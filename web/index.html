@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutroom</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ff7a45'/%3E%3Cpath d='M9 8v16M15 8v16M21 8l4 8-4 8' stroke='%231d0c03' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <button id="btnProjects" title="Projects">Projects</button>
+  <input id="projName" class="name" spellcheck="false" aria-label="Project name">
+  <span class="spacer"></span>
+  <span id="saveState" class="muted"></span>
+  <button id="btnExport" class="primary">Export</button>
+</header>
+
+<main class="work">
+  <aside class="left">
+    <nav class="tabs">
+      <button data-tab="media" class="on">Media</button>
+      <button data-tab="text">Text</button>
+      <button data-tab="captions">Captions</button>
+    </nav>
+    <section id="tab-media" class="pane on">
+      <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv">+ Import media</label>
+      <p class="hint">or drop files anywhere. Drag items onto a track, or press +.</p>
+      <div id="mediaList" class="media-list"></div>
+    </section>
+    <section id="tab-text" class="pane">
+      <p class="hint">Adds a text clip at the playhead. Drag it on the preview to move it.</p>
+      <div id="textPresets" class="presets"></div>
+    </section>
+    <section id="tab-captions" class="pane">
+      <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>
+      <label class="row"><span>Language</span><select id="capLang">
+        <option value="auto">Auto-detect</option><option value="en">English</option><option value="hy">Armenian</option>
+        <option value="ru">Russian</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option>
+      </select></label>
+      <label class="row"><span>Words per caption</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
+      <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
+      <div id="capPresets" class="presets"></div>
+      <button id="btnCaptions" class="primary wide">Generate captions</button>
+      <p id="capStatus" class="muted"></p>
+    </section>
+  </aside>
+
+  <section class="center">
+    <div id="stage" class="stage"><canvas id="cv"></canvas></div>
+    <div class="transport">
+      <span id="tc" class="tc">00:00:00</span>
+      <button id="btnPlay" class="play" title="Play / pause (Space)"></button>
+      <span class="spacer"></span>
+      <span id="ratioLabel" class="muted"></span>
+    </div>
+  </section>
+
+  <aside id="inspector" class="right"></aside>
+</main>
+
+<footer class="timeline">
+  <div class="toolbar">
+    <button id="btnUndo" title="Undo (⌘Z)">Undo</button>
+    <button id="btnRedo" title="Redo (⇧⌘Z)">Redo</button>
+    <span class="sep"></span>
+    <button id="btnSplit" title="Split at playhead (S)">Split</button>
+    <button id="btnDelete" title="Delete (⌫)">Delete</button>
+    <span class="sep"></span>
+    <button id="btnPauses" title="Cut silent gaps out of main-track clips">Remove pauses</button>
+    <select id="pauseLen" title="Shortest pause to remove"><option value="0.3">&gt; 0.3 s</option><option value="0.5" selected>&gt; 0.5 s</option><option value="1">&gt; 1 s</option></select>
+    <span class="spacer"></span>
+    <label class="zoom">Zoom <input id="zoom" type="range" min="0" max="5.6" step="0.01"></label>
+  </div>
+  <div class="tl-body">
+    <div id="heads" class="heads"></div>
+    <div id="tlScroll" class="tl-scroll">
+      <div id="tlInner" class="tl-inner">
+        <div id="ruler" class="ruler"></div>
+        <div id="lanes"></div>
+        <div id="playhead" class="playhead"></div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<div id="modal" class="modal" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<div id="mediaPool" class="pool" aria-hidden="true"></div>
+<script src="app.js"></script>
+</body>
+</html>

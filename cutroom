@@ -1,0 +1,20 @@
+#!/bin/sh
+# Start the Cutroom server if it isn't running, then open the editor as a Chrome app window.
+# Started on demand, never at login. Data: ~/Movies/Cutroom (media, projects, exports, cache, models).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+PORT="${CUTROOM_PORT:-4610}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA="${CUTROOM_HOME:-$HOME/Movies/Cutroom}"
+VAD="$DATA/models/ggml-silero-v5.1.2.bin"   # speech detector that keeps whisper from captioning music
+
+mkdir -p "$DATA/models"
+[ -f "$VAD" ] || curl -fsSL -o "$VAD" "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" || rm -f "$VAD"
+
+if ! curl -fs -o /dev/null "http://127.0.0.1:$PORT/api/ping"; then
+  nohup env -u PYTHONPATH python3 -I "$DIR/server.py" >>"$DATA/server.log" 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 0.2
+    curl -fs -o /dev/null "http://127.0.0.1:$PORT/api/ping" && break
+  done
+fi
+[ "$1" = "--server-only" ] || open -na "Google Chrome" --args --app="http://127.0.0.1:$PORT/"
