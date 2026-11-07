@@ -115,6 +115,11 @@ TOOLS = [
                      'voice ids: first letter = language (a US, b UK English, e Spanish, f French, h Hindi, i Italian, j Japanese, p Portuguese, z Chinese), '
                      'second = f/m; e.g. af_heart, af_bella, am_michael, bf_emma, bm_george. speed 0.5-2.',
      S({'text': txt, 'voice': txt, 'speed': num, 'at': num}, ['text']), 'ai_voiceover'),
+    ('smart_combine', 'Smart combine (CapCut AutoCut), on this Mac: from several videos, the best-looking part of every scene, ordered '
+                      '(order: auto | story = by what each shot shows | shot = as filmed), fitted to length seconds (0 = all the good parts), '
+                      'cut to the music\'s beats, transitions chosen from what changes between shots. style: balanced | energetic | calm | cinematic. '
+                      'Builds and opens a new project.', S({'media': {'type': 'array', 'items': txt}, 'length': num, 'style': txt, 'order': txt, 'music': txt,
+                                                            'ratio': txt, 'sound': boo, 'title': boo}, ['media']), 'smart_combine'),
     ('remove_object', 'Remove an object from a video clip, on this Mac: box = where it is on the canvas as fractions {x, y, w, h} '
                       '(read it off a snapshot at time t); it is tracked through the whole clip and the background filled in. '
                       'The clip switches to a cleaned copy. Best on moving objects or moving cameras; a static object in a locked-off shot is '
@@ -150,7 +155,7 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object')
+    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

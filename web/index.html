@@ -61,6 +61,18 @@
       <label class="row"><span>Speed</span><select id="aiSpeed"><option value="0.9">Slower</option><option value="1" selected>Normal</option><option value="1.1">Faster</option><option value="1.25">Fast</option></select></label>
       <button id="btnAiVoice" class="primary wide">Add voiceover at playhead</button>
       <p id="aiVoiceStatus" class="muted"></p>
+      <h4>Smart combine</h4>
+      <p class="hint">Tick your clips. Cutroom keeps the best-looking part of every scene, orders them (a story from what each shot shows, or as filmed), fits them to the length and the music's beats, and picks transitions from what changes between shots.</p>
+      <div id="scList"></div>
+      <label class="row"><span>Length</span><select id="scLen"><option value="0">All the good parts</option><option value="15">15 s</option><option value="30" selected>30 s</option><option value="60">60 s</option><option value="90">90 s</option></select></label>
+      <label class="row"><span>Style</span><select id="scStyle"><option value="balanced">Balanced</option><option value="energetic">Energetic</option><option value="calm">Calm</option><option value="cinematic">Cinematic</option></select></label>
+      <label class="row"><span>Order</span><select id="scOrder"><option value="auto">Auto</option><option value="story">Story</option><option value="shot">As filmed</option></select></label>
+      <label class="row"><span>Music</span><select id="scMusic"></select></label>
+      <label class="row"><span>Canvas</span><select id="scRatio"><option>9:16</option><option>16:9</option><option>1:1</option><option>4:5</option></select></label>
+      <label class="row chk"><span>Keep the clips' sound</span><input id="scSound" type="checkbox" checked></label>
+      <label class="row chk"><span>Title</span><input id="scTitle" type="checkbox"></label>
+      <button id="btnCombine" class="primary wide">Combine</button>
+      <p id="scStatus" class="muted"></p>
       <h4>Long video → Shorts</h4>
       <p class="hint">A local language model reads the transcript and picks the best moments. Each becomes a 9:16 project with captions, face reframing and a hook title.</p>
       <label class="row"><span>Video</span><select id="hlSrc"></select></label>

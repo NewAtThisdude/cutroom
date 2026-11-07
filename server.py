@@ -648,15 +648,16 @@ def llm_model():
     return pick[0] if pick else None
 
 
-def llm(system, user, ctx=8192):
-    """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes)."""
+def llm(system, user, ctx=8192, images=None):
+    """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes).
+    images: base64 JPEGs for a vision model (qwen3.5 sees)."""
     if not ollama_up():
         raise RuntimeError('the local language model is not available (install Ollama and pull a model, e.g. qwen3.5:9b)')
     model = llm_model()
     if not model:
         raise RuntimeError('Ollama has no model yet: ollama pull qwen3.5:9b')
     body = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.2, 'num_ctx': int(ctx)},
-            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user, **({'images': images} if images else {})}]}
     if 'qwen3' in model:
         body['think'] = False
     with LLM_LOCK:
@@ -679,6 +680,142 @@ def sentences(words, gap=0.6):
     if cur:
         out.append(cur)
     return [{'s': round(c[0]['s'], 2), 'e': round(c[-1]['e'], 2), 'text': ' '.join(x['w'] for x in c)} for c in out]
+
+
+def shots(st, mid, span=(0.0, 1.0)):
+    """What is in a video, for smart combine (cached): its scenes (long takes in parts of up to 10 s), how every moment
+    looks (sharpness, exposure, colour, motion; 4 samples a second, from ffmpeg) and, with the local vision model,
+    what the best frame of each part shows."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError(f"{m['name']} is not a video")
+    cache = CACHE / f'{mid}.shots.json'
+    if cache.exists() and ((res := json.loads(cache.read_text()))['vision'] or not ai_status()['llm']):
+        return res  # analysed without the model while it was unavailable: describe now
+    src, dur = str(MEDIA / m['file']), m['duration']
+    dec, vf = hdr_decode(m)
+    r = sh(['ffmpeg', '-v', 'error', *dec, '-i', src, '-an', '-vf',
+            f'{vf}fps=4,scale=320:-2,blurdetect=block_width=32:block_height=32,signalstats,metadata=print:file=-', '-f', 'null', '-'])
+    fr = []
+    for block in r.stdout.split('frame:')[1:]:
+        kv, pt = dict(re.findall(r'lavfi\.([\w.]+)=([-\d.e]+)', block)), re.search(r'pts_time:([\d.]+)', block)
+        if pt:
+            blur, y = float(kv.get('blur', 8)), float(kv.get('signalstats.YAVG', 128))
+            q = max(0.0, min(1.0, (9.5 - blur) / 3)) * (1 - min(1.0, abs(y - 120) / 140))  # sharp and well exposed
+            fr.append({'t': round(float(pt.group(1)), 3), 'q': round(q, 3), 'y': round(y, 1), 'm': round(float(kv.get('signalstats.YDIF', 0)), 2),
+                       'sat': round(float(kv.get('signalstats.SATAVG', 0)), 1)})
+    if not fr:
+        raise RuntimeError(f"could not read {m['name']}")
+    cuts = [0.0, *[c for c in scenes(mid) if 0.3 < c < dur - 0.3], dur]
+    parts = []
+    for a, b in zip(cuts, cuts[1:]):
+        k = max(1, math.ceil((b - a) / 10))
+        parts += [(a + (b - a) * i / k, a + (b - a) * (i + 1) / k, len(parts) + i) for i in range(k)]
+    out, vision = [], True
+    for n, (a, b, _) in enumerate(parts):
+        inside = [f for f in fr if a <= f['t'] < b] or [min(fr, key=lambda f: abs(f['t'] - a))]
+        best = max(inside, key=lambda f: f['q'])
+        sc = {'a': round(a, 3), 'b': round(b, 3), 'kt': best['t'], 'take': next(i for i, c in enumerate(cuts) if c > a) - 1}
+        if vision:
+            try:
+                jpg = subprocess.run(['ffmpeg', '-v', 'error', *dec, '-ss', f"{best['t']:.3f}", '-i', src, '-frames:v', '1', '-vf', f'{vf}scale=384:-2',
+                                      '-q:v', '4', '-f', 'image2pipe', '-c:v', 'mjpeg', '-'], capture_output=True).stdout
+                d = llm('You describe video shots for an editor. Reply with JSON only.',
+                        'Describe this video frame. Return {"desc": "max 10 words", "place": "1-3 words", "shot": "wide|medium|close", '
+                        '"subject": "1-3 words", "energy": "calm|lively|intense", "quality": 1-5}', ctx=4096, images=[base64.b64encode(jpg).decode()])
+                sc.update({k: str(d.get(k, ''))[:80] for k in ('desc', 'place', 'shot', 'subject', 'energy')}, look=int(fnum(d.get('quality', 3), 1, 5)))
+            except (RuntimeError, OSError, ValueError, AttributeError):
+                vision = False  # no vision model: order as shot, transitions from the picture statistics only
+        out.append(sc)
+        st['progress'] = span[0] + (span[1] - span[0]) * (n + 1) / len(parts)
+    res = {'frames': fr, 'scenes': out, 'vision': vision}
+    cache.write_text(json.dumps(res))
+    return res
+
+
+COMBINE_STYLES = {  # shot length range (s), transition for a change of place, its length
+    'balanced': (2.0, 3.5, 'fade', 0.4), 'energetic': (1.0, 2.0, 'slideleft', 0.25), 'calm': (3.0, 5.0, 'fade', 0.8), 'cinematic': (3.0, 5.5, 'fadeblack', 0.7)}
+
+
+def combine(st, mids, target=0, style='balanced', order='auto', music=None):
+    """Smart combine (CapCut's AutoCut), on this Mac: the best-looking moment of every scene across the clips, in an
+    order (as shot, or a story the local model picks from what each shot shows), fitted to the length, with transitions
+    picked from what changes between shots: a hard cut inside one take, a dip on a big brightness jump, the style's
+    transition between places. Returns the edit; the editor builds the project (and beat-syncs it to the music)."""
+    style = style if style in COMBINE_STYLES else 'balanced'
+    lo, hi, change_tr, trd = COMBINE_STYLES[style]
+    mids = list(dict.fromkeys(str(x) for x in mids))[:40]
+    if not mids:
+        raise ValueError('pick some videos')
+    target = fnum(target, 0, 3600)
+    info = [(mid, shots(st, mid, (0.75 * i / len(mids), 0.75 * (i + 1) / len(mids)))) for i, mid in enumerate(mids)]
+    cands = []
+    for mi, (mid, sh_) in enumerate(info):
+        fr = sh_['frames']
+        for sc in sh_['scenes']:
+            a, b = sc['a'] + 0.15, sc['b'] - 0.15  # stay clear of the cuts
+            if b - a < min(lo, 1.0):
+                continue
+            L = min(b - a, max(lo, min(hi, 0.6 * (b - a))))
+            pts = [f for f in fr if a <= f['t'] <= b]
+            score = lambda s0: statistics.fmean([f['q'] for f in pts if s0 <= f['t'] <= s0 + L] or [0])
+            s0 = max([f['t'] for f in pts if f['t'] + L <= b + 1e-6] or [a], key=score)
+            win = [f for f in pts if s0 <= f['t'] <= s0 + L] or pts[:1] or fr[:1]
+            mot = statistics.fmean(f['m'] for f in win)
+            q = score(s0) * (0.6 + 0.08 * sc.get('look', 3)) * ((1 + min(mot, 20) / 40) if style == 'energetic' else (1 - min(mot, 30) / 90))
+            cands.append({'media': mid, 'in': round(s0, 3), 'out': round(s0 + L, 3), 'lim': b, 'q': round(q, 3), 'y0': win[0]['y'], 'y1': win[-1]['y'],
+                          'take': (mi, sc['take']), 'mi': mi, **{k: sc[k] for k in ('desc', 'place', 'shot', 'subject', 'energy') if k in sc}})
+    if not cands:
+        raise RuntimeError('no usable shots (the clips are too short, too dark or too blurry)')
+    title = ''
+    vision = all(s['vision'] for _, s in info)
+    if order == 'story' or (order == 'auto' and vision and len(mids) > 1):
+        if vision:
+            lines = '\n'.join(f"{k + 1}: {c.get('desc', '')} | {c.get('place', '')} | {c.get('shot', '')} shot | {c.get('energy', '')}" for k, c in enumerate(cands))
+            try:
+                ans = llm('You are a video editor. Reply with JSON only.',
+                          'Put these shots in the best order for one short edit: open with a striking or establishing shot, keep shots of the same '
+                          'place together, build up, and end on a strong closing shot. Use every number once. '
+                          'Return {"order": [numbers], "title": "a title, max 5 words"}.\n' + lines, ctx=8192)
+                seq = [int(x) - 1 for x in ans.get('order', []) if str(x).isdigit() and 0 < int(x) <= len(cands)]
+                seq = list(dict.fromkeys(seq)) + [k for k in range(len(cands)) if k not in seq]
+                cands, title = [cands[k] for k in seq], str(ans.get('title') or '').strip()[:60]
+            except RuntimeError:
+                pass
+    else:
+        cands.sort(key=lambda c: (c['mi'], c['in']))
+    st['progress'] = 0.85
+    tot = lambda cs: sum(c['out'] - c['in'] for c in cs) - trd * 0.5 * max(0, len(cs) - 1)
+    if target:
+        while tot(cands) > target and len(cands) > 2:  # drop the weakest shots until it fits
+            cands.remove(min(cands, key=lambda c: c['q']))
+        if tot(cands) < target * 0.9:  # stretch toward the target, never past the scene's own end
+            f = min(1.6, target / max(tot(cands), 0.1))
+            for c in cands:
+                c['out'] = round(min(c['lim'], c['in'] + (c['out'] - c['in']) * f), 3)
+    for k, c in enumerate(cands):  # transitions from what changes
+        n = cands[k + 1] if k + 1 < len(cands) else None
+        if not n:
+            continue
+        same_take, same_place = c['take'] == n['take'], bool(c.get('place')) and c.get('place', '').lower() == n.get('place', '').lower()
+        if same_take and n['in'] >= c['out'] - 0.05:
+            continue  # the same take moving on: hard cut
+        if abs(c['y1'] - n['y0']) > 70:
+            c['tr'] = {'type': 'fadewhite' if n['y0'] > c['y1'] else 'fadeblack', 'd': max(trd, 0.5)}
+        elif style == 'energetic':
+            if not same_place:
+                c['tr'] = {'type': ('slideleft', 'zoomin', 'slideup', 'wiperight')[k % 4], 'd': trd}
+        elif same_place:
+            c['tr'] = {'type': 'fade', 'd': round(trd * 0.6, 2)}
+        else:
+            c['tr'] = {'type': change_tr, 'd': trd}
+    every = 1
+    if music:
+        bp = beats(music)
+        beat = 60 / max(40, bp.get('bpm') or 120)
+        every = max(1, round(((lo + hi) / 2) / beat))  # cuts every N beats, near the style's shot length
+    keep = ('media', 'in', 'out', 'lim', 'tr', 'desc', 'place')
+    return {'shots': [{k: c[k] for k in keep if k in c} for c in cands], 'title': title, 'every': every, 'vision': vision}
 
 
 def hook_text(s):
@@ -1463,6 +1600,9 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(lift(body['media']))
             if u.path == '/api/remove_object':
                 return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'))})
+            if u.path == '/api/ai/combine':
+                return self.reply({'job': run_job(combine, body.get('media') or [], body.get('target', 0), body.get('style', 'balanced'),
+                                                  body.get('order', 'auto'), body.get('music'))})
             if u.path == '/api/ai/highlights':
                 return self.reply({'job': run_job(highlights, body['media'], body.get('lang', 'auto'), body.get('count', 3), body.get('min', 15), body.get('max', 45))})
             if u.path == '/api/ai/translate':
@@ -1551,7 +1691,7 @@ def selftest():
     global HOME, MEDIA, PROJ, EXPORTS, CACHE, CHUNK
     # language-model features with a stub model: picks snap to sentence edges, padding stops halfway into a pause,
     # overlapping / malformed picks are dropped, two-clause titles keep the first clause, translations keep the line count
-    keep = {k: globals()[k] for k in ('transcribe', 'meta', 'llm')}
+    keep = {k: globals()[k] for k in ('transcribe', 'meta', 'llm', 'shots')}
     words = [{'w': w, 's': a, 'e': b} for w, a, b in (('Intro.', 0, 1), ('First', 2, 2.4), ('point', 2.5, 3), ('here.', 3.1, 20), ('Second', 20.2, 20.6), ('one.', 20.7, 40), ('Bye.', 41, 42))]
     answer = {'clips': [{'start': 1.7, 'end': 20.3, 'title': 'Big claim: details.'}, {'start': 5, 'end': 25}, {'start': 'x'}, {'start': 20, 'end': 40.5, 'title': 'Two'}],
               'hooks': ['One: two three', '', 'Fine hook here.']}
@@ -1572,6 +1712,21 @@ def selftest():
             raise AssertionError('translate accepted a bad language name')
         except ValueError:
             pass
+        # smart combine on stubbed shot analysis: the window skips a blurry start, one take moving on is a hard cut,
+        # big brightness jumps dip to black / white, the target length drops the weakest shots, stretching stops at the scene end
+        fr = lambda a, b, y=120, q=0.9: [{'t': round(a + i * 0.25, 3), 'q': q, 'y': y, 'm': 1.0, 'sat': 10} for i in range(int((b - a) / 0.25))]
+        fake = {'A': {'frames': fr(0, 6) + fr(6, 12, y=30), 'vision': True, 'scenes': [{'a': 0, 'b': 6, 'kt': 1, 'take': 0, 'place': 'beach', 'look': 4},
+                                                                                     {'a': 6, 'b': 12, 'kt': 7, 'take': 1, 'place': 'city', 'look': 4}]},
+                'B': {'frames': fr(0, 1, q=0.1) + fr(1, 8), 'vision': True, 'scenes': [{'a': 0, 'b': 4, 'kt': 2, 'take': 0, 'place': 'hill', 'look': 3},
+                                                                                     {'a': 4, 'b': 8, 'kt': 6, 'take': 0, 'place': 'hill', 'look': 3}]}}
+        globals()['shots'] = lambda st, mid, span=(0, 1): fake[mid]
+        sh_ = combine({}, ['A', 'B'], 0, 'balanced', 'shot')['shots']
+        assert [x['media'] for x in sh_] == ['A', 'A', 'B', 'B'] and sh_[2]['in'] >= 1.0, sh_
+        assert [x.get('tr', {}).get('type') for x in sh_] == ['fadeblack', 'fadewhite', None, None], sh_
+        fit = combine({}, ['A', 'B'], 6, 'balanced', 'shot')['shots']
+        assert len(fit) == 2 and sum(x['out'] - x['in'] for x in fit) <= 7.5, fit
+        long = combine({}, ['A'], 30, 'calm', 'shot')['shots']
+        assert all(x['out'] <= x['lim'] + 1e-6 for x in long), long
     finally:
         globals().update(keep)
     HOME = Path(tempfile.mkdtemp(prefix='cutroom-test-'))

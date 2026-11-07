@@ -394,6 +394,9 @@ function renderMediaList() {
       <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : ' · preparing'}</span></div>
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
+  const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
+  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)} · ${fmtDur(x.duration)}</span><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
+  if (mu) { mu.innerHTML = '<option value="">No music</option>' + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
   if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}">${esc(x.name)} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
 }
@@ -1772,6 +1775,15 @@ function wire() {
     catch (e) { $('#aiStatus').textContent = e.message; }
     finally { b.disabled = false; }
   });
+  $('#btnCombine').addEventListener('click', async () => {
+    const b = $('#btnCombine'), media = [...document.querySelectorAll('#scList input:checked')].map(x => x.value);
+    if (!media.length) return toast('Tick the videos to combine');
+    b.disabled = true;
+    try { await smartCombine({ media, length: +$('#scLen').value, style: $('#scStyle').value, order: $('#scOrder').value, music: $('#scMusic').value || undefined,
+      ratio: $('#scRatio').value, sound: $('#scSound').checked, title: $('#scTitle').checked }); }
+    catch (e) { $('#scStatus').textContent = e.message; }
+    finally { b.disabled = false; }
+  });
   $('#btnShorts').addEventListener('click', async () => {
     const b = $('#btnShorts'), [mn, mx] = $('#hlLen').value.split('-').map(Number);
     if (!$('#hlSrc').value) return toast('Import a video with speech first');
@@ -2066,6 +2078,58 @@ async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
   addMedia(jb.media, 'audio', at);
   return brief(...cfind(S.sel.id));
 }
+async function smartCombine({ media, length = 30, style = 'balanced', order = 'auto', music, ratio = '9:16', sound = true, title = false, reframe = true }) { // CapCut's AutoCut, on this Mac
+  const vids = [...new Set((Array.isArray(media) ? media : [media]).map(q => mediaBy(q)))].filter(m => m.kind === 'video');
+  if (!vids.length) throw new Error('pick at least one video');
+  const mus = music ? mediaBy(music) : null;
+  if (mus && !mus.hasAudio) throw new Error(`${mus.name} has no sound`);
+  if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
+  const st = $('#scStatus'), say = x => { if (st) st.textContent = x; };
+  say('Looking at every shot…');
+  const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id }, 'Combining');
+  setProject(newProject(ratio));
+  P.name = plan.title || `Smart combine ${new Date().toLocaleDateString()}`;
+  for (const s of plan.shots) {
+    addMedia(s.media, 'main');
+    const c = P.main.at(-1);
+    change(() => { Object.assign(c, { in: s.in, out: s.out, volume: sound ? 1 : 0 }); if (s.tr) c.tr = { ...s.tr }; });
+  }
+  say('Framing the shots…');
+  for (const c of P.main) { // other shapes fill the canvas; faces stay in frame
+    const m = M.get(c.media);
+    if (Math.abs(m.w / m.h - P.w / P.h) > 0.15) { change(() => { c.fit = 'fill'; }); if (reframe) await autoReframe(c); }
+  }
+  if (mus) {
+    packMain();
+    addMedia(mus.id, 'audio', 0);
+    const a = P.audio.at(-1);
+    await detectBeats(a);
+    if (a.beats?.length) change(() => { // each cut moves to the nearest beat, never past its shot's own scene
+      const marks = a.beats.map(b => a.start + (b - a.in) / a.speed);
+      P.main.slice(0, -1).forEach((x, i) => {
+        packMain();
+        const half = (x.tr?.d || 0) / 2, endT = x.start + tdur(x, 'main') - half;
+        const mk = marks.reduce((best, v) => (Math.abs(v - endT) < Math.abs(best - endT) ? v : best), Infinity);
+        const want = x.in + (mk + half - x.start) * x.speed;
+        if (Number.isFinite(mk) && mk - x.start > 0.8 && want <= Math.min(plan.shots[i].lim ?? Infinity, M.get(x.media).duration)) x.out = want;
+      });
+    });
+    const end = packMain(); // the edit's length (total() would count the music itself)
+    change(() => { a.out = Math.min(mus.duration, a.in + end); a.fadeOut = Math.min(2, end / 4); });
+    if (sound && P.main.some(c => M.get(c.media)?.hasAudio)) await autoDuck(a);
+  }
+  if (title && plan.title) {
+    S.t = 0; addText('Title');
+    const tx = P.text.at(-1);
+    change(() => { Object.assign(tx, { text: plan.title, dur: Math.min(3, total()) }); tx.style.anim = 'fade'; });
+  }
+  packMain();
+  await api(`/api/projects/${P.id}`, P, 'PUT');
+  S.t = 0; renderAll();
+  const out = { project: P.id, name: P.name, shots: P.main.length, duration: r3(total()), transitions: P.main.filter(c => c.tr).map(c => c.tr.type), orderedBy: plan.vision ? 'what each shot shows' : 'time (no vision model)' };
+  say(`${out.shots} shots, ${fmtDur(out.duration)}: ${P.name}`);
+  return out;
+}
 async function makeShorts({ media, count = 3, min = 15, max = 45, captions = true, reframe = true, title = true, lang = 'auto' }) { // long video -> shorts, on this Mac
   const m = mediaBy(media);
   if (m.kind !== 'video' || !m.hasAudio) throw new Error('pick a video with speech');
@@ -2139,6 +2203,7 @@ async function loadAI() { // fill the AI tab from what is installed
   if (!s.image) $('#aiStatus').textContent = 'The image model is not installed (README: On-device AI).';
   if (!s.voice) $('#aiVoiceStatus').textContent = 'The voice model is not installed (README: On-device AI).';
   for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
+  if (!s.llm) $('#scStatus').textContent = 'Without the local model, shots are kept in the order they were filmed.';
   if (!s.llm) $('#hlStatus').textContent = 'Needs Ollama with a model (ollama pull qwen3.5:9b).';
 }
 
@@ -2295,6 +2360,7 @@ const REMOTE = {
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
   async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
+  async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
   async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },

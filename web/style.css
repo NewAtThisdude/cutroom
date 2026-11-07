@@ -110,7 +110,8 @@ h4 { margin: 16px 0 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .0
 .row input[type=range] { flex: 1; min-width: 0; }
 .row select, .row input:not([type=range]):not([type=checkbox]):not([type=color]) { flex: 1; min-width: 0; }
 .row.chk { justify-content: space-between; }
-.row.chk > span:first-child { width: auto; }
+.row.chk > span:first-child { width: auto; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row.chk > input { flex: none; }
 .row output { width: 46px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; font-size: 12px; opacity: .8; }
 .seg { display: flex; flex: 1; gap: 2px; padding: 2px; background: #0a0c13; border: 1px solid var(--line); border-radius: 8px; }
 .seg button { flex: 1; padding: 4px 6px; font-size: 12px; border: 0; background: transparent; color: var(--muted); border-radius: 6px; }

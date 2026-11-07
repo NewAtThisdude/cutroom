@@ -64,6 +64,7 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
 | | **Remove object** from video: drag a box round it at any frame | Apple Vision follows it both ways through the clip. Each frame's hole is filled with the real background from the nearest frames that show it, aligned for camera motion. What no frame shows (a static object in a locked-off shot) is synthesized once from the surrounding texture and carried through the shot, so it doesn't flicker. Poisson blending hides exposure seams. `ai/remove.py`, OpenCV |
+| | **Smart combine**: tick several clips and get one edit | Every scene of every clip is scored 4× a second for sharpness and exposure (ffmpeg `blurdetect`, `signalstats`), and the local vision model describes its best frame. Cutroom keeps the best window of each scene, orders the shots (a story from what they show, or as filmed), fits them to the length, snaps the cuts to the music's beats and picks each transition from what changes: a hard cut inside one take, a dip to black or white on a big brightness jump, the style's transition between places. Shots of another shape fill the canvas with face reframing. Styles: balanced, energetic, calm, cinematic |
 | | **Long video → Shorts**, caption translation, hook titles | A local language model (Ollama, qwen3.5:9b) reads the on-device transcript. Shorts: its picks snap to sentence edges, and each becomes a 9:16 project with face reframing, captions and a hook title. Translation works on whole sentences, then re-cuts them into captions over the same time (by character for Chinese and Japanese) |
 | Claude Code control | Tell Claude Code in VS Code what to do and it edits the open project | The Cutroom MCP server (see below) |
 
@@ -75,10 +76,10 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 33 tools cover projects, media import, clips (add, update any setting,
+the preview frame as an image), and exports. The 34 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
-object's position off a snapshot), `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
+object's position off a snapshot), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -99,6 +100,7 @@ about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9
 | Natural voiceover (AI tab, `ai_voiceover`) | Kokoro-82M via mlx-audio, 54 voices in 9 languages | 7.7 s of speech in about 5 s, most of it model load |
 | Background removal for photos | Apple Vision `VNGenerateForegroundInstanceMaskRequest` | under a second; any subject, not only people |
 | Remove object (video) | Apple Vision tracking + `ai/remove.py` (OpenCV, no model) | 4 s of 720p in about 11 s. Against the clean footage: 40-44 dB inside the hole for a moving object or a moving camera (indistinguishable), and plausible synthesized texture for a static object in a static shot |
+| Smart combine | ffmpeg picture statistics + qwen3.5:9b looking at one frame per scene | three clips (5 scenes): analysed and described in about 15 s the first time (cached after that), the edit built in about 3 s |
 | Shorts, translation, hooks | qwen3.5:9b (Q4) on Ollama, thinking off | a 94 s talk: 3 shorts picked and built in about 8 s; 6 sentences translated in about 3 s |
 
 The full-precision image model needs more than 30 GB while it loads and pushes a 36 GB Mac into swap (about 9 minutes
@@ -206,6 +208,9 @@ once in the browser also guarantees the export matches the preview.
   detail such as a bookshelf. Strong parallax or an object over moving texture (water, crowds) can leave soft or
   ghosted patches. Shadows and reflections of the object are not removed. Verified on synthetic composites (with
   ground truth), not yet on real phone footage.
+- **Smart combine** judges a shot by sharpness and exposure and by what one frame of it shows; it doesn't hear speech or
+  follow action, and the story order is the 9B model's call. Cuts move to the nearest beat. Transitions don't follow the
+  camera's motion direction. Verified on synthetic clips (stills with camera moves), not yet on real phone footage.
 - **Language model:** a 9B local model. Its picks for shorts were right on a clear multi-topic talk; hook titles sometimes
   ignore the word limit (two-clause titles are cut to the first clause). Translation is good in Spanish and Russian;
   Japanese had an occasional wrong word (Chinese 咖啡 for "coffee").
