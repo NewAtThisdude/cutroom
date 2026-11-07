@@ -73,6 +73,7 @@ const WEIGHTS = { Montserrat: [400, 500, 600, 700, 800, 900], Poppins: [800, 900
 const WEIGHT_NAMES = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold', 900: 'Black' };
 const CANVAS_FILTER = 'filter' in CanvasRenderingContext2D.prototype; // WebKit (the Mac app) has no ctx.filter: filters and feathering are done by hand
 const ALPHA_Q = navigator.vendor.startsWith('Apple') ? '?alpha=hevc' : ''; // WebKit plays VP9 alpha opaque; the server hands it an HEVC-alpha copy
+const WK_Q = navigator.vendor.startsWith('Apple') ? '?wk=1' : ''; // WebKit colour-manages video (BT.709 mid-tones lifted): a re-labelled copy shows it as exported
 const RAMPS = { // speed multipliers over 8 equal parts of the clip (CapCut's curve presets, baked into editable parts)
   montage: [1, 1.6, 0.5, 2, 1, 0.5, 1.8, 1], hero: [1, 1, 0.5, 0.25, 0.25, 0.5, 1, 1], bullet: [2, 2, 0.35, 0.2, 0.35, 2, 2, 2],
   jumpcut: [1, 1, 3, 3, 1, 1, 3, 3], flashin: [4, 3, 2, 1.5, 1, 1, 1, 1], flashout: [1, 1, 1, 1, 1.5, 2, 3, 4],
@@ -602,7 +603,7 @@ function vidFor(key, m) {
     $('#mediaPool').append(v);
     pool.set(key, v);
   }
-  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : ''}`; }
+  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr ? '' : WK_Q}`; }
   return v;
 }
 function imgFor(m) {
@@ -701,6 +702,7 @@ function sync(v, src, rate, vol, pitch) { // the wall clock is the master; media
     else if (Math.abs(v.currentTime - src) > 0.3) v.currentTime = src;
   } else {
     if (!v.paused) v.pause();
+    v._want = src; // waitFrame checks the element really got here
     if (!v.seeking && Math.abs(v.currentTime - src) > 0.5 / P.fps) v.currentTime = src;
   }
 }
@@ -735,9 +737,10 @@ function paint() {
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
     const v = vidFor(`m${(mi + 1) % 2}`, nm);
-    if (!live.has(v)) { live.add(v); if (!v.paused) v.pause(); if (!v.seeking && Math.abs(v.currentTime - nx.in) > 0.04) v.currentTime = nx.in; }
+    if (!live.has(v)) { live.add(v); if (!v.paused) v.pause(); v._want = nx.in; if (!v.seeking && Math.abs(v.currentTime - nx.in) > 0.04) v.currentTime = nx.in; }
   }
   for (const v of pool.values()) if (!live.has(v) && !v.paused) v.pause();
+  S.live = live;
   drawTexts(ctx, t, k, true);
   if (S.pickRect) {
     const R = S.pickRect, d = devicePixelRatio || 1;
@@ -999,9 +1002,9 @@ function addMedia(id, lane, t) {
     S.sel = { lane, id: c.id };
   });
 }
-function addText(name) {
+function addText(name, props = {}, style = {}) { // one undo step, whatever it starts with
   change(() => {
-    const c = { id: hex12(), start: S.t, dur: 3, text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', style: { ...TEXT_PRESETS[name] }, x: 0.5, y: 0.42 };
+    const c = { id: hex12(), start: S.t, dur: 3, text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
     P.text.push(c);
     S.sel = { lane: 'text', id: c.id };
   });
@@ -1562,20 +1565,20 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
         st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null];
       for (const [a, b] of spans.filter(Boolean)) for (let t = a; t < Math.min(b, end); t += 1 / P.fps) cuts.add(t); // animated: one PNG per frame
     }
-    const ts = [...cuts].filter(t => t >= 0 && t <= D).sort((a, b) => a - b);
+    const nF = Math.round(D * P.fps), fs = new Set([0, nF]);
+    for (const c of cuts) fs.add(Math.floor(c * P.fps)).add(Math.ceil(c * P.fps)); // the frames on either side of every change
+    const fr = [...fs].filter(f => f >= 0 && f <= nF).sort((a, b) => a - b);
     const cv = new OffscreenCanvas(w, h), ctx = cv.getContext('2d'), pngs = [], seen = new Map(), spans = [];
-    for (let i = 0; i + 1 < ts.length; i++) {
-      const a = ts[i], b = ts[i + 1];
-      if (b - a < 1e-4) continue;
+    for (let i = 0; i + 1 < fr.length; i++) { // spans on the frame grid: the export can't put a change between two frames
+      const a = fr[i] / P.fps, b = fr[i + 1] / P.fps;
       ctx.clearRect(0, 0, w, h);
-      drawTexts(ctx, a + 1e-4, k, false); // state at the interval start = what the preview shows on that frame
+      drawTexts(ctx, a, k, false); // exactly what the preview draws on that frame (same function, same time)
       const url = await blobURL(await cv.convertToBlob({ type: 'image/png' }));
       let idx = seen.get(url);
       if (idx === undefined) { idx = pngs.push(url) - 1; seen.set(url, idx); }
       const last = spans.at(-1);
       if (last && last.i === idx) last.end = b; else spans.push({ i: idx, start: a, end: b });
     }
-    if (spans.length) spans[0].start = 0;
     text = { pngs, frames: spans };
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
@@ -2140,9 +2143,7 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
     if (sound && P.main.some(c => M.get(c.media)?.hasAudio)) await autoDuck(a);
   }
   if (title && plan.title) {
-    S.t = 0; addText('Title');
-    const tx = P.text.at(-1);
-    change(() => { Object.assign(tx, { text: plan.title, dur: Math.min(3, total()) }); tx.style.anim = 'fade'; });
+    S.t = 0; addText('Title', { text: plan.title, dur: Math.min(3, total()) }, { anim: 'fade' });
   }
   packMain();
   await api(`/api/projects/${P.id}`, P, 'PUT');
@@ -2168,9 +2169,7 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
     if (reframe) await autoReframe(c);
     if (captions) await autoCaptions(true);
     if (title && h.title) {
-      S.t = 0; addText('Title');
-      const tx = P.text.at(-1);
-      change(() => { Object.assign(tx, { text: h.title, dur: Math.min(3, len(c)), y: 0.16 }); tx.style.anim = 'pop'; });
+      S.t = 0; addText('Title', { text: h.title, dur: Math.min(3, len(c)), y: 0.16 }, { anim: 'pop' });
     }
     await api(`/api/projects/${P.id}`, P, 'PUT');
     made.push({ id: P.id, name: P.name, start: h.start, end: h.end, reason: h.reason });
@@ -2215,7 +2214,7 @@ async function hookTitles() {
   if (!ranges.length) throw new Error('no speech on the main track');
   return job('/api/ai/hooks', { ranges, lang: $('#capLang').value }, 'Writing hooks');
 }
-function addHook(text) { S.t = 0; addText('Title'); const tx = P.text.at(-1); change(() => { Object.assign(tx, { text, dur: 3, y: 0.16 }); tx.style.anim = 'pop'; }); return brief(tx, 'text'); }
+function addHook(text) { S.t = 0; addText('Title', { text, dur: 3, y: 0.16 }, { anim: 'pop' }); return brief(P.text.at(-1), 'text'); }
 async function loadAI() { // fill the AI tab from what is installed
   let s;
   try { s = await api('/api/ai/status'); } catch { return; }
@@ -2261,9 +2260,11 @@ function merge(o, patch) { // deep merge; null deletes
     else o[k] = structuredClone(v);
   }
 }
-async function waitFrame() { // the preview shows the frame at S.t: media elements seeked, then painted
-  S.dirty = true;
-  for (let i = 0; i < 80; i++) { await sleep(50); if ([...pool.values()].every(v => !v.currentSrc || (v.readyState >= 2 && !v.seeking))) break; }
+async function waitFrame() { // the preview shows the frame at S.t: every element at its time, then painted
+  paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
+  const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && Math.abs(v.currentTime - (v._want ?? v.currentTime)) <= 0.5 / P.fps + 0.002);
+  for (let i = 0; i < 100 && ![...(S.live || [])].every(at); i++) { await sleep(40); paint(); } // re-paint re-issues a seek skipped mid-seek
+  await sleep(40); // WebKit hands drawImage the new frame a moment after 'seeked'
   paint();
 }
 const REMOTE = {
@@ -2410,7 +2411,7 @@ const REMOTE = {
     o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
     return { t: r3(S.t), image: o.toDataURL('image/png').split(',')[1] };
   },
-  async export({ format = 'mp4', resolution = '1080p', quality = 'fast', bitrate = 1, name, loudness = false, at }) {
+  async export({ format = 'mp4', resolution = '1080p', quality = 'fast', bitrate = 1, name, loudness = false, at, show = false }) {
     const sz = exportSizes().find(x => x[0] === resolution);
     if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
     if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
@@ -2420,7 +2421,8 @@ const REMOTE = {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, !!loudness, format);
       plan.rate = +bitrate || 1;
       const jb = await job('/api/export', plan, 'Exporting');
-      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format };
+      if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
+      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, shown: !!show };
     } finally { S.exporting = false; }
   },
 };
@@ -2435,8 +2437,10 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     api('/api/remote/ack', { id: m.id }).catch(() => {});
     let ok = true, result;
     remoteLog = [];
+    const p0 = P, u0 = undo.length;
     try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
     catch (e) { ok = false; result = e.message; }
+    if (P === p0 && undo.length > u0 + 1) undo.splice(u0 + 1); // one command = one undo step (a command may make several changes)
     const log = remoteLog;
     remoteLog = null;
     await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});

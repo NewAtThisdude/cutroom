@@ -133,6 +133,30 @@ def alpha_mov(m):
     return out if out.exists() else None
 
 
+WK_LOCK = threading.Lock()  # ponytail: one re-label at a time; per-file locks if many big files arrive at once
+
+
+def wk_copy(m):
+    """Video for WebKit (the Mac app): the same stream re-labelled, not re-encoded. macOS colour-manages video in WebKit
+    and lifts BT.709's mid-tones (grey 128 shows as 139); labelled with the sRGB transfer it shows the decoded values,
+    which is what the export and Chrome use. Primaries BT.709 (no gamut mapping); the matrix the export reads it with."""
+    src = CACHE / f"{m['id']}.proxy.mp4"
+    codec = 'h264' if src.exists() else m.get('codec')
+    src = src if src.exists() else MEDIA / m['file']
+    if codec not in ('h264', 'hevc') or m.get('hdr'):
+        return src
+    out = CACHE / f"{m['id']}.wk.mov"
+    with WK_LOCK:
+        if not out.exists():
+            cs = m.get('cs') or ''
+            matrix = 6 if cs in ('smpte170m', 'bt470bg') or (cs in ('', 'unknown') and max(m['w'], m['h']) < 720) else 9 if cs.startswith('bt2020') else 1
+            tmp = out.with_suffix('.tmp.mov')
+            if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', '-c', 'copy', '-bsf:v',
+                   f'{codec}_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients={matrix}', '-movflags', '+faststart', str(tmp)]).returncode == 0:
+                tmp.replace(out)
+    return out if out.exists() else src
+
+
 def prepare(m):
     """Timeline assets, like CapCut's material cache: filmstrip, waveform, preview proxy."""
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
@@ -1362,10 +1386,10 @@ def graph(p, td):
         for j, b in enumerate(p['pngs']):
             files.append(Path(td) / f't{j}.png')
             files[-1].write_bytes(b)
-        lines = ['ffconcat version 1.0']
-        for fr in p['frames']:
-            lines += [f"file '{files[fr['i']]}'", f"duration {max(0.001, fr['end'] - fr['start']):.6f}"]
-        lines.append(f"file '{files[p['frames'][-1]['i']]}'")  # concat demuxer ignores the last duration otherwise
+        lines, rate = ['ffconcat version 1.0'], {23.976: '24000/1001', 29.97: '30000/1001', 59.94: '60000/1001'}.get(round(F, 3), f'{F:g}')
+        for fr in p['frames']:  # the project's frame rate as the time base: frame-exact spans stay exact (the default 25 fps rounds them)
+            lines += [f"file '{files[fr['i']]}'", f'option framerate {rate}', f"duration {max(0.001, fr['end'] - fr['start']):.9f}"]
+        lines += [f"file '{files[p['frames'][-1]['i']]}'", f'option framerate {rate}']  # concat demuxer ignores the last duration otherwise
         (Path(td) / 'text.ffconcat').write_text('\n'.join(lines) + '\n')
         ins.append(['-f', 'concat', '-safe', '0', '-i', str(Path(td) / 'text.ffconcat')])
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
@@ -1573,9 +1597,12 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
                 return self.reply(JOBS.get(m[1], {'state': 'missing'}))
             if m := re.fullmatch(r'/media/([a-f0-9]{12})', path):
-                if 'hevc' in parse_qs(urlparse(self.path).query).get('alpha', []) and (mm := meta(m[1])).get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
+                q, mm = parse_qs(urlparse(self.path).query), meta(m[1])
+                if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
                     if mov := alpha_mov(mm):  # made at import; older library items get it on first request
                         return self.file(mov)
+                if q.get('wk') and mm.get('kind') == 'video' and not (mm.get('alpha') or mm.get('trans') or mm.get('hdr')):
+                    return self.file(wk_copy(mm))  # the app's preview: colour labels WebKit shows as decoded
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
             if path == '/api/templates':
@@ -1688,7 +1715,7 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/trash', u.path):  # reversible: file + metadata move to trash/media
                 info = meta(m[1])
                 (HOME / 'trash' / 'media').mkdir(parents=True, exist_ok=True)
-                for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json'):
+                for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
                         shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
                 return self.reply({'ok': True})
@@ -1700,10 +1727,10 @@ class App(BaseHTTPRequestHandler):
                     (HOME / 'trash').mkdir(exist_ok=True)
                     shutil.move(str(f), str(unique(HOME / 'trash' / f.name)))
                 return self.reply({'ok': True})
-            if u.path == '/api/reveal':
+            if u.path == '/api/reveal':  # Show in Finder, or play: open it in the Mac's default player (QuickTime)
                 f = EXPORTS / Path(str(body.get('file', ''))).name
                 if f.is_file():
-                    subprocess.Popen(['open', '-R', str(f)])
+                    subprocess.Popen(['open', str(f)] if body.get('play') else ['open', '-R', str(f)])
                 return self.reply({'ok': f.is_file()})
             self.reply({'error': 'not found'}, 404)
         except (ValueError, KeyError, TypeError, FileNotFoundError) as e:
@@ -2025,6 +2052,16 @@ def selftest():
         print('filler words ok:', ' '.join(f"{f['w']}@{f['s']:.2f}-{f['e']:.2f}" for f in fl))
     else:
         print('captions skipped (whisper-cli or model missing)')
+    # the app's preview copy: same decoded pixels, only the colour labels change (sRGB transfer: WebKit shows them unlifted)
+    gen('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'hd.mp4'))
+    hd = imp('hd.mp4')
+    wk = wk_copy(hd)
+    tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer', '-of', 'json',
+                          str(wk)]).stdout)['streams'][0]
+    md5 = lambda f: re.findall(r'[0-9a-f]{32}', sh(['ffmpeg', '-v', 'error', '-i', str(f), '-map', '0:v', '-f', 'framemd5', '-']).stdout)
+    assert wk.name.endswith('.wk.mov') and tags == {'color_space': 'bt709', 'color_primaries': 'bt709', 'color_transfer': 'iec61966-2-1'}, tags
+    assert md5(wk) == md5(MEDIA / hd['file']), 'the WebKit copy decodes differently'
+    print('webkit preview copy ok: identical frames, labelled bt709 + sRGB transfer')
     if (AI_BIN / 'python').exists():  # object removal end to end: Vision tracks a moving square both ways, the fill must match the clean shot
         gen('-f', 'lavfi', '-i', 'testsrc2=s=480x270', '-frames:v', '1', str(HOME / 'bg.png'))
         gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'clean.mp4'))

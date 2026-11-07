@@ -140,8 +140,9 @@ TOOLS = [
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
-    ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png (png = still at `at`); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5.',
-     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'name': txt, 'loudness': boo, 'at': num}), 'export'),
+    ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png (png = still at `at`); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5. '
+               'show=true opens the result in the Mac\'s player when it is done.',
+     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'name': txt, 'loudness': boo, 'at': num, 'show': boo}), 'export'),
 ]
 SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]
 CMD = {n: c for n, _, _, c in TOOLS}
