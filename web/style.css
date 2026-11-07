@@ -301,6 +301,10 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .confirm .q { display: flex; flex-direction: column; min-width: 0; margin-right: 4px; }
 .confirm small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.clip svg.fade { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.clip svg.fade path { fill: rgba(0, 0, 0, .45); stroke: rgba(255, 255, 255, .7); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.clip .fh { position: absolute; top: 1px; width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); cursor: ew-resize; z-index: 2; display: none; }
+.clip:hover .fh, .clip.sel .fh { display: block; }
 .clip svg.env { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .clip svg.env polyline { fill: none; stroke: #ffd166; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .clip svg.env circle { fill: #ffd166; vector-effect: non-scaling-stroke; }

@@ -394,7 +394,12 @@ function clipHTML(lane, c, top = 0, h = 42) {
     const w = Math.max(3, tdur(c, lane) * pps), y = v => (1 - clamp((dB(v) + 40) / 52, 0, 1)) * 100, pts = c.vkf.map(f => `${clamp(f.t * pps, 0, w)},${y(f.v)}`);
     return `<svg class="env" viewBox="0 0 ${w} 100" preserveAspectRatio="none"><polyline points="0,${y(c.vkf[0].v)} ${pts.join(' ')} ${w},${y(c.vkf.at(-1).v)}"/>${c.vkf.map(f => `<circle cx="${clamp(f.t * pps, 0, w)}" cy="${y(f.v)}" r="2.5"/>`).join('')}</svg>`;
   })() : '';
-  const marks = env + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
+  const fades = m ? (() => { // fade ramps shaded over the clip, plus round knobs on its top corners to drag them
+    const w = Math.max(3, tdur(c, lane) * pps), a = (c.fadeIn || 0) * pps, b = (c.fadeOut || 0) * pps;
+    return (a || b ? `<svg class="fade" viewBox="0 0 ${w} 100" preserveAspectRatio="none">${a ? `<path d="M0,0H${a}L0,100Z"/>` : ''}${b ? `<path d="M${w},0H${w - b}L${w},100Z"/>` : ''}</svg>` : '')
+      + `<i class="fh l" style="left:${clamp(a - 5, 0, w - 10)}px" title="Drag to fade in"></i><i class="fh r" style="right:${clamp(b - 5, 0, w - 10)}px" title="Drag to fade out"></i>`;
+  })() : '';
+  const marks = env + fades + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
   return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
@@ -535,7 +540,7 @@ function mediaPanel(c, lane) {
   if (!m) return '<h3>Missing media</h3><div class="actions"><button data-act="delete">Delete</button></div>';
   const d = tdur(c, lane), pr = propsAt(c, S.t - c.start), cr = c.crop || {}, vis = m.kind !== 'audio', vid = m.kind === 'video', mk = c.mask, A = c.anim || {}, a = c.adj || {};
   const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(d)}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
-  const fmax = Math.max(0.05, Math.min(3, d)), amax = Math.max(0.2, Math.min(3, d));
+  const fmax = Math.max(0.05, Math.min(3, d), c.fadeIn || 0, c.fadeOut || 0), amax = Math.max(0.2, Math.min(3, d));
   let basic = m.kind !== 'image' ? slider('c.speed', 'Speed', Math.log10(c.speed), -1, 2, 0.005, 'x', ' data-log') + (m.hasAudio ? tick('c.pitch', 'Change pitch with speed', c.pitch) : '') : '';
   if (vis) {
     basic += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
@@ -2876,6 +2881,18 @@ function drag(e, lane, c, el) {
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 }
+function fadeDrag(lane, c, el, isIn) { // a fade knob: drag it into the clip to fade in (left) or out (right), in 0.05 s steps
+  const before = JSON.stringify(P), left = el.getBoundingClientRect().left, d = tdur(c, lane), k = isIn ? 'fadeIn' : 'fadeOut', other = isIn ? 'fadeOut' : 'fadeIn';
+  if (S.playing) pause();
+  const move = ev => {
+    const x = (ev.clientX - left) / S.pps;
+    c[k] = Math.round(clamp(isIn ? x : d - x, 0, d - (c[other] || 0)) * 20) / 20;
+    S.dirty = true; renderTimeline(); renderInspector();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
 function setZoom(pps, anchorX) {
   const sc = $('#tlScroll'), x = anchorX ?? sc.clientWidth / 2, t = (sc.scrollLeft + x) / S.pps;
   S.pps = clamp(pps, 8, 600);
@@ -3072,7 +3089,8 @@ function wire() {
     }
     if (!isSel(lane, c.id)) S.multi.clear(); // a click on an unselected clip starts over; on a selected one it keeps the group, to drag it
     if (S.sel?.id !== c.id) { S.sel = { lane, id: c.id }; renderInspector(); $$('.clip.sel').forEach(x => { if (!S.multi.has(selKey(x.dataset.lane, x.dataset.id))) x.classList.remove('sel'); }); el.classList.add('sel'); S.dirty = true; }
-    drag(e, lane, c, el);
+    const fh = e.target.closest('.fh');
+    if (fh) fadeDrag(lane, c, el, fh.classList.contains('l')); else drag(e, lane, c, el);
   });
   $('#tlInner').addEventListener('contextmenu', e => { // right-click: the clip's menu, the cut's menu, or paste
     if (!P) return;
