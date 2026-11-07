@@ -94,7 +94,10 @@ h4 { margin: 14px 0 6px; font-size: 11px; letter-spacing: .06em; text-transform:
 .zoom { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .tl-body { flex: 1; display: grid; grid-template-columns: 78px minmax(0, 1fr); align-items: start; min-height: 0; overflow-y: auto; } /* stacked rows can outgrow the panel */
 .heads { border-right: 1px solid var(--line); padding-top: 24px; }
-.heads div { display: flex; align-items: center; padding-left: 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.heads div { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 0 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.lt { padding: 0; width: 18px; height: 18px; font-size: 10px; line-height: 1; color: var(--muted); }
+.lt.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.mk { position: absolute; bottom: 0; width: 8px; height: 8px; margin-left: -4px; background: #3dff8b; clip-path: polygon(50% 100%, 0 0, 100% 0); pointer-events: none; }
 .tl-scroll { overflow-x: auto; overflow-y: hidden; position: relative; }
 .tl-inner { position: relative; min-height: 100%; }
 .ruler { position: relative; height: 24px; border-bottom: 1px solid var(--line); cursor: text;

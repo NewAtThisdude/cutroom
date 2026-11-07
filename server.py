@@ -59,6 +59,9 @@ def probe(path):
         w, h = int(v['width']), int(v['height'])
         if abs(int(float(rot))) % 180 == 90:  # phone footage: ffmpeg and the browser both auto-rotate
             w, h = h, w
+        fr = v.get('avg_frame_rate', '0/1').split('/')
+        info['fps'] = round(int(fr[0]) / int(fr[1]), 3) if len(fr) == 2 and fr[1] not in ('', '0') else 30
+        info['trans'] = v.get('pix_fmt', '') in ('rgba', 'bgra', 'argb', 'abgr', 'ya8', 'pal8', 'yuva420p') or v['codec_name'] == 'gif'
         info.update(w=w, h=h, codec=v['codec_name'], rot=int(float(rot)),
                     hdr=v.get('color_transfer') in ('arib-std-b67', 'smpte2084'),  # HLG / PQ (iPhone HDR is HLG)
                     alpha=v['codec_name'] == 'vp9' and v.get('tags', {}).get('alpha_mode') == '1')
@@ -87,7 +90,8 @@ def import_file(name, stream, length, background=True):
     except ValueError:
         dst.unlink()
         raise
-    kind = 'image' if ext in IMAGE_EXT else 'video' if 'w' in info else 'audio' if info['hasAudio'] else None
+    animated = ext == '.gif' and info['duration'] > 0.15  # animated GIF stickers behave like (transparent) video
+    kind = 'image' if ext in IMAGE_EXT and not animated else 'video' if 'w' in info else 'audio' if info['hasAudio'] else None
     if not kind or (kind == 'image' and 'w' not in info):
         dst.unlink()
         raise ValueError('no audio or video in this file')
@@ -108,7 +112,10 @@ def prepare(m):
         if not sh(['ffmpeg', '-v', 'error', '-y', '-hwaccel', 'videotoolbox', '-i', src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
                    '-frames:v', '1', '-q:v', '5', str(CACHE / f'{mid}.strip.jpg')]).returncode:
             m['stripN'] = n
-        if m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT:  # e.g. ProRes, MKV
+        if m.get('trans') and not m.get('alpha'):  # e.g. GIF: preview proxy keeps transparency (VP9 alpha WebM)
+            m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)',format=yuva420p", '-c:v', 'libvpx-vp9', '-b:v', '0',
+                                 '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(CACHE / f'{mid}.proxy.webm')]).returncode
+        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT:  # e.g. ProRes, MKV
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
                                  '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(CACHE / f'{mid}.proxy.mp4')]).returncode
     if m['hasAudio']:
@@ -386,6 +393,24 @@ def faces(st, mid, t0, t1):
     return {'points': pts}
 
 
+def slowmo(st, mid, t0, t1, factor):
+    """Smooth slow motion (CapCut 'smooth slow-mo'): motion-interpolated copy of a range at factor x the frame rate,
+    so playing it at 1/factor speed still shows a fresh frame every frame."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('only video')
+    fps = min(240, m.get('fps', 30) * factor)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'smooth.mp4'
+        run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-ss', f'{t0:.4f}', '-t', f'{t1 - t0:.4f}',
+                    '-i', str(MEDIA / m['file']), '-vf', f'minterpolate=fps={fps:g}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(out)],
+                   t1 - t0, lambda x: st.update(progress=0.95 * x))
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (smooth {factor}x).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
 MATTE_VF = 'format=yuva444p'  # matte writes straight alpha (set to 'unpremultiply=inplace=1,...' if that ever changes)
 
 
@@ -413,6 +438,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'still': fnum(p.get('still', 0), 0, 1e6),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -446,6 +472,8 @@ def clean_plan(p):
         k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0}
                    for f in kf] or None
         k['angle'] = fnum(c.get('angle', 0), -3600, 3600)
+        k['trans'] = bool(m.get('trans'))
+        k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 4), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
             k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
         k['mask'] = base64.b64decode(c['mask'].split(',')[-1]) if c.get('mask') else None
@@ -566,8 +594,9 @@ def graph(p, td):
         return v
 
     def audio(i, c, dur, delay=0.0):
-        live = c['hasAudio'] and c['kind'] != 'image' and c['volume'] > 0
-        a = f"[{i}:a]asetpts=PTS-STARTPTS,{atempo(c['speed'])},volume={c['volume']:.3f}" if live else 'anullsrc=r=48000:cl=stereo'
+        live = c['hasAudio'] and c['kind'] != 'image' and (c['volume'] > 0 or c.get('vkf'))
+        vol = f"volume='{pw(c['vkf'], 'v')}':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"  # envelope: ducking, fades
+        a = f"[{i}:a]asetpts=PTS-STARTPTS,{atempo(c['speed'])},{vol}" if live else 'anullsrc=r=48000:cl=stereo'
         if live and c.get('denoise'):
             a += ',afftdn=nr=15:nf=-40:tn=1'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
@@ -614,7 +643,7 @@ def graph(p, td):
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
         v, kf, rot = video(i, c, n), c.get('kf'), rotation(c)
-        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('key') or c.get('mask'):  # composite onto a base frame
+        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('trans') or c.get('key') or c.get('mask'):  # composite onto a base frame
             if c['fit'] == 'blur':
                 v += f',split=2[f{k}][b{k}];[b{k}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]null'
             else:
@@ -704,18 +733,38 @@ def graph(p, td):
     return sum(ins, []), ';'.join(fg)
 
 
+FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'gif': '.gif', 'mp3': '.mp3', 'wav': '.wav', 'png': '.png'}
+
+
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
-    W, H, F = p['w'], p['h'], p['fps']
+    W, H, F, fmt = p['w'], p['h'], p['fps'], 'mp4' if intermediate else p.get('format', 'mp4')
+    vmap, amap, br = ['-map', '[vout]'], ['-map', '[aout]'], f'{max(2000, round(W * H * F * 0.2 / 1000))}k'
     if intermediate:
         enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le']
+    elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
+        fg += f';[vout]fps={min(F, 15):g},split[g1][g2];[g1]palettegen=stats_mode=diff[gp];[g2][gp]paletteuse=dither=bayer:bayer_scale=4[gout];[aout]anullsink'
+        vmap, amap, enc = ['-map', '[gout]'], [], ['-loop', '0']
+    elif fmt == 'png':  # still frame at p['still']
+        fg += ';[aout]anullsink'
+        amap, enc = [], ['-ss', f"{p['still']:.4f}", '-frames:v', '1', '-update', '1']
+    elif fmt in ('mp3', 'wav'):
+        fg += ';[vout]nullsink'
+        vmap, enc = [], ['-c:a', 'libmp3lame', '-q:a', '2'] if fmt == 'mp3' else ['-c:a', 'pcm_s16le']
+    elif fmt == 'prores':
+        enc = ['-c:v', 'prores_ks', '-profile:v', '2', '-c:a', 'pcm_s16le']
+    elif fmt == 'hevc':
+        enc = ['-c:v', 'hevc_videotoolbox', '-b:v', br, '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
     elif p['quality'] == 'best':
         enc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac', '-b:a', '192k']
     else:
-        enc = ['-c:v', 'h264_videotoolbox', '-b:v', f'{max(2000, round(W * H * F * 0.2 / 1000))}k', '-profile:v', 'high', '-c:a', 'aac', '-b:a', '192k']
-    return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *ins,
-             '-filter_complex', fg, '-map', '[vout]', '-map', '[aout]', *enc, '-pix_fmt', 'yuv420p', '-r', f'{F:g}', '-fps_mode', 'cfr',
-             '-t', f"{p['duration']:.6f}"] + ([] if intermediate else ['-movflags', '+faststart']) + [str(out)])
+        enc = ['-c:v', 'h264_videotoolbox', '-b:v', br, '-profile:v', 'high', '-c:a', 'aac', '-b:a', '192k']
+    video = fmt not in ('mp3', 'wav')
+    pix = ['-pix_fmt', 'yuv422p10le' if fmt == 'prores' else 'yuv420p'] if video and fmt not in ('gif', 'png') else []
+    rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
+    return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *ins, '-filter_complex', fg,
+             *vmap, *amap, *enc, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
+            + (['-movflags', '+faststart'] if fmt in ('mp4', 'hevc') and not intermediate else []) + [str(out)])
 
 
 def run_ffmpeg(cmd, dur, report):
@@ -757,7 +806,7 @@ def export(job, p):
                              'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
-            out = unique(EXPORTS / f"{p['name']}.mp4")
+            out = unique(EXPORTS / f"{p['name']}{FORMATS[p.get('format', 'mp4')]}")
             run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps))
         st.update(state='done', progress=1.0, file=out.name)
     except Exception as e:  # surfaced to the UI
@@ -857,11 +906,13 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
                 return self.reply(JOBS.get(m[1], {'state': 'missing'}))
             if m := re.fullmatch(r'/media/([a-f0-9]{12})', path):
-                proxy = CACHE / f'{m[1]}.proxy.mp4'
-                return self.file(proxy if proxy.exists() else MEDIA / meta(m[1])['file'])
+                proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
+                return self.file(proxy or MEDIA / meta(m[1])['file'])
+            if path == '/api/templates':
+                return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png))', path):
                 return self.file(CACHE / m[1])
-            if m := re.fullmatch(r'/exports/([^/]+\.mp4)', path):
+            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|gif|mp3|wav|png))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
             if WEB in f.parents and f.is_file():
@@ -911,8 +962,10 @@ class App(BaseHTTPRequestHandler):
                     if f.exists():
                         shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
                 return self.reply({'ok': True})
-            if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
-                f = PROJ / f'{m[1]}.json'
+            if u.path == '/api/slowmo':
+                return self.reply({'job': run_job(slowmo, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), int(fnum(body.get('factor', 4), 2, 8)))})
+            if m := re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
+                f = (PROJ if m[1] == 'projects' else HOME / 'templates') / f'{m[2]}.json'
                 if f.exists():
                     (HOME / 'trash').mkdir(exist_ok=True)
                     shutil.move(str(f), str(unique(HOME / 'trash' / f.name)))
@@ -931,16 +984,18 @@ class App(BaseHTTPRequestHandler):
     def do_PUT(self):
         if not self.allowed(True):
             return
-        m = re.fullmatch(r'/api/projects/([a-f0-9]{12})', urlparse(self.path).path)
+        m = re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})', urlparse(self.path).path)
         if not m:
             return self.reply({'error': 'not found'}, 404)
         try:
             body = self.body()
             if not isinstance(body, dict):
-                raise ValueError('project must be an object')
-            tmp = PROJ / f'.{m[1]}.tmp'
+                raise ValueError('expected an object')
+            folder = PROJ if m[1] == 'projects' else HOME / 'templates'
+            folder.mkdir(exist_ok=True)
+            tmp = folder / f'.{m[2]}.tmp'
             tmp.write_text(json.dumps(body))
-            tmp.replace(PROJ / f'{m[1]}.json')  # atomic: a crash mid-save never truncates the project
+            tmp.replace(folder / f'{m[2]}.json')  # atomic: a crash mid-save never truncates the file
             self.reply({'ok': True})
         except ValueError as e:
             self.reply({'error': str(e)}, 400)
@@ -1067,6 +1122,23 @@ def selftest():
     sb = meta(stabilize({}, L['id'])['media'])
     assert (sb['w'], sb['h']) == (L['w'], L['h']) and abs(sb['duration'] - L['duration']) < 0.2, sb
     print('rotation + mask + easing + reverse + stabilize ok')
+    vplan = {'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': 'envelope', 'main': [], 'overlay': [],
+             'audio': [{'media': A['id'], 'start': 0, 'in': 0, 'out': 2, 'frames': 60, 'volume': 1, 'vkf': [{'t': 0, 'v': 1}, {'t': 2, 'v': 0}]}]}
+    out = render(vplan, 60)
+    db = lambda a, b: float(re.search(r'mean_volume: (-?[\d.]+|-inf)', sh(['ffmpeg', '-hide_banner', '-ss', str(a), '-to', str(b), '-i', str(out), '-af', 'volumedetect', '-f', 'null', '-']).stderr.replace('-inf', '-200'))[1])
+    assert db(0, 0.4) - db(1.6, 2) > 10, ('volume envelope', db(0, 0.4), db(1.6, 2))
+    for fmt, codec in (('gif', 'gif'), ('mp3', 'mp3'), ('wav', 'pcm_s16le'), ('png', 'png'), ('prores', 'prores'), ('hevc', 'hevc')):
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**tplan, 'format': fmt, 'still': 1.5, 'name': f'fmt {fmt}'}))
+        assert JOBS['t']['state'] == 'done', (fmt, JOBS['t'])
+        got = sh(['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', str(EXPORTS / JOBS['t']['file'])]).stdout.split()
+        assert got and got[0] == codec, (fmt, got)
+    gen('-f', 'lavfi', '-i', 'testsrc=s=120x120:r=10:d=1', str(HOME / 'sticker.gif'))
+    gf = imp('sticker.gif')
+    assert gf['kind'] == 'video' and gf['trans'] and gf.get('proxy') and (CACHE / f"{gf['id']}.proxy.webm").exists(), gf
+    sm = meta(slowmo({}, L['id'], 0, 1, 4)['media'])
+    assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, sm
+    print('volume envelope + 6 export formats + animated GIF + smooth slow-mo ok')
     plan['loud'] = True
     plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True)
     render(plan, 270)

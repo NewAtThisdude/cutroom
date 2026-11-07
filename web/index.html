@@ -10,6 +10,7 @@
 <body>
 <header class="top">
   <button id="btnProjects" title="Projects">Projects</button>
+  <button id="btnTemplates" title="Templates">Templates</button>
   <input id="projName" class="name" spellcheck="false" aria-label="Project name">
   <span class="spacer"></span>
   <span id="saveState" class="muted"></span>
@@ -37,6 +38,7 @@
       <label class="row"><span>Voice</span><select id="ttsVoice"></select></label>
       <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
       <button id="btnTts" class="primary wide">Add voiceover at playhead</button>
+      <button id="btnRec" class="wide">Record voiceover (mic)</button>
     </section>
     <section id="tab-captions" class="pane">
       <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>

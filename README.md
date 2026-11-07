@@ -47,8 +47,13 @@ Data lives in `~/Movies/Cutroom/`:
 | | Voiceover (text-to-speech) | The Mac's own voices (`say`), added on the audio track |
 | | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking. Main-track cuts snap to every 1, 2, 4 or 8 beats |
 | | Remove pauses (jump cuts), reduce noise, loudness normalization (−14 LUFS), detach audio | `silencedetect`, `afftdn`, `loudnorm` |
-| Output | MP4 export from 720p to 4K | H.264 via VideoToolbox (fast) or x264 (best), with a progress bar and Show in Finder |
-| Library | Proxies for ProRes and MKV, HEIC import, project and media delete (to trash) | |
+| | Volume envelope and auto-duck | Music dips about 12 dB under speech, found with `silencedetect`, with ramps. Per-frame `volume` expression; Web Audio gain in the preview |
+| | Smooth slow-mo for clips under 1× | `minterpolate` renders an interpolated copy of just the clip's range |
+| | Voiceover recording from the mic | MediaRecorder while the timeline plays muted |
+| Text | Out animations (pop, fade, slide) and loops (bounce, pulse, wiggle); animated GIF stickers with transparency | GIFs get a VP9-alpha preview proxy |
+| Timeline | Markers (M), mute/hide toggles per track, per-keyframe easing | Edges snap to markers |
+| Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, still PNG at the playhead; 720p to 4K | VideoToolbox (fast) or x264 (best), with a progress bar and Show in Finder |
+| Library | Templates (save an edit, refill its media slots), project duplicate and delete, media delete (to trash), proxies for ProRes, MKV and GIF, HEIC import | |
 
 ## How CapCut works (teardown of /Applications/CapCut.app 9.7.1)
 
@@ -117,4 +122,5 @@ once in the browser also guarantees the export matches the preview.
   keyframed). Easing is per clip (all segments), not per keyframe.
 - **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only,
   verified on a 3D-avatar clip.
-- **Not built:** multi-camera, templates, AI generation (CapCut's AIGC is cloud-based).
+- **Mic recording** is untested end to end: the test browser has no microphone.
+- **Not built:** multi-camera, blend modes, and AI generation (CapCut's AIGC is cloud-based).
