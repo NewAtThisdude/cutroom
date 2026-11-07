@@ -43,7 +43,7 @@
       <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
     </section>
     <section id="tab-audio" class="pane">
-      <div class="phead"><b>Sound effects</b><span>made on this Mac · ▶ listen · + add</span></div>
+      <div class="phead"><b>Sound effects</b><span>▶ listen · + add</span></div>
       <div id="sfxList" class="sfx"></div>
       <h4>AI music</h4>
       <p class="hint">Describe it, or pick a style. Made on this Mac (MusicGen) in about the time it lasts; nothing is uploaded.</p>
@@ -108,7 +108,7 @@
         <option value="auto">Auto-detect</option><option value="en">English</option><option value="hy">Armenian</option>
         <option value="ru">Russian</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option><option value="uk">Ukrainian</option><option value="tr">Turkish</option><option value="ar">Arabic</option><option value="fa">Persian</option><option value="hi">Hindi</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option>
       </select></label>
-      <label class="row"><span>Words per caption</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
+      <label class="row"><span>Words each</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
       <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
       <h4>Style</h4>
       <div id="capPresets" class="presets"></div>
@@ -172,7 +172,7 @@
       <textarea id="aiPrompt" rows="3" placeholder="A neon sign that says OPEN on a rainy street at night, cinematic" spellcheck="true"></textarea>
       <label class="row"><span>Shape</span><select id="aiShapeSel"><option value="canvas">Like the canvas</option><option value="1:1">Square</option><option value="16:9">Wide</option><option value="9:16">Tall</option><option value="4:5">Portrait</option></select></label>
       <label class="row"><span>Quality</span><select id="aiSteps"><option value="4">Draft (faster)</option><option value="8" selected>Best</option></select></label>
-      <label class="row"><span>Put it on</span><select id="aiPut"><option value="overlay">Overlay at playhead</option><option value="main">Main track</option><option value="library">Library only</option></select></label>
+      <label class="row"><span>Put it on</span><select id="aiPut"><option value="overlay">Overlay</option><option value="main">Main track</option><option value="library">Library only</option></select></label>
       <label class="row chk"><span>Sticker (cut out the subject)</span><input id="aiSticker" type="checkbox"></label>
       <button id="btnAiImage" class="primary wide">Generate image</button>
       <p id="aiStatus" class="muted"></p>

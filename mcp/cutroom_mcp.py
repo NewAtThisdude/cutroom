@@ -27,6 +27,8 @@ speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit 
 scale (1 = fitted size) | x, y: offset in canvas fractions, 0 = centred (text clips: 0..1 position, 0.5 = centre) | rot degrees | opacity 0-1
 blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|color-burn|hard-light|soft-light|difference|exclusion
 fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (export)
+au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
+vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
 look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
 key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror, x, y -0.5..0.5, w, h, rot, feather, invert}
@@ -116,7 +118,7 @@ TOOLS = [
     ('remove_fillers', 'Cut um / uh / er / hmm out of main-track clips (on-device transcript).', S(), 'remove_fillers'),
     ('voiceover', "Text to speech with the Mac's voices, added on the audio track at `at` (default: playhead).", S({'text': txt, 'voice': txt, 'rate': num, 'at': num}, ['text']), 'voiceover'),
     ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
-                  'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), '
+                  'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),

@@ -76,6 +76,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | **AI music** from a description or a style (upbeat pop, lo-fi, cinematic, hip hop, EDM, acoustic, corporate, ambient, funk, trap), 4-60 s; smart combine can make its own ("AI music, made to fit": the style's sound, as long as the edit) | MusicGen on this Mac, faster than real time. Detected beats drive the cuts like any song's |
 | | Volume in dB (mute to +20 dB), fades you can hear in the preview, auto-duck from −6 to −24 dB under speech on any track | The duck envelope multiplies the clip volume, so the Volume slider keeps working after auto-duck |
 | | Remove pauses, reduce noise, loudness −14 LUFS, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
+| | **Sound per clip**: voice effects (chipmunk, deep, robot, echo, hall, telephone), pitch in semitones that keeps the timing, 3-band EQ (bass 100 Hz, mid 1 kHz, treble 8 kHz, ±12 dB), pan, volume points you set at the playhead (drawn on the clip), **split into stems** (vocals, drums, bass, other: four clips in sync) | The preview runs the export's chain in Web Audio: the EQ shelves are the Web Audio spec's biquads, sent to ffmpeg's `biquad` as coefficients (its own `bass`/`treble` overshoot); pan is StereoPanner's equal-power formula as `pan`; the hall is one seeded impulse response for both `ConvolverNode` and `afir`. Exported WAV vs the preview's own chain rendered offline: 64-86 dB SNR for every setting (`tests/audio_e2e.mjs`). Pitch: an AudioWorklet in the preview, `asetrate`+`atempo` in the export (same note, not the same samples). Stems: Demucs htdemucs; they add back up to the original at 24 dB SNR |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three bitrates; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
 | Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
@@ -260,6 +261,8 @@ once in the browser also guarantees the export matches the preview.
 - **Cut out object:** edges come from SAM 2's mask at up to 1024 px, smoothed when scaled up, so fine hair on 4K is
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
+- **Audio timing:** ffmpeg's input seek in M4A files lands 800-2700 samples off (differently at each point), and MP3 seeks are approximate, so the export reads audio files from a lossless FLAC copy made at import (`cache/<id>.exact.flac`); MP4/MOV video sound seeks exactly. `atempo=1` is skipped (it wandered 7 ms on speech).
+- **Preview pitch shift** adds up to 50 ms of delay while it is on, and is a simpler algorithm than the export's.
 - **Edit by script** follows the main track only (not voiceovers on the audio track). Caption text you edited by hand is
   re-made from the transcript after a cut (undo brings your edits back). Words are as good as whisper's timing: a cut
   can clip a fast word's tail.

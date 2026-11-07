@@ -172,6 +172,26 @@ def heavy(m):
     return m.get('kind') == 'video' and not (m.get('hdr') or m.get('alpha') or m.get('trans')) and m.get('w', 0) * m.get('h', 0) * (m.get('fps') or 30) > 1920 * 1080 * 60
 
 
+EXACT_LOCK = threading.Lock()
+
+
+def exact_audio(m):
+    """What the export reads an audio file from: the file itself when it seeks to the sample (WAV, AIFF, FLAC), else a
+    lossless FLAC copy made once. ffmpeg's input seek in M4A files came out 800-2700 samples off, differently at every
+    point (AAC priming and edit lists), and MP3 seeks are approximate; the preview's browser seeks them exactly."""
+    src = MEDIA / m['file']
+    if src.suffix.lower() in ('.wav', '.aif', '.aiff', '.flac'):
+        return src
+    out = CACHE / f"{m['id']}.exact.flac"
+    with EXACT_LOCK:
+        if not out.exists():
+            tmp = out.with_suffix('.tmp.flac')
+            if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vn', '-map', '0:a:0', '-c:a', 'flac', str(tmp)]).returncode:
+                return src
+            tmp.replace(out)
+    return out
+
+
 def prepare(m):
     """Timeline assets, like CapCut's material cache: preview proxy, filmstrip, waveform."""
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
@@ -190,6 +210,8 @@ def prepare(m):
             m['stripN'] = n
     if m['kind'] == 'video' and (m.get('alpha') or m.get('trans')):
         alpha_mov(m)
+    if m['kind'] == 'audio':
+        exact_audio(m)  # made now, so the first export doesn't wait for it
     if m['hasAudio']:
         m['wave'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex',
                             'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x7ee0c3:scale=sqrt',
@@ -496,26 +518,41 @@ def mask_preview(mid, t, box, points=None):
 def isolate(st, mid, keep='voice'):
     """CapCut's "Isolate voice", and its reverse (the music and ambience without the voice), on this Mac: Demucs
     (htdemucs, Defossez / Meta) splits the sound -> a new audio library item the length of the source, cached."""
-    m, keep = meta(mid), 'voice' if keep == 'voice' else 'music'
+    m, keep = meta(mid), keep if keep in ('voice', 'music', 'stems') else 'music'
     if not m.get('hasAudio'):
         raise ValueError('this clip has no sound')
     if not (AI_BIN / 'python').exists():
         raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
     memo = CACHE / f'{mid}.isolate.json'
     done = json.loads(memo.read_text()) if memo.exists() else {}
-    if done.get(keep) and (MEDIA / f"{done[keep]}.json").exists():
+    if keep == 'stems' and done.get('stems') and all((MEDIA / f'{x}.json').exists() for x in done['stems'].values()):
+        return {'stems': done['stems']}
+    if keep != 'stems' and done.get(keep) and (MEDIA / f"{done[keep]}.json").exists():
         return {'media': done[keep]}
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         wav = Path(td) / 'in.wav'
         if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vn', '-ac', '2', '-ar', '44100', str(wav)]).returncode:
             raise RuntimeError('could not read the sound')
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', '-m', 'demucs', '--two-stems', 'vocals', '-d', 'mps', '-o', td, str(wav)],
+        two = [] if keep == 'stems' else ['--two-stems', 'vocals']  # stems: vocals, drums, bass, other
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', '-m', 'demucs', *two, '-d', 'mps', '-o', td, str(wav)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env={**AI_ENV, 'PYTORCH_ENABLE_MPS_FALLBACK': '1'})
         tail = ''
         while chunk := proc.stdout.read(256):  # tqdm "11.7/23.4 [" (seconds of audio) -> progress
             tail = (tail + chunk)[-2000:]
             if hit := re.findall(r'([\d.]+)/([\d.]+) \[', tail):
                 st['progress'] = 0.9 * float(hit[-1][0]) / max(0.01, float(hit[-1][1]))
+        if keep == 'stems':
+            if proc.wait():
+                raise RuntimeError('splitting into stems failed: ' + tail.strip()[-300:])
+            stems = {}
+            for name in ('vocals', 'drums', 'bass', 'other'):
+                out = Path(td) / f'{name}.m4a'
+                if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(Path(td) / 'htdemucs' / 'in' / f'{name}.wav'), '-c:a', 'aac', '-b:a', '192k', str(out)]).returncode:
+                    raise RuntimeError(f'encoding the {name} stem failed')
+                with open(out, 'rb') as fh:
+                    stems[name] = import_file(f"{Path(m['name']).stem} ({name}).m4a", fh, out.stat().st_size, background=False)['id']
+            memo.write_text(json.dumps({**done, 'stems': stems}))
+            return {'stems': stems}
         stem = Path(td) / 'htdemucs' / 'in' / ('vocals.wav' if keep == 'voice' else 'no_vocals.wav')
         if proc.wait() or not stem.exists():
             raise RuntimeError('voice separation failed: ' + tail.strip()[-300:])
@@ -1331,7 +1368,7 @@ def clean_plan(p):
 
     def clip(c, timed):
         m = meta(c['media'])
-        k = {'path': str(MEDIA / m['file']), 'kind': m['kind'], 'hasAudio': m['hasAudio'],
+        k = {'path': str(exact_audio(m) if m['kind'] == 'audio' else MEDIA / m['file']), 'kind': m['kind'], 'hasAudio': m['hasAudio'],
              'in': fnum(c.get('in', 0), -1e6, 1e6), 'out': fnum(c.get('out', 0), -1e6, 1e6),
              'speed': fnum(c.get('speed', 1), 0.1, 100), 'volume': fnum(c.get('volume', 1), 0, 10),
              'frames': int(fnum(c['frames'], 1, 1e8)), 'fadeIn': fnum(c.get('fadeIn', 0), 0, 60), 'fadeOut': fnum(c.get('fadeOut', 0), 0, 60),
@@ -1344,6 +1381,9 @@ def clean_plan(p):
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
                  flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')))
+        au = c.get('au') if isinstance(c.get('au'), dict) else {}
+        k['au'] = {'voice': au.get('voice') if au.get('voice') in VOICE_FX else 'none', 'semi': round(fnum(au.get('semi', 0), -12, 12)),
+                   **{b: fnum(au.get(b, 0), -15, 15) for b in ('bass', 'mid', 'treb')}, 'pan': fnum(au.get('pan', 0), -1, 1)}
         cr = c.get('crop') or {}
         k['crop'] = {s: fnum(cr.get(s, 0), 0, 0.9) for s in 'lrtb'}
         if k['crop']['l'] + k['crop']['r'] > 0.95 or k['crop']['t'] + k['crop']['b'] > 0.95:
@@ -1499,7 +1539,84 @@ def overlap(a, b):
     return min(a['trf'], a['frames'] // 2, b['frames'] // 2) if a['tr'] else 0
 
 
+VOICE_FX = ('none', 'robot', 'echo', 'hall', 'telephone')
+AFX_N = __import__('itertools').count()  # unique filter labels (a hall reverb needs a few)
+
+
+def afx(au, n):
+    """A clip's sound settings as ffmpeg filters, the same maths as the preview's Web Audio chain (app.js soundChain):
+    pitch in semitones keeping the length, 3-band EQ (RBJ shelves / peak, like BiquadFilterNode), a voice effect, and an
+    equal-power pan (StereoPannerNode's formula for stereo input). Empty when the clip is untouched."""
+    au = au or {}
+    if not (au.get('semi') or au.get('bass') or au.get('mid') or au.get('treb') or au.get('pan') or au.get('voice', 'none') != 'none'):
+        return ''
+    f = ['aresample=48000', 'aformat=channel_layouts=stereo']  # the preview's chain runs in stereo too (mono doubled)
+    if au.get('semi'):
+        r = 2 ** (au['semi'] / 12)
+        f += [f'asetrate={48000 * r:.3f}', 'aresample=48000', atempo(1 / r)]
+    if au.get('bass'):
+        f.append(shelf(100, au['bass'], low=True))
+    if au.get('mid'):
+        f.append(f"equalizer=f=1000:t=q:w=1:g={au['mid']:.2f}")
+    if au.get('treb'):
+        f.append(shelf(8000, au['treb'], low=False))
+    v = au.get('voice')
+    if v == 'telephone':
+        f += ['highpass=f=400:p=2:t=q:w=0.7071', 'lowpass=f=3200:p=2:t=q:w=0.7071']
+    elif v == 'robot':  # ring modulation by 50 Hz
+        f.append("aeval='val(ch)*sin(2*PI*50*t)':c=same")
+    elif v == 'echo':  # three taps, 250 / 500 / 750 ms
+        f.append('aecho=1:0.8:250|500|750:0.5|0.25|0.125')
+    elif v == 'hall':  # the dry sound plus its convolution with the hall's impulse response (the same file the preview uses)
+        f.append(f"asplit=2[hd{n}][hw{n}];amovie={hall_ir()},aformat=sample_rates=48000:channel_layouts=stereo[hi{n}];"
+                 f"[hw{n}][hi{n}]afir=irnorm=-1:gtype=none[hx{n}];[hd{n}][hx{n}]amix=inputs=2:normalize=0")
+    p = au.get('pan', 0)
+    if p:
+        import math
+        x = p + 1 if p <= 0 else p
+        gl, gr = math.cos(x * math.pi / 2), math.sin(x * math.pi / 2)
+        f.append(f'pan=stereo|c0=c0+{gl:.6f}*c1|c1={gr:.6f}*c1' if p <= 0 else f'pan=stereo|c0={gl:.6f}*c0|c1=c1+{gr:.6f}*c0')
+    return ',' + ','.join(f)
+
+
+def shelf(f0, g, low, sr=48000):
+    """A shelving EQ with the Web Audio spec's coefficients (BiquadFilterNode lowshelf / highshelf, slope 1) as an ffmpeg
+    biquad: ffmpeg's own bass / treble filters overshoot (+12.7 dB at 50 Hz and -0.7 dB at 200 Hz for +12 dB at 100 Hz)."""
+    import math
+    A, w = 10 ** (g / 40), 2 * math.pi * f0 / sr
+    c, al = math.cos(w), math.sin(w) / 2 * math.sqrt(2)
+    k = 2 * al * math.sqrt(A)
+    if low:
+        b = [A * ((A + 1) - (A - 1) * c + k), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - k)]
+        a = [(A + 1) + (A - 1) * c + k, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - k]
+    else:
+        b = [A * ((A + 1) + (A - 1) * c + k), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - k)]
+        a = [(A + 1) - (A - 1) * c + k, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - k]
+    return 'biquad=' + ':'.join(f'{n}={v / a[0]:.10f}' for n, v in zip(('b0', 'b1', 'b2', 'a0', 'a1', 'a2'), b + a))
+
+
+def hall_ir():
+    """The hall reverb's impulse response: 2.2 s of seeded noise per channel under an exponential decay (RT60 ~1.8 s),
+    5 ms pre-delay, 48 kHz stereo WAV in the cache. Deterministic, so the preview (ConvolverNode) and export (afir) match."""
+    out = CACHE / 'hall_ir.wav'
+    if not out.exists():
+        import math, random, struct, wave
+        rnd, sr, n = random.Random(7), 48000, int(2.2 * 48000)
+        fr = bytearray()
+        for i in range(n):
+            t = i / sr
+            env = 0 if t < 0.005 else math.exp(-6.9 * (t - 0.005) / 1.8) * min(1, (t - 0.005) / 0.01)
+            fr += struct.pack('<hh', *(int(max(-1, min(1, rnd.gauss(0, 1) * env * 0.035)) * 32767) for _ in range(2)))
+        tmp = out.with_suffix('.tmp')
+        with wave.open(str(tmp), 'wb') as w:
+            w.setnchannels(2), w.setsampwidth(2), w.setframerate(sr), w.writeframes(bytes(fr))
+        tmp.replace(out)
+    return out
+
+
 def atempo(s):
+    if abs(s - 1) < 1e-6:  # atempo=1 is not a pass-through: its overlap-add wandered 7 ms on speech
+        return 'anull'
     f = []
     while s < 0.5:
         f.append('atempo=0.5')
@@ -1560,9 +1677,7 @@ def graph(p, td):
         live = c['hasAudio'] and c['kind'] != 'image' and (c['volume'] > 0 or c.get('vkf'))
         vol = f"volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"  # envelope: ducking, fades
         tempo = f"aresample=48000,asetrate={48000 * c['speed']:.3f},aresample=48000" if c.get('pitch') and c['speed'] != 1 else atempo(c['speed'])
-        a = f"[{i}:a]asetpts=PTS-STARTPTS,{tempo},{vol}" if live else 'anullsrc=r=48000:cl=stereo'
-        if live and c.get('denoise'):
-            a += ',afftdn=nr=15:nf=-40:tn=1'
+        a = f"[{i}:a]asetpts=PTS-STARTPTS,{tempo}" + (',afftdn=nr=15:nf=-40:tn=1' if c.get('denoise') else '') + afx(c.get('au'), next(AFX_N)) + f',{vol}' if live else 'anullsrc=r=48000:cl=stereo'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
         if c['fadeIn']:
             a += f",afade=t=in:d={c['fadeIn']:.3f}"
@@ -1996,6 +2111,8 @@ class App(BaseHTTPRequestHandler):
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
             if path == '/api/sfx':
                 return self.reply([{'id': k, 'name': v[0], 'dur': v[1]} for k, v in SFX.items()])
+            if path == '/ir/hall.wav':  # the hall reverb's impulse response (the preview's ConvolverNode reads it)
+                return self.file(hall_ir())
             if m := re.fullmatch(r'/sfx/([a-z]+)\.wav', path):
                 return self.file(sfx_file(m[1]))
             if path == '/api/templates':

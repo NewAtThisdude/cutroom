@@ -126,7 +126,7 @@ function packMain() { let f = 0; P.main.forEach((c, i) => { c.start = f / P.fps;
 function total() { packMain(); let t = 0; for (const L of LANES) for (const c of P[L.key]) t = Math.max(t, c.start + tdur(c, L.key)); return t; }
 const snap = t => Math.round(t * P.fps) / P.fps;
 function tc(t) { const fps = Math.round(P.fps), f = Math.round(t * P.fps), s = Math.floor(f / fps); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}:${String(f % fps).padStart(2, '0')}`; }
-const fmtDur = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const fmtDur = s => (s > 0 && s < 1 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`); // a sound effect under a second isn't "0:00"
 
 const ss3 = x => x * x * (3 - 2 * x);
 const easeU = (u, r0, r1) => { const d = ss3(r1) - ss3(r0); return d > 1e-9 ? (ss3(r0 + u * (r1 - r0)) - ss3(r0)) / d : u; }; // part [r0, r1] of a smoothstep, rescaled to 0..1
@@ -390,7 +390,11 @@ function clipHTML(lane, c, top = 0, h = 42) {
     if (wave) layers.push([`url(/cache/${m.id}.wave.png)`, `${full}px ${lane === 'main' ? '32%' : '100%'}`, `${off}px 100%`, 'no-repeat']);
   }
   const bg = layers.length ? `background-image:${layers.map(l => l[0])};background-size:${layers.map(l => l[1])};background-position:${layers.map(l => l[2])};background-repeat:${layers.map(l => l[3])};` : '';
-  const marks = (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
+  const env = c.vkf?.length ? (() => { // the volume points as a line over the clip (0 dB in the middle, -40 dB at the bottom)
+    const w = Math.max(3, tdur(c, lane) * pps), y = v => (1 - clamp((dB(v) + 40) / 52, 0, 1)) * 100, pts = c.vkf.map(f => `${clamp(f.t * pps, 0, w)},${y(f.v)}`);
+    return `<svg class="env" viewBox="0 0 ${w} 100" preserveAspectRatio="none"><polyline points="0,${y(c.vkf[0].v)} ${pts.join(' ')} ${w},${y(c.vkf.at(-1).v)}"/>${c.vkf.map(f => `<circle cx="${clamp(f.t * pps, 0, w)}" cy="${y(f.v)}" r="2.5"/>`).join('')}</svg>`;
+  })() : '';
+  const marks = env + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
   return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
@@ -418,15 +422,21 @@ function renderMediaList() {
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
-  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)} · ${fmtDur(x.duration)}</span><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
-  if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); if (mkeep) mu.value = mkeep; }
+  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
+  if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name))}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
-  if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}">${esc(x.name)} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
+  if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name, 22))} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
 }
+
+const short = (n, max = 26) => { // a long file name for a dropdown: start … end, extension kept (a select can't draw an ellipsis in WebKit)
+  if (n.length <= max) return n;
+  const dot = n.lastIndexOf('.'), ext = dot > 0 && n.length - dot <= 5 ? n.slice(dot) : '', stem = n.slice(0, n.length - ext.length), keep = max - ext.length - 1;
+  return `${stem.slice(0, Math.ceil(keep * 0.7))}…${stem.slice(stem.length - Math.floor(keep * 0.3))}${ext}`;
+};
 
 // ---------- inspector ----------
 const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's' ? `${(+v).toFixed(2)}s` : unit === '°' ? `${Math.round(v)}°`
-  : unit === 'x' ? `${(10 ** v).toFixed(2)}×` : unit === 'dB' ? (v <= -60 ? 'Muted' : `${v > 0 ? '+' : ''}${(+v).toFixed(1)} dB`) : `${Math.round(v * 10) / 10}`);
+  : unit === 'x' ? `${(10 ** v).toFixed(2)}×` : unit === 'st' ? (+v ? `${v > 0 ? '+' : ''}${+v} st` : '0') : unit === 'pan' ? (Math.abs(v) < 0.01 ? 'Centre' : `${Math.round(Math.abs(v) * 100)}% ${v < 0 ? 'L' : 'R'}`) : unit === 'dB' ? (v <= -60 ? 'Muted' : `${v > 0 ? '+' : ''}${(+v).toFixed(1)} dB`) : `${Math.round(v * 10) / 10}`);
 const fill = el => el.style.setProperty('--p', `${(el.value - el.min) / (el.max - el.min) * 100}%`); // slider track fill
 const slider = (k, label, v, min, max, step, unit = '', extra = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}"${extra} min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${clamp((v - min) / (max - min), 0, 1) * 100}%"><output title="Click to type a value">${fmt(v, unit)}</output></label>`;
 const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><select data-k="${k}"${typeof opts[0][0] === 'number' ? ' data-num' : ''}>${opts.map(([val, txt]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
@@ -474,6 +484,23 @@ function tabbed(sections) { // inspector tabs; empty tabs are hidden and the ope
     + live.map(([n, h]) => `<div class="isec${n === cur ? ' on' : ''}" data-sec="${n}">${h}</div>`).join('');
 }
 const dB = v => (v > 0 ? Math.max(-60, 20 * Math.log10(v)) : -60);
+const VOICES = [['none', 'None'], ['chipmunk', 'Chipmunk'], ['deep', 'Deep'], ['robot', 'Robot'], ['echo', 'Echo'], ['hall', 'Hall'], ['telephone', 'Telephone']];
+const voiceOf = a => (a.voice !== 'none' ? a.voice : a.semi === 6 ? 'chipmunk' : a.semi === -5 ? 'deep' : 'none'); // chipmunk / deep are pitch presets
+function setVoice(c, k) {
+  change(() => {
+    const a = { ...AU0, ...c.au };
+    if (k === 'chipmunk' || k === 'deep') Object.assign(a, { voice: 'none', semi: k === 'chipmunk' ? 6 : -5 });
+    else if (k === 'none') Object.assign(a, { voice: 'none', semi: 0 });
+    else a.voice = k;
+    c.au = a;
+  });
+  renderInspector();
+}
+function volPoint(c, db) { // set the envelope at the playhead (a new point, or the one already there)
+  const lt = clamp(S.t - c.start, 0, len(c)), v = db <= -40 ? 0 : +(10 ** (db / 20)).toFixed(4), near = f => Math.abs(f.t - lt) < 0.5 / P.fps;
+  const k = (c.vkf || []).filter(f => !near(f));
+  c.vkf = [...k, { t: +lt.toFixed(4), v }].sort((a, b) => a.t - b.t);
+}
 function editOutput(out) { // click a slider's value to type an exact one (in the units shown)
   const r = out.parentElement.querySelector('input[type=range]');
   if (!r) return;
@@ -544,9 +571,19 @@ function mediaPanel(c, lane) {
   let audio = '';
   if (m.hasAudio) {
     audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise (export)', c.denoise)
-      + `<h4>Volume envelope</h4>${c.vkf?.length ? `<p class="muted">${c.vkf.length} volume points, on top of the volume above</p>` : lane === 'audio' ? '<p class="hint">Auto duck lowers this clip wherever another clip has speech.</p>' : ''}`
-      + (lane === 'audio' ? '<div class="row"><span>Duck by</span><select id="duckDepth"><option value="0.5">−6 dB</option><option value="0.25" selected>−12 dB</option><option value="0.125">−18 dB</option><option value="0.0625">−24 dB</option></select></div>' : '')
-      + `<div class="actions">${lane === 'audio' ? '<button data-act="duck">Auto duck under speech</button>' : ''}${c.vkf?.length ? '<button data-act="vkfclear">Clear envelope</button>' : ''}${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac)">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button></div>`;
+      + `<h4>Separate</h4><div class="actions">${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac)">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button><button data-act="stems" title="Vocals, drums, bass and the rest as four audio clips (Demucs, on this Mac)">Split into stems</button></div>`;
+  }
+  if (m.hasAudio) { // CapCut's voice effects, pitch, equalizer, pan; volume points; stems
+    const a = { ...AU0, ...c.au }, lt = clamp(S.t - c.start, 0, len(c)), vk = voiceOf(a);
+    audio += `<h4>Voice effect</h4><div class="seg wrap voices">${VOICES.map(([k, n]) => `<button data-voice="${k}" class="${vk === k ? 'on' : ''}">${n}</button>`).join('')}</div>`
+      + slider('c.au.semi', 'Pitch', a.semi, -12, 12, 1, 'st')
+      + `<h4>Equalizer</h4>` + slider('c.au.bass', 'Bass', a.bass, -12, 12, 0.5, 'dB') + slider('c.au.mid', 'Mid', a.mid, -12, 12, 0.5, 'dB')
+      + slider('c.au.treb', 'Treble', a.treb, -12, 12, 0.5, 'dB') + slider('c.au.pan', 'Pan', a.pan, -1, 1, 0.05, 'pan')
+      + (c.au ? '<div class="actions"><button data-act="soundreset">Reset sound</button></div>' : '')
+      + `<h4>Volume points</h4><p class="hint">${c.vkf?.length ? `${c.vkf.length} point${c.vkf.length > 1 ? 's' : ''}, on top of the volume above. ` : ''}The level at the playhead; points ramp into each other, and the first one sets the whole clip.</p>`
+      + slider('vk.here', 'Level here', +dB(envAt(c, lt)).toFixed(1), -40, 6, 0.5, 'dB', ' id="vkHere"')
+      + `<div class="actions"><button data-act="vkprev" title="Previous volume point">◀ Point</button><button data-act="vknext" title="Next volume point">Point ▶</button>${c.vkf?.length ? '<button data-act="vkdel">Delete point</button><button data-act="vkfclear">Clear all</button>' : ''}</div>`
+      + (lane === 'audio' ? '<div class="row"><span>Duck by</span><select id="duckDepth"><option value="0.5">−6 dB</option><option value="0.25" selected>−12 dB</option><option value="0.125">−18 dB</option><option value="0.0625">−24 dB</option></select></div><div class="actions"><button data-act="duck" title="Volume points that lower this clip wherever another clip has speech">Auto duck under speech</button></div>' : '');
   }
   if (lane === 'audio') {
     audio += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
@@ -591,6 +628,7 @@ function textPanel(c, lane) {
     + `<div class="actions"><button data-act="split">Split</button>${cap ? '' : '<button data-act="dup">Duplicate</button><button data-act="track">Track motion</button>'}<button data-act="delete">Delete</button>${cap ? '<button data-act="clearcaps">Delete all captions</button>' : ''}</div><p id="clipStatus" class="muted"></p>`;
 }
 function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" -> caption style ; "p.fps" -> project
+  if (el.dataset.k === 'vk.here') { const c = selClip(); if (c) volPoint(c, +el.value); return; }
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
   let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : P;
   if (!o) return;
@@ -644,10 +682,59 @@ function imgFor(m) {
   return i;
 }
 let actx;
-function audioOn() { try { actx ??= new AudioContext(); actx.resume(); } catch { actx = null; } } // needs a user gesture
-function gain(v, vol) { // Web Audio gain: the preview can play volumes above 100%, like the export
-  if (actx && v._g === undefined) { try { const s = actx.createMediaElementSource(v); v._g = actx.createGain(); s.connect(v._g).connect(actx.destination); } catch { v._g = null; } }
-  if (v._g) { v.volume = 1; v._g.gain.value = vol; } else v.volume = clamp(vol, 0, 1);
+let pitchReady = false, hallIR = null;
+function audioOn() { // needs a user gesture; loads the pitch shifter and the hall's impulse response once
+  try {
+    if (!actx) {
+      actx = new AudioContext();
+      actx.audioWorklet?.addModule('/pitch.js').then(() => { pitchReady = true; resound(); }).catch(() => {});
+      fetch('/ir/hall.wav').then(r => r.arrayBuffer()).then(b => actx.decodeAudioData(b)).then(buf => { hallIR = buf; resound(); }).catch(() => {});
+    }
+    actx.resume();
+  } catch { actx = null; }
+}
+function resound() { for (const v of pool.values()) if (v._n) v._n.key = ''; S.dirty = true; } // re-apply every element's sound settings
+const AU0 = { voice: 'none', semi: 0, bass: 0, mid: 0, treb: 0, pan: 0 };
+function soundChain(v, A = actx, src = A.createMediaElementSource(v)) { // per media element, the export's afx() in Web Audio: [pitch] > bass > mid > treble > [telephone band] > [robot] > dry + [echo | hall] > pan > volume
+  const bq = (type, f, q) => { const b = A.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+  const n = { A, src, head: A.createGain(), bass: bq('lowshelf', 100, 0), mid: bq('peaking', 1000, 1), treb: bq('highshelf', 8000, 0),
+    hp: bq('allpass', 400, -3.0103), lp: bq('allpass', 3200, -3.0103), ring: A.createGain(), dry: A.createGain(), sum: A.createGain(), pan: A.createStereoPanner(), out: A.createGain(), key: '' };
+  Object.assign(n.head, { channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' }); // mono doubled to stereo, like the export's aformat
+  n.src.connect(n.head).connect(n.bass).connect(n.mid).connect(n.treb).connect(n.hp).connect(n.lp).connect(n.ring).connect(n.dry).connect(n.sum).connect(n.pan).connect(n.out).connect(A.destination);
+  return n; // highpass/lowpass Q is in dB in Web Audio: -3.01 dB = Q 0.707, the export's Butterworth
+}
+function setSound(n, au) { // a clip's sound settings onto its element's chain (skipped when unchanged); effects that are off are disconnected, so they cost nothing
+  const s = { ...AU0, ...au }, key = JSON.stringify([s, pitchReady, !!hallIR]);
+  if (n.key === key) return;
+  n.key = key;
+  const A = n.A;
+  n.bass.gain.value = s.bass; n.mid.gain.value = s.mid; n.treb.gain.value = s.treb; n.pan.pan.value = s.pan;
+  const tel = s.voice === 'telephone';
+  n.hp.type = tel ? 'highpass' : 'allpass'; n.lp.type = tel ? 'lowpass' : 'allpass';
+  n.head.disconnect();
+  if (s.semi && pitchReady) { // semitones keeping the timing
+    n.pitch ??= new AudioWorkletNode(A, 'cutroom-pitch', { outputChannelCount: [2] });
+    n.pitch.parameters.get('ratio').value = 2 ** (s.semi / 12);
+    n.pitch.disconnect(); n.head.connect(n.pitch).connect(n.bass);
+  } else n.head.connect(n.bass);
+  if (s.voice === 'robot') { // ring modulation by 50 Hz
+    if (!n.osc) { n.osc = A.createOscillator(); n.osc.frequency.value = 50; n.osc.start(); }
+    n.ring.gain.value = 0; n.osc.disconnect(); n.osc.connect(n.ring.gain);
+  } else { n.osc?.disconnect(); n.ring.gain.value = 1; }
+  n.ring.disconnect(); n.ring.connect(n.dry);
+  n.dry.gain.value = s.voice === 'echo' ? 0.8 : 1; // aecho=1:0.8:250|500|750:0.5|0.25|0.125
+  if (s.voice === 'echo') {
+    n.taps ??= [0.25, 0.5, 0.75].map((d, i) => { const dl = A.createDelay(1), g = A.createGain(); dl.delayTime.value = d; g.gain.value = 0.8 * 0.5 / 2 ** i; dl.connect(g).connect(n.sum); return dl; });
+    for (const dl of n.taps) n.ring.connect(dl);
+  }
+  if (s.voice === 'hall' && hallIR) { // dry + the convolution with the same impulse response the export's afir uses
+    if (!n.conv) { n.conv = A.createConvolver(); n.conv.normalize = false; n.conv.buffer = hallIR; n.conv.connect(n.sum); }
+    n.ring.connect(n.conv);
+  }
+}
+function gain(v, vol, au) { // Web Audio gain: the preview can play volumes above 100%, like the export
+  if (actx && v._g === undefined) { try { v._n = soundChain(v); v._g = v._n.out; } catch { v._g = null; } }
+  if (v._g) { v.volume = 1; v._g.gain.value = vol; setSound(v._n, au); } else v.volume = clamp(vol, 0, 1);
 }
 const layerCv = [];
 function layer(n) {
@@ -730,8 +817,8 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
   }
   ctx.restore();
 }
-function sync(v, src, rate, vol, pitch) { // the wall clock is the master; media elements follow it
-  gain(v, vol);
+function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; media elements follow it
+  gain(v, vol, au);
   if (v.preservesPitch === !!pitch) v.preservesPitch = !pitch; // "change pitch": speed shifts pitch, like the export's asetrate
   if (S.playing) {
     const pr = Math.min(16, rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
@@ -763,7 +850,7 @@ function paint() {
     const g = tr && lane === 'main' ? (i === act[0] ? 1 - tr.p : tr.p) : 1; // audio crossfade, like acrossfade
     let el;
     if (m.kind === 'image') el = imgFor(m);
-    else { el = vidFor(key, m); live.add(el); sync(el, c.in + (t - c.start) * c.speed, c.speed, S.recMute || P.mute[lane] ? 0 : volAt(c, t - c.start) * fadeAt(c, t - c.start, tdur(c, lane)) * g, c.pitch); }
+    else { el = vidFor(key, m); live.add(el); sync(el, c.in + (t - c.start) * c.speed, c.speed, S.recMute || P.mute[lane] ? 0 : volAt(c, t - c.start) * fadeAt(c, t - c.start, tdur(c, lane)) * g, c.pitch, c.au); }
     if (lane === 'audio' || (lane === 'overlay' && P.mute.overlay)) continue;
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       const L = layer(i === act[0] ? 0 : 1), lx = L.getContext('2d');
@@ -795,6 +882,8 @@ function paint() {
   }
   if (G.tab === 'script') scriptNow(t);
   $('#tc').textContent = `${tc(t)} / ${tc(S.playing ? S.end : total())}`;
+  const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
+  if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
 }
 function drawMedia(ctx, lane, c, m, el, lt, k) {
   if (el.tagName === 'VIDEO' ? el.readyState < 2 : !(el.complete && el.naturalWidth)) return;
@@ -1329,7 +1418,9 @@ function renderFilters() {
   const tg = lookTargets(), cur = tg.list[0]?.look?.name || 'none';
   $('#lookTarget').textContent = tg.sel ? 'Applies to the selected clip.' : tg.list.length ? 'No clip selected: applies to every clip on the main track.' : 'Add a clip first: filters change its colours.';
   $('#lookGrid').innerHTML = ['none', ...Object.keys(LOOKS)].map(n => `<button class="tile${cur === n ? ' on' : ''}" data-lookset="${n}">${tileCv()}<span>${n === 'none' ? 'None' : cap1(n)}</span></button>`).join('');
-  const src = frameThumb(TILE_W, TILE_H, tg.list);
+  let src = frameThumb(TILE_W, TILE_H, tg.list);
+  { const d = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, TILE_W, TILE_H).data; let y = 0; for (let i = 0; i < d.length; i += 4) y += d[i] + d[i + 1] + d[i + 2];
+    if (y / (d.length / 4) / 3 < 28) src = sampleScene(TILE_W, TILE_H, 0); } // a near-black frame (night footage) shows no filter's difference: the sample scene does
   for (const b of $$('#lookGrid .tile')) { const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0); if (b.dataset.lookset !== 'none') matrixPass(x, TILE_W, TILE_H, LOOKS[b.dataset.lookset]); }
 }
 function applyLook(name) {
@@ -1624,7 +1715,8 @@ async function renderScript(load = true) {
     if (p && gap >= 0.5) html += `<span class="gap" data-g="${i}" title="Pause: click it, then ⌫ to cut it">${gap.toFixed(1)} s</span> `;
     html += `<span class="w" data-i="${i}">${esc(w.w)}</span> `;
   });
-  body.innerHTML = `${html}</p>`;
+  body.innerHTML = ws.length ? `${html}</p>` : '';
+  body.hidden = !ws.length; // no speech: no empty box
   st(ws.length ? `${ws.length} words. Click a word to jump there; drag or ⇧-click to select; ⌫ cuts it out of the video.` : 'No speech found on the main track.');
   SC.now = -1;
   markScript();
@@ -2156,6 +2248,26 @@ function detachAudio(c) { // the clip's sound moves to the audio track at the sa
     S.sel = { lane: 'audio', id: a.id };
   });
 }
+async function splitStems(c, lane) { // Demucs, four stems: vocals, drums, bass, other -> four audio clips in sync, the source muted
+  try {
+    const j = await job('/api/isolate', { media: c.media, keep: 'stems' }, 'Splitting into stems');
+    await loadMedia();
+    let first;
+    change(() => {
+      packMain();
+      for (const [name, id] of Object.entries(j.stems)) {
+        const a = { ...structuredClone(c), id: hex12(), media: id, volume: c.volume || 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, adj: { b: 1, c: 1, s: 1 } };
+        for (const k of ['tr', 'kf', 'anim', 'look', 'mask', 'key', 'crop', 'flip', 'blend', 'fx', 'text']) delete a[k];
+        P.audio.push(a);
+        first ??= a;
+      }
+      if (lane === 'audio') P.audio.splice(P.audio.indexOf(c), 1); else c.volume = 0;
+      S.sel = { lane: 'audio', id: first.id };
+    });
+    toast('Split into vocals, drums, bass and the rest: four clips on the audio track, in sync');
+    return j.stems;
+  } catch (e) { setStatus(e.message); throw e; }
+}
 async function isolateVoice(c, lane, keep = 'voice') { // Demucs on this Mac: the voice alone, or everything but the voice
   try {
     const j = await job('/api/isolate', { media: c.media, keep }, keep === 'voice' ? 'Isolating the voice' : 'Removing the voice');
@@ -2544,6 +2656,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     }
     if (lane === 'main' && trF(i)) o.tr = { type: c.tr.type, frames: trF(i) };
     if (c.vkf?.length) o.vkf = c.vkf;
+    if (c.au) o.au = c.au;
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
     return o;
   };
@@ -2668,7 +2781,7 @@ async function trashProject(id, name) { // reversible: the server moves it to Mo
 }
 async function loadVoices() {
   const vs = await api('/api/voices').catch(() => []), pref = store.get('cutroom.voice') || 'Samantha';
-  $('#ttsVoice').innerHTML = vs.map(v => `<option value="${esc(v.name)}"${v.name === pref ? ' selected' : ''}>${esc(v.name)} · ${v.lang}</option>`).join('');
+  $('#ttsVoice').innerHTML = vs.map(v => `<option value="${esc(v.name)}"${v.name === pref ? ' selected' : ''}>${esc(v.name.replace(/\s*\(.*\)$/, ''))} · ${v.lang}</option>`).join('');
 }
 async function addVoiceover() { // CapCut's text-to-speech with the Mac's own voices
   const text = $('#ttsText').value.trim(), btn = $('#btnTts');
@@ -3125,8 +3238,9 @@ function wire() {
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
+    else if (d.voice) setVoice(c, d.voice);
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.blend; delete c.vkf; delete c.anim; delete c.pitch; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.blend; delete c.vkf; delete c.anim; delete c.pitch; delete c.au; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
@@ -3157,6 +3271,13 @@ function wire() {
       if (t !== undefined) seekTo(c.start + t);
     }
     else if (d.act === 'vkfclear') change(() => { delete c.vkf; });
+    else if (d.act === 'soundreset') { change(() => { delete c.au; }); renderInspector(); }
+    else if (d.act === 'stems') splitStems(c, S.sel.lane);
+    else if (d.act === 'vkprev' || d.act === 'vknext') {
+      const lt = S.t - c.start, ts = (c.vkf || []).map(f => f.t), t = d.act === 'vkprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
+      if (t !== undefined) { seekTo(c.start + t); renderInspector(); }
+    }
+    else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
     else if (d.act === 'slowmo') smoothSlowmo(c);
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
@@ -3423,7 +3544,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   return o;
 }
-const EDITABLE = new Set(['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+const EDITABLE = new Set(['au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -3544,8 +3665,8 @@ const REMOTE = {
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { if (at !== undefined) S.t = at; return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
-    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, detect_beats, beat_sync, speed_ramp');
+      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
