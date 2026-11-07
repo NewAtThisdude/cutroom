@@ -9,7 +9,8 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, json, mimetypes, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
+import base64, json, math, mimetypes, os, re, shutil, statistics, subprocess, sys, tempfile, threading, time, uuid
+from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -25,6 +26,8 @@ CHUNK = 24  # ponytail: main tracks with >24 clips pre-render in chunks so ffmpe
 IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9', 'av1'}, {'.mp4', '.mov', '.m4v', '.webm'}
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
+XFADES = {'fade', 'fadeblack', 'wipeleft', 'slideleft', 'circleopen', 'zoomin'}  # the UI mirrors these per pixel
+NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Good News', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox'}
 ID = re.compile(r'[a-f0-9]{12}')
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
 JOBS = {}
@@ -56,7 +59,9 @@ def probe(path):
         w, h = int(v['width']), int(v['height'])
         if abs(int(float(rot))) % 180 == 90:  # phone footage: ffmpeg and the browser both auto-rotate
             w, h = h, w
-        info.update(w=w, h=h, codec=v['codec_name'])
+        info.update(w=w, h=h, codec=v['codec_name'], rot=int(float(rot)),
+                    hdr=v.get('color_transfer') in ('arib-std-b67', 'smpte2084'),  # HLG / PQ (iPhone HDR is HLG)
+                    alpha=v['codec_name'] == 'vp9' and v.get('tags', {}).get('alpha_mode') == '1')
     return info
 
 
@@ -174,6 +179,155 @@ def words_from_tokens(toks, dur):
     return out
 
 
+def voices():
+    found = {}
+    for line in sh(['say', '-v', '?']).stdout.splitlines():
+        m = re.match(r'(.+?)\s+([a-z]{2,3}_[A-Z0-9]{2,3})\s+#', line)
+        if m and m[1] not in NOVELTY_VOICES:
+            found[m[1]] = m[2]
+    return [{'name': n, 'lang': l} for n, l in sorted(found.items(), key=lambda v: (v[1] != 'en_US', v[1], v[0]))]
+
+
+def tts(text, voice, rate):
+    """CapCut's text-to-speech, using the Mac's own voices (say)."""
+    text = str(text).strip()[:5000]
+    if not text:
+        raise ValueError('nothing to say')
+    if voice not in {v['name'] for v in voices()}:
+        raise ValueError('unknown voice')
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        script, out = Path(td) / 'script.txt', Path(td) / 'voice.aiff'
+        script.write_text(text)
+        r = sh(['say', '-v', voice, '-r', str(int(fnum(rate, 90, 400))), '-o', str(out), '-f', str(script)])
+        if r.returncode or not out.exists():
+            raise RuntimeError('say failed: ' + r.stderr[-200:])
+        with open(out, 'rb') as fh:
+            return import_file(f"Voiceover - {' '.join(text.split()[:5])}.aiff", fh, out.stat().st_size)
+
+
+def beats(mid):
+    """Beat grid for a music file (CapCut's 'Beats'): onset envelope -> tempo (autocorrelation, 120 BPM prior)
+    -> dynamic-programming beat tracking (Ellis 2007), so the grid follows small tempo drifts."""
+    m, cache = meta(mid), CACHE / f'{mid}.beats.json'
+    if cache.exists():
+        return json.loads(cache.read_text())
+    sr, hop = 8000, 128  # 62.5 onset frames per second
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(MEDIA / m['file']), '-vn', '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
+    x = array('h')
+    x.frombytes(raw[:len(raw) // 2 * 2])
+    n, fps = len(x) // hop, sr / hop
+    if n < fps * 4:
+        raise ValueError('need at least 4 seconds of audio')
+    env = [math.log1p(sum(v * v for v in x[i * hop:(i + 1) * hop]) / hop / 1e4) for i in range(n)]
+    on = [0.0] + [max(0.0, env[i] - env[i - 1]) for i in range(1, n)]
+    sd = statistics.pstdev(on) or 1.0
+    on = [v / sd for v in on]
+    prior = lambda L: math.exp(-0.5 * math.log2(60 * fps / L / 120) ** 2)
+    period = max(range(int(60 * fps / 180), int(60 * fps / 60) + 1), key=lambda L: prior(L) * sum(on[i] * on[i - L] for i in range(L, n)))
+    score, back = on[:], [-1] * n
+    for t in range(n):
+        best, arg = -1e9, -1
+        for prev in range(max(0, t - 2 * period), max(0, t - period // 2)):
+            v = score[prev] - 100 * math.log((t - prev) / period) ** 2
+            if v > best:
+                best, arg = v, prev
+        if arg >= 0:
+            score[t], back[t] = on[t] + best, arg
+    t = max(range(max(0, n - period), n), key=lambda i: score[i])
+    grid = []
+    while t >= 0:
+        grid.append(t)
+        t = back[t]
+    out = {'bpm': round(60 * fps / period, 1), 'beats': [round(i / fps, 3) for i in reversed(grid)]}
+    cache.write_text(json.dumps(out))
+    return out
+
+
+def still(mid, t):
+    """Freeze frame: grab one frame as a new image in the library."""
+    m = meta(mid)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        f = Path(td) / 'frame.png'
+        if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t:.3f}', '-i', str(MEDIA / m['file']), '-frames:v', '1', '-update', '1', str(f)]).returncode or not f.exists():
+            raise RuntimeError('could not grab that frame')
+        with open(f, 'rb') as fh:
+            return import_file(f"{Path(m['name']).stem} frame {t:.2f}s.png", fh, f.stat().st_size, background=False)
+
+
+TOOLS = Path(__file__).resolve().parent / 'tools'
+
+
+def build_tool(name):
+    """Swift helpers (Apple Vision) compile on first use, and again whenever the source changes."""
+    src, exe = TOOLS / f'{name}.swift', TOOLS / name
+    if not exe.exists() or exe.stat().st_mtime < src.stat().st_mtime:
+        r = sh(['swiftc', '-O', str(src), '-o', str(exe)])
+        if r.returncode:
+            raise RuntimeError(f'could not build {name}: ' + r.stderr[-300:])
+    return str(exe)
+
+
+def run_job(fn, *args):
+    job = uuid.uuid4().hex[:12]
+    JOBS[job] = {'state': 'running', 'progress': 0.0}
+
+    def go():
+        try:
+            JOBS[job].update(state='done', progress=1.0, **fn(JOBS[job], *args))
+        except Exception as e:  # surfaced to the UI
+            JOBS[job].update(state='error', error=str(e))
+    threading.Thread(target=go, daemon=True).start()
+    return job
+
+
+def track(st, mid, t0, t1, box):
+    """Follow a box (normalized, display orientation) from t0 to t1 with Vision; returns per-frame boxes."""
+    proc = subprocess.Popen([build_tool('track'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', *(f'{box[k]:.5f}' for k in 'xywh')],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    pts, lost = [], False
+    for line in proc.stdout:
+        d = json.loads(line)
+        if d.get('lost'):
+            lost = True
+            continue
+        pts.append({k: d[k] for k in ('t', 'x', 'y', 'w', 'h')})
+        st['progress'] = min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
+    err = proc.stderr.read()
+    if proc.wait() or not pts:
+        raise RuntimeError(err.strip()[-300:] or 'tracking failed')
+    return {'points': pts, 'lost': lost}
+
+
+def matte(st, mid):
+    """Remove the background (Vision person segmentation) -> VP9+alpha WebM, a new library item.
+    WebM/VP9 alpha plays transparent in Chrome and is ~30x smaller than the ProRes 4444 the tool writes."""
+    m = meta(mid)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        pro, out = Path(td) / 'cut.mov', Path(td) / 'cut.webm'
+        proc = subprocess.Popen([build_tool('matte'), str(MEDIA / m['file']), str(pro), 'balanced'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.9 * float(line.split()[1])
+        err = proc.stderr.read()
+        if proc.wait() or not pro.exists():
+            raise RuntimeError(err.strip()[-300:] or 'background removal failed')
+        tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer',
+                              '-of', 'json', str(MEDIA / m['file'])]).stdout or '{}').get('streams', [{}])[0]
+        # the matte is tagged bt709 even for untagged sources; relabel it like the source or ffmpeg shifts the person's colours
+        relabel = f"setparams=colorspace={tags.get('color_space', 'unknown')}:color_primaries={tags.get('color_primaries', 'unknown')}:color_trc={tags.get('color_transfer', 'unknown')}"
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(pro), '-i', str(MEDIA / m['file']), '-map', '0:v', '-map', '1:a?', '-vf', f'{relabel},{MATTE_VF}',
+                '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
+                '-c:a', 'libopus', '-b:a', '128k', str(out)])
+        if r.returncode:
+            raise RuntimeError('encoding the cutout failed: ' + r.stderr[-300:])
+        with open(out, 'rb') as fh:
+            cut = import_file(f"{Path(m['name']).stem} (cutout).webm", fh, out.stat().st_size, background=False)
+    return {'media': cut['id']}
+
+
+MATTE_VF = 'format=yuva444p'  # matte writes straight alpha (set to 'unpremultiply=inplace=1,...' if that ever changes)
+
+
 def silences(mid, noise=-35.0, mind=0.5):
     m = meta(mid)
     r = sh(['ffmpeg', '-hide_banner', '-nostats', '-i', str(MEDIA / m['file']), '-vn', '-af', f'silencedetect=noise={noise:g}dB:d={mind:g}', '-f', 'null', '-'])
@@ -197,7 +351,7 @@ def clean_plan(p):
     W, H = int(fnum(p['w'], 16, 8192)), int(fnum(p['h'], 16, 8192))
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
-           'quality': 'best' if p.get('quality') == 'best' else 'fast',
+           'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -210,6 +364,25 @@ def clean_plan(p):
              'adj': {a: fnum((c.get('adj') or {}).get(a, 1), 0, 4) for a in 'bcs'}}
         if m['kind'] != 'image' and not 0 <= k['in'] < k['out']:
             raise ValueError('empty clip')
+        tr = c.get('tr') or {}
+        k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
+        k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
+        k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
+                 flip=bool(c.get('flip')), denoise=bool(c.get('denoise')))
+        cr = c.get('crop') or {}
+        k['crop'] = {s: fnum(cr.get(s, 0), 0, 0.9) for s in 'lrtb'}
+        if k['crop']['l'] + k['crop']['r'] > 0.95 or k['crop']['t'] + k['crop']['b'] > 0.95:
+            raise ValueError('crop too large')
+        k['look'] = [fnum(v, -3, 3) for v in c['look']] if c.get('look') else None
+        if k['look'] is not None and len(k['look']) != 9:
+            raise ValueError('look must be a 3x3 matrix')
+        ck = c.get('key')
+        k['key'] = {'color': ck['color'] if HEX.fullmatch(str(ck.get('color', ''))) else '#00ff00', 'sim': fnum(ck.get('sim', 0.3), 0.01, 1),
+                    'blend': fnum(ck.get('blend', 0.1), 0, 1)} if ck else None
+        kf = c.get('kf') or []
+        if len(kf) > 2000:
+            raise ValueError('too many keyframes')
+        k['kf'] = [{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')} for f in kf] or None
         if timed:
             k['start'] = fnum(c['start'], 0, 6 * 3600)
         if m['kind'] != 'audio' and 'geom' in c:
@@ -232,6 +405,27 @@ def clean_plan(p):
 
 def even(x):
     return int(round(x / 2)) * 2
+
+
+def pw(kf, key, var='t'):
+    """Piecewise-linear ffmpeg expression through keyframes (same interpolation as the UI's propsAt)."""
+    e = f'{kf[-1][key]:.4f}'
+    for a, b in reversed(list(zip(kf, kf[1:]))):
+        dt = max(b['t'] - a['t'], 1e-6)
+        e = f"if(lt({var},{b['t']:.6f}),{a[key]:.4f}+({b[key] - a[key]:.4f})*clip(({var}-{a['t']:.6f})/{dt:.6f},0,1),{e})"
+    return e
+
+
+def look(c):
+    if not c.get('look'):
+        return ''
+    m = c['look']
+    return ',colorchannelmixer=' + ':'.join(f'{n}={v:.4f}' for n, v in zip(('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb'), m))
+
+
+def overlap(a, b):
+    """Frames two adjacent main clips share in a transition (0 = hard cut). Same clamp as the UI's trF()."""
+    return min(a['trf'], a['frames'] // 2, b['frames'] // 2) if a['tr'] else 0
 
 
 def atempo(s):
@@ -266,16 +460,34 @@ def graph(p, td):
         if c['kind'] == 'image':
             ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', c['path']])
         else:  # input seek: each clip decodes only its own range
-            ins.append(['-ss', f"{c['in']:.6f}", '-t', f"{c['out'] - c['in']:.6f}", '-i', c['path']])
+            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate'] if c.get('hdr')
+                   else ['-c:v', 'libvpx-vp9'] if c.get('alpha') else [])  # native vp9 decoder drops the alpha plane
+            ins.append([*dec, '-ss', f"{c['in']:.6f}", '-t', f"{c['out'] - c['in']:.6f}", '-i', c['path']])
         return len(ins) - 1
 
-    def video(i, c, n):  # retimed, exactly n frames, adjusted
+    def video(i, c, n):  # tone-mapped, retimed, exactly n frames, cropped, flipped, adjusted, graded
         sp = 1 if c['kind'] == 'image' else c['speed']
-        return f"[{i}:v]setpts=(PTS-STARTPTS)/{sp:.6f},fps={F:g},tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n}{adjust(c)}"
+        v = f'[{i}:v]'
+        if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709; rotation applied by hand since autorotate can't touch hw frames
+            v += 'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
+            v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
+        v += f"setpts=(PTS-STARTPTS)/{sp:.6f},fps={F:g},tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n}"
+        cr = c.get('crop') or {}
+        if any(cr.values()):
+            v += (f",crop=w='trunc(iw*{1 - cr['l'] - cr['r']:.5f}/2)*2':h='trunc(ih*{1 - cr['t'] - cr['b']:.5f}/2)*2'"
+                  f":x='iw*{cr['l']:.5f}':y='ih*{cr['t']:.5f}'")
+        if c.get('flip'):
+            v += ',hflip'
+        v += adjust(c) + look(c)
+        if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
+            v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
+        return v
 
     def audio(i, c, dur, delay=0.0):
         live = c['hasAudio'] and c['kind'] != 'image' and c['volume'] > 0
         a = f"[{i}:a]asetpts=PTS-STARTPTS,{atempo(c['speed'])},volume={c['volume']:.3f}" if live else 'anullsrc=r=48000:cl=stereo'
+        if live and c.get('denoise'):
+            a += ',afftdn=nr=15:nf=-40:tn=1'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
         if c['fadeIn']:
             a += f",afade=t=in:d={c['fadeIn']:.3f}"
@@ -291,10 +503,18 @@ def graph(p, td):
         i = inp(c, dur)
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
-        v = video(i, c, n)
-        if c['fit'] == 'blur':
-            v += (f',split=2[f{k}][b{k}];[b{k}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur={max(2, W // 40)}:3[bb{k}];'
-                  f'[f{k}]scale={w}:{h}[ff{k}];[bb{k}][ff{k}]overlay={x}:{y}')
+        v, kf = video(i, c, n), c.get('kf')
+        if c['fit'] == 'blur' or kf or c.get('alpha') or c.get('key'):  # composite onto a base frame (blurred copy or background colour)
+            if c['fit'] == 'blur':
+                v += f',split=2[f{k}][b{k}];[b{k}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]'
+            else:
+                v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}[bb{k}];[f{k}]'
+            if kf:  # per-frame zoom/pan; same curve as the preview. Convert BEFORE the size-changing scale: a format
+                # converter after it would stay at the first frame's size and crop every later frame
+                v += (f"format=yuva420p,scale=w='2*trunc(({pw(kf, 'w')})/2)':h=-2:eval=frame[ff{k}];"
+                      f"[bb{k}][ff{k}]overlay=x='{pw(kf, 'x')}':y='{pw(kf, 'y')}':eval=frame:shortest=1")
+            else:
+                v += f'scale={w}:{h}[ff{k}];[bb{k}][ff{k}]overlay={x}:{y}:shortest=1'
         else:
             cx, cy = max(0, -x), max(0, -y)
             cw, ch = min(w - cx, W - max(0, x)), min(h - cy, H - max(0, y))
@@ -304,10 +524,22 @@ def graph(p, td):
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}"
         if c['fadeOut']:
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}"
-        fg.append(v + f',format=yuv420p,setsar=1[v{k}]')
+        fg.append(v + f',format=yuv420p,setsar=1,settb=AVTB[v{k}]')  # xfade needs identical timebases on both inputs
         fg.append(audio(i, c, dur) + f'[a{k}]')
-    if p['main']:
-        fg.append(''.join(f'[v{k}][a{k}]' for k in range(len(p['main']))) + f"concat=n={len(p['main'])}:v=1:a=1[vm][am]")
+    if p['main']:  # cuts concatenate; transitions overlap the two clips (xfade + acrossfade), like CapCut
+        cv, ca, n = 'v0', 'a0', p['main'][0]['frames']
+        for k in range(1, len(p['main'])):
+            prev, c = p['main'][k - 1], p['main'][k]
+            o = overlap(prev, c)
+            if o:
+                fg.append(f"[{cv}][v{k}]xfade=transition={prev['tr']}:duration={o / F:.6f}:offset={(n - o) / F:.6f}[mv{k}]")
+                fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]')
+            else:
+                fg.append(f'[{cv}][{ca}][v{k}][a{k}]concat=n=2:v=1:a=1[mv{k}][ma{k}]')
+            n += c['frames'] - o
+            cv, ca = f'mv{k}', f'ma{k}'
+        fg.append(f'[{cv}]null[vm]')
+        fg.append(f'[{ca}]anull[am]')
         mix.append('[am]')
 
     fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format=yuv420p[L0]')
@@ -324,16 +556,24 @@ def graph(p, td):
         n = c['frames']
         dur = n / F
         i = inp(c, dur)
-        g = c['geom']
-        v = video(i, c, n) + f",scale={max(2, even(g['w']))}:{max(2, even(g['h']))},format=rgba"
-        if c['opacity'] < 1:
-            v += f",colorchannelmixer=aa={c['opacity']:.3f}"
+        g, kf = c['geom'], c.get('kf')
+        v = video(i, c, n) + ('' if kf else f",scale={max(2, even(g['w']))}:{max(2, even(g['h']))}") + ',format=rgba'
+        if kf and len({f['op'] for f in kf}) > 1:  # animated opacity: per-pixel alpha scale, only when it actually varies
+            v += f",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({pw(kf, 'op', 'T')})'"
+        elif (kf[0]['op'] if kf else c['opacity']) < 1:
+            v += f",colorchannelmixer=aa={kf[0]['op'] if kf else c['opacity']:.3f}"
         if c['fadeIn']:
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}:alpha=1"
         if c['fadeOut']:
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}:alpha=1"
+        if kf:  # size changes per frame: last step, already in overlay's input format (see the main-track note)
+            v += f",format=yuva420p,scale=w='2*trunc(({pw(kf, 'w')})/2)':h=-2:eval=frame"
         fg.append(v + f",setpts=PTS+{c['start']:.6f}/TB[o{k}]")  # shifted to its timeline start
-        over(f'o{k}', even(g['x']), even(g['y']))
+        if kf:
+            lt = f"(t-{c['start']:.6f})"
+            over(f'o{k}', f"'{pw(kf, 'x', lt)}'", f"'{pw(kf, 'y', lt)}':eval=frame")
+        else:
+            over(f'o{k}', even(g['x']), even(g['y']))
         if c['kind'] == 'video' and c['hasAudio'] and c['volume'] > 0:
             fg.append(audio(i, c, dur, c['start']) + f'[oa{k}]')
             mix.append(f'[oa{k}]')
@@ -355,7 +595,8 @@ def graph(p, td):
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
         over('tx')
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
-    fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0[aout]')
+    loud = ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' if p.get('loud') else ''  # -14 LUFS, the reels/YouTube target
+    fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
     fg.append(f'[{cur[0]}]format=yuv420p[vout]')
     return sum(ins, []), ';'.join(fg)
 
@@ -403,13 +644,14 @@ def export(job, p):
             chunks = [main[i:i + CHUNK] for i in range(0, len(main), CHUNK)] if len(main) > CHUNK else []
             steps = len(chunks) + 1
             for n, part in enumerate(chunks):  # long main tracks: render chunks to near-lossless intermediates first
-                frames = sum(c['frames'] for c in part)
+                frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
                 sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'duration': frames / F}
                 f = Path(td) / f'chunk{n}.mkv'
                 run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps))
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
                              'frames': frames, 'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1},
-                             'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']}}
+                             'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']},
+                             'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
             out = unique(EXPORTS / f"{p['name']}.mp4")
@@ -505,6 +747,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in MEDIA.glob('*.json')), key=lambda m: -m.get('added', 0)))
             if path == '/api/projects':
                 return self.reply(list_projects())
+            if path == '/api/voices':
+                return self.reply(voices())
             if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})', path):
                 return self.file(PROJ / f'{m[1]}.json')
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
@@ -541,6 +785,31 @@ class App(BaseHTTPRequestHandler):
                 JOBS[job] = {'state': 'running', 'progress': 0.0}
                 threading.Thread(target=export, args=(job, p), daemon=True).start()
                 return self.reply({'job': job})
+            if u.path == '/api/matte':
+                return self.reply({'job': run_job(matte, body['media'])})
+            if u.path == '/api/track':
+                b = body.get('box') or {}
+                box = {k: fnum(b.get(k), 0, 1) for k in 'xywh'}
+                return self.reply({'job': run_job(track, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), box)})
+            if u.path == '/api/beats':
+                return self.reply(beats(body['media']))
+            if u.path == '/api/still':
+                return self.reply(still(body['media'], fnum(body.get('t', 0), 0, 1e6)))
+            if u.path == '/api/tts':
+                return self.reply(tts(body.get('text', ''), body.get('voice', 'Samantha'), body.get('rate', 185)))
+            if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/trash', u.path):  # reversible: file + metadata move to trash/media
+                info = meta(m[1])
+                (HOME / 'trash' / 'media').mkdir(parents=True, exist_ok=True)
+                for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json'):
+                    if f.exists():
+                        shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
+                return self.reply({'ok': True})
+            if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
+                f = PROJ / f'{m[1]}.json'
+                if f.exists():
+                    (HOME / 'trash').mkdir(exist_ok=True)
+                    shutil.move(str(f), str(unique(HOME / 'trash' / f.name)))
+                return self.reply({'ok': True})
             if u.path == '/api/reveal':
                 f = EXPORTS / Path(str(body.get('file', ''))).name
                 if f.is_file():
@@ -633,6 +902,80 @@ def selftest():
         assert r > 200 and 90 < g < 170 and b < 60, ('image clip wrong', r, g, b)
         assert max(pixel(out, 8.0, 135, 240)) < 40, 'background after main track should be #101010'
         print(f'export ok (chunk={chunk}): {out.name} {W}x{H} 270 frames, audio {float(a["duration"]):.2f}s')
+    def imp(f):
+        with open(HOME / f, 'rb') as fh:
+            return import_file(f, fh, (HOME / f).stat().st_size, background=False)
+
+    def render(plan, frames):
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan(plan))
+        assert JOBS['t']['state'] == 'done', JOBS['t']
+        out = EXPORTS / JOBS['t']['file']
+        got = int(json.loads(sh(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v', '-print_format', 'json', '-show_streams', str(out)]).stdout)['streams'][0]['nb_read_frames'])
+        assert got == frames, (plan['name'], got, frames)
+        return out
+
+    for name, col in (('red', 'red'), ('blue', 'blue')):
+        gen('-f', 'lavfi', '-i', f'color=c={col}:s=320x320', '-frames:v', '1', str(HOME / f'{name}.png'))
+    R, B = imp('red.png'), imp('blue.png')
+    still_clip = lambda m, tr=None: {'media': m['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(m, 'fill'), 'tr': tr}
+    tplan = {'w': W, 'h': H, 'fps': F, 'duration': 4, 'bg': '#000000', 'name': 'transitions', 'overlay': [], 'audio': [],
+             'main': [still_clip(R, {'type': 'fade', 'frames': 30}), still_clip(B, {'type': 'wipeleft', 'frames': 30}), still_clip(R)]}
+    for chunk in (24, 1):  # 1 = every clip its own chunk: transitions must survive the chunked path too
+        CHUNK = chunk
+        out = render(tplan, 120)  # 3 x 60 frames - 2 x 30 overlap
+        r, g, b = pixel(out, 1.5, 135, 240)
+        assert 90 < r < 165 and 90 < b < 165 and g < 40, ('dissolve midpoint should be purple', r, g, b)
+        assert pixel(out, 2.5, 40, 240)[2] > 200 and pixel(out, 2.5, 230, 240)[0] > 200, 'wipe should split blue|red at half way'
+    print('transitions ok: dissolve + wipe, single graph and chunked')
+    CHUNK = 24
+    kplan = {'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': 'keyframes', 'audio': [],
+             'main': [{'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I),  # zoom 0.5x -> 1x
+                       'kf': [{'t': 0, 'w': 135, 'x': 67.5, 'y': 172.5, 'op': 1}, {'t': 2, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]}],
+             'overlay': [{'media': R['id'], 'start': 0, 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(R),  # grows, slides right, fades in
+                          'kf': [{'t': 0, 'w': 60, 'x': 0, 'y': 0, 'op': 0.3}, {'t': 2, 'w': 120, 'x': 150, 'y': 0, 'op': 1}]}]}
+    out = render(kplan, 60)
+    # sample points that only the FULL-size frames cover: a regression once cropped every frame to the first frame's size
+    assert max(pixel(out, 0.05, 250, 300)) < 40 and pixel(out, 1.95, 250, 300)[0] > 200, 'main zoom keyframes'
+    assert pixel(out, 0.05, 30, 30)[0] < 120 and pixel(out, 1.95, 255, 100)[0] > 200 and max(pixel(out, 1.95, 30, 30)) < 40, 'overlay grow/move/fade keyframes'
+    print('keyframes ok: zoom on main, move + opacity on overlay')
+    gen('-f', 'lavfi', '-i', 'color=c=0x00ff00:s=320x320', '-vf', 'drawbox=x=110:y=110:w=100:h=100:color=red:t=fill', '-frames:v', '1', str(HOME / 'green.png'))
+    G = imp('green.png')
+    out = render({'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#0000ff', 'name': 'chroma', 'overlay': [], 'audio': [],
+                  'main': [{'media': G['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(G), 'key': {'color': '#00ff00', 'sim': 0.3, 'blend': 0.1}}]}, 30)
+    assert pixel(out, 0.5, 20, 150)[2] > 200 and pixel(out, 0.5, 135, 240)[0] > 200, 'chroma key: green must turn transparent, red stays'
+    print('chroma key ok')
+    plan['loud'] = True
+    plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True)
+    render(plan, 270)
+    print('smoke ok: crop + flip + look + denoise + loudness')
+    # HDR: HLG clip + a portrait-rotated copy (iPhone-style). The rotated one must match the same content
+    # rendered through the normal SDR autorotate path (wrong orientation would collapse the PSNR).
+    hlg = ['-vf', 'format=yuv420p10le', '-c:v', 'libx265', '-x265-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error',
+           '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc']
+    gen('-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=1', *hlg, str(HOME / 'hlg.mp4'))
+    gen('-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'sdr.mp4'))
+    for f in ('hlg', 'sdr'):
+        gen('-display_rotation', '90', '-i', str(HOME / f'{f}.mp4'), '-c', 'copy', str(HOME / f'{f}_rot.mp4'))
+    outs = {}
+    for f, dims in (('hlg.mp4', (320, 180)), ('hlg_rot.mp4', (180, 320)), ('sdr_rot.mp4', (180, 320))):
+        hm = imp(f)
+        assert hm['hdr'] == f.startswith('hlg') and (hm['w'], hm['h']) == dims, hm
+        outs[f] = render({'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#000000', 'name': f, 'overlay': [], 'audio': [],
+                          'main': [{'media': hm['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(hm)}]}, 30)
+    trc = sh(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=color_transfer', '-of', 'csv=p=0', str(outs['hlg_rot.mp4'])]).stdout.strip()
+    ps = re.search(r'average:([\d.]+|inf)', sh(['ffmpeg', '-hide_banner', '-i', str(outs['hlg_rot.mp4']), '-i', str(outs['sdr_rot.mp4']), '-lavfi', 'psnr', '-f', 'null', '-']).stderr)
+    assert trc != 'arib-std-b67' and ps and float(ps[1]) > 22, ('HDR tone map / rotation', trc, ps and ps[1])
+    print(f'hdr ok: HLG tone-mapped to SDR, rotated clip matches the SDR path at {float(ps[1]):.1f} dB PSNR')
+    gen('-f', 'lavfi', '-i', "aevalsrc='0.9*sin(2*PI*55*t)*exp(-25*mod(t,0.5))':s=44100:d=12", '-c:a', 'aac', str(HOME / 'kick.m4a'))
+    bt = beats(imp('kick.m4a')['id'])
+    err = max(abs(b - round(b * 2) / 2) for b in bt['beats'][1:-1])
+    assert abs(bt['bpm'] - 120) < 4 and err < 0.06, (bt['bpm'], err)
+    print(f"beats ok: {bt['bpm']} BPM, grid error {err * 1000:.0f} ms")
+    vs = voices()
+    vo = tts('Cutroom voiceover test.', vs[0]['name'], 185)
+    assert vo['kind'] == 'audio' and vo['duration'] > 0.5 and still(L['id'], 1.0)['kind'] == 'image', vo
+    print(f"voiceover + freeze frame ok ({len(vs)} voices, used {vs[0]['name']})")
     sil = silences(ids['gap.m4a']['id'], -35, 0.5)
     assert len(sil) == 1 and abs(sil[0][0] - 1) < 0.1 and abs(sil[0][1] - 2) < 0.1, sil
     print('silence detection ok:', sil)

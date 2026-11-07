@@ -31,6 +31,12 @@
     <section id="tab-text" class="pane">
       <p class="hint">Adds a text clip at the playhead. Drag it on the preview to move it.</p>
       <div id="textPresets" class="presets"></div>
+      <h4>Voiceover</h4>
+      <p class="hint">Text to speech with this Mac's voices. Better ones: System Settings → Accessibility → Spoken Content → System voice → Manage Voices.</p>
+      <textarea id="ttsText" rows="4" placeholder="Type the script…" spellcheck="true"></textarea>
+      <label class="row"><span>Voice</span><select id="ttsVoice"></select></label>
+      <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
+      <button id="btnTts" class="primary wide">Add voiceover at playhead</button>
     </section>
     <section id="tab-captions" class="pane">
       <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>
@@ -87,6 +93,7 @@
 <div id="modal" class="modal" hidden></div>
 <div id="toast" class="toast" hidden></div>
 <div id="mediaPool" class="pool" aria-hidden="true"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="looks"></defs></svg>
 <script src="app.js"></script>
 </body>
 </html>
