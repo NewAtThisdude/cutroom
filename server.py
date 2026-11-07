@@ -455,6 +455,42 @@ def silences(mid, noise=-35.0, mind=0.5):
     return [[max(0.0, a), b] for a, b in zip(st, en)]
 
 
+FILLER = re.compile(r'(u+h+m*|u+m+|e+r+m*|h+m+|a+h+|e+h+|m{2,})', re.I)
+
+
+def fillers(mid, lang='auto'):
+    """Filler words (um, uh, er, hmm) from the on-device transcript, cut from the middle of the pause before to the
+    middle of the pause after: DTW word edges are approximate, pause midpoints make clean jump cuts."""
+    words, sil = transcribe(mid, lang), silences(mid, -35, 0.08)
+    def edge(t, before):  # the pause holding t, or the nearest one within 0.25 s on the outer side
+        near = [(a, b) for a, b in sil if a - (0.05 if before else 0.25) <= t <= b + (0.25 if before else 0.05)]
+        if not near:
+            return t
+        a, b = (max if before else min)(near, key=lambda ab: ab[1] if before else ab[0])
+        return (a + b) / 2
+    out = []
+    for w in words:
+        if FILLER.fullmatch(re.sub(r'\W', '', w['w'])):
+            a, b = edge(w['s'], True), edge(w['e'], False)
+            if b - a > 0.08:
+                out.append({'w': w['w'], 's': round(a, 3), 'e': round(b, 3)})
+    return out
+
+
+def scenes(mid, thr=0.3):
+    """Hard cuts inside a video (CapCut's scene detection): ffmpeg's scene score on a small copy, cached."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('scene detection needs a video')
+    cache = CACHE / f'{mid}.scenes{thr:.2f}.json'
+    if cache.exists():
+        return json.loads(cache.read_text())
+    r = sh(['ffmpeg', '-hide_banner', '-nostats', '-i', str(MEDIA / m['file']), '-an', '-vf', f"scale=160:-2,select='gt(scene,{thr:.3f})',showinfo", '-f', 'null', '-'])
+    times = sorted({round(float(x), 3) for x in re.findall(r'pts_time:([\d.]+)', r.stderr)})
+    cache.write_text(json.dumps(times))
+    return times
+
+
 # ---------- render engine: validated plan -> one ffmpeg filtergraph ----------
 
 def fnum(v, lo, hi):
@@ -477,7 +513,7 @@ def clean_plan(p):
         m = meta(c['media'])
         k = {'path': str(MEDIA / m['file']), 'kind': m['kind'], 'hasAudio': m['hasAudio'],
              'in': fnum(c.get('in', 0), -1e6, 1e6), 'out': fnum(c.get('out', 0), -1e6, 1e6),
-             'speed': fnum(c.get('speed', 1), 0.1, 10), 'volume': fnum(c.get('volume', 1), 0, 10),
+             'speed': fnum(c.get('speed', 1), 0.1, 100), 'volume': fnum(c.get('volume', 1), 0, 10),
              'frames': int(fnum(c['frames'], 1, 1e8)), 'fadeIn': fnum(c.get('fadeIn', 0), 0, 60), 'fadeOut': fnum(c.get('fadeOut', 0), 0, 60),
              'fit': c.get('fit') if c.get('fit') in ('fit', 'fill', 'blur') else 'fit', 'opacity': fnum(c.get('opacity', 1), 0, 1),
              'adj': {a: fnum((c.get('adj') or {}).get(a, 1), 0, 4) for a in 'bcs'}}
@@ -511,6 +547,12 @@ def clean_plan(p):
         k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 10), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
             k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
+        k['tone'] = [int(fnum(v, 0, 255)) for v in c['tone']] if c.get('tone') else None  # 256-entry curve made by the UI (exposure, highlights...)
+        if k['tone'] is not None and len(k['tone']) != 256:
+            raise ValueError('tone curve must have 256 entries')
+        k['vig'] = base64.b64decode(c['vig'].split(',')[-1]) if c.get('vig') else None  # vignette multiplier PNG drawn by the UI
+        if k['vig'] is not None and not k['vig'].startswith(b'\x89PNG'):
+            raise ValueError('vignette must be PNG')
         k['mask'] = base64.b64decode(c['mask'].split(',')[-1]) if c.get('mask') else None
         if k['mask'] is not None and not k['mask'].startswith(b'\x89PNG'):
             raise ValueError('mask must be PNG')
@@ -656,7 +698,7 @@ def graph(p, td):
                   f":x='iw*{cr['l']:.5f}':y='ih*{cr['t']:.5f}'")
         if c.get('flip'):
             v += ',hflip'
-        v += adjust(c) + look(c)
+        v += adjust(c) + tone(c) + look(c)
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         return v
@@ -676,6 +718,23 @@ def graph(p, td):
         if delay:
             a += f',adelay={round(delay * 1000)}:all=1'
         return a
+
+    def tone(c):  # the UI's curve as a 1D LUT (exact at 8-bit inputs, like the preview's feComponentTransfer table)
+        if not c.get('tone'):
+            return ''
+        f = Path(td) / f'tone{len(list(Path(td).glob("tone*.cube")))}.cube'
+        f.write_text('LUT_1D_SIZE 256\n' + ''.join(f'{v / 255:.6f} {v / 255:.6f} {v / 255:.6f}\n' for v in c['tone']))
+        return f",format=rgb24,lut1d=file='{f}':interp=linear"
+
+    def vignetted(v, c, tag, dur):  # RGB x the UI's multiplier image, alpha untouched (cutouts stay cut out)
+        if not c.get('vig'):
+            return v
+        f = Path(td) / f'vig_{tag}.png'
+        f.write_bytes(c['vig'])
+        ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
+        j = len(ins) - 1
+        return v + (f',format=gbrap,split[{tag}c][{tag}r];[{j}:v]format=gbrap[{tag}g];[{tag}g][{tag}r]scale=w=rw:h=rh[{tag}gs];'  # scale2ref fails on gbrap
+                    f'[{tag}c][{tag}gs]blend=c0_mode=multiply:c1_mode=multiply:c2_mode=multiply:c3_mode=normal')
 
     def opacity(c, tag, n):
         kf = c.get('kf')
@@ -727,14 +786,14 @@ def graph(p, td):
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
         v, kf, rot = video(i, c, n), c.get('kf'), rotation(c)
-        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('trans') or c.get('key') or c.get('mask') or c['opacity'] < 1:  # composite onto a base frame
+        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('trans') or c.get('key') or c.get('mask') or c.get('vig') or c['opacity'] < 1:  # composite onto a base frame
             if c['fit'] == 'blur':
                 v += (f',split=2[f{k}][b{k}];[b{k}]scale={even(W * 1.08)}:{even(H * 1.08)}:force_original_aspect_ratio=increase,crop={W}:{H},'  # 8% overscan, as the preview
                       f'boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]null')
             else:
                 v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}[bb{k}];[f{k}]null'
             sc, px_, py_ = place(c, 't')
-            v = masked(v, c, f'm{k}', dur) + rot + opacity(c, f'mop{k}', n) + sc + f'[ff{k}];[bb{k}][ff{k}]overlay=x={px_}:y={py_}:shortest=1:format=gbrp'
+            v = masked(vignetted(v, c, f'mv{k}', dur), c, f'm{k}', dur) + rot + opacity(c, f'mop{k}', n) + sc + f'[ff{k}];[bb{k}][ff{k}]overlay=x={px_}:y={py_}:shortest=1:format=gbrp'
         else:
             cx, cy = max(0, -x), max(0, -y)
             cw, ch = min(w - cx, W - max(0, x)), min(h - cy, H - max(0, y))
@@ -785,7 +844,7 @@ def graph(p, td):
         i = inp(c, dur)
         g, kf = c['geom'], c.get('kf')
         sc, ox, oy = place(c, f"(t-{c['start']:.6f})")
-        v = masked(video(i, c, n), c, f'o{k}', dur) + rotation(c) + ('' if kf else sc) + ',format=rgba' + opacity(c, f'oop{k}', n)
+        v = masked(vignetted(video(i, c, n), c, f'ov{k}', dur), c, f'o{k}', dur) + rotation(c) + ('' if kf else sc) + ',format=rgba' + opacity(c, f'oop{k}', n)
         if c['fadeIn']:
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}:alpha=1"
         if c['fadeOut']:
@@ -1032,6 +1091,10 @@ class App(BaseHTTPRequestHandler):
             body = self.body()
             if u.path == '/api/transcribe':
                 return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'))})
+            if u.path == '/api/fillers':
+                return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'))})
+            if u.path == '/api/scenes':
+                return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
             if u.path == '/api/silences':
                 return self.reply({'silences': silences(body['media'], fnum(body.get('noise', -35), -90, 0), fnum(body.get('min', 0.5), 0.05, 30))})
             if u.path == '/api/export':
@@ -1267,6 +1330,15 @@ def selftest():
     sb = meta(stabilize({}, L['id'])['media'])
     assert (sb['w'], sb['h']) == (L['w'], L['h']) and abs(sb['duration'] - L['duration']) < 0.2, sb
     print('rotation + mask + easing + reverse + stabilize ok')
+    inv = [255 - i for i in range(256)]  # tone curve = inverse: the orange image must come out blue-ish
+    out = one('tone', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'tone': inv})
+    r_, g_, b_ = pixel(out, 1, 135, 240)
+    assert r_ < 40 and 90 < g_ < 160 and b_ > 220, ('tone curve (lut1d)', r_, g_, b_)
+    gen('-f', 'lavfi', '-i', 'color=c=black:s=320x320', '-vf', "format=gray,geq=lum='255*(1-0.8*min(1,hypot(X-160,Y-160)/226))'", '-frames:v', '1', str(HOME / 'vig.png'))
+    out = one('vignette', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'vig': png('vig')})
+    mid, corner = pixel(out, 1, 135, 240), pixel(out, 1, 8, 108)
+    assert mid[0] > 230 and corner[0] < 110, ('vignette multiply', mid, corner)
+    print('tone curve + vignette ok')
     vplan = {'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': 'envelope', 'main': [], 'overlay': [],
              'audio': [{'media': A['id'], 'start': 0, 'in': 0, 'out': 2, 'frames': 60, 'volume': 1, 'vkf': [{'t': 0, 'v': 1}, {'t': 2, 'v': 0}]}]}
     out = render(vplan, 60)
@@ -1322,6 +1394,11 @@ def selftest():
     sil = silences(ids['gap.m4a']['id'], -35, 0.5)
     assert len(sil) == 1 and abs(sil[0][0] - 1) < 0.1 and abs(sil[0][1] - 2) < 0.1, sil
     print('silence detection ok:', sil)
+    gen('-f', 'lavfi', '-i', 'color=c=red:s=160x90:r=30:d=1', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=30:d=1', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=30:d=1',
+        '-filter_complex', '[0][1][2]concat=n=3:v=1:a=0', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'cuts.mp4'))
+    sc = scenes(imp('cuts.mp4')['id'])
+    assert len(sc) == 2 and abs(sc[0] - 1) < 0.05 and abs(sc[1] - 2) < 0.05, ('scene detection', sc)
+    print(f'scene detection ok: {sc}')
     if shutil.which(WHISPER) and Path(MODEL).exists() and shutil.which('say'):
         subprocess.run(['say', '-o', str(HOME / 'speech.aiff'), 'Cutroom makes captions automatically. [[slnc 1300]] Right on your Mac.'], check=True)
         with open(HOME / 'speech.aiff', 'rb') as fh:
@@ -1335,6 +1412,10 @@ def selftest():
             junk = transcribe(A['id'], 'en')
             assert junk == [], ('hallucinated captions on music', junk)
         print(f'captions ok (max {smear:.2f}s into a pause):', ' '.join(f"{w['w']}@{w['s']:.2f}" for w in words))
+        subprocess.run(['say', '-o', str(HOME / 'fill.aiff'), 'So, um, I think, uh, we should, um, start the video now.'], check=True)
+        fl = fillers(imp('fill.aiff')['id'], 'en')
+        assert len(fl) >= 2 and all(f['e'] - f['s'] > 0.15 for f in fl), ('filler words', fl)
+        print('filler words ok:', ' '.join(f"{f['w']}@{f['s']:.2f}-{f['e']:.2f}" for f in fl))
     else:
         print('captions skipped (whisper-cli or model missing)')
     shutil.rmtree(HOME)
