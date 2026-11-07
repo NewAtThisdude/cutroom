@@ -5,16 +5,20 @@ no watermark, and no cloud AI (CapCut's captions go to its servers; Cutroom's do
 
 ## Run it
 
-- Double-click **~/Applications/Cutroom.app**, or run `~/cutroom/cutroom`.
-  This starts the server on demand (never at login) and opens the editor as a Chrome app window.
-- Self-check after any engine change: `env -u PYTHONPATH python3 -I server.py --selftest`
-  (~2 min). It renders synthetic projects through both render paths and checks the result pixel by pixel.
-  It covers transitions, keyframes, chroma key, all clip options, HDR + rotation, beats, voiceover,
-  freeze frame, silence detection and caption timing.
+- Double-click **~/Applications/Cutroom.app**: a native Mac window (AppKit + WebKit). If a Cutroom server
+  is already running it uses it; otherwise it starts one and stops it again when you quit (never at login).
+  Rebuild it after editing `app/Cutroom.swift` with `app/build.sh`. `~/cutroom/cutroom` still opens the
+  editor in a Chrome app window instead.
+- Self-check after any engine change: `env -u PYTHONPATH python3 -I server.py --selftest` (about 3 min).
+  It renders synthetic projects through both render paths and checks the results pixel by pixel:
+  transitions, keyframes (deep, eased and partially eased), opacity, blend modes, chroma key, masks, HDR,
+  colour tags, every export format, beats, voiceover, freeze frames, silence detection and caption timing.
 
-Requirements: Homebrew `ffmpeg` and `whisper-cpp`, Google Chrome, Xcode command-line tools (`swiftc`) for
-the two Apple Vision helpers (built automatically on first use). The whisper model is reused from Voicify
-(`ggml-large-v3-turbo-q5_0.bin`); override it with `CUTROOM_MODEL=/path/to/ggml-*.bin`.
+Requirements: Homebrew `ffmpeg` and `whisper-cpp`, and the Xcode command-line tools (`swiftc`) for the app
+and the Apple Vision helpers (built automatically on first use). Chrome is only needed for the
+`cutroom` launcher. The whisper model is reused from Voicify (`ggml-large-v3-turbo-q5_0.bin`); override it
+with `CUTROOM_MODEL=/path/to/ggml-*.bin`. `CUTROOM_PORT` and `CUTROOM_HOME` work for the app, the launcher
+and the server.
 
 Data lives in `~/Movies/Cutroom/`:
 - `media/`: imported copies
@@ -27,34 +31,35 @@ Data lives in `~/Movies/Cutroom/`:
 
 ## Features
 
+The preview and the export share one geometry, colour and text pipeline. Rendering the same frame both ways
+and comparing pixels gave 0–2 levels of difference for transitions, clip animations, filters, masks and
+blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's engine).
+
 | | Feature | How |
 |---|---|---|
-| Edit | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder, and edge-drag to trim; both snap to the playhead, clip edges and beat marks. S splits, ⌫ deletes, ⌘D duplicates, ⌘Z / ⇧⌘Z undo and redo. Clips move between the main and overlay tracks |
-| | Transitions: dissolve, dip to black, wipe, slide, circle, zoom | The two clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel math |
-| | Keyframes for scale, position, opacity and rotation, linear or eased | Identical curves in the preview and the export (ffmpeg per-frame expressions, smoothstep easing). Used for zoom, pan and punch-in |
-| | Speed ramps (montage, hero, bullet, jump cut, flash in, flash out) and reverse | A ramp splits the clip into 8 editable parts. Reverse renders a reversed copy |
-| | Speed 0.25×–4×, volume up to 200%, fades, freeze frame | The preview uses Web Audio gain, so above-100% volume and transition crossfades are audible |
-| Look | Canvas 9:16, 16:9, 1:1, 4:5; fit, fill or blurred-background fill | One geometry function drives the preview and the export |
-| | Filters (vivid, mono, sepia, warm, cool, teal) with strength; brightness, contrast, saturation | Colour matrices: an SVG `feColorMatrix` in the preview, `colorchannelmixer` in the export |
-| | Crop, mirror, rotation, chroma key (green screen) | The preview's key uses ffmpeg `colorkey`'s exact formula |
-| | Masks: circle, rectangle, linear, mirror; feather and invert | Drawn by one canvas routine for both the preview and the export PNG (`alphamerge`). Combined with a chroma key, the alphas multiply |
-| | Overlay blend modes: multiply, screen, overlay, darken, lighten, color dodge, color burn, hard light, soft light, difference, exclusion | The preview uses canvas `globalCompositeOperation`. The export runs the same W3C formulas through `lut2`; ffmpeg's own `blend` modes give different results |
-| | Stabilize, auto reframe | Stabilize: `deshake` plus an 8% zoom. Auto reframe: Apple Vision faces, written as eased keyframes |
-| | HDR iPhone footage (HLG/PQ) | Tone-mapped to SDR by VideoToolbox (`scale_vt`), with rotation handled |
-| Text | Text clips with 7 presets (including emoji stickers), 4 bundled OFL fonts plus system fonts | Pop, fade or slide-in animations. Keyframed position and scale |
-| | Auto-captions with word-by-word highlight, 4 styles | whisper.cpp on-device, with DTW word timing and a Silero VAD filter |
-| AI and audio | Remove background (people) | Apple Vision person segmentation, saved as a transparent VP9 WebM |
-| | Motion tracking | Drag a box on the preview and the text or overlay follows it (Apple Vision object tracker, written as keyframes) |
-| | Voiceover (text-to-speech) | The Mac's own voices (`say`), added on the audio track |
-| | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking. Main-track cuts snap to every 1, 2, 4 or 8 beats |
-| | Remove pauses (jump cuts), reduce noise, loudness normalization (−14 LUFS), detach audio | `silencedetect`, `afftdn`, `loudnorm` |
-| | Volume envelope and auto-duck | Music dips about 12 dB under speech, found with `silencedetect`, with ramps. Per-frame `volume` expression; Web Audio gain in the preview |
-| | Smooth slow-mo for clips under 1× | `minterpolate` renders an interpolated copy of just the clip's range |
-| | Voiceover recording from the mic | MediaRecorder while the timeline plays muted |
-| Text | Out animations (pop, fade, slide) and loops (bounce, pulse, wiggle); animated GIF stickers with transparency | GIFs get a VP9-alpha preview proxy |
-| Timeline | Markers (M), mute/hide toggles per track, per-keyframe easing | Edges snap to markers |
-| Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, still PNG at the playhead; 720p to 4K | VideoToolbox (fast) or x264 (best), with a progress bar and Show in Finder |
-| Library | Templates (save an edit, refill its media slots), project duplicate and delete, media delete (to trash), proxies for ProRes, MKV and GIF, HEIC import | |
+| Edit | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder; edge-drag to trim. Both snap to the playhead, clip edges, markers and beats. Keyframes, volume envelopes and word timings stay on their content when you trim, split, change speed, remove pauses, ramp or freeze |
+| | 14 transitions: dissolve, dip to black or white, wipe and slide in 4 directions, circle open and close, zoom | The clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel maths |
+| | Keyframes for scale, position, opacity and rotation, linear or eased per keyframe, with previous/next jumps | ffmpeg per-frame expressions built as a balanced tree (ffmpeg's parser stops at about 100 nesting levels), so tracking with hundreds of points exports fine. Cutting through an eased segment keeps the exact curve |
+| | Clip In/Out animations: fade, zoom in/out, slide in 4 directions, rotate, spin, each with its own length | Applied live in the preview and baked into per-frame keyframes for the export, on top of your own keyframes |
+| | Speed 0.1×–10× on a continuous slider, optional pitch change; speed ramps; reverse; freeze frame | Change pitch uses `asetrate` in the export and `preservesPitch=false` in the preview |
+| | Typed values | Click any slider's value to type an exact number |
+| Look | Canvas 9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9; fit, fill or blurred-background fill | One geometry function drives the preview and the export |
+| | Filters with strength; brightness, contrast, saturation, temperature, tint | One colour matrix shared by the preview and the export |
+| | Crop, mirror, rotation, opacity on any clip, chroma key with a colour picker | The picker reads the clip's own graded pixel under the click. The key uses ffmpeg `colorkey`'s exact formula |
+| | Masks: circle, rectangle, linear, mirror; feather and invert | One canvas routine draws the preview and the export's mask PNG |
+| | Overlay blend modes (11) and bring forward / send backward | Canvas `globalCompositeOperation` in the preview; the export runs the same W3C formulas through `lut2` (ffmpeg's own `blend` modes differ) |
+| | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
+| Text | Text clips with presets and emoji stickers, 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding). One `drawText()` renders the preview and the export layer |
+| | In/out animations (pop, fade, slide) with adjustable length, and loops (bounce, pulse, wiggle) | |
+| | Auto-captions with word-by-word highlight and pop, 4 styles, 18 languages plus auto-detect | whisper.cpp on-device, with DTW word timing and a Silero VAD filter. It asks before replacing captions on the timeline |
+| AI and audio | Remove background (people), motion tracking | Apple Vision segmentation (transparent VP9 WebM) and object tracking (keyframes that keep the clip's rotation) |
+| | Voiceover from the Mac's voices or the microphone | `say`; MediaRecorder while the timeline plays muted |
+| | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking |
+| | Volume in dB (mute to +20 dB), fades you can hear in the preview, auto-duck from −6 to −24 dB under speech on any track | The duck envelope multiplies the clip volume, so the Volume slider keeps working after auto-duck |
+| | Remove pauses, reduce noise, loudness −14 LUFS, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
+| Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
+| Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three bitrates; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
+| Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1 and GIF, HEIC import | |
 
 ## How CapCut works (teardown of /Applications/CapCut.app 9.7.1)
 
@@ -95,6 +100,14 @@ once in the browser also guarantees the export matches the preview.
   decoder; the native one drops the alpha plane.
 - **Transitions:** chain inputs need identical timebases (`settb=AVTB`). The clamp
   (≤ half the shorter clip) is shared by `trF()` (UI) and `overlap()` (server).
+- **Colour:** the graph composites in RGB (`gbrp`) like the canvas, then converts once to tagged
+  BT.709 YUV. It used to mix BT.601 conversions with untagged output, so players shifted colours.
+  swscale's default *decoder* is about 4 levels off at widths like 270 or 1080, so the selftest reads
+  pixels with `accurate_rnd`.
+- **Opacity over time** is per-frame `colorchannelmixer` values fed by `sendcmd`, not a per-pixel `geq`.
+- **WebKit** (the app) has no `ctx.filter` and drops VP9's alpha. Filters, the blur fill and mask
+  feathering are done by hand there (`colorPass`, `featherAlpha`; the exported mask PNG is drawn the
+  same way), and transparent clips get an HEVC-with-alpha preview copy (`/media/<id>?alpha=hevc`).
 - **Blend modes:** ffmpeg's `blend` filter disagrees with the W3C formulas that the canvas uses:
   soft-light is off by up to 31 levels, dodge and burn miss the edge cases, and "overlay" versus
   "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels.
@@ -109,22 +122,29 @@ once in the browser also guarantees the export matches the preview.
   layers, Web Audio), the editing UI and the export plan builder.
 - `web/index.html`, `web/style.css`, `web/fonts/` (OFL fonts from Google Fonts).
 - `tools/matte.swift`, `tools/track.swift`, `tools/faces.swift`: Apple Vision helpers, compiled on first use.
-- `cutroom`: the launcher. `~/Applications/Cutroom.app` just calls it.
+- `app/Cutroom.swift`, `app/build.sh`: the native app.
+- `cutroom`: the Chrome-window launcher (also downloads the VAD model if missing).
 
 ## Limits (honest)
 
-- **Preview-only differences:** noise reduction and loudness are applied on export only. Chrome shows
-  HDR its own way, while the export is tone-mapped. The blurred background edge differs slightly.
+- **Preview-only differences:** noise reduction and loudness are applied on export only, and are
+  labelled that way. In the app (WebKit), the blurred background is a fast approximation; the export
+  blurs for real. Chrome shows HDR its own way, while the export is tone-mapped.
 - **Background removal:** people only (Vision person segmentation), frame by frame. Expect some edge
   flicker. It was verified on a 3D-avatar clip, not on a real person; hair edges are unverified. A cutout
   of HDR footage is not tone-mapped.
-- **Motion tracking:** follows position only (not scale or rotation), and needs the target visible on a
-  main-track video at the playhead. Verified on synthetic motion.
+- **Motion tracking:** follows position only (not the target's scale or rotation). Verified on synthetic
+  motion only.
 - **HDR:** verified on synthetic HLG, including rotation. Real iPhone Dolby Vision metadata is ignored
   (its HLG base layer is used).
-- **Speed ramps** are stepped (8 parts), not a continuous curve. Masks and filters are static (not
-  keyframed). Easing is per clip (all segments), not per keyframe.
-- **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only,
-  verified on a 3D-avatar clip.
-- **Mic recording** is untested end to end: the test browser has no microphone.
-- **Not built:** multi-camera and AI generation (CapCut's AIGC is cloud-based).
+- **Speed ramps** are stepped (8 parts), and speed tops out at 10× (CapCut goes to 100×). Masks and filters
+  are static (not keyframeable). A chroma key on a clip that is already transparent replaces its alpha in
+  the export.
+- **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only.
+- **Mic recording** is untested end to end: the test browsers have no microphone.
+- **The app's** confirm/prompt dialogs, file picker, drag and drop, export player window and microphone
+  prompt are wired up but were not clicked through on screen. Ad-hoc signing means macOS may ask for the
+  microphone again after each rebuild. Quitting the app mid-export stops the export if the app started
+  the server.
+- **Not built:** multi-camera, curves / highlights / shadows, vignette, and AI generation (CapCut's AIGC
+  is cloud-based).
