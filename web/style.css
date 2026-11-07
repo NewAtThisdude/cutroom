@@ -197,3 +197,8 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 12px; 
 ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 10px; border: 2px solid var(--panel); }
 ::-webkit-scrollbar-track { background: transparent; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } } /* decorative transitions only; playback is unaffected */
+.row output { cursor: text; border-radius: 4px; padding: 1px 3px; }
+.row output:hover { background: var(--hover); color: var(--text); }
+.numedit { width: 66px; padding: 2px 6px; font: inherit; font-size: 12px; text-align: right; }
+#exDone { display: contents; }
+select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-allowed; }

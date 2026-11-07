@@ -24,7 +24,7 @@ MODEL = os.environ.get('CUTROOM_MODEL', str(Path.home() / 'Library/Application S
 VAD = os.environ.get('CUTROOM_VAD', str(HOME / 'models' / 'ggml-silero-v5.1.2.bin'))
 CHUNK = 24  # ponytail: main tracks with >24 clips pre-render in chunks so ffmpeg never opens more decoders than this
 IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
-PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9', 'av1'}, {'.mp4', '.mov', '.m4v', '.webm'}
+PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9'}, {'.mp4', '.mov', '.m4v', '.webm'}  # AV1 gets a proxy: WebKit shows paused AV1 frames empty
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
 XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', 'wipedown', 'slideleft', 'slideright', 'slideup', 'slidedown',
           'circleopen', 'circleclose', 'zoomin'}  # the UI mirrors these per pixel
@@ -114,6 +114,19 @@ def import_file(name, stream, length, background=True):
     return m
 
 
+def alpha_mov(m):
+    """Transparent media for WebKit (the Mac app): HEVC with alpha, which it decodes with transparency (it drops
+    VP9's alpha). Chrome keeps using the VP9 WebM; exports always read the original file."""
+    out = CACHE / f"{m['id']}.alpha.mov"
+    if not out.exists():
+        dec = ['-c:v', 'libvpx-vp9'] if m.get('alpha') else []
+        tmp = out.with_suffix('.tmp.mov')
+        if sh(['ffmpeg', '-v', 'error', '-y', *dec, '-i', str(MEDIA / m['file']), '-vf', "scale=-2:'min(720,ih)',format=bgra", '-c:v', 'hevc_videotoolbox',
+               '-alpha_quality', '0.75', '-tag:v', 'hvc1', '-an', str(tmp)]).returncode == 0:
+            tmp.replace(out)
+    return out if out.exists() else None
+
+
 def prepare(m):
     """Timeline assets, like CapCut's material cache: filmstrip, waveform, preview proxy."""
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
@@ -128,6 +141,8 @@ def prepare(m):
         elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT:  # e.g. ProRes, MKV
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
                                  '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(CACHE / f'{mid}.proxy.mp4')]).returncode
+    if m['kind'] == 'video' and (m.get('alpha') or m.get('trans')):
+        alpha_mov(m)
     if m['hasAudio']:
         m['wave'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex',
                             'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x7ee0c3:scale=sqrt',
@@ -455,7 +470,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
-           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'still': fnum(p.get('still', 0), 0, 1e6),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -472,7 +487,7 @@ def clean_plan(p):
         k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
-                 flip=bool(c.get('flip')), denoise=bool(c.get('denoise')))
+                 flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')))
         cr = c.get('crop') or {}
         k['crop'] = {s: fnum(cr.get(s, 0), 0, 0.9) for s in 'lrtb'}
         if k['crop']['l'] + k['crop']['r'] > 0.95 or k['crop']['t'] + k['crop']['b'] > 0.95:
@@ -486,7 +501,8 @@ def clean_plan(p):
         kf = c.get('kf') or []
         if len(kf) > 2000:
             raise ValueError('too many keyframes')
-        k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0}
+        k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0,
+                    'u0': fnum(f.get('u0', 0), 0, 1), 'u1': fnum(f.get('u1', 1), 0, 1)}
                    for f in kf] or None
         k['angle'] = fnum(c.get('angle', 0), -3600, 3600)
         k['blend'] = c.get('blend') if c.get('blend') in BLENDS else None
@@ -522,6 +538,10 @@ def even(x):
     return int(round(x / 2)) * 2
 
 
+def ss3(x):
+    return x * x * (3 - 2 * x)
+
+
 def pw(kf, key, var='t'):
     """Keyframe curve as an ffmpeg expression (same interpolation as the UI's propsAt): linear, or smoothstep
     per segment when the segment's first keyframe has e=1. Segments are chosen by a balanced if() tree: ffmpeg's
@@ -532,8 +552,13 @@ def pw(kf, key, var='t'):
 
     def seg(a, b):  # clip() also holds the end values outside the segment, so the outer leaves cover t < first and t > last
         u = f"clip(({var}-{a['t']:.6f})/{max(b['t'] - a['t'], 1e-6):.6f},0,1)"
-        if a.get('e'):
-            u = f'({u}*{u}*(3-2*{u}))'
+        if a.get('e'):  # smoothstep, or the part [u0, u1] of it that a cut left this segment with
+            r0, r1 = a.get('u0', 0), a.get('u1', 1)
+            if (r0, r1) == (0, 1):
+                u = f'({u}*{u}*(3-2*{u}))'
+            elif ss3(r1) - ss3(r0) > 1e-9:
+                w = f'({r0:.6f}+{u}*{r1 - r0:.6f})'
+                u = f'(({w}*{w}*(3-2*{w})-{ss3(r0):.6f})/{ss3(r1) - ss3(r0):.6f})'
         return f"{a[key]:.4f}+({b[key] - a[key]:.4f})*{u}"
 
     def tree(lo, hi):
@@ -549,7 +574,11 @@ def pw_at(kf, key, t):
     for a, b in zip(kf, kf[1:]):
         if t < b['t']:
             u = min(1.0, max(0.0, (t - a['t']) / max(b['t'] - a['t'], 1e-6)))
-            return a[key] + (b[key] - a[key]) * (u * u * (3 - 2 * u) if a.get('e') else u)
+            if a.get('e'):
+                r0, r1 = a.get('u0', 0), a.get('u1', 1)
+                d = ss3(r1) - ss3(r0)
+                u = (ss3(r0 + u * (r1 - r0)) - ss3(r0)) / d if d > 1e-9 else u
+            return a[key] + (b[key] - a[key]) * u
     return kf[-1][key]
 
 
@@ -635,7 +664,8 @@ def graph(p, td):
     def audio(i, c, dur, delay=0.0):
         live = c['hasAudio'] and c['kind'] != 'image' and (c['volume'] > 0 or c.get('vkf'))
         vol = f"volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"  # envelope: ducking, fades
-        a = f"[{i}:a]asetpts=PTS-STARTPTS,{atempo(c['speed'])},{vol}" if live else 'anullsrc=r=48000:cl=stereo'
+        tempo = f"aresample=48000,asetrate={48000 * c['speed']:.3f},aresample=48000" if c.get('pitch') and c['speed'] != 1 else atempo(c['speed'])
+        a = f"[{i}:a]asetpts=PTS-STARTPTS,{tempo},{vol}" if live else 'anullsrc=r=48000:cl=stereo'
         if live and c.get('denoise'):
             a += ',afftdn=nr=15:nf=-40:tn=1'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
@@ -790,7 +820,8 @@ def graph(p, td):
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
     loud = ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' if p.get('loud') else ''  # -14 LUFS, the reels/YouTube target
     fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
-    fg.append(f'[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
+    fg.append(f'[{cur[0]}]format=rgb24[vout]' if p.get('format') in ('png', 'gif') else  # stills and GIFs stay RGB: no 4:2:0 round trip
+              f'[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
     return sum(ins, []), ';'.join(fg)
 
 
@@ -800,7 +831,7 @@ FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'gif': '.gif', 'mp3'
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
     W, H, F, fmt = p['w'], p['h'], p['fps'], 'mp4' if intermediate else p.get('format', 'mp4')
-    vmap, amap, br = ['-map', '[vout]'], ['-map', '[aout]'], f'{max(2000, round(W * H * F * 0.2 / 1000))}k'
+    vmap, amap, br = ['-map', '[vout]'], ['-map', '[aout]'], f"{max(2000, round(W * H * F * 0.2 * p.get('rate', 1) / 1000))}k"  # Bitrate: Standard / High / Very high
     if intermediate:
         enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le']
     elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
@@ -861,7 +892,7 @@ def export(job, p):
             steps = len(chunks) + 1
             for n, part in enumerate(chunks):  # long main tracks: render chunks to near-lossless intermediates first
                 frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
-                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'duration': frames / F}
+                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'duration': frames / F, 'format': 'mp4'}  # chunks are always YUV video
                 f = Path(td) / f'chunk{n}.mkv'
                 run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps))
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
@@ -972,6 +1003,9 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
                 return self.reply(JOBS.get(m[1], {'state': 'missing'}))
             if m := re.fullmatch(r'/media/([a-f0-9]{12})', path):
+                if 'hevc' in parse_qs(urlparse(self.path).query).get('alpha', []) and (mm := meta(m[1])).get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
+                    if mov := alpha_mov(mm):  # made at import; older library items get it on first request
+                        return self.file(mov)
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
             if path == '/api/templates':
@@ -1223,6 +1257,10 @@ def selftest():
     ease_kf = [{'t': 0, 'w': 135, 'x': 67.5, 'y': 172.5, 'op': 1, 'e': 1}, {'t': 2, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]
     out = one('ease', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': ease_kf})
     assert max(pixel(out, 0.5, 54, 240)) < 40 and pixel(out, 0.5, 70, 240)[0] > 200, 'easing: at u=.25 the eased edge (57 px) must lag linear (51 px)'
+    part = [{**ease_kf[0], 'u0': 0.5, 'u1': 1.0}, ease_kf[1]]  # the second half of a smoothstep (what a split leaves): at u=.25 the edge is at 43 px
+    assert abs(pw_at(part, 'x', 0.5) - (67.5 - 67.5 * (ss3(0.625) - 0.5) / 0.5)) < 1e-6
+    out = one('ease-part', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': part})
+    assert max(pixel(out, 0.5, 36, 240)) < 40 and pixel(out, 0.5, 50, 240)[0] > 200, 'partial easing: the edge must sit near 43 px'
     gen('-f', 'lavfi', '-i', 'color=c=white:s=64x64:r=30:d=4', '-vf', 'fade=t=in:st=0:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'ramp.mp4'))
     rv = meta(reverse({}, imp('ramp.mp4')['id'])['media'])
     assert pixel(MEDIA / rv['file'], 0.1, 32, 32)[0] > 200 and pixel(MEDIA / rv['file'], 3.8, 32, 32)[0] < 60 and abs(rv['duration'] - 4) < 0.2, rv
