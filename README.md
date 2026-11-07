@@ -38,14 +38,19 @@ and comparing pixels gave 0–2 levels of difference for transitions, clip anima
 blend modes, about 2.6 levels for text, and 0.5–5 levels for the video effects, in Chrome and in WebKit (the app's engine).
 
 The window works like CapCut's: a library rail on the left (Media, Audio, Text, Stickers, Effects, Transitions,
-Filters, Captions, AI), each opening a gallery whose tiles show what they do (effects and transitions animate; with
+Filters, Captions, Script, AI), each opening a gallery whose tiles show what they do (effects and transitions animate; with
 Reduce motion on they show a still and move when you point at them), the preview with its transport in the middle,
 the selected clip's settings on the right, and the timeline with a toolbar (split, delete, duplicate, freeze, reverse,
 mirror, rotate, remove pauses and fillers, fit) below.
 
 | | Feature | How |
 |---|---|---|
-| Edit | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder; edge-drag to trim. Both snap to the playhead, clip edges, markers and beats. Keyframes, volume envelopes and word timings stay on their content when you trim, split, change speed, remove pauses, ramp or freeze |
+| Edit | **On-canvas handles**: drag a corner of the selected text, sticker or clip to scale it, the knob above it to rotate (snaps to straight; ⌥ for free) | One undo step per drag; with keyframes, the change lands on the keyframe under the playhead |
+| | **Right-click menus** on clips, cuts and the preview; **multi-select** (⇧ / ⌘-click: delete, copy or drag several clips at once); ⌘A selects all | |
+| | **Copy / cut / paste** clips (⌘C ⌘X ⌘V, at the playhead) and **paste look** (⌥⌘V: filter, adjustments, animations, mask, key; or a text's style) | |
+| | **Q / W**: delete what is left / right of the playhead in a clip; **F**: theater view (the preview fills the window) | |
+| | **Edit by script**: the main track's words; click a word to jump there, select words or a pause and press ⌫ to cut them out of the video. Captions made from speech re-make themselves after every cut (also after Remove pauses / fillers) | Words from the cached on-device transcript, mapped through each clip's in/out/speed; cuts land at the middle of the pauses around the words |
+| | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder; edge-drag to trim. Both snap to the playhead, clip edges, markers and beats. Keyframes, volume envelopes and word timings stay on their content when you trim, split, change speed, remove pauses, ramp or freeze |
 | | 31 transitions in an animated gallery: dissolve, dip to black / white / grey, noise, pixelate, blur, zoom, wipe and soft wipe and slide in 4 directions, squeeze, circle open and close, clock, doors, split open, diagonals, slices, blinds. Click one to put it on the selected cut (or the one nearest the playhead), or on every cut | The clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel maths from its source (weights, noise, block sampling, box blur), within 0.2–3.4 levels of the export |
 | | **30 video effects** on their own Effects track, with strength: shake, earthquake, beat zoom (follows detected beats), slow zoom, flash, strobe, blink, dreamy glow, VHS, old film, film grain, black & white, sepia, glitch, RGB split, pixelate, blur, invert, mirror, split ×4, snow, rain, sparkles, hearts, confetti, bubbles, cinema bars, camcorder, vignette, film strip | Each effect is pixel steps the export runs on everything under the text layer, on exact frame ranges (`enable='between(n,a,b)'`, per-frame values through `sendcmd` or expressions), and/or an overlay drawn into the text layer by the same canvas code as the preview. Grain is random in both, so it matches in strength, not pixel for pixel |
 | | Keyframes for scale, position, opacity and rotation, linear or eased per keyframe, with previous/next jumps | ffmpeg per-frame expressions built as a balanced tree (ffmpeg's parser stops at about 100 nesting levels), so tracking with hundreds of points exports fine. Cutting through an eased segment keeps the exact curve |
@@ -54,14 +59,16 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Typed values | Click any slider's value to type an exact number |
 | Look | Canvas 9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9; fit, fill or blurred-background fill | One geometry function drives the preview and the export |
 | | 17 filters in a gallery that shows them on the frame at the playhead, with strength; brightness, contrast, saturation, temperature, tint | One colour matrix shared by the preview and the export. A filter tile applies to the selected clip, or to the whole main track |
+| | **Auto adjust** (one click: exposure, contrast, white balance) and **Match colour** to another clip | Solved from the clip's own pixels with the preview's exact grading maths (contrast/exposure for the brightness spread, then temperature/tint for the colour balance); auto adjust stays gentle and goes 70% of the way on white balance |
 | | Crop, mirror, rotation, opacity on any clip, chroma key with a colour picker | The picker reads the clip's own graded pixel under the click. The key uses ffmpeg `colorkey`'s exact formula |
 | | Masks: circle, rectangle, linear, mirror; feather and invert | One canvas routine draws the preview and the export's mask PNG |
 | | Overlay blend modes (11) and bring forward / send backward | Canvas `globalCompositeOperation` in the preview; the export runs the same W3C formulas through `lut2` (ffmpeg's own `blend` modes differ) |
 | | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
-| Text | 15 text styles shown as tiles (title, neon, glow, gradient, retro, comic, marker, bubble, minimal...), 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding), gradient fill. One `drawText()` renders the preview and the export layer |
+| Text | 8 **text templates** (title + subtitle, lower third, countdown, subscribe, quote, big number, breaking news, hook): several animated layers at once | Plain text clips: every layer stays editable |
+| | 15 text styles shown as tiles (title, neon, glow, gradient, retro, comic, marker, bubble, minimal...), 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding), gradient fill. One `drawText()` renders the preview and the export layer |
 | | In/out animations (pop, fade, slide, zoom, drop, typewriter) with adjustable length, and loops (bounce, pulse, wiggle) | |
 | | Stickers: about 190 emoji in 7 groups, plus AI stickers (describe it; drawn on this Mac and cut out) | Emoji are text clips, so they animate like text |
-| | Auto-captions with word-by-word highlight and pop, 4 styles, 18 languages plus auto-detect | whisper.cpp on-device, with DTW word timing and a Silero VAD filter. It asks before replacing captions on the timeline |
+| | Auto-captions with word-by-word highlight and pop, 4 styles, 18 languages plus auto-detect; every line editable in a list | whisper.cpp on-device, with DTW word timing and a Silero VAD filter. It asks before replacing captions on the timeline |
 | AI and audio | Remove background (people), motion tracking | Apple Vision segmentation (transparent VP9 WebM) and object tracking (keyframes that keep the clip's rotation) |
 | | Voiceover from the Mac's voices or the microphone | `say`; MediaRecorder while the timeline plays muted |
 | | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking |
@@ -89,8 +96,9 @@ mirror, rotate, remove pauses and fillers, fit) below.
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 37 tools cover projects, media import, clips (add, update any setting,
-split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), captions, pause and filler removal, voiceovers, the smart tools,
+the preview frame as an image), and exports. The 39 tools cover projects, media import, clips (add, update any setting,
+split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
+(`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
 object's position off a snapshot), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
@@ -240,6 +248,11 @@ once in the browser also guarantees the export matches the preview.
 - **Cut out object:** edges come from SAM 2's mask at up to 1024 px, smoothed when scaled up, so fine hair on 4K is
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
+- **Edit by script** follows the main track only (not voiceovers on the audio track). Caption text you edited by hand is
+  re-made from the transcript after a cut (undo brings your edits back). Words are as good as whisper's timing: a cut
+  can clip a fast word's tail.
+- **Auto adjust** looks at one frame (the playhead's, or the clip's middle), so a clip whose lighting changes a lot
+  gets a grade for that moment. Match colour copies brightness and colour balance, not a full look.
 - **Video effects:** 30, against CapCut's downloadable library of hundreds. In the app (WebKit) the blur and glow
   previews are a close stand-in (down- and up-scaling; there is no `ctx.filter`), and grain is random, so the preview
   and the export match in look, not pixel for pixel. Effect and transition tiles show stand-in footage (a drawn sunset

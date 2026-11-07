@@ -32,6 +32,7 @@
       <button data-tab="transitions" title="Transitions"><svg class="i" viewBox="0 0 24 24"><path d="M3 5l8 7-8 7zM21 5l-8 7 8 7z"/></svg><span>Transitions</span></button>
       <button data-tab="filters" title="Filters"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg><span>Filters</span></button>
       <button data-tab="captions" title="Captions"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7 15h4M13 15h4M7 11h10"/></svg><span>Captions</span></button>
+      <button data-tab="script" title="Edit by script: delete words to cut the video"><svg class="i" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7M9 19h4"/></svg><span>Script</span></button>
       <button data-tab="ai" title="AI tools, on this Mac"><svg class="i" viewBox="0 0 24 24"><path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8z"/></svg><span>AI</span></button>
     </nav>
     <div class="panes">
@@ -63,6 +64,8 @@
     </section>
     <section id="tab-text" class="pane">
       <button id="btnAddText" class="primary wide first"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add text</button>
+      <div class="phead"><b>Templates</b><span>several layers at once</span></div>
+      <div id="tplList" class="ttiles tpl"></div>
       <div class="phead"><b>Styles</b><span>click to add at the playhead</span></div>
       <div id="textPresets" class="ttiles"></div>
       <p class="hint">Drag text on the preview to move it. Fonts, outline, shadow, background and in/out animations are on the right once it is selected.</p>
@@ -108,6 +111,16 @@
       <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
       <button id="btnTranslate" class="wide">Translate captions</button>
       <p id="trStatus" class="muted"></p>
+      <h4>Edit captions</h4>
+      <div id="capList" class="caplist"></div>
+    </section>
+    <section id="tab-script" class="pane">
+      <div class="sticky">
+        <div class="phead"><b>Edit by script</b><span>delete words, the video follows</span></div>
+        <div class="actions"><button id="btnScriptCut" class="primary" disabled>Cut selected ⌫</button><button id="btnScriptFill">Remove fillers</button><button id="btnScriptPause">Remove pauses</button><button id="btnScriptLoad" title="Read the main track again (after adding clips)">Refresh</button></div>
+        <p id="scriptStatus" class="hint"></p>
+      </div>
+      <div id="scriptBody" class="script" tabindex="0" aria-label="Transcript of the main track"></div>
     </section>
     <section id="tab-ai" class="pane">
       <div class="phead"><b>Smart tools</b><span>on the selected clip</span></div>
@@ -171,7 +184,7 @@
         <button id="btnFwd" title="Next frame (→)" aria-label="Next frame"><svg class="i" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
         <button id="btnEnd" title="Go to end (End)" aria-label="Go to end"><svg class="i" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8V4ZM19 5v14"/></svg></button>
       </div>
-      <div class="tside end"><span id="ratioLabel" class="muted"></span></div>
+      <div class="tside end"><span id="ratioLabel" class="muted"></span><button id="btnTheater" class="ghost sq" title="Theater view (F)" aria-label="Theater view"></button></div>
     </div>
   </section>
 

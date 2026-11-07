@@ -117,8 +117,14 @@ TOOLS = [
     ('voiceover', "Text to speech with the Mac's voices, added on the audio track at `at` (default: playhead).", S({'text': txt, 'voice': txt, 'rate': num, 'at': num}, ['text']), 'voiceover'),
     ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), '
-                  'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name).',
-     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num}, ['id', 'action']), 'clip_tool'),
+                  'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name), auto_adjust (exposure, contrast, white balance from the picture; '
+                  'ref = another clip id to match its colours instead).',
+     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
+    ('main_transcript', "The main track's speech as it plays on the timeline: sentences with start/end seconds, and every word timed. "
+                        'Use it to decide what to cut, then cut_timeline. Transcribes on this Mac the first time (cached).', S({'lang': txt}), 'main_transcript'),
+    ('cut_timeline', 'Ripple-delete ranges from the main track: ranges = [[start, end], ...] in timeline seconds (e.g. a sentence from main_transcript). '
+                     'Later clips move up; captions made from speech are re-made so they stay on their words. One undo step.',
+     S({'ranges': {'type': 'array', 'items': {'type': 'array', 'items': num}}}, ['ranges']), 'cut_timeline'),
     ('generate_image', 'Generate an image ON THIS MAC (Z-Image-Turbo, about 25-50 s) and put it on the timeline. sticker=true cuts the subject out (transparent PNG). '
                        'shape canvas|1:1|16:9|9:16|4:5; steps 4 (draft) or 8 (best); put overlay|main|library; start/duration in seconds.',
      S({'prompt': txt, 'shape': txt, 'sticker': boo, 'steps': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'put': txt, 'start': num, 'duration': num}, ['prompt']), 'ai_image'),
@@ -169,7 +175,7 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('export', 'auto_captions', 'main_transcript', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

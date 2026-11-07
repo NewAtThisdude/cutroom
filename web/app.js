@@ -60,6 +60,8 @@ const CAP_PRESETS = {
 const ICON = {
   play: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4.5v15l12-7.5z" fill="currentColor"/></svg>',
   pause: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
+  expand: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  shrink: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>',
 };
 
 const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['fadewhite', 'Dip to white'], ['fadegrays', 'Fade to grey'], ['dissolve', 'Noise'],
@@ -105,7 +107,7 @@ const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1);
 
 let P = null;                        // current project
 const M = new Map();                 // media id -> server metadata
-const S = { sel: null, t: 0, playing: false, pps: 60, dirty: true, t0: 0, wall0: 0, end: 0, exporting: false };
+const S = { sel: null, multi: new Set(), t: 0, playing: false, pps: 60, dirty: true, t0: 0, wall0: 0, end: 0, exporting: false }; // multi: more selected clips ('lane:id')
 let undo = [], redo = [], pending = null, saveTimer = 0, hits = [];
 const uploads = [], pool = new Map(), imgs = new Map();
 
@@ -318,6 +320,7 @@ function restore(from, to) {
   to.push(JSON.stringify(P));
   P = JSON.parse(from.pop());
   if (S.sel && !selClip()) S.sel = null;
+  S.multi.clear();
   fitStage(); touched();
 }
 function scheduleSave() {
@@ -386,7 +389,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
   const bg = layers.length ? `background-image:${layers.map(l => l[0])};background-size:${layers.map(l => l[1])};background-position:${layers.map(l => l[2])};background-repeat:${layers.map(l => l[3])};` : '';
   const marks = (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
-  return `<div class="clip ${lane}${S.sel?.lane === lane && S.sel.id === c.id ? ' sel' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
+  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
 
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }
@@ -434,6 +437,9 @@ function renderInspector() {
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
+  else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
+  else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) renderCapList();
+  if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p>`);
 }
 function trPanel(c) {
   const i = P.main.indexOf(c), next = P.main[i + 1], cur = c.tr?.type || 'none';
@@ -516,7 +522,9 @@ function mediaPanel(c, lane) {
   let look = '';
   if (vis) {
     look += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
-    look += `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
+    const others = [...P.main, ...P.overlay].filter(x => x !== c && M.get(x.media) && M.get(x.media).kind !== 'audio');
+    look += `<h4>Adjust</h4><div class="actions"><button data-act="autoadj" title="Exposure, contrast and white balance from the clip's own picture">Auto adjust</button>${others.length ? `<select id="matchRef" title="The clip whose colours to copy">${others.map(x => `<option value="${x.id}">${esc(M.get(x.media).name)} @ ${tc(x.start).slice(0, 5)}</option>`).join('')}</select><button data-act="matchcol">Match colour</button>` : ''}</div>`
+      + `${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
       + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
       + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%')
       + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%');
@@ -775,12 +783,12 @@ function paint() {
     ctx.save(); ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = 2 * d; ctx.setLineDash([5 * d, 4 * d]);
     ctx.strokeRect(R.x * k, R.y * k, R.w * k, R.h * k); ctx.restore();
   }
-  const s = S.sel && hits.find(h => h.id === S.sel.id);
-  if (s) {
-    const d = devicePixelRatio || 1;
-    ctx.save(); ctx.strokeStyle = '#ff7a45'; ctx.lineWidth = 1.5 * d; ctx.setLineDash([6 * d, 4 * d]);
-    ctx.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0); ctx.restore();
+  const sel = selection(), byId = new Map(hits.map(q => [q.id, q]));
+  for (const [x, lane] of sel) { // the selection: a box that turns with the clip, with handles when one clip is selected
+    const h = byId.get(x.id);
+    if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
   }
+  if (G.tab === 'script') scriptNow(t);
   $('#tc').textContent = `${tc(t)} / ${tc(S.playing ? S.end : total())}`;
 }
 function drawMedia(ctx, lane, c, m, el, lt, k) {
@@ -823,7 +831,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   draw(g.x * k, g.y * k, g.w * k, g.h * k);
   ctx.restore();
   if (lane === 'main' && f < 1) { ctx.fillStyle = `rgba(0,0,0,${1 - f})`; ctx.fillRect(0, 0, P.w * k, P.h * k); } // ffmpeg fade = to black
-  hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k });
+  hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
 }
 const blurCv = document.createElement('canvas');
 function colorPass(x, W, H, c) { // drawMedia's filter by hand (no ctx.filter in WebKit): brightness, contrast, saturate, then the look matrix, in sRGB like CSS
@@ -1262,6 +1270,8 @@ function renderPane() { // the open gallery, refreshed (cheap: called on tab cha
   else if (t === 'stickers') renderStickers();
   else if (t === 'audio') renderAudio();
   else if (t === 'text') renderTextTiles();
+  else if (t === 'script') renderScript();
+  else if (t === 'captions') renderCapList();
   if ((t === 'effects' || t === 'transitions') && !G.raf) G.raf = requestAnimationFrame(galleryLoop);
 }
 function renderEffects() {
@@ -1361,7 +1371,9 @@ function textSwatch(n, s0) { // the style drawn with CSS: close to drawText, for
     s.grad ? `background:linear-gradient(${s.color},${s.grad});-webkit-background-clip:text;background-clip:text;color:transparent` : ''].filter(Boolean).join(';');
   return `<span style="${css}">${n === 'Sticker' ? '🔥' : n}</span>`;
 }
-function renderTextTiles() { $('#textPresets').innerHTML = Object.entries(TEXT_PRESETS).map(([n, s]) => `<button data-addtext="${n}" title="Add ${n} text at the playhead">${textSwatch(n, s)}</button>`).join(''); }
+function renderTextTiles() {
+  $('#tplList').innerHTML = Object.entries(TEXT_TEMPLATES).map(([n, layers]) => `<button data-tpl="${esc(n)}" title="Add ${esc(n)} at the playhead">${textSwatch(n, { ...TEXT_PRESETS[layers[0][0]], ...layers[0][2], size: 60, maxW: 1 })}<i>${layers.length} layer${layers.length > 1 ? 's' : ''}</i></button>`).join('');
+  $('#textPresets').innerHTML = Object.entries(TEXT_PRESETS).map(([n, s]) => `<button data-addtext="${n}" title="Add ${n} text at the playhead">${textSwatch(n, s)}</button>`).join(''); }
 function drawTiles(force, now = performance.now()) { // animated tiles: only the ones in view; with reduced motion only the one under the pointer moves
   const pane = $(`#tab-${G.tab}`), pr = pane?.getBoundingClientRect(), anim = !RM.matches;
   if (!pr) return;
@@ -1415,6 +1427,364 @@ function syncToolbar() { // timeline toolbar buttons enabled for what is selecte
 }
 function rotate90(c) { const pr = propsAt(c, S.t - c.start); change(() => setProp(c, 'rot', ((Math.round(pr.rot) + 90 + 180) % 360 + 360) % 360 - 180)); }
 function fitTimeline() { const sc = $('#tlScroll'); setZoom((sc.clientWidth - 60) / Math.max(1, total())); sc.scrollLeft = 0; }
+
+
+// ---------- editing like a pro: multi-select, clipboard, trim to playhead, right-click menus, on-canvas handles ----------
+const selKey = (lane, id) => `${lane}:${id}`;
+function selection() { // the selected clips as [clip, lane]: the primary one plus any ⇧-clicked ones
+  const out = [], seen = new Set();
+  const add = (lane, id) => { const k = selKey(lane, id), c = P[lane]?.find(x => x.id === id); if (c && !seen.has(k)) { seen.add(k); out.push([c, lane]); } };
+  if (S.sel && S.sel.lane !== 'tr') add(S.sel.lane, S.sel.id);
+  for (const k of S.multi) { const i = k.indexOf(':'); add(k.slice(0, i), k.slice(i + 1)); }
+  return out;
+}
+const isSel = (lane, id) => (S.sel?.lane === lane && S.sel.id === id) || S.multi.has(selKey(lane, id));
+function selectAll() { // ⌘A: every clip on every track
+  S.multi.clear();
+  const all = LANES.flatMap(L => P[L.key].map(c => [L.key, c.id]));
+  if (!all.length) return;
+  S.sel = { lane: all[0][0], id: all[0][1] };
+  for (const [l, id] of all.slice(1)) S.multi.add(selKey(l, id));
+  renderTimeline(); renderInspector(); S.dirty = true;
+  toast(`${all.length} clips selected`);
+}
+let clipboard = null;
+function copySel(cut = false) {
+  const many = selection();
+  if (!many.length) return toast('Select a clip first');
+  clipboard = { items: many.map(([c, lane]) => ({ lane, c: structuredClone(c) })), t0: Math.min(...many.map(([c]) => c.start)) };
+  if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes the look`);
+}
+function paste(at = S.t) { // main clips insert at the playhead's cut; the others keep their spacing, starting at the playhead
+  if (!clipboard) return toast('Nothing to paste: copy a clip first (⌘C)');
+  change(() => {
+    packMain();
+    let mi = P.main.filter(x => x.start + tdur(x, 'main') / 2 <= at).length, last = null;
+    S.multi.clear();
+    for (const { lane, c } of clipboard.items) {
+      const b = { ...structuredClone(c), id: hex12() };
+      if (lane === 'main') { delete b.tr; P.main.splice(mi++, 0, b); } else { b.start = Math.max(0, at + c.start - clipboard.t0); P[lane].push(b); }
+      if (last) S.multi.add(selKey(last.lane, last.id));
+      last = { lane, id: b.id };
+    }
+    S.sel = last;
+  });
+  toast(`Pasted ${clipboard.items.length} clip${clipboard.items.length > 1 ? 's' : ''}`);
+}
+const LOOK_ATTRS = ['look', 'adj', 'anim', 'mask', 'key', 'blend', 'crop', 'flip', 'fit'];
+function pasteLook() { // ⌥⌘V: the copied clip's filter, adjustments, animations, mask and key (or a text's style) onto the selection
+  const src = clipboard?.items[0]?.c;
+  if (!src) return toast('Copy a clip first (⌘C), then select others and paste its look (⌥⌘V)');
+  const targets = selection().filter(([c]) => !!c.media === !!src.media && !c.fx && !src.fx);
+  if (!targets.length) return toast(src.media ? 'Select video or photo clips to paste onto' : 'Select text clips to paste the style onto');
+  change(() => {
+    for (const [c, lane] of targets) {
+      if (!src.media) { if (lane === 'text') c.style = structuredClone(src.style); continue; }
+      for (const k of LOOK_ATTRS) { if (src[k] !== undefined) c[k] = structuredClone(src[k]); else delete c[k]; }
+    }
+  });
+  toast(`Pasted the look onto ${targets.length} clip${targets.length > 1 ? 's' : ''}`);
+}
+function trimTo(side) { // Q / W: delete what is left / right of the playhead in the clip (CapCut's trim left / right)
+  packMain();
+  const t = S.t, inside = (x, lane) => t > x.start + 1e-6 && t < x.start + tdur(x, lane) - 1e-6;
+  let lane = S.sel?.lane === 'tr' ? 'main' : S.sel?.lane, c = selClip();
+  if (!c || !inside(c, lane)) { lane = 'main'; c = P.main.find(x => inside(x, 'main')); }
+  if (!c) return toast('Put the playhead over a clip first');
+  let kept;
+  change(() => {
+    const b = splitClip(c, lane, lane === 'main' ? snap(t) : t);
+    kept = side === 'left' ? b : c;
+    P[lane] = P[lane].filter(x => x !== (side === 'left' ? c : b));
+    S.sel = { lane, id: kept.id }; S.multi.clear();
+  });
+  if (side === 'left' && lane === 'main') { packMain(); seekTo(kept.start); } // the playhead stays on the same picture
+}
+let menuEl = null;
+function closeMenu() { menuEl?.remove(); menuEl = null; removeEventListener('pointerdown', menuAway, true); }
+const menuAway = e => { if (menuEl && !menuEl.contains(e.target)) closeMenu(); };
+function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled] or '-'
+  closeMenu();
+  const m = document.createElement('div');
+  m.className = 'ctxmenu'; m.setAttribute('role', 'menu');
+  m.innerHTML = items.map((it, i) => (it === '-' ? '<hr>' : `<button data-mi="${i}" role="menuitem"${it[3] ? ' disabled' : ''}><span>${esc(it[0])}</span><kbd>${esc(it[2] || '')}</kbd></button>`)).join('');
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = `${clamp(x, 8, innerWidth - r.width - 8)}px`; m.style.top = `${clamp(y, 8, innerHeight - r.height - 8)}px`;
+  m.addEventListener('click', e => { const b = e.target.closest('[data-mi]'); if (b && !b.disabled) { closeMenu(); items[+b.dataset.mi][1](); } });
+  menuEl = m;
+  setTimeout(() => addEventListener('pointerdown', menuAway, true));
+  m.querySelector('button:not([disabled])')?.focus();
+}
+function clipMenu(c, lane) { // what a right-click on a clip offers
+  const m = M.get(c.media), vid = m?.kind === 'video', vis = !!m && m.kind !== 'audio', many = selection().length > 1;
+  const items = [['Split', split, 'S'], ['Duplicate', dup, '⌘D'], ['Copy', () => copySel(), '⌘C'], ['Cut', () => copySel(true), '⌘X'], ['Paste', () => paste(), '⌘V', !clipboard],
+    ['Paste look', pasteLook, '⌥⌘V', !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), 'Q'], ['Trim end to playhead', () => trimTo('right'), 'W']];
+  if (vid || vis) items.push('-');
+  if (vid) items.push(['Freeze frame', () => freeze(c, lane)], ['Reverse', () => remake(c, 'reverse')]);
+  if (vid && lane !== 'audio' && m.hasAudio && c.volume > 0) items.push(['Detach audio', () => detachAudio(c)]);
+  if (vid) items.push(['Remove object…', () => startRemove(c, lane)], ['Cut out object…', () => startRemove(c, lane, 'cutout')]);
+  if (vis) items.push(['Remove background', () => removeBackground(c)], ['Auto adjust colour', () => autoAdjust(c, lane).catch(() => {})]);
+  if (lane === 'main' || lane === 'overlay') items.push(['Mirror', () => change(() => { c.flip = !c.flip; })], ['Rotate 90°', () => rotate90(c)], [`Move to ${lane === 'main' ? 'overlay' : 'main'} track`, () => moveLane(c, lane)]);
+  if (lane === 'overlay') items.push(['Bring forward', () => restack(c, 1)], ['Send backward', () => restack(c, -1)]);
+  items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, '⌫']);
+  return items;
+}
+function selBox(h) { return { cx: (h.x0 + h.x1) / 2, cy: (h.y0 + h.y1) / 2, hw: (h.x1 - h.x0) / 2, hh: (h.y1 - h.y0) / 2, rad: ((h.rot || 0) * Math.PI) / 180 }; }
+function handlePts(h) { // corner handles and the rotate knob, in canvas pixels (they turn with the clip)
+  const b = selBox(h), d = devicePixelRatio || 1, cs = Math.cos(b.rad), sn = Math.sin(b.rad), at = (u, v) => [b.cx + u * cs - v * sn, b.cy + u * sn + v * cs];
+  return [['nw', ...at(-b.hw, -b.hh)], ['ne', ...at(b.hw, -b.hh)], ['sw', ...at(-b.hw, b.hh)], ['se', ...at(b.hw, b.hh)], ['rot', ...at(0, -b.hh - 26 * d)]];
+}
+const handleAt = (h, x, y) => handlePts(h).find(([, hx, hy]) => Math.hypot(x - hx, y - hy) <= 11 * (devicePixelRatio || 1))?.[0];
+const canHandle = lane => lane === 'text' || lane === 'overlay' || lane === 'main';
+function drawSel(ctx, h, handles) {
+  const b = selBox(h), d = devicePixelRatio || 1;
+  ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rad);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * d; ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 3 * d;
+  if (!handles) ctx.setLineDash([5 * d, 4 * d]);
+  ctx.strokeRect(-b.hw, -b.hh, b.hw * 2, b.hh * 2);
+  if (handles) {
+    ctx.beginPath(); ctx.moveTo(0, -b.hh); ctx.lineTo(0, -b.hh - 20 * d); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.beginPath(); ctx.roundRect(u * b.hw - 5 * d, v * b.hh - 5 * d, 10 * d, 10 * d, 2.5 * d); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(0, -b.hh - 26 * d, 6 * d, 0, 6.2832); ctx.fill();
+    ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 1.5 * d; ctx.beginPath(); ctx.arc(0, -b.hh - 26 * d, 3 * d, -2.2, 2.4); ctx.stroke();
+  }
+  ctx.restore();
+}
+function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: rotate (snaps to straight; ⌥ for free)
+  const c = selClip(), before = JSON.stringify(P), b = selBox(h), pr0 = propsAt(c, S.t - c.start), r = cv.getBoundingClientRect(), px = cv.width / r.width;
+  const pt = ev => [(ev.clientX - r.left) * px, (ev.clientY - r.top) * px], [x0, y0] = pt(e);
+  const d0 = Math.max(1, Math.hypot(x0 - b.cx, y0 - b.cy)), a0 = Math.atan2(y0 - b.cy, x0 - b.cx);
+  const move = ev => {
+    const [x, y] = pt(ev);
+    if (kind === 'rot') {
+      let deg = pr0.rot + ((Math.atan2(y - b.cy, x - b.cx) - a0) * 180) / Math.PI;
+      deg = ((((deg + 180) % 360) + 360) % 360) - 180;
+      if (!ev.altKey) for (const s of [-180, -90, 0, 90, 180]) if (Math.abs(deg - s) < 4) deg = s;
+      setProp(c, 'rot', Math.round(deg * 10) / 10);
+    } else setProp(c, 'scale', +clamp((pr0.scale * Math.hypot(x - b.cx, y - b.cy)) / d0, 0.05, 10).toFixed(3));
+    S.dirty = true;
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
+function toggleTheater(on = !document.body.classList.contains('theater')) { // the preview fills the window (F, Esc to leave)
+  document.body.classList.toggle('theater', on);
+  $('#btnTheater').innerHTML = on ? ICON.shrink : ICON.expand;
+  $('#btnTheater').title = on ? 'Back to the editor (F or Esc)' : 'Theater view (F)';
+  requestAnimationFrame(() => { fitStage(); renderTimeline(); });
+}
+
+// ---------- edit by script: the main track's words; delete words or pauses to cut the video ----------
+const SC = { words: null, sel: null, anchor: null, drag: false, now: -1, busy: false };
+const wordCache = new Map(); // `${media}:${lang}` -> words in source time
+async function loadWords(ids, status) {
+  const lang = $('#capLang').value;
+  for (const [i, id] of ids.entries()) {
+    if (wordCache.has(`${id}:${lang}`)) continue;
+    if (status) status(`Transcribing ${i + 1}/${ids.length} on this Mac: ${M.get(id)?.name}…`);
+    wordCache.set(`${id}:${lang}`, (await api('/api/transcribe', { media: id, lang })).words);
+  }
+}
+function scriptWords() { // the main track's words on the timeline, each with its clip and source times
+  packMain();
+  const lang = $('#capLang').value, out = [];
+  for (const c of P.main) {
+    const ws = wordCache.get(`${c.media}:${lang}`);
+    if (!ws) continue;
+    for (const w of ws) {
+      if (w.e <= c.in || w.s >= c.out) continue;
+      const t0 = c.start + (Math.max(w.s, c.in) - c.in) / c.speed, t1 = c.start + (Math.min(w.e, c.out) - c.in) / c.speed;
+      if (t1 - t0 > 0.02) out.push({ w: w.w, t0, t1, s: w.s, e: w.e, c });
+    }
+  }
+  return out;
+}
+async function renderScript(load = true) {
+  const body = $('#scriptBody'), st = t => { $('#scriptStatus').textContent = t; };
+  const ids = [...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))];
+  if (!ids.length) { SC.words = null; body.innerHTML = '<p class="hint">Put a clip with speech on the main track: its words show up here, and deleting words cuts them out of the video.</p>'; st(''); return; }
+  const lang = $('#capLang').value, missing = ids.filter(id => !wordCache.has(`${id}:${lang}`));
+  if (missing.length) {
+    if (!load || SC.busy) return;
+    SC.busy = true;
+    try { await loadWords(missing, st); } catch (e) { st(e.message); return; } finally { SC.busy = false; }
+  }
+  const ws = SC.words = scriptWords();
+  if (SC.sel && (Array.isArray(SC.sel) ? SC.sel[1] >= ws.length : SC.sel.gap >= ws.length)) SC.sel = null;
+  let html = '<p>';
+  ws.forEach((w, i) => {
+    const p = ws[i - 1], gap = p ? w.t0 - p.t1 : 0;
+    if (p && (p.c !== w.c || (gap > 0.9 && /[.?!]$/.test(p.w)))) html += '</p><p>';
+    if (p && gap >= 0.5) html += `<span class="gap" data-g="${i}" title="Pause: click it, then ⌫ to cut it">${gap.toFixed(1)} s</span> `;
+    html += `<span class="w" data-i="${i}">${esc(w.w)}</span> `;
+  });
+  body.innerHTML = `${html}</p>`;
+  st(ws.length ? `${ws.length} words. Click a word to jump there; drag or ⇧-click to select; ⌫ cuts it out of the video.` : 'No speech found on the main track.');
+  SC.now = -1;
+  markScript();
+}
+function markScript() {
+  const s = SC.sel, on = i => Array.isArray(s) && i >= s[0] && i <= s[1];
+  for (const el of $$('#scriptBody .w')) el.classList.toggle('on', on(+el.dataset.i));
+  for (const el of $$('#scriptBody .gap')) el.classList.toggle('on', !!s && !Array.isArray(s) && s.gap === +el.dataset.g);
+  $('#btnScriptCut').disabled = !s;
+}
+function scriptNow(t) { // the word under the playhead, highlighted while it plays
+  const ws = SC.words;
+  if (!ws?.length) return;
+  let lo = 0, hi = ws.length - 1, k = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (ws[mid].t0 <= t) { k = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (k >= 0 && t > ws[k].t1 + 0.25) k = -1;
+  if (k === SC.now) return;
+  $(`#scriptBody .w[data-i="${SC.now}"]`)?.classList.remove('now');
+  SC.now = k;
+  const el = k >= 0 && $(`#scriptBody .w[data-i="${k}"]`);
+  if (el) { el.classList.add('now'); if (S.playing) el.scrollIntoView({ block: 'nearest' }); }
+}
+function timelineCuts(ranges) { // timeline ranges -> source ranges per main clip
+  packMain();
+  const rm = new Map();
+  for (const [a, b] of ranges) for (const c of P.main) {
+    const s = Math.max(a, c.start), e = Math.min(b, c.start + tdur(c, 'main'));
+    if (e - s > 1e-3) (rm.get(c.id) || rm.set(c.id, []).get(c.id)).push([c.in + (s - c.start) * c.speed, c.in + (e - c.start) * c.speed]);
+  }
+  return rm;
+}
+async function applyCut(rm, what) { // ripple cut of the main track, then captions re-made from the (cached) words so they stay on their speech
+  if (!rm.size) { toast('Nothing to cut there'); return 0; }
+  const before = packMain(), next = cutMain(rm, 0, c => c.id, 0.02, true);
+  if (JSON.stringify(next) === JSON.stringify(P.main)) { toast('Nothing to cut there'); return 0; }
+  change(() => { P.main = next; S.sel = null; S.multi.clear(); });
+  S.t = clamp(S.t, 0, total());
+  const cut = before - packMain();
+  toast(`Cut ${what} (${cut.toFixed(1)} s)`);
+  await resyncCaptions();
+  return cut;
+}
+async function resyncCaptions() { // captions made from speech follow a cut of the main track
+  if (P.captions.some(c => c.words?.length)) { await autoCaptions(true); toast('Captions moved with the cut'); }
+}
+function cutScript() {
+  const ws = SC.words, sel = SC.sel;
+  if (!ws || !sel) return;
+  const rm = new Map(), put = (c, a, b) => { if (b - a > 0.02) (rm.get(c.id) || rm.set(c.id, []).get(c.id)).push([a, b]); };
+  let what;
+  if (!Array.isArray(sel)) { // a pause: keep a little air on both sides
+    const p = ws[sel.gap - 1], w = ws[sel.gap];
+    if (p && w && p.c === w.c) put(w.c, p.e + 0.08, w.s - 0.08);
+    what = 'a pause'; if (p) S.t = p.t1;
+  } else { // the words, cut at the middle of the pauses around them, in runs within one clip
+    for (let i = sel[0]; i <= sel[1];) {
+      const c = ws[i].c;
+      let j = i;
+      while (j + 1 <= sel[1] && ws[j + 1].c === c) j++;
+      const prev = ws[i - 1]?.c === c ? ws[i - 1] : null, next = ws[j + 1]?.c === c ? ws[j + 1] : null;
+      put(c, prev ? (prev.e + ws[i].s) / 2 : c.in, next ? (ws[j].e + next.s) / 2 : c.out);
+      i = j + 1;
+    }
+    const n = sel[1] - sel[0] + 1;
+    what = n === 1 ? `"${ws[sel[0]].w}"` : `${n} words`; S.t = ws[sel[0]].t0;
+  }
+  SC.sel = null;
+  return applyCut(rm, what);
+}
+function renderCapList() { // every caption as an editable line; click the time to jump there
+  const el = $('#capList');
+  if (!el) return;
+  el.innerHTML = P.captions.length ? P.captions.map(c => `<div class="caprow"><button class="ct" data-capgo="${c.id}" title="Go there">${tc(c.start).slice(0, 5)}</button><input data-capid="${c.id}" value="${esc(c.text)}" spellcheck="true" aria-label="Caption at ${tc(c.start)}"></div>`).join('')
+    : '<p class="hint">Generate captions and every line shows up here, to fix words.</p>';
+}
+
+// ---------- auto adjust and colour match: a few numbers, solved from the clip's own pixels ----------
+async function rawFrame(c, lane) { // the clip's own pixels (before its adjustments), at the playhead or its middle, as a small RGBA buffer
+  const m = M.get(c.media), d = tdur(c, lane), lt = S.t - c.start;
+  if (!(lt >= 0 && lt < d)) seekTo(c.start + d / 2);
+  await waitFrame();
+  const el = m.kind === 'image' ? imgFor(m) : [...(S.live || [])].find(v => v.dataset.media === m.id && v.readyState >= 2);
+  if (!el) throw new Error('the clip is not on screen yet: try again');
+  const W = 64, H = Math.max(8, Math.round((64 * m.h) / m.w)), x = scratch(W, H, 'raw').getContext('2d', { willReadFrequently: true });
+  x.drawImage(el, 0, 0, W, H);
+  return x.getImageData(0, 0, W, H).data;
+}
+function gradeStats(d, c) { // colorPass's maths on a pixel buffer, then the numbers auto adjust aims at
+  const a = c.adj || {}, b = a.b ?? 1, k = a.c ?? 1, M3 = sat(a.s ?? 1), L = lookMatrix(c), T = toneLUT(c), q = v => (v < 0 ? 0 : v > 255 ? 255 : v), n = d.length / 4, Y = new Float32Array(n);
+  let R = 0, Gr = 0, B = 0;
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+    const r = q((q(d[i] * b) - 127.5) * k + 127.5), g = q((q(d[i + 1] * b) - 127.5) * k + 127.5), u = q((q(d[i + 2] * b) - 127.5) * k + 127.5);
+    let r2 = q(M3[0] * r + M3[1] * g + M3[2] * u), g2 = q(M3[3] * r + M3[4] * g + M3[5] * u), b2 = q(M3[6] * r + M3[7] * g + M3[8] * u);
+    if (T) { r2 = T[Math.round(r2)]; g2 = T[Math.round(g2)]; b2 = T[Math.round(b2)]; }
+    if (L) { const r3 = q(L[0] * r2 + L[1] * g2 + L[2] * b2), g3 = q(L[3] * r2 + L[4] * g2 + L[5] * b2); b2 = q(L[6] * r2 + L[7] * g2 + L[8] * b2); r2 = r3; g2 = g3; }
+    R += r2; Gr += g2; B += b2; Y[j] = 0.2126 * r2 + 0.7152 * g2 + 0.0722 * b2;
+  }
+  Y.sort();
+  const at = p => Y[Math.min(n - 1, Math.floor(p * n))];
+  return { r: R / n, g: Gr / n, b: B / n, p5: at(0.05), p50: at(0.5), p95: at(0.95) };
+}
+function solveAdj(d, base, target) { // contrast + exposure for the brightness spread, then temperature + tint for the colour balance
+  let best = null;
+  const tp50 = target?.p50 ?? 118, tsp = target?.spread ?? 190, [k0, k1, e1] = target ? [0.7, 1.5, 1.5] : [0.85, 1.3, 1]; // auto adjust stays gentle; matching may move further
+  for (let k = k0; k <= k1 + 1e-3; k += 0.05) for (let ex = -e1; ex <= e1 + 1e-3; ex += 0.1) {
+    const kk = +k.toFixed(2), e = +ex.toFixed(2), s = gradeStats(d, { adj: { ...base, c: kk, ex: e } });
+    const err = ((s.p50 - tp50) / 30) ** 2 + ((s.p95 - s.p5 - tsp) / 50) ** 2 + (target ? 0.05 * e * e : 0.35 * e * e + 0.4 * ((kk - 1) / 0.3) ** 2); // small moves unless matching
+    if (!best || err < best.err) best = { err, c: kk, ex: e };
+  }
+  const s0 = gradeStats(d, { adj: { ...base, c: best.c, ex: best.ex } });
+  const goal = target ? [target.r, target.g, target.b].map(v => (3 * v) / (target.r + target.g + target.b)) : [1, 1, 1];
+  let wb = { err: Infinity, temp: 0, tint: 0 };
+  for (let tp = -0.8; tp <= 0.801; tp += 0.05) for (let tn = -0.8; tn <= 0.801; tn += 0.05) {
+    const T = [1 + 0.2 * tp + 0.05 * tn, 1 - 0.12 * tn, 1 - 0.2 * tp + 0.05 * tn], m3 = [s0.r * T[0], s0.g * T[1], s0.b * T[2]], y = (m3[0] + m3[1] + m3[2]) / 3 || 1;
+    const err = m3.reduce((sum, v, i) => sum + (v / y - goal[i]) ** 2, 0) + 0.01 * (tp * tp + tn * tn);
+    if (err < wb.err) wb = { err, temp: tp, tint: tn };
+  }
+  const f = target ? 1 : 0.7; // grey-world over-corrects scenes that really are warm or green: go most of the way
+  return { c: best.c, ex: best.ex, temp: +(wb.temp * f).toFixed(2), tint: +(wb.tint * f).toFixed(2) };
+}
+async function autoAdjust(c, lane, refId) { // CapCut's auto adjust, and colour match against another clip
+  const m = M.get(c.media);
+  if (!m || m.kind === 'audio') { toast('Auto adjust works on video and photo clips'); return null; }
+  try {
+    let target = null;
+    if (refId) {
+      const ref = P.main.find(x => x.id === refId) || P.overlay.find(x => x.id === refId);
+      if (!ref) throw new Error('pick the clip to match');
+      const s = gradeStats(await rawFrame(ref, P.main.includes(ref) ? 'main' : 'overlay'), ref);
+      target = { r: s.r, g: s.g, b: s.b, p50: s.p50, spread: s.p95 - s.p5 };
+    }
+    const d = await rawFrame(c, lane), a = c.adj || {}, r = solveAdj(d, { b: a.b ?? 1, s: a.s ?? 1, hi: a.hi || 0, sh: a.sh || 0, fade: a.fade || 0 }, target);
+    change(() => { c.adj = { ...c.adj, c: r.c, ex: r.ex, temp: r.temp, tint: r.tint }; });
+    const ev = r.ex ? `exposure ${r.ex > 0 ? '+' : ''}${r.ex}` : 'exposure kept', wb = Math.abs(r.temp) < 0.03 ? '' : r.temp > 0 ? ', warmer' : ', cooler';
+    toast(refId ? `Matched the colours (${ev}, contrast ${r.c}${wb})` : `Auto adjust: ${ev}, contrast ${r.c}${wb}`);
+    return { contrast: r.c, exposure: r.ex, temperature: r.temp, tint: r.tint };
+  } catch (e) { toast(e.message); throw e; }
+}
+
+// ---------- text templates: a few layers that work together ----------
+const TEXT_TEMPLATES = {
+  'Title + subtitle': [['Title', { text: 'Your big title', y: 0.4 }, { anim: 'pop' }], ['Subtitle', { text: 'and the line that explains it', y: 0.5 }, { anim: 'fade', animT: 0.6 }]],
+  'Lower third': [['Label', { text: 'Your Name', y: 0.8, dur: 4 }, { anim: 'slide', boxColor: '#8b5cf6', boxAlpha: 1, size: 56 }], ['Minimal', { text: 'Founder · Your Company', y: 0.86, dur: 4 }, { size: 36, anim: 'fade', animT: 0.7 }]],
+  'Countdown': [['Headline', { text: '3', dur: 1, y: 0.45 }, { size: 300, anim: 'zoom', out: 'fade', outT: 0.2 }], ['Headline', { text: '2', dur: 1, y: 0.45, at: 1 }, { size: 300, anim: 'zoom', out: 'fade', outT: 0.2 }],
+    ['Headline', { text: '1', dur: 1, y: 0.45, at: 2 }, { size: 300, anim: 'zoom', out: 'fade', outT: 0.2 }]],
+  'Subscribe': [['Bubble', { text: 'SUBSCRIBE 🔔', y: 0.8, dur: 3 }, { boxColor: '#e4002b', anim: 'pop', loop: 'pulse' }]],
+  'Quote': [['Minimal', { text: '“Make it simple, but significant.”', y: 0.44, dur: 4 }, { font: 'Georgia', weight: 400, italic: true, upper: false, ls: 0, size: 68, anim: 'fade', animT: 0.8 }],
+    ['Minimal', { text: '— Your Name', y: 0.56, dur: 4 }, { size: 38, anim: 'fade', animT: 1.3 }]],
+  'Big number': [['Headline', { text: '1,000,000', y: 0.44 }, { anim: 'zoom' }], ['Subtitle', { text: 'views in one week', y: 0.54 }, { anim: 'fade', animT: 0.8 }]],
+  'Breaking news': [['Label', { text: 'BREAKING', y: 0.79, dur: 4 }, { boxColor: '#e4002b', boxAlpha: 1, size: 50, anim: 'slide' }], ['Label', { text: 'Your headline goes right here', y: 0.85, dur: 4 }, { boxColor: '#111827', size: 42, anim: 'slide', animT: 0.5 }]],
+  'Hook': [['Neon', { text: 'Wait for it…', y: 0.3, dur: 2.5 }, { anim: 'drop', loop: 'wiggle' }]],
+};
+function addTemplate(name) {
+  const t0 = S.t;
+  change(() => {
+    for (const [preset, props, style] of TEXT_TEMPLATES[name]) {
+      const { at = 0, ...p } = props, c = { id: hex12(), start: t0 + at, dur: 3, text: 'Your text', x: 0.5, y: 0.42, ...p, style: { ...TEXT_PRESETS[preset], ...style } };
+      P.text.push(c);
+      S.sel = { lane: 'text', id: c.id };
+    }
+  });
+  toast(`${name} added: click a line to change its words`);
+}
 
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? P.capStyle : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
@@ -1506,7 +1876,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   ctx.restore();
   if (preview) {
     const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;
-    hits.push({ lane, id: it.id, x0: x - bw, y0: top, x1: x + bw, y1: top + lines.length * lh });
+    hits.push({ lane, id: it.id, x0: x - bw, y0: top, x1: x + bw, y1: top + lines.length * lh, rot: pr.rot || 0 });
   }
 }
 function frame(now) {
@@ -1584,6 +1954,8 @@ function splitClip(c, lane, t) { // cut c at timeline time t; returns the right 
   }
 }
 function del() {
+  const many = selection();
+  if (many.length > 1) { change(() => { for (const [x, lane] of many) P[lane] = P[lane].filter(y => y !== x); S.sel = null; S.multi.clear(); }); return toast(`Deleted ${many.length} clips`); }
   const c = selClip();
   if (!c) return;
   if (S.sel.lane === 'tr') return change(() => { delete c.tr; });
@@ -1600,21 +1972,22 @@ function dup() {
   });
 }
 
-function cutMain(rm, pad = 0) { // main clips without the given source ranges (pauses, filler words): jump cuts; keyframes, envelopes, animations kept
+function cutMain(rm, pad = 0, key = c => c.media, min = 0.1, drop = false) { // main clips without the given source ranges (pauses, filler words, script cuts): jump cuts; keyframes, envelopes, animations kept
   return P.main.flatMap(c => {
-    const ss = rm.get(c.media);
+    const ss = rm.get(key(c));
     if (!ss?.length) return [c];
     const keep = [];
     let cur = c.in;
     for (const [a, b] of [...ss].sort((x, y) => x[0] - y[0])) {
       const s0 = Math.max(a + pad, c.in), e = Math.min(b - pad, c.out); // pad > 0 keeps a little air around speech
-      if (e - s0 < 0.1) continue;
+      if (e - s0 < min) continue;
       if (s0 > cur) keep.push([cur, s0]);
       cur = Math.max(cur, e);
     }
     if (c.out > cur) keep.push([cur, c.out]);
     const parts = keep.filter(([a, b]) => (b - a) / c.speed >= 2 / P.fps);
-    if (!parts.length || (parts.length === 1 && parts[0][0] === c.in && parts[0][1] === c.out)) return [c];
+    if (!parts.length) return drop ? [] : [c]; // a script cut of every word removes the clip
+    if (parts.length === 1 && parts[0][0] === c.in && parts[0][1] === c.out) return [c];
     const last = parts.length - 1; // jump cuts are hard cuts: only the last piece keeps the clip's outgoing transition
     return parts.map(([a, b], i) => ({ ...structuredClone(c), id: i ? hex12() : c.id, in: a, out: b, fadeIn: i ? 0 : c.fadeIn, fadeOut: i === last ? c.fadeOut : 0, tr: i === last ? c.tr : undefined,
       kf: sliceKf(c, (a - c.in) / c.speed, (b - c.in) / c.speed), vkf: sliceEnv(c, (a - c.in) / c.speed, (b - c.in) / c.speed), anim: partAnim(c.anim, i === 0, i === last) }));
@@ -1632,10 +2005,11 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
       rm.set(id, (await api('/api/fillers', { media: id, lang: $('#capLang').value })).fillers.map(f => [f.s, f.e]));
     }
     packMain();
-    const hit = P.main.reduce((n, c) => n + (rm.get(c.media) || []).filter(([a, b]) => b > c.in && a < c.out).length, 0), before = total(), next = cutMain(rm);
+    const hit = P.main.reduce((n, c) => n + (rm.get(c.media) || []).filter(([a, b]) => b > c.in && a < c.out).length, 0), before = packMain(), next = cutMain(rm);
     if (!hit || JSON.stringify(next) === JSON.stringify(P.main)) return toast('No filler words found');
     change(() => { P.main = next; });
-    toast(`Removed ${hit} filler word${hit === 1 ? '' : 's'} (${(before - total()).toFixed(1)} s)`);
+    toast(`Removed ${hit} filler word${hit === 1 ? '' : 's'} (${(before - packMain()).toFixed(1)} s)`);
+    await resyncCaptions();
   } catch (e) { toast(e.message); }
   finally { btn.disabled = false; }
 }
@@ -1648,10 +2022,11 @@ async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect
     const sil = new Map();
     for (const id of ids) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min })).silences);
     const next = cutMain(sil, pad);
-    const before = total();
+    const before = packMain();
     if (JSON.stringify(next) === JSON.stringify(P.main)) return toast(`No pauses longer than ${min} s`);
     change(() => { P.main = next; });
-    toast(`Removed ${(before - total()).toFixed(1)} s of pauses`);
+    toast(`Removed ${(before - packMain()).toFixed(1)} s of pauses`);
+    await resyncCaptions();
   } catch (e) { toast(e.message); }
   finally { btn.disabled = false; }
 }
@@ -2193,7 +2568,7 @@ function migrate(p) {
 function newProject(ratio = '9:16') { const [w, h] = RATIOS[ratio]; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h }); }
 function setProject(p) {
   if (S.playing) pause();
-  P = migrate(p); undo = []; redo = []; S.sel = null; S.t = 0;
+  P = migrate(p); undo = []; redo = []; S.sel = null; S.multi.clear(); S.t = 0;
   for (const v of pool.values()) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
   pool.clear();
   store.set('cutroom.last', P.id);
@@ -2254,7 +2629,7 @@ function snapTo(s, c, lane) { // a moved clip snaps by whichever edge is closer 
 }
 function scrub(e) {
   if (S.playing) pause();
-  if (!e.target.closest('.ruler') && S.sel) { S.sel = null; renderInspector(); $$('.clip.sel').forEach(x => x.classList.remove('sel')); }
+  if (!e.target.closest('.ruler') && (S.sel || S.multi.size)) { S.sel = null; S.multi.clear(); renderInspector(); $$('.clip.sel').forEach(x => x.classList.remove('sel')); }
   const left = $('#tlInner').getBoundingClientRect().left;
   const set = ev => { S.t = snap(clamp((ev.clientX - left) / S.pps, 0, total())); placePlayhead(); S.dirty = true; };
   set(e);
@@ -2264,6 +2639,7 @@ function scrub(e) {
 }
 function drag(e, lane, c, el) {
   const before = JSON.stringify(P), x0 = e.clientX, o = structuredClone(c), m = M.get(c.media);
+  const group = lane !== 'main' && selection().length > 1 && isSel(lane, c.id) ? selection().filter(([x, l]) => x !== c && l !== 'main').map(([x]) => [x, x.start]) : [];
   const r = el.getBoundingClientRect(), edge = Math.min(8, r.width / 3);
   const mode = e.clientX - r.left < edge ? 'l' : r.right - e.clientX < edge ? 'r' : 'move';
   const minD = 1 / P.fps, sp = c.speed || 1, maxOut = m && m.kind !== 'image' ? m.duration : Infinity;
@@ -2287,7 +2663,12 @@ function drag(e, lane, c, el) {
       if (o.kf) c.kf = o.kf.map(f => ({ ...f, t: f.t - d })); // keyframes, envelope and word timing stay on their content
       if (o.vkf) c.vkf = o.vkf.map(f => ({ ...f, t: f.t - d }));
       if (o.words) { c.words = o.words.map(w => ({ ...w, s: w.s - d, e: w.e - d })).filter(w => w.e > 0); c.text = c.words.map(w => w.w).join(' '); }
-    } else c.start = snapTo(Math.max(0, o.start + dt), c, lane);
+    } else {
+      c.start = snapTo(Math.max(0, o.start + dt), c, lane);
+      const dd = Math.max(c.start - o.start, -Math.min(o.start, ...group.map(g => g[1]))); // the group keeps its spacing and stops at 0
+      c.start = o.start + dd;
+      for (const [x, s0] of group) x.start = s0 + dd;
+    }
     S.dirty = true;
     renderTimeline();
   };
@@ -2299,6 +2680,7 @@ function drag(e, lane, c, el) {
       rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, c);
       P.main = rest;
     }
+    if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
     if (moved && JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } else renderTimeline();
   };
   addEventListener('pointermove', move);
@@ -2479,8 +2861,37 @@ function wire() {
     if (!el) return scrub(e);
     const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
     if (!c) return;
-    if (S.sel?.id !== c.id) { S.sel = { lane, id: c.id }; renderInspector(); $$('.clip.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); S.dirty = true; }
+    if (e.shiftKey || e.metaKey) { // ⇧ / ⌘-click: add the clip to the selection, or take it out
+      const k = selKey(lane, c.id);
+      if (isSel(lane, c.id) && selection().length > 1) {
+        S.multi.delete(k);
+        if (S.sel?.lane === lane && S.sel.id === c.id) { const nx = [...S.multi][0]; S.multi.delete(nx); S.sel = { lane: nx.slice(0, nx.indexOf(':')), id: nx.slice(nx.indexOf(':') + 1) }; }
+      } else if (!isSel(lane, c.id)) { if (S.sel && S.sel.lane !== 'tr') S.multi.add(selKey(S.sel.lane, S.sel.id)); S.sel = { lane, id: c.id }; }
+      renderTimeline(); renderInspector(); S.dirty = true;
+      return;
+    }
+    if (!isSel(lane, c.id)) S.multi.clear(); // a click on an unselected clip starts over; on a selected one it keeps the group, to drag it
+    if (S.sel?.id !== c.id) { S.sel = { lane, id: c.id }; renderInspector(); $$('.clip.sel').forEach(x => { if (!S.multi.has(selKey(x.dataset.lane, x.dataset.id))) x.classList.remove('sel'); }); el.classList.add('sel'); S.dirty = true; }
     drag(e, lane, c, el);
+  });
+  $('#tlInner').addEventListener('contextmenu', e => { // right-click: the clip's menu, the cut's menu, or paste
+    if (!P) return;
+    e.preventDefault();
+    const th = e.target.closest('.trh'), el = e.target.closest('.clip');
+    if (th) {
+      const c = P.main.find(x => x.id === th.dataset.trFor);
+      S.sel = { lane: 'tr', id: c.id }; S.multi.clear(); renderAll(); S.dirty = true;
+      return openMenu(e.clientX, e.clientY, [['Transitions…', () => openTab('transitions')], ['Use this one on every cut', () => applyTransition(c.tr?.type || 'fade', true), '', !c.tr], '-', ['Remove transition', () => change(() => { delete c.tr; }), '⌫', !c.tr]]);
+    }
+    if (!el) {
+      const left = $('#tlInner').getBoundingClientRect().left;
+      S.t = snap(clamp((e.clientX - left) / S.pps, 0, total())); placePlayhead(); S.dirty = true;
+      return openMenu(e.clientX, e.clientY, [['Paste here', () => paste(), '⌘V', !clipboard], ['Add marker', toggleMarker, 'M'], ['Select all', selectAll, '⌘A'], '-', ['Fit the edit in view', fitTimeline]]);
+    }
+    const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
+    if (!c) return;
+    if (!isSel(lane, c.id)) { S.multi.clear(); S.sel = { lane, id: c.id }; renderTimeline(); renderInspector(); S.dirty = true; }
+    openMenu(e.clientX, e.clientY, clipMenu(c, lane));
   });
   $('#tlScroll').addEventListener('wheel', e => {
     const sc = $('#tlScroll');
@@ -2520,6 +2931,8 @@ function wire() {
       addEventListener('pointerup', upp);
       return;
     }
+    const hs = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(h => h.id === S.sel.id), hk = hs && handleAt(hs, x, y);
+    if (hk) return handleDrag(e, hs, hk, cv);
     const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
     if (!hit) { if (S.sel) { S.sel = null; renderAll(); S.dirty = true; } return; }
     if (S.sel?.id !== hit.id) { S.sel = { lane: hit.lane, id: hit.id }; renderAll(); S.dirty = true; }
@@ -2541,6 +2954,50 @@ function wire() {
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   });
+
+  $('#cv').addEventListener('pointermove', e => { // the cursor says what a handle does
+    if (e.buttons || S.pick || S.keyPick || !P) return;
+    const cv = $('#cv'), r = cv.getBoundingClientRect(), px = cv.width / r.width, h = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(q => q.id === S.sel.id);
+    const k = h && handleAt(h, (e.clientX - r.left) * px, (e.clientY - r.top) * px);
+    cv.style.cursor = k === 'rot' ? 'grab' : k ? (k === 'nw' || k === 'se' ? 'nwse-resize' : 'nesw-resize') : '';
+  });
+  $('#cv').addEventListener('contextmenu', e => {
+    if (!P) return;
+    e.preventDefault();
+    const cv = $('#cv'), r = cv.getBoundingClientRect(), px = cv.width / r.width, x = (e.clientX - r.left) * px, y = (e.clientY - r.top) * px;
+    const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+    if (!hit) return openMenu(e.clientX, e.clientY, [['Paste at the playhead', () => paste(), '⌘V', !clipboard], ['Theater view', () => toggleTheater(), 'F']]);
+    const c = P[hit.lane].find(q => q.id === hit.id);
+    if (!c) return;
+    if (!isSel(hit.lane, c.id)) { S.multi.clear(); S.sel = { lane: hit.lane, id: c.id }; renderAll(); S.dirty = true; }
+    openMenu(e.clientX, e.clientY, clipMenu(c, hit.lane));
+  });
+  $('#btnTheater').innerHTML = ICON.expand;
+  $('#btnTheater').addEventListener('click', () => toggleTheater());
+  $('#scriptBody').addEventListener('pointerdown', e => { // click a word: jump there; drag or ⇧-click: select words
+    const w = e.target.closest('[data-i]'), g = e.target.closest('[data-g]');
+    if (g) { SC.sel = { gap: +g.dataset.g }; const p = SC.words[+g.dataset.g - 1]; if (p) seekTo(p.t1); markScript(); return; }
+    if (!w) return;
+    const i = +w.dataset.i;
+    if (e.shiftKey && SC.anchor !== null && Array.isArray(SC.sel)) SC.sel = [Math.min(SC.anchor, i), Math.max(SC.anchor, i)];
+    else { SC.anchor = i; SC.sel = [i, i]; SC.drag = true; }
+    seekTo(SC.words[i].t0); markScript();
+  });
+  $('#scriptBody').addEventListener('pointerover', e => {
+    const w = SC.drag && e.buttons && e.target.closest('[data-i]');
+    if (w) { const i = +w.dataset.i; SC.sel = [Math.min(SC.anchor, i), Math.max(SC.anchor, i)]; markScript(); }
+  });
+  addEventListener('pointerup', () => { SC.drag = false; });
+  $('#btnScriptCut').addEventListener('click', () => cutScript());
+  $('#btnScriptLoad').addEventListener('click', () => renderScript());
+  $('#btnScriptFill').addEventListener('click', removeFillers);
+  $('#btnScriptPause').addEventListener('click', () => removePauses(0.5));
+  $('#capList').addEventListener('change', e => {
+    const inp = e.target.closest('[data-capid]'), c = inp && P.captions.find(x => x.id === inp.dataset.capid);
+    if (c && inp.value.trim() !== c.text) change(() => { c.text = inp.value.trim(); retext(c); });
+  });
+  $('#capList').addEventListener('click', e => { const b = e.target.closest('[data-capgo]'), c = b && P.captions.find(x => x.id === b.dataset.capgo); if (c) { seekTo(c.start + 0.01); S.sel = { lane: 'captions', id: c.id }; renderAll(); S.dirty = true; } });
+  $('#tplList').addEventListener('click', e => { const b = e.target.closest('[data-tpl]'); if (b) addTemplate(b.dataset.tpl); });
 
   const insp = $('#inspector');
   insp.addEventListener('input', e => {
@@ -2614,6 +3071,8 @@ function wire() {
     else if (d.act === 'slowmo') smoothSlowmo(c);
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
+    else if (d.act === 'autoadj') autoAdjust(c, S.sel.lane).catch(() => {});
+    else if (d.act === 'matchcol') autoAdjust(c, S.sel.lane, $('#matchRef').value).catch(() => {});
   });
 
   $('#modal').addEventListener('click', async e => {
@@ -2644,6 +3103,14 @@ function wire() {
     if (e.code === 'Space' && !e.target.matches('input[type=checkbox], input[type=color]')) { e.preventDefault(); if (S.playing) pause(); else play(); }
     else if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) restore(redo, undo); else restore(undo, redo); }
     else if (mod && key === 'd') { e.preventDefault(); dup(); }
+    else if (mod && e.code === 'KeyC') { e.preventDefault(); copySel(); }
+    else if (mod && e.code === 'KeyX') { e.preventDefault(); copySel(true); }
+    else if (mod && e.code === 'KeyV') { e.preventDefault(); if (e.altKey) pasteLook(); else paste(); }
+    else if (mod && e.code === 'KeyA') { e.preventDefault(); selectAll(); }
+    else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
+    else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
+    else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
+    else if ((key === 'backspace' || key === 'delete') && G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) { e.preventDefault(); cutScript(); }
     else if ((mod && key === 'b') || (!mod && key === 's')) { e.preventDefault(); split(); }
     else if (!mod && key === 'm') { e.preventDefault(); toggleMarker(); }
     else if ((key === 'backspace' || key === 'delete') && !field) { e.preventDefault(); del(); }
@@ -2651,7 +3118,9 @@ function wire() {
     else if ((key === 'home' || key === 'end') && !field) { e.preventDefault(); seekTo(key === 'home' ? 0 : total()); }
     else if (key === 'escape' && S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
     else if (key === 'escape' && S.pick) { S.pick = null; toast('Cancelled'); }
-    else if (key === 'escape' && S.sel) { S.sel = null; renderAll(); S.dirty = true; }
+    else if (key === 'escape' && menuEl) closeMenu();
+    else if (key === 'escape' && document.body.classList.contains('theater')) toggleTheater(false);
+    else if (key === 'escape' && (S.sel || S.multi.size)) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
   });
   new ResizeObserver(fitStage).observe($('#stage'));
   addEventListener('resize', () => renderTimeline());
@@ -2952,13 +3421,13 @@ const REMOTE = {
     await loadMedia(); addMedia(m.id, 'audio', at);
     return brief(...cfind(S.sel.id));
   },
-  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', at }) {
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', at, ref }) {
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { if (at !== undefined) S.t = at; return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
-    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, isolate_voice, remove_voice, detect_beats, beat_sync, speed_ramp');
+      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
@@ -2976,6 +3445,18 @@ const REMOTE = {
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, 'best', 'cutout');
+  },
+  async cut_timeline({ ranges }) { // ripple-delete [start, end] ranges (timeline seconds) from the main track
+    if (!Array.isArray(ranges) || !ranges.length || ranges.some(r => !Array.isArray(r) || !(r[1] > r[0]))) throw new Error('ranges: [[start, end], ...] in timeline seconds');
+    const cut = await applyCut(timelineCuts(ranges.map(r => [+r[0], +r[1]])), `${ranges.length} range${ranges.length > 1 ? 's' : ''}`);
+    return { removedSeconds: r3(cut), duration: r3(total()), clips: P.main.length };
+  },
+  async main_transcript({ lang }) { // the main track's words in timeline time (what edit-by-script shows)
+    if (lang) $('#capLang').value = lang;
+    await loadWords([...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))]);
+    const ws = scriptWords();
+    return { words: ws.length, sentences: ws.reduce((out, w, i) => { const p = ws[i - 1]; if (!p || /[.?!]$/.test(p.w) || w.t0 - p.t1 > 1) out.push({ start: r3(w.t0), end: r3(w.t1), text: w.w }); else { const o = out.at(-1); o.end = r3(w.t1); o.text += ` ${w.w}`; } return out; }, []),
+      timed: ws.map(w => [w.w, r3(w.t0), r3(w.t1)]) };
   },
   async add_effect({ type, start = S.t, duration, strength = 1 }) { return brief(addEffect(type, start, duration, strength), 'fx'); },
   async add_sound({ name, at = S.t }) {
