@@ -86,18 +86,23 @@ def probe(path):
     return info
 
 
-def import_file(name, stream, length, background=True):
+def import_file(name, stream, length, background=True, src=None):
     mid = uuid.uuid4().hex[:12]
     ext = Path(name).suffix.lower()
     ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.bin'
     dst = MEDIA / f'{mid}{ext}'
-    with open(dst, 'wb') as f:
-        while length > 0:
-            b = stream.read(min(length, 1 << 20))
-            if not b:
-                break
-            f.write(b)
-            length -= len(b)
+    if src:  # a file on this Mac: an APFS clone, instant and taking no space (a 4 GB camera clip copied took 4 GB more); a copy elsewhere
+        if sh(['cp', '-c', str(src), str(dst)]).returncode:
+            dst.unlink(missing_ok=True)
+            raise ValueError(f'could not copy {Path(src).name}')
+    else:
+        with open(dst, 'wb') as f:
+            while length > 0:
+                b = stream.read(min(length, 1 << 20))
+                if not b:
+                    break
+                f.write(b)
+                length -= len(b)
     if ext == '.heic':  # Chrome can't decode HEIC; sips ships with macOS
         jpg = dst.with_suffix('.jpg')
         sh(['sips', '-s', 'format', 'jpeg', str(dst), '--out', str(jpg)])
@@ -143,6 +148,8 @@ def wk_copy(m):
     and lifts BT.709's mid-tones (grey 128 shows as 139); labelled with the sRGB transfer it shows the decoded values,
     which is what the export and Chrome use. Primaries BT.709 (no gamut mapping); the matrix the export reads it with."""
     src = CACHE / f"{m['id']}.proxy.mp4"
+    if heavy(m) and not src.exists():  # its proxy is on the way (the page reloads when it's ready): no 4 GB re-labelled copy meanwhile
+        return MEDIA / m['file']
     codec = 'h264' if src.exists() else m.get('codec')
     src = src if src.exists() else MEDIA / m['file']
     if codec not in ('h264', 'hevc') or m.get('hdr'):
@@ -159,20 +166,28 @@ def wk_copy(m):
     return out if out.exists() else src
 
 
+def heavy(m):
+    """Camera footage past 1080p60 (a DJI 4K60 clip is 100 Mbit/s): previewed, and looked at by smart combine, through a
+    720p proxy (CapCut's proxy media). Exports always read the original. HDR keeps its own path (tone mapped)."""
+    return m.get('kind') == 'video' and not (m.get('hdr') or m.get('alpha') or m.get('trans')) and m.get('w', 0) * m.get('h', 0) * (m.get('fps') or 30) > 1920 * 1080 * 60
+
+
 def prepare(m):
-    """Timeline assets, like CapCut's material cache: filmstrip, waveform, preview proxy."""
+    """Timeline assets, like CapCut's material cache: preview proxy, filmstrip, waveform."""
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
     if m['kind'] == 'video':
-        n = max(4, min(60, round(d / 1.5)))
-        if not sh(['ffmpeg', '-v', 'error', '-y', '-hwaccel', 'videotoolbox', '-i', src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
-                   '-frames:v', '1', '-q:v', '5', str(CACHE / f'{mid}.strip.jpg')]).returncode:
-            m['stripN'] = n
         if m.get('trans') and not m.get('alpha'):  # e.g. GIF: preview proxy keeps transparency (VP9 alpha WebM)
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)',format=yuva420p", '-c:v', 'libvpx-vp9', '-b:v', '0',
                                  '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(CACHE / f'{mid}.proxy.webm')]).returncode
-        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT:  # e.g. ProRes, MKV
+        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m):  # e.g. ProRes, MKV, 4K60
+            # software decode: VideoToolbox decoded 4K60 H.264 at 88 fps here, ffmpeg's threads at 320
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
                                  '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(CACHE / f'{mid}.proxy.mp4')]).returncode
+        n = max(4, min(60, round(d / 1.5)))
+        px = CACHE / f'{mid}.proxy.mp4'
+        if not sh(['ffmpeg', '-v', 'error', '-y', '-hwaccel', 'videotoolbox', '-i', str(px) if px.exists() else src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
+                   '-frames:v', '1', '-q:v', '5', str(CACHE / f'{mid}.strip.jpg')]).returncode:
+            m['stripN'] = n
     if m['kind'] == 'video' and (m.get('alpha') or m.get('trans')):
         alpha_mov(m)
     if m['hasAudio']:
@@ -1014,6 +1029,8 @@ def shots(st, mid, span=(0.0, 1.0)):
     if cache.exists() and ((res := json.loads(cache.read_text()))['vision'] or not ai_status()['llm']):
         return res  # analysed without the model while it was unavailable: describe now
     src, dur = str(MEDIA / m['file']), m['duration']
+    if heavy(m) and (px := CACHE / f'{mid}.proxy.mp4').exists():  # 4K60: the same looks from the 720p proxy, 11x faster
+        src = str(px)
     dec, vf = hdr_decode(m)
     r = sh(['ffmpeg', '-v', 'error', *dec, '-i', src, '-an', '-vf',
             f'{vf}fps=4,scale=320:-2,blurdetect=block_width=32:block_height=32,signalstats,metadata=print:file=-', '-f', 'null', '-'])
@@ -2038,8 +2055,7 @@ class App(BaseHTTPRequestHandler):
                 f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
                 if not f.is_file():
                     raise ValueError(f'no such file: {f}')
-                with open(f, 'rb') as fh:
-                    return self.reply(import_file(f.name, fh, f.stat().st_size))
+                return self.reply(import_file(f.name, None, 0, src=f))
             if u.path == '/api/ai/music':
                 return self.reply({'job': run_job(ai_music, body.get('prompt', ''), body.get('dur', 20), body.get('seed'))})
             if u.path == '/api/ai/voice':

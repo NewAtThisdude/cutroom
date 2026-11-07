@@ -3257,6 +3257,8 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
   const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id, sound }, 'Combining');
   setProject(newProject(ratio));
   P.name = plan.title || `Smart combine ${new Date().toLocaleDateString()}`;
+  const slow = Math.min(...vids.map(m => m.fps || 30)); // the footage's frame rate (60 fps camera clips stay smooth), never above the slowest clip's
+  P.fps = [24, 25, 30, 50, 60].reduce((a, f) => (Math.abs(f - slow) < Math.abs(a - slow) ? f : a));
   for (const s of plan.shots) {
     addMedia(s.media, 'main');
     const c = P.main.at(-1);

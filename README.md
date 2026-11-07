@@ -22,7 +22,7 @@ with `CUTROOM_MODEL=/path/to/ggml-*.bin`. `CUTROOM_PORT` and `CUTROOM_HOME` work
 and the server.
 
 Data lives in `~/Movies/Cutroom/`:
-- `media/`: imported copies
+- `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)
 - `projects/`: one JSON per project
 - `exports/`
 - `cache/`: filmstrips, waveforms, proxies, transcripts, beats
@@ -78,7 +78,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Remove pauses, reduce noise, loudness −14 LUFS, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three bitrates; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
-| Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1 and GIF, HEIC import | |
+| Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
@@ -273,7 +273,9 @@ once in the browser also guarantees the export matches the preview.
   whoosh, riser, boom), plainer for applause and typing than a sample library.
 - **Smart combine** judges a shot by sharpness and exposure and by what one frame of it shows; it doesn't hear speech or
   follow action, and the story order is the 9B model's call. Cuts move to the nearest beat. Transitions don't follow the
-  camera's motion direction. Verified on synthetic clips (stills with camera moves), not yet on real phone footage.
+  camera's motion direction. The edit runs at the footage's frame rate (60 fps camera clips stay 60). Verified on synthetic
+  clips and on real camera footage: three DJI 4K60 100 Mbit/s night-drive clips (7 min) made a 15-shot, 30 s edit in
+  2.7 min (5 s again, cached), exported at 1080p60 in 13 s. Not yet on iPhone HDR footage.
 - **Language model:** a 9B local model. Its picks for shorts were right on a clear multi-topic talk; hook titles sometimes
   ignore the word limit (two-clause titles are cut to the first clause). Translation is good in Spanish and Russian;
   Japanese had an occasional wrong word (Chinese 咖啡 for "coffee").
