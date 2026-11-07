@@ -25,6 +25,7 @@
       <button data-tab="media" class="on">Media</button>
       <button data-tab="text">Text &amp; voice</button>
       <button data-tab="captions">Captions</button>
+      <button data-tab="ai">AI</button>
     </nav>
     <section id="tab-media" class="pane on">
       <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
@@ -42,6 +43,24 @@
       <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
       <button id="btnTts" class="primary wide">Add voiceover at playhead</button>
       <button id="btnRec" class="wide">Record voiceover (mic)</button>
+    </section>
+    <section id="tab-ai" class="pane">
+      <h4>Generate an image</h4>
+      <p class="hint">Runs on this Mac (Z-Image-Turbo). About 25-50 s; nothing is uploaded.</p>
+      <textarea id="aiPrompt" rows="4" placeholder="A neon sign that says OPEN on a rainy street at night, cinematic" spellcheck="true"></textarea>
+      <label class="row"><span>Shape</span><select id="aiShapeSel"><option value="canvas">Like the canvas</option><option value="1:1">Square</option><option value="16:9">Wide</option><option value="9:16">Tall</option><option value="4:5">Portrait</option></select></label>
+      <label class="row"><span>Quality</span><select id="aiSteps"><option value="4">Draft (faster)</option><option value="8" selected>Best</option></select></label>
+      <label class="row"><span>Put it on</span><select id="aiPut"><option value="overlay">Overlay at playhead</option><option value="main">Main track</option><option value="library">Library only</option></select></label>
+      <label class="row chk"><span>Sticker (cut out the subject)</span><input id="aiSticker" type="checkbox"></label>
+      <button id="btnAiImage" class="primary wide">Generate image</button>
+      <p id="aiStatus" class="muted"></p>
+      <h4>Natural voiceover</h4>
+      <p class="hint">On-device AI voices (Kokoro): 9 languages, faster than real time.</p>
+      <textarea id="aiText" rows="4" placeholder="Type the script…" spellcheck="true"></textarea>
+      <label class="row"><span>Voice</span><select id="aiVoice"></select></label>
+      <label class="row"><span>Speed</span><select id="aiSpeed"><option value="0.9">Slower</option><option value="1" selected>Normal</option><option value="1.1">Faster</option><option value="1.25">Fast</option></select></label>
+      <button id="btnAiVoice" class="primary wide">Add voiceover at playhead</button>
+      <p id="aiVoiceStatus" class="muted"></p>
     </section>
     <section id="tab-captions" class="pane">
       <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>

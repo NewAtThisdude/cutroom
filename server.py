@@ -9,7 +9,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, json, math, mimetypes, os, re, shutil, statistics, subprocess, sys, tempfile, threading, time, uuid
+import base64, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, uuid
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,6 +40,12 @@ NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Ce
 ID = re.compile(r'[a-f0-9]{12}')
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
 JOBS = {}
+REMOTE_Q, REMOTE_WAIT, REMOTE_SEEN, REMOTE_SENT = queue.Queue(), {}, [0.0], {}  # commands from the Cutroom MCP server; the open editor page runs them
+
+
+def remote_reoffer(m):  # sent but never acknowledged (the page reloaded mid-poll): offer it again while its caller still waits
+    if REMOTE_SENT.pop(m['id'], None) and m['id'] in REMOTE_WAIT:
+        REMOTE_Q.put(m)
 
 
 def sh(cmd):
@@ -453,6 +459,93 @@ def silences(mid, noise=-35.0, mind=0.5):
     en = [float(x) for x in re.findall(r'silence_end: ([\d.]+)', r.stderr)]
     en += [m['duration']] * (len(st) - len(en))  # silence running to EOF has no end line
     return [[max(0.0, a), b] for a, b in zip(st, en)]
+
+
+AI_DIR = Path(__file__).resolve().parent / 'ai'
+AI_BIN = AI_DIR / '.venv' / 'bin'
+AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+KOKORO = 'mlx-community/Kokoro-82M-bf16'
+HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
+AI_LOCK = threading.Lock()  # one generation at a time: two image models at once would push the Mac into swap
+
+
+def ai_status():
+    """Which on-device generators are installed (weights already on disk: a status call never starts a download)."""
+    venv = (AI_BIN / 'python').exists()
+    return {'voice': venv and (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').exists(),
+            'image': venv and (HOME / 'ai' / 'z-image-turbo-4bit' / 'mflux_model.json').exists()}
+
+
+def ai_voices():
+    return sorted({f.stem for f in (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').glob('*/voices/*.safetensors')})
+
+
+def ai_voice(st, text, voice='af_heart', speed=1.0):
+    """Natural speech on this Mac (Kokoro-82M on MLX) -> a library item. The voice prefix picks the language (a = US English, b = UK...)."""
+    text = ' '.join(str(text).split())[:5000]
+    if not text:
+        raise ValueError('nothing to say')
+    voice = voice if re.fullmatch(r'[a-z]{2}_[a-z]+', str(voice)) else 'af_heart'
+    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        r = subprocess.run([str(AI_BIN / 'python'), '-I', '-m', 'mlx_audio.tts.generate', '--model', KOKORO, '--text', text, '--voice', voice,
+                            '--speed', f'{fnum(speed, 0.5, 2):.2f}', '--lang_code', voice[0], '--output_path', td, '--file_prefix', 'v',
+                            '--audio_format', 'wav', '--join_audio'], env=AI_ENV, capture_output=True, text=True, errors='replace')
+        f = Path(td) / 'v.wav'
+        if r.returncode or not f.exists():
+            raise RuntimeError('voice generation failed: ' + (r.stderr or r.stdout)[-300:])
+        st['progress'] = 0.9
+        with open(f, 'rb') as fh:
+            m = import_file(f'AI voice - {text[:40]}.wav', fh, f.stat().st_size, background=False)
+    return {'media': m['id']}
+
+
+def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
+    """Text to image on this Mac (Z-Image-Turbo, 4-bit, MLX) -> a library item. sticker: the subject is cut out (Vision)."""
+    prompt = ' '.join(str(prompt).split())[:2000]
+    if not prompt:
+        raise ValueError('describe the image')
+    model = HOME / 'ai' / 'z-image-turbo-4bit'
+    if not (model / 'mflux_model.json').exists():
+        raise RuntimeError('the on-device image model is not installed (README: On-device AI)')
+    w, h = (int(fnum(v, 256, 2048)) // 16 * 16 for v in (w, h))
+    seed = int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 1000000
+    full = prompt + (', isolated on a plain light grey background' if sticker else '')  # a plain backdrop lifts cleanly
+    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'img.png'
+        proc = subprocess.Popen([str(AI_BIN / 'mflux-generate-z-image-turbo'), '--model', str(model), '--prompt', full, '--width', str(w), '--height', str(h),
+                                 '--steps', str(int(fnum(steps, 1, 20))), '--seed', str(seed), '--output', str(out)],
+                                env=AI_ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+        tail = ''
+        while chunk := proc.stdout.read(128):  # tqdm "3/8 [" -> job progress
+            tail = (tail + chunk)[-600:]
+            if hit := re.findall(r'(\d+)/(\d+) \[', tail):
+                st['progress'] = 0.95 * int(hit[-1][0]) / max(1, int(hit[-1][1]))
+        if proc.wait() or not out.exists():
+            raise RuntimeError('image generation failed: ' + tail[-300:])
+        if sticker:
+            cut = Path(td) / 'cut.png'
+            if sh([build_tool('lift'), str(out), str(cut)]).returncode == 0 and cut.exists():
+                out = cut
+        with open(out, 'rb') as fh:
+            m = import_file(f"AI {'sticker' if sticker else 'image'} - {prompt[:40]}.png", fh, out.stat().st_size, background=False)
+    return {'media': m['id'], 'seed': seed}
+
+
+def lift(mid):
+    """Background removal for photos (any subject: Vision subject lifting) -> a new transparent PNG in the library."""
+    m = meta(mid)
+    if m['kind'] != 'image':
+        raise ValueError('subject lifting is for photos; videos use Remove background (people)')
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'cut.png'
+        r = sh([build_tool('lift'), str(MEDIA / m['file']), str(out)])
+        if r.returncode == 2:
+            raise ValueError('no subject found in this image')
+        if r.returncode or not out.exists():
+            raise RuntimeError('subject lifting failed: ' + r.stderr[-200:])
+        with open(out, 'rb') as fh:
+            c = import_file(f"{Path(m['name']).stem} (cutout).png", fh, out.stat().st_size, background=False)
+    return {'media': c['id']}
 
 
 FILLER = re.compile(r'(u+h+m*|u+m+|e+r+m*|h+m+|a+h+|e+h+|m{2,})', re.I)
@@ -1049,6 +1142,23 @@ class App(BaseHTTPRequestHandler):
             return
         path = unquote(urlparse(self.path).path)
         try:
+            if path == '/api/remote/next':  # the editor page long-polls for the next command (header required: no other site may take them)
+                if self.headers.get('X-Cutroom') != '1':
+                    return self.reply({'error': 'forbidden'}, 403)
+                REMOTE_SEEN[0] = time.time()
+                try:
+                    m = REMOTE_Q.get(timeout=20)
+                except queue.Empty:
+                    m = {}
+                REMOTE_SEEN[0] = time.time()
+                if m:  # the page acknowledges at once; a write to a page that just went away doesn't fail, so don't trust it
+                    REMOTE_SENT[m['id']] = m
+                    threading.Timer(5, remote_reoffer, (m,)).start()
+                return self.reply(m)
+            if path == '/api/ai/status':
+                return self.reply({**ai_status(), 'voices': ai_voices()})
+            if path == '/api/remote/status':
+                return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
             if path == '/api/media':
@@ -1091,6 +1201,38 @@ class App(BaseHTTPRequestHandler):
             body = self.body()
             if u.path == '/api/transcribe':
                 return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'))})
+            if u.path == '/api/remote':  # from the MCP server: hand a command to the editor page and wait for its result
+                if time.time() - REMOTE_SEEN[0] > 30:
+                    return self.reply({'ok': False, 'result': 'the Cutroom editor is not open'})
+                rid, ev = uuid.uuid4().hex[:12], threading.Event()
+                REMOTE_WAIT[rid] = {'ev': ev}
+                REMOTE_Q.put({'id': rid, 'cmd': str(body.get('cmd', '')), 'args': body.get('args') or {}})
+                done = ev.wait(fnum(body.get('timeout', 900), 1, 7200))
+                w = REMOTE_WAIT.pop(rid, {})
+                return self.reply(w.get('res') if done else {'ok': False, 'result': 'timed out waiting for the editor'})
+            if u.path == '/api/remote/ack':  # the editor page got the command
+                REMOTE_SENT.pop(str(body.get('id')), None)
+                return self.reply({'ok': True})
+            if u.path == '/api/remote/result':  # from the editor page
+                REMOTE_SENT.pop(str(body.get('id')), None)
+                w = REMOTE_WAIT.get(str(body.get('id')))
+                if w:
+                    w['res'] = {'ok': bool(body.get('ok')), 'result': body.get('result'), 'log': body.get('log') or []}
+                    w['ev'].set()
+                return self.reply({'ok': True})
+            if u.path == '/api/import_path':  # the MCP server imports a file from this Mac by its path
+                f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
+                if not f.is_file():
+                    raise ValueError(f'no such file: {f}')
+                with open(f, 'rb') as fh:
+                    return self.reply(import_file(f.name, fh, f.stat().st_size))
+            if u.path == '/api/ai/voice':
+                return self.reply({'job': run_job(ai_voice, body.get('text', ''), body.get('voice', 'af_heart'), body.get('speed', 1))})
+            if u.path == '/api/ai/image':
+                return self.reply({'job': run_job(ai_image, body.get('prompt', ''), body.get('w', 1024), body.get('h', 1024), body.get('seed'),
+                                                  body.get('steps', 8), bool(body.get('sticker')))})
+            if u.path == '/api/lift':
+                return self.reply(lift(body['media']))
             if u.path == '/api/fillers':
                 return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'))})
             if u.path == '/api/scenes':

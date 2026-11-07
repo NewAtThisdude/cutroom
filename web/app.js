@@ -524,6 +524,7 @@ function mediaPanel(c, lane) {
   let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
+  if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
   return head + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
 }
@@ -1087,10 +1088,10 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
   } catch (e) { toast(e.message); }
   finally { btn.disabled = false; }
 }
-async function removePauses() { // CapCut's "remove pauses": silencedetect, then split main clips around the gaps
+async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect, then split main clips around the gaps
   const ids = [...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))];
   if (!ids.length) return toast('Remove pauses works on main-track clips with sound');
-  const min = +$('#pauseLen').value, pad = 0.1, btn = $('#btnPauses');
+  const min = typeof minSec === 'number' ? minSec : +$('#pauseLen').value, pad = 0.1, btn = $('#btnPauses');
   btn.disabled = true;
   try {
     const sil = new Map();
@@ -1104,7 +1105,7 @@ async function removePauses() { // CapCut's "remove pauses": silencedetect, then
   finally { btn.disabled = false; }
 }
 
-const setStatus = msg => { const s = $('#clipStatus'); if (s) s.textContent = msg; else toast(msg); };
+const setStatus = msg => { if (remoteLog) remoteLog.push(String(msg)); const s = $('#clipStatus'); if (s) s.textContent = msg; else toast(msg); };
 async function job(path, body, label) { // start a server job and poll it, showing progress next to the clip
   const { job: id } = await api(path, body);
   for (;;) {
@@ -1190,9 +1191,9 @@ function moveLane(c, lane) {
     S.sel = { lane: to, id: c.id };
   });
 }
-async function removeBackground(c) { // Apple Vision person segmentation, on this Mac
+async function removeBackground(c) { // Apple Vision: person segmentation for video, subject lifting (any subject) for photos
   try {
-    const j = await job('/api/matte', { media: c.media }, 'Removing background');
+    const j = M.get(c.media)?.kind === 'image' ? await api('/api/lift', { media: c.media }) : await job('/api/matte', { media: c.media }, 'Removing background');
     await loadMedia();
     change(() => { c.media = j.media; });
     toast('Background removed. Put it on the overlay track over B-roll.');
@@ -1396,12 +1397,12 @@ async function finishTrack(rect) { // rect in project canvas units
   } catch (e) { toast(e.message); }
 }
 
-async function autoCaptions() { // words come back in source time; map them through each clip's in/out/speed
+async function autoCaptions(force) { // words come back in source time; map them through each clip's in/out/speed
   const lang = $('#capLang').value, per = +$('#capWords').value, status = $('#capStatus'), btn = $('#btnCaptions');
   packMain();
   const src = [...P.main, ...($('#capAudio').checked ? P.audio : [])].filter(c => M.get(c.media)?.hasAudio && c.volume > 0);
   if (!src.length) return toast('Add a clip with speech to the main or audio track first');
-  if (P.captions.length && !confirm(`Replace the ${P.captions.length} captions on the timeline? Text you edited on them is lost (undo brings it back).`)) return;
+  if (P.captions.length && force !== true && !confirm(`Replace the ${P.captions.length} captions on the timeline? Text you edited on them is lost (undo brings it back).`)) return;
   btn.disabled = true;
   try {
     const ids = [...new Set(src.map(c => c.media))], words = new Map();
@@ -1635,7 +1636,8 @@ async function addVoiceover() { // CapCut's text-to-speech with the Mac's own vo
 }
 
 // ---------- small UI ----------
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, 3500); }
+let remoteLog = null; // toasts and statuses shown while a remote (MCP) command runs go back to the caller
+function toast(msg) { if (remoteLog) remoteLog.push(String(msg)); const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, 3500); }
 function modal(html) { const m = $('#modal'); m.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">${html}</div>`; m.hidden = false; $('button, input', m)?.focus(); }
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
@@ -1731,13 +1733,29 @@ function wire() {
   $('#btnRedo').addEventListener('click', () => restore(redo, undo));
   $('#btnSplit').addEventListener('click', split);
   $('#btnDelete').addEventListener('click', del);
-  $('#btnPauses').addEventListener('click', removePauses);
+  $('#btnPauses').addEventListener('click', () => removePauses());
   $('#btnFillers').addEventListener('click', removeFillers);
-  $('#btnCaptions').addEventListener('click', autoCaptions);
+  $('#btnCaptions').addEventListener('click', () => autoCaptions());
   $('#btnExport').addEventListener('click', openExport);
   $('#btnProjects').addEventListener('click', openProjects);
   $('#btnTts').addEventListener('click', addVoiceover);
   $('#btnRec').addEventListener('click', toggleRecord);
+  $('#btnAiImage').addEventListener('click', async () => {
+    const prompt = $('#aiPrompt').value.trim(), b = $('#btnAiImage');
+    if (!prompt) return toast('Describe the image first');
+    b.disabled = true;
+    try { await aiImage({ prompt, shape: $('#aiShapeSel').value, sticker: $('#aiSticker').checked, steps: +$('#aiSteps').value, put: $('#aiPut').value }); }
+    catch (e) { $('#aiStatus').textContent = e.message; }
+    finally { b.disabled = false; }
+  });
+  $('#btnAiVoice').addEventListener('click', async () => {
+    const text = $('#aiText').value.trim(), b = $('#btnAiVoice');
+    if (!text) return toast('Type the script first');
+    b.disabled = true; $('#aiVoiceStatus').textContent = 'Speaking…';
+    try { await aiVoice({ text, voice: $('#aiVoice').value, speed: +$('#aiSpeed').value }); $('#aiVoiceStatus').textContent = 'Added on the audio track.'; }
+    catch (e) { $('#aiVoiceStatus').textContent = e.message; }
+    finally { b.disabled = false; }
+  });
   $('#btnTemplates').addEventListener('click', openTemplates);
   $('#heads').addEventListener('click', e => { const b = e.target.closest('[data-lt]'); if (b) change(() => { P.mute[b.dataset.lt] = !P.mute[b.dataset.lt]; }); });
   $('#projName').addEventListener('change', e => change(() => { P.name = e.target.value.trim() || 'Untitled'; }));
@@ -1972,6 +1990,232 @@ function wire() {
   document.fonts.addEventListener('loadingdone', () => { S.dirty = true; });
 }
 
+// ---------- on-device AI: images (Z-Image-Turbo) and natural voices (Kokoro), both on this Mac ----------
+const AI_LANG = { a: 'US English', b: 'UK English', e: 'Spanish', f: 'French', h: 'Hindi', i: 'Italian', j: 'Japanese', p: 'Portuguese', z: 'Chinese' };
+const aiVoiceName = v => `${v.slice(3, 4).toUpperCase()}${v.slice(4)} · ${AI_LANG[v[0]] || v[0]}, ${v[1] === 'f' ? 'female' : 'male'}`;
+function aiShape(shape) { // generation size for a shape; "canvas" follows the project (about 1 megapixel, multiples of 16)
+  const [a, b] = shape === 'canvas' ? [P.w, P.h] : shape.split(':').map(Number), k = Math.sqrt((1024 * 1024) / (a * b));
+  return [Math.round((a * k) / 16) * 16, Math.round((b * k) / 16) * 16];
+}
+async function aiImage({ prompt, shape = 'canvas', sticker = false, steps = 8, seed, put = 'overlay', start = S.t, duration }) {
+  const [w, h] = aiShape(shape), st = $('#aiStatus');
+  if (st) st.textContent = 'Generating on this Mac…';
+  const jb = await job('/api/ai/image', { prompt, w, h, steps, seed, sticker }, 'Generating image');
+  await loadMedia();
+  if (st) st.textContent = `Done (seed ${jb.seed}).`;
+  if (put === 'main' || put === 'overlay') {
+    addMedia(jb.media, put, start);
+    const [c, L] = cfind(S.sel.id);
+    change(() => { if (duration) c.out = duration; if (sticker && put === 'overlay') Object.assign(c, { fit: 'fit', scale: 0.6 }); }); // stickers start smaller than the frame
+    return { media: jb.media, seed: jb.seed, clip: brief(c, L) };
+  }
+  return { media: jb.media, seed: jb.seed };
+}
+async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
+  const jb = await job('/api/ai/voice', { text, voice, speed }, 'Generating voice');
+  await loadMedia();
+  addMedia(jb.media, 'audio', at);
+  return brief(...cfind(S.sel.id));
+}
+async function loadAI() { // fill the AI tab from what is installed
+  let s;
+  try { s = await api('/api/ai/status'); } catch { return; }
+  $('#aiVoice').innerHTML = s.voices.map(v => `<option value="${v}"${v === 'af_heart' ? ' selected' : ''}>${esc(aiVoiceName(v))}</option>`).join('');
+  $('#btnAiImage').disabled = !s.image; $('#btnAiVoice').disabled = !s.voice;
+  if (!s.image) $('#aiStatus').textContent = 'The image model is not installed (README: On-device AI).';
+  if (!s.voice) $('#aiVoiceStatus').textContent = 'The voice model is not installed (README: On-device AI).';
+}
+
+// ---------- remote control: Claude Code drives this editor through the Cutroom MCP server ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function cfind(id) { for (const L of LANES) { const c = P[L.key].find(x => x.id === id); if (c) return [c, L.key]; } throw new Error(`no clip with id ${id}`); }
+function mediaBy(q) {
+  const s0 = String(q).toLowerCase(), all = [...M.values()];
+  const m = M.get(q) || all.find(x => x.name === q) || all.find(x => x.name.toLowerCase().includes(s0));
+  if (!m) throw new Error(`no media "${q}" in the library (call media to list it, or import_media)`);
+  return m;
+}
+const r3 = v => Math.round(v * 1000) / 1000;
+function brief(c, lane) { // compact clip description: what an assistant needs to refer to and reason about it
+  const o = { id: c.id, lane, start: r3(c.start), dur: r3(tdur(c, lane)) };
+  if (c.media) { const m = M.get(c.media); Object.assign(o, { media: m?.name, kind: m?.kind, in: r3(c.in), out: r3(c.out) }); } else o.text = c.text;
+  const def = { speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: lane === 'text' ? 0.5 : 0, y: lane === 'text' ? 0.42 : 0, rot: 0, opacity: 1, fadeIn: 0, fadeOut: 0 };
+  for (const k of ['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch']) {
+    const v = c[k];
+    if (v !== undefined && v !== def[k] && v !== false && v !== 'normal') o[k] = typeof v === 'number' ? r3(v) : v;
+  }
+  for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
+  if (c.mask) o.mask = c.mask.type;
+  if (c.kf?.length) o.keyframes = c.kf.length;
+  if (c.vkf?.length) o.volumePoints = c.vkf.length;
+  return o;
+}
+const EDITABLE = new Set(['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf']);
+function merge(o, patch) { // deep merge; null deletes
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete o[k];
+    else if (v && typeof v === 'object' && !Array.isArray(v) && o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) merge(o[k], v);
+    else o[k] = structuredClone(v);
+  }
+}
+async function waitFrame() { // the preview shows the frame at S.t: media elements seeked, then painted
+  S.dirty = true;
+  for (let i = 0; i < 80; i++) { await sleep(50); if ([...pool.values()].every(v => !v.currentSrc || (v.readyState >= 2 && !v.seeking))) break; }
+  paint();
+}
+const REMOTE = {
+  async status() { packMain(); return { project: { id: P.id, name: P.name, w: P.w, h: P.h, fps: P.fps, duration: r3(total()) }, playhead: r3(S.t), playing: S.playing, selected: S.sel, clips: Object.fromEntries(LANES.map(L => [L.key, P[L.key].length])) }; },
+  async options() {
+    return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
+      comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
+      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value) };
+  },
+  async timeline() {
+    packMain();
+    return { ...(await REMOTE.status()), markers: P.markers,
+      tracks: Object.fromEntries(LANES.map(L => [L.key, L.key === 'captions' ? P.captions.map(c => ({ id: c.id, start: r3(c.start), dur: r3(c.dur), text: c.text })) : P[L.key].map(c => brief(c, L.key))])) };
+  },
+  async media() { await loadMedia(); return [...M.values()].map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
+  async projects() { return api('/api/projects'); },
+  async open_project({ project }) {
+    const list = await api('/api/projects'), q = String(project).toLowerCase();
+    const p = list.find(x => x.id === project) || list.find(x => x.name === project) || list.find(x => x.name.toLowerCase().includes(q));
+    if (!p) throw new Error(`no project "${project}"`);
+    await openProject(p.id);
+    return REMOTE.status();
+  },
+  async new_project({ ratio = '9:16', name }) {
+    if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
+    setProject(newProject(ratio)); if (name) P.name = name; scheduleSave(); renderAll();
+    return REMOTE.status();
+  },
+  async set_project({ set = {} }) {
+    change(() => {
+      for (const [k, v] of Object.entries(set)) {
+        if (k === 'ratio') { if (!RATIOS[v]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`); [P.w, P.h] = RATIOS[v]; }
+        else if (['name', 'fps', 'bg'].includes(k)) P[k] = v;
+        else if (k === 'capStyle') merge(P.capStyle, v);
+        else throw new Error(`can't set project.${k} (name, ratio, fps, bg, capStyle)`);
+      }
+    });
+    fitStage();
+    return REMOTE.status();
+  },
+  async add_clip({ media, lane = 'main', start, in: a, out: b }) {
+    const m = mediaBy(media);
+    addMedia(m.id, lane, start);
+    const [c, L] = cfind(S.sel.id);
+    if (a !== undefined || b !== undefined) change(() => { if (a !== undefined) c.in = a; if (b !== undefined) c.out = b; });
+    return brief(c, L);
+  },
+  async update_clip({ id, set = {} }) {
+    const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
+    if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
+    change(() => { if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); } merge(c, set); });
+    return brief(c, L);
+  },
+  async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
+  async split_clip({ id, at }) {
+    const [c, L] = cfind(id);
+    if (!(at > c.start && at < c.start + tdur(c, L))) throw new Error(`at must be inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s on the timeline`);
+    let b;
+    change(() => { b = splitClip(c, L, L === 'main' ? snap(at) : at); });
+    return [brief(c, L), brief(b, L)];
+  },
+  async duplicate_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; dup(); return brief(...cfind(S.sel.id)); },
+  async move_clip({ id, start, index, lane }) {
+    let [c, L] = cfind(id);
+    if (lane && lane !== L) { if (!['main', 'overlay'].includes(lane) || !['main', 'overlay'].includes(L)) throw new Error('clips move between the main and overlay tracks only'); moveLane(c, L); [c, L] = cfind(id); }
+    change(() => { if (L === 'main' && index !== undefined) { P.main.splice(P.main.indexOf(c), 1); P.main.splice(clamp(index, 0, P.main.length), 0, c); } else if (start !== undefined) c.start = Math.max(0, start); });
+    return brief(c, L);
+  },
+  async add_text({ text, preset = 'Title', start = S.t, duration = 3, x, y, style }) {
+    if (!TEXT_PRESETS[preset]) throw new Error(`preset must be one of ${Object.keys(TEXT_PRESETS).join(', ')}`);
+    S.t = start; addText(preset);
+    const [c] = cfind(S.sel.id);
+    change(() => { c.text = String(text); c.dur = duration; if (x !== undefined) c.x = x; if (y !== undefined) c.y = y; if (style) merge(c.style, style); });
+    return brief(c, 'text');
+  },
+  async set_transition({ after, type, duration = 0.5, all }) {
+    if (type !== 'none' && !TRANSITIONS.some(x => x[0] === type)) throw new Error(`type must be none or one of ${TRANSITIONS.map(x => x[0]).join(', ')}`);
+    const put = c => { if (type === 'none') delete c.tr; else c.tr = { type, d: duration }; };
+    change(() => { if (all) P.main.slice(0, -1).forEach(put); else { const [c, L] = cfind(after); if (L !== 'main') throw new Error('transitions go between main-track clips: pass the id of the clip before the cut'); put(c); } });
+    return (await REMOTE.timeline()).tracks.main;
+  },
+  async auto_captions({ lang = 'auto', words = 3, style, audio = true }) {
+    $('#capLang').value = lang; if (!$('#capLang').value) { $('#capLang').insertAdjacentHTML('beforeend', `<option value="${esc(lang)}">${esc(lang)}</option>`); $('#capLang').value = lang; }
+    $('#capWords').value = String(words); if (!$('#capWords').value) { $('#capWords').insertAdjacentHTML('beforeend', `<option>${+words}</option>`); $('#capWords').value = String(words); }
+    $('#capAudio').checked = !!audio;
+    if (style) { if (!CAP_PRESETS[style]) throw new Error(`style must be one of ${Object.keys(CAP_PRESETS).join(', ')}`); P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[style], y: P.capStyle.y }; }
+    await autoCaptions(true);
+    return { captions: P.captions.length, status: $('#capStatus').textContent, first: P.captions.slice(0, 5).map(c => c.text) };
+  },
+  async remove_pauses({ min = 0.5 }) { const d0 = total(); await removePauses(+min); return { removedSeconds: r3(d0 - total()), clips: P.main.length }; },
+  async remove_fillers() { const d0 = total(); await removeFillers(); return { removedSeconds: r3(d0 - total()), clips: P.main.length }; },
+  async voiceover({ text, voice, rate = 185, at = S.t }) {
+    const m = await api('/api/tts', { text: String(text), voice: voice || $('#ttsVoice').value, rate });
+    await loadMedia(); addMedia(m.id, 'audio', at);
+    return brief(...cfind(S.sel.id));
+  },
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', at }) {
+    const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
+    S.sel = { lane: L, id };
+    const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
+      freeze_frame: () => { if (at !== undefined) S.t = at; return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
+      auto_duck: () => autoDuck(c, depth), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, detect_beats, beat_sync, speed_ramp');
+    await run();
+    return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
+  },
+  async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
+  async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
+  async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
+  async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
+  async snapshot({ t, max = 720 }) {
+    if (S.playing) pause();
+    if (t !== undefined) seekTo(+t);
+    const sel = S.sel, pick0 = S.pickRect;
+    S.sel = null; S.pickRect = null; // the frame as rendered: no selection box or tracking marquee
+    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; }
+    const cv = $('#cv'), k = Math.min(1, max / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
+    o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
+    o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
+    return { t: r3(S.t), image: o.toDataURL('image/png').split(',')[1] };
+  },
+  async export({ format = 'mp4', resolution = '1080p', quality = 'fast', bitrate = 1, name, loudness = false, at }) {
+    const sz = exportSizes().find(x => x[0] === resolution);
+    if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
+    if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
+    if (at !== undefined) S.t = +at;
+    S.exporting = true;
+    try {
+      const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, !!loudness, format);
+      plan.rate = +bitrate || 1;
+      const jb = await job('/api/export', plan, 'Exporting');
+      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format };
+    } finally { S.exporting = false; }
+  },
+};
+const remoteSeen = new Set();
+async function remoteLoop() { // long-poll the server for commands from the MCP server; run them one at a time
+  for (;;) {
+    let m;
+    try { m = await api('/api/remote/next'); } catch { await sleep(3000); continue; }
+    if (!m.id || remoteSeen.has(m.id)) continue; // a re-offered command we already have
+    remoteSeen.add(m.id);
+    if (remoteSeen.size > 200) remoteSeen.delete(remoteSeen.values().next().value);
+    api('/api/remote/ack', { id: m.id }).catch(() => {});
+    let ok = true, result;
+    remoteLog = [];
+    try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
+    catch (e) { ok = false; result = e.message; }
+    const log = remoteLog;
+    remoteLog = null;
+    await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});
+  }
+}
+
 (async function boot() {
   wire();
   try {
@@ -1981,8 +2225,10 @@ function wire() {
     if (id) await openProject(id);
     else { setProject(newProject('9:16')); scheduleSave(); }
     loadVoices();
+    loadAI();
     const ping = await api('/api/ping');
     if (!ping.whisper) $('#capStatus').textContent = 'Captions need whisper.cpp: brew install whisper-cpp';
   } catch (e) { toast(`Cannot reach the Cutroom server: ${e.message}`); }
   requestAnimationFrame(frame);
+  remoteLoop();
 })();

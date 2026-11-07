@@ -60,6 +60,42 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three bitrates; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
 | Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1 and GIF, HEIC import | |
+| Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
+| Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
+| On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
+| Claude Code control | Tell Claude Code in VS Code what to do and it edits the open project | The Cutroom MCP server (see below) |
+
+## Control it from Claude Code (MCP)
+
+`mcp/cutroom_mcp.py` is an MCP server (stdlib only). It is registered for every Claude Code session on this Mac:
+
+    claude mcp add -s user cutroom -- env -u PYTHONPATH /opt/homebrew/bin/python3 -I ~/cutroom/mcp/cutroom_mcp.py
+
+Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
+between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
+the preview frame as an image), and exports. The 28 tools cover projects, media import, clips (add, update any setting,
+split, delete, duplicate, move), text, transitions, captions, pause and filler removal, voiceovers, the smart tools,
+undo/redo, snapshots, export, and on-device image and voice generation.
+
+How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
+them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
+acknowledged, so a page reload can't lose a command. If no editor is open, the first call opens the app.
+
+## On-device AI
+
+Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup: `ai/setup.sh` (about 32 GB of
+downloads into `~/.cache/huggingface`, plus a 5.5 GB 4-bit copy in `~/Movies/Cutroom/ai`).
+
+| | Model | Measured here |
+|---|---|---|
+| Text to image (AI tab, `generate_image`) | Z-Image-Turbo 6B, 4-bit, via mflux on MLX | 1024² in about 48 s (8 steps); a 4-step draft in about 27 s |
+| Stickers | the image above + Apple Vision subject lifting | the prompt asks for a plain backdrop so the cut-out is clean |
+| Natural voiceover (AI tab, `ai_voiceover`) | Kokoro-82M via mlx-audio, 54 voices in 9 languages | 7.7 s of speech in about 5 s, most of it model load |
+| Background removal for photos | Apple Vision `VNGenerateForegroundInstanceMaskRequest` | under a second; any subject, not only people |
+
+The full-precision image model needs more than 30 GB while it loads and pushes a 36 GB Mac into swap (about 9 minutes
+per image). That is why Cutroom keeps a 4-bit copy, which loads in about 4 s.
+
 
 ## How CapCut works (teardown of /Applications/CapCut.app 9.7.1)
 
@@ -123,6 +159,8 @@ once in the browser also guarantees the export matches the preview.
 - `web/index.html`, `web/style.css`, `web/fonts/` (OFL fonts from Google Fonts).
 - `tools/matte.swift`, `tools/track.swift`, `tools/faces.swift`: Apple Vision helpers, compiled on first use.
 - `app/Cutroom.swift`, `app/build.sh`: the native app.
+- `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
+- `ai/setup.sh`: installs the on-device AI (venv in `ai/.venv`, gitignored). `tools/lift.swift`: Vision subject lifting.
 - `cutroom`: the Chrome-window launcher (also downloads the VAD model if missing).
 
 ## Limits (honest)
@@ -146,5 +184,9 @@ once in the browser also guarantees the export matches the preview.
   prompt are wired up but were not clicked through on screen. Ad-hoc signing means macOS may ask for the
   microphone again after each rebuild. Quitting the app mid-export stops the export if the app started
   the server.
-- **Not built:** multi-camera, curves / highlights / shadows, vignette, and AI generation (CapCut's AIGC
-  is cloud-based).
+- **On-device AI:** image quality is close to the cloud generators, but each image takes 25-50 s. Kokoro sounds
+  best in English; the other languages have fewer, plainer voices. A subject cut-out can drop thin details (steam,
+  smoke). Video generation (image-to-video) is not built: on this Mac it would take minutes per few-second clip,
+  well below CapCut's cloud quality. The 4090 box (Wan 2.2) is the better place for that.
+- **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
+- **Not built:** multi-camera, user-drawn curves, keyframeable masks and filters, and AI video generation.

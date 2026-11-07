@@ -3,3 +3,5 @@ __pycache__/
 tools/matte
 tools/track
 tools/faces
+ai/.venv/
+tools/lift
