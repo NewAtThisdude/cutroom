@@ -115,6 +115,18 @@ TOOLS = [
                      'voice ids: first letter = language (a US, b UK English, e Spanish, f French, h Hindi, i Italian, j Japanese, p Portuguese, z Chinese), '
                      'second = f/m; e.g. af_heart, af_bella, am_michael, bf_emma, bm_george. speed 0.5-2.',
      S({'text': txt, 'voice': txt, 'speed': num, 'at': num}, ['text']), 'ai_voiceover'),
+    ('remove_object', 'Remove an object from a video clip, on this Mac: box = where it is on the canvas as fractions {x, y, w, h} '
+                      '(read it off a snapshot at time t); it is tracked through the whole clip and the background filled in. '
+                      'The clip switches to a cleaned copy. Best on moving objects or moving cameras; a static object in a locked-off shot is '
+                      'filled with synthesized texture.', S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')},
+                                                             't': num}, ['id', 'box']), 'remove_object'),
+    ('transcript', "Timestamped sentences of a library item's speech (on-device whisper, cached). Use it to pick moments yourself, then add_clip with in/out.",
+     S({'media': txt, 'lang': txt}, ['media']), 'transcript'),
+    ('make_shorts', 'Long video -> shorts on this Mac: a local language model picks the best moments; each becomes a new 9:16 project with captions, face reframing and a hook title. '
+                    'min/max = length range in seconds.',
+     S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
+    ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working.', S({'to': txt}, ['to']), 'translate_captions'),
+    ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
@@ -138,7 +150,7 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover')
+    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

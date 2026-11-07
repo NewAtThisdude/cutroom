@@ -61,6 +61,19 @@
       <label class="row"><span>Speed</span><select id="aiSpeed"><option value="0.9">Slower</option><option value="1" selected>Normal</option><option value="1.1">Faster</option><option value="1.25">Fast</option></select></label>
       <button id="btnAiVoice" class="primary wide">Add voiceover at playhead</button>
       <p id="aiVoiceStatus" class="muted"></p>
+      <h4>Long video → Shorts</h4>
+      <p class="hint">A local language model reads the transcript and picks the best moments. Each becomes a 9:16 project with captions, face reframing and a hook title.</p>
+      <label class="row"><span>Video</span><select id="hlSrc"></select></label>
+      <label class="row"><span>Shorts</span><select id="hlCount"><option>2</option><option selected>3</option><option>5</option></select></label>
+      <label class="row"><span>Length</span><select id="hlLen"><option value="10-25">10–25 s</option><option value="15-45" selected>15–45 s</option><option value="30-60">30–60 s</option><option value="45-90">45–90 s</option></select></label>
+      <label class="row chk"><span>Captions</span><input id="hlCaps" type="checkbox" checked></label>
+      <label class="row chk"><span>Auto reframe (faces)</span><input id="hlReframe" type="checkbox" checked></label>
+      <label class="row chk"><span>Hook title</span><input id="hlTitle" type="checkbox" checked></label>
+      <button id="btnShorts" class="primary wide">Make shorts</button>
+      <div id="hlStatus" class="muted"></div>
+      <h4>Hook title</h4>
+      <button id="btnHooks" class="wide">Suggest hook titles</button>
+      <div id="hookList"></div>
     </section>
     <section id="tab-captions" class="pane">
       <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>
@@ -74,6 +87,10 @@
       <div id="capPresets" class="presets"></div>
       <button id="btnCaptions" class="primary wide">Generate captions</button>
       <p id="capStatus" class="muted"></p>
+      <h4>Translate</h4>
+      <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
+      <button id="btnTranslate" class="wide">Translate captions</button>
+      <p id="trStatus" class="muted"></p>
     </section>
   </aside>
 

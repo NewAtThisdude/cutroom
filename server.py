@@ -9,7 +9,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, uuid
+import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -281,16 +281,24 @@ def beats(mid):
     return out
 
 
+def hdr_decode(m):
+    """HLG/PQ -> SDR BT.709 the way the export does it (VideoToolbox; rotation by hand, autorotate can't touch hw
+    frames): ffmpeg input args + filters ending in ','. Empty for SDR."""
+    if not m.get('hdr') or m.get('alpha'):
+        return [], ''
+    tr = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-m.get('rot', 0) % 360, '')
+    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate'],
+            f'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,{tr}')
+
+
 def still(mid, t):
     """Freeze frame: grab one frame as a new image in the library."""
     m = meta(mid)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         f, src = Path(td) / 'frame.png', str(MEDIA / m['file'])
-        if m.get('hdr') and not m.get('alpha'):  # tone-map like video(), or the still imports as 16-bit HLG and breaks the export
-            tr = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-m.get('rot', 0) % 360, '')
-            cmd = ['ffmpeg', '-v', 'error', '-y', '-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-ss', f'{t:.3f}', '-i', src,
-                   '-vf', f'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,{tr}format=rgb24',
-                   '-frames:v', '1', '-update', '1', str(f)]
+        dec, vf = hdr_decode(m)
+        if dec:  # tone-map like video(), or the still imports as 16-bit HLG and breaks the export
+            cmd = ['ffmpeg', '-v', 'error', '-y', *dec, '-ss', f'{t:.3f}', '-i', src, '-vf', f'{vf}format=rgb24', '-frames:v', '1', '-update', '1', str(f)]
         else:
             cmd = ['ffmpeg', '-v', 'error', '-y', '-ss', f'{t:.3f}', '-i', src, '-frames:v', '1', '-update', '1', str(f)]
         if sh(cmd).returncode or not f.exists():
@@ -325,9 +333,9 @@ def run_job(fn, *args):
     return job
 
 
-def track(st, mid, t0, t1, box):
+def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     """Follow a box (normalized, display orientation) from t0 to t1 with Vision; returns per-frame boxes."""
-    proc = subprocess.Popen([build_tool('track'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', *(f'{box[k]:.5f}' for k in 'xywh')],
+    proc = subprocess.Popen([build_tool('track'), str(path or MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', *(f'{box[k]:.5f}' for k in 'xywh')],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     pts, lost = [], False
     for line in proc.stdout:
@@ -336,11 +344,69 @@ def track(st, mid, t0, t1, box):
             lost = True
             continue
         pts.append({k: d[k] for k in ('t', 'x', 'y', 'w', 'h')})
-        st['progress'] = min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
+        st['progress'] = span[0] + (span[1] - span[0]) * min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
     err = proc.stderr.read()
     if proc.wait() or not pts:
         raise RuntimeError(err.strip()[-300:] or 'tracking failed')
     return {'points': pts, 'lost': lost}
+
+
+def remove_object(st, mid, t, t0, t1, box):
+    """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
+    [t0, t1] gets the background filled in (ai/remove.py) -> a new library item covering just that range."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('pick a video clip')
+    if not (AI_BIN / 'python').exists():
+        raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
+    fps = float(m.get('fps') or 30)
+    t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
+    if t1 - t0 < 2 / fps:
+        raise ValueError('the clip is too short')
+    t, b = fnum(t, t0, t1), {k: fnum((box or {}).get(k), 0, 1) for k in 'xywh'}
+    if b['w'] < 0.004 or b['h'] < 0.004:
+        raise ValueError('draw a box around the object')
+    src, pts, lost = str(MEDIA / m['file']), [{'t': t, **b}], False
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        if t1 - t > 1 / fps:
+            r = track(st, mid, t, t1, b, span=(0.0, 0.15))
+            pts, lost = pts + r['points'], r['lost']
+        if t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
+            rev = Path(td) / 'rev.mp4'
+            if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t - t0 + 1 / fps:.6f}', '-i', src, '-vf', 'scale=-2:480,reverse', '-an',
+                   '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', str(rev)]).returncode:
+                raise RuntimeError('could not read the clip')
+            r = track(st, mid, 0, t - t0, b, path=rev, span=(0.15, 0.3))
+            pts, lost = pts + [{**p, 't': t - p['t']} for p in r['points']], lost or r['lost']
+        pts.sort(key=lambda p: p['t'])
+        times, n, boxes = [p['t'] for p in pts], max(2, round((t1 - t0) * fps)), []
+        for i in range(n):  # one box per output frame: the nearest tracked one (held where tracking was lost)
+            ti, j = t0 + i / fps, bisect.bisect_left(times, t0 + i / fps)
+            p = min((pts[q] for q in (j - 1, j) if 0 <= q < len(pts)), key=lambda p: abs(p['t'] - ti))
+            w, h = max(p['w'], b['w']), max(p['h'], b['h'])  # Vision's box drifts smaller; never cover less than was drawn
+            boxes.append([p['x'] + p['w'] / 2 - w / 2, p['y'] + p['h'] / 2 - h / 2, w, h])
+        dec, vf = hdr_decode(m)
+        tags = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] if dec else []
+        if not dec:  # keep the source's colour labels (untagged stays untagged, so it previews and exports the same)
+            probe_tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer',
+                                        '-of', 'json', src]).stdout or '{}').get('streams', [{}])[0]
+            for opt, key in (('-colorspace', 'color_space'), ('-color_primaries', 'color_primaries'), ('-color_trc', 'color_transfer')):
+                if probe_tags.get(key) not in (None, '', 'unknown', 'reserved'):
+                    tags += [opt, probe_tags[key]]
+        out, jf = Path(td) / 'clean.mp4', Path(td) / 'job.json'
+        jf.write_text(json.dumps({'src': src, 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': m['w'], 'h': m['h'],
+                                  'boxes': boxes, 'dec': dec, 'vf': vf, 'tags': tags}))
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=AI_ENV)
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.3 + 0.68 * float(line.split()[1])
+        err = proc.stderr.read()
+        if proc.wait() or not out.exists():
+            raise RuntimeError('object removal failed: ' + (err.strip()[-300:] or 'no output'))
+        with open(out, 'rb') as fh:
+            res = import_file(f"{Path(m['name']).stem} (object removed).mp4", fh, out.stat().st_size, background=False)
+    return {'media': res['id'], 'frames': n, 'lost': lost}
 
 
 def matte(st, mid):
@@ -472,8 +538,10 @@ AI_LOCK = threading.Lock()  # one generation at a time: two image models at once
 def ai_status():
     """Which on-device generators are installed (weights already on disk: a status call never starts a download)."""
     venv = (AI_BIN / 'python').exists()
+    manifests = Path.home() / '.ollama' / 'models' / 'manifests'
     return {'voice': venv and (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').exists(),
-            'image': venv and (HOME / 'ai' / 'z-image-turbo-4bit' / 'mflux_model.json').exists()}
+            'image': venv and (HOME / 'ai' / 'z-image-turbo-4bit' / 'mflux_model.json').exists(),
+            'llm': Path(OLLAMA).exists() and manifests.is_dir() and any(f.is_file() for f in manifests.rglob('*'))}
 
 
 def ai_voices():
@@ -546,6 +614,158 @@ def lift(mid):
         with open(out, 'rb') as fh:
             c = import_file(f"{Path(m['name']).stem} (cutout).png", fh, out.stat().st_size, background=False)
     return {'media': c['id']}
+
+
+OLLAMA = shutil.which('ollama') or '/opt/homebrew/bin/ollama'
+LLM_URL = 'http://127.0.0.1:11434'
+LLM_LOCK = threading.Lock()
+
+
+def ollama_up():
+    """The local language model server (Ollama): reuse a running one, else start it for as long as Cutroom runs."""
+    def alive():
+        try:
+            urllib.request.urlopen(LLM_URL + '/api/tags', timeout=1).read()
+            return True
+        except OSError:
+            return False
+    if alive():
+        return True
+    if not Path(OLLAMA).exists():
+        return False
+    subprocess.Popen([OLLAMA, 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, 'OLLAMA_HOST': '127.0.0.1:11434'})
+    for _ in range(60):
+        time.sleep(0.25)
+        if alive():
+            return True
+    return False
+
+
+def llm_model():
+    names = [m['name'] for m in json.loads(urllib.request.urlopen(LLM_URL + '/api/tags', timeout=3).read()).get('models', [])]
+    want = os.environ.get('CUTROOM_LLM')
+    pick = [n for n in names if n == want] or [n for n in names if n.startswith('qwen3.5')] or [n for n in names if n.startswith('qwen')] or names
+    return pick[0] if pick else None
+
+
+def llm(system, user, ctx=8192):
+    """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes)."""
+    if not ollama_up():
+        raise RuntimeError('the local language model is not available (install Ollama and pull a model, e.g. qwen3.5:9b)')
+    model = llm_model()
+    if not model:
+        raise RuntimeError('Ollama has no model yet: ollama pull qwen3.5:9b')
+    body = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.2, 'num_ctx': int(ctx)},
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+    if 'qwen3' in model:
+        body['think'] = False
+    with LLM_LOCK:
+        r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/chat', data=json.dumps(body).encode(),
+                                                                    headers={'Content-Type': 'application/json'}), timeout=900).read())
+    try:
+        return json.loads(r['message']['content'])
+    except (KeyError, ValueError):
+        raise RuntimeError('the local model did not answer in JSON')
+
+
+def sentences(words, gap=0.6):
+    """Timed words -> sentences (punctuation or a pause ends one)."""
+    out, cur = [], []
+    for w in words:
+        if cur and (w['s'] - cur[-1]['e'] > gap or re.search(r'[.?!]$', cur[-1]['w'])):
+            out.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        out.append(cur)
+    return [{'s': round(c[0]['s'], 2), 'e': round(c[-1]['e'], 2), 'text': ' '.join(x['w'] for x in c)} for c in out]
+
+
+def hook_text(s):
+    """A model-written title as a hook: small models often write two clauses ("Stop X: do Y") -> keep the first."""
+    s = str(s or '').strip().strip('"\'').rstrip('.')
+    head = re.split(r'\s*[:;|\u2013\u2014]\s*', s)[0]
+    return (head if len(head.split()) >= 2 else s)[:80]
+
+
+def highlights(st, mid, lang='auto', count=3, lo=15.0, hi=45.0):
+    """Long video -> the best self-contained moments for shorts (CapCut's long-video-to-shorts), all on this Mac:
+    the transcript goes to the local language model; its picks are snapped to sentence edges and checked."""
+    count, lo, hi = int(fnum(count, 1, 10)), fnum(lo, 3, 300), fnum(hi, 5, 600)
+    sents = sentences(transcribe(mid, lang))
+    if not sents:
+        raise ValueError('no speech found in this video')
+    st['progress'] = 0.3
+    lines = '\n'.join(f"[{x['s']:.1f}-{x['e']:.1f}] {x['text']}" for x in sents)
+    ans = llm('You are a short-form video editor. Reply with JSON only.',
+              f'From this timestamped transcript (seconds), pick the {count} best self-contained moments for vertical shorts, {lo:g}-{hi:g} s each, '
+              'starting and ending on sentence boundaries. Prefer moments that open with a strong line; skip greetings, filler and calls to subscribe; no overlaps. '
+              'Return {"clips":[{"start":seconds,"end":seconds,"title":"punchy hook, 3-6 words, one phrase, same language as the transcript","reason":"max 12 words"}]}.\n\n' + lines,
+              ctx=min(32768, 3000 + len(lines) // 3))
+    n, dur, out = len(sents), meta(mid)['duration'], []
+    for c in (ans.get('clips') or [])[:count * 2]:
+        try:
+            a, b = float(c['start']), float(c['end'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        i = min(range(n), key=lambda q: abs(sents[q]['s'] - a))  # the model's times, snapped to real sentence edges
+        k = min(range(n), key=lambda q: abs(sents[q]['e'] - b))
+        # a little air around the words, never into the neighbouring sentences (at most half the pause)
+        a = max(0.0, sents[i]['s'] - 0.12, (sents[i - 1]['e'] + sents[i]['s']) / 2 if i else 0.0)
+        b = min(dur, sents[k]['e'] + 0.3, (sents[k]['e'] + sents[k + 1]['s']) / 2 if k + 1 < n else dur)
+        if not (min(lo, 5) * 0.6 <= b - a <= hi * 1.6) or any(a < o['end'] and b > o['start'] for o in out):
+            continue
+        out.append({'start': round(a, 3), 'end': round(b, 3), 'title': hook_text(c.get('title')), 'reason': str(c.get('reason') or '').strip()[:160]})
+    if not out:
+        raise RuntimeError('the model found no usable moments (try another length range)')
+    return {'clips': sorted(out, key=lambda o: o['start'])[:count]}
+
+
+def translate(st, texts, to):
+    """Lines (whole sentences, not caption fragments) into another language with the local model. Numbered, so a line
+    the model drops or merges is caught and asked again; one it still skips keeps its original text."""
+    to = str(to).strip()
+    if not re.fullmatch(r'[A-Za-z][A-Za-z ()-]{1,30}', to):
+        raise ValueError('name the language, e.g. Spanish')
+    texts = [str(t)[:500] for t in texts][:2000]
+    out = [None] * len(texts)
+    for i in range(0, len(texts), 30):
+        for _ in range(3):
+            todo = [j for j in range(i, min(i + 30, len(texts))) if out[j] is None]
+            if not todo:
+                break
+            ans = llm('You translate video subtitles. Reply with JSON only.',
+                      f'Translate each numbered line into {to}: natural, same meaning, about the same length, no notes. '
+                      'Return {"1": "...", "2": "..."} with exactly the same numbers.\n' + json.dumps({str(k + 1): texts[j] for k, j in enumerate(todo)}, ensure_ascii=False))
+            if isinstance(ans, dict) and len(ans) == 1 and isinstance(v := next(iter(ans.values())), (dict, list)):
+                ans = v  # {"t": {...}} or {"translations": [...]}
+            if isinstance(ans, list):
+                ans = {str(k + 1): v for k, v in enumerate(ans)}
+            for k, j in enumerate(todo):
+                v = ans.get(str(k + 1)) if isinstance(ans, dict) else None
+                if isinstance(v, str) and v.strip():
+                    out[j] = v.strip()
+        st['progress'] = min(1.0, (i + 30) / max(1, len(texts)))
+    if texts and all(o is None for o in out):
+        raise RuntimeError('the local model did not translate; try again')
+    return {'texts': [o if o is not None else texts[j] for j, o in enumerate(out)], 'kept': sum(o is None for o in out)}
+
+
+def hooks(st, ranges, lang='auto'):
+    """Three hook titles for the edit, from the on-device transcript of the clips' ranges (local model)."""
+    words = []
+    for r in list(ranges)[:50]:
+        a, b = fnum(r.get('in', 0), 0, 1e6), fnum(r.get('out', 0), 0, 1e6)
+        words += [w['w'] for w in transcribe(r['media'], lang) if a <= w['s'] < b]
+    if not words:
+        raise ValueError('no speech found on the main track')
+    ans = llm('You write hooks for short videos. Reply with JSON only.',
+              'Write 3 different punchy hook titles (3-6 words each, one phrase, no hashtags, no emoji) for a vertical video with this transcript, '
+              'in the same language as the transcript. Return {"hooks":["...","...","..."]}.\n\n' + ' '.join(words)[:12000])
+    hs = [h for h in map(hook_text, ans.get('hooks') or []) if h][:3]
+    if not hs:
+        raise RuntimeError('the model wrote no hooks')
+    return {'hooks': hs}
 
 
 FILLER = re.compile(r'(u+h+m*|u+m+|e+r+m*|h+m+|a+h+|e+h+|m{2,})', re.I)
@@ -1241,6 +1461,16 @@ class App(BaseHTTPRequestHandler):
                                                   body.get('steps', 8), bool(body.get('sticker')))})
             if u.path == '/api/lift':
                 return self.reply(lift(body['media']))
+            if u.path == '/api/remove_object':
+                return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'))})
+            if u.path == '/api/ai/highlights':
+                return self.reply({'job': run_job(highlights, body['media'], body.get('lang', 'auto'), body.get('count', 3), body.get('min', 15), body.get('max', 45))})
+            if u.path == '/api/ai/translate':
+                return self.reply({'job': run_job(translate, body.get('texts') or [], body.get('to', ''))})
+            if u.path == '/api/ai/hooks':
+                return self.reply({'job': run_job(hooks, body.get('ranges') or [], body.get('lang', 'auto'))})
+            if u.path == '/api/transcript':  # timestamped sentences (the MCP transcript tool)
+                return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
                 return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'))})
             if u.path == '/api/scenes':
@@ -1319,6 +1549,31 @@ class App(BaseHTTPRequestHandler):
 def selftest():
     """Render synthetic projects end-to-end (single graph + chunked path) and check timing, layers, audio."""
     global HOME, MEDIA, PROJ, EXPORTS, CACHE, CHUNK
+    # language-model features with a stub model: picks snap to sentence edges, padding stops halfway into a pause,
+    # overlapping / malformed picks are dropped, two-clause titles keep the first clause, translations keep the line count
+    keep = {k: globals()[k] for k in ('transcribe', 'meta', 'llm')}
+    words = [{'w': w, 's': a, 'e': b} for w, a, b in (('Intro.', 0, 1), ('First', 2, 2.4), ('point', 2.5, 3), ('here.', 3.1, 20), ('Second', 20.2, 20.6), ('one.', 20.7, 40), ('Bye.', 41, 42))]
+    answer = {'clips': [{'start': 1.7, 'end': 20.3, 'title': 'Big claim: details.'}, {'start': 5, 'end': 25}, {'start': 'x'}, {'start': 20, 'end': 40.5, 'title': 'Two'}],
+              'hooks': ['One: two three', '', 'Fine hook here.']}
+
+    def fake_llm(system, user, ctx=8192):  # translations answer what was sent (renumbered on retry); 'three' is never translated
+        if 'numbered line' not in user:
+            return answer
+        return {k: {'one': 'uno', 'two': 'dos'}[v] for k, v in json.loads(user.rsplit('\n', 1)[1]).items() if v in ('one', 'two')}
+    globals().update(transcribe=lambda mid, lang='auto': words, meta=lambda mid: {'duration': 43.0}, llm=fake_llm)
+    try:
+        got = [(c['start'], c['end'], c['title']) for c in highlights({}, 'm', count=3, lo=10, hi=30)['clips']]
+        assert got == [(1.88, 20.1, 'Big claim'), (20.1, 40.3, 'Two')], got
+        assert hooks({}, [{'media': 'm', 'in': 0, 'out': 10}])['hooks'] == ['One: two three', 'Fine hook here']
+        assert translate({}, ['one', 'two'], 'Spanish')['texts'] == ['uno', 'dos']
+        assert translate({}, ['one', 'two', 'three'], 'Spanish') == {'texts': ['uno', 'dos', 'three'], 'kept': 1}  # never answered: kept
+        try:
+            translate({}, ['a', 'b'], 'Spanish; rm -rf')
+            raise AssertionError('translate accepted a bad language name')
+        except ValueError:
+            pass
+    finally:
+        globals().update(keep)
     HOME = Path(tempfile.mkdtemp(prefix='cutroom-test-'))
     MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports', 'cache'))
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
@@ -1568,6 +1823,21 @@ def selftest():
         print('filler words ok:', ' '.join(f"{f['w']}@{f['s']:.2f}-{f['e']:.2f}" for f in fl))
     else:
         print('captions skipped (whisper-cli or model missing)')
+    if (AI_BIN / 'python').exists():  # object removal end to end: Vision tracks a moving square both ways, the fill must match the clean shot
+        gen('-f', 'lavfi', '-i', 'testsrc2=s=480x270', '-frames:v', '1', str(HOME / 'bg.png'))
+        gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'clean.mp4'))
+        gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-f', 'lavfi', '-i', 'color=c=0xff00ff:s=40x40', '-filter_complex', "[0][1]overlay=x='60+t*120':y=110:shortest=1",
+            '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'dirty.mp4'))
+        rm = remove_object({}, imp('dirty.mp4')['id'], 1.0, 0, 2, {'x': 180 / 480, 'y': 110 / 270, 'w': 40 / 480, 'h': 40 / 270})
+        worst = 99.0
+        for t in (0.2, 1.0, 1.8):  # the square's own spot vs the clean shot
+            x = int(60 + 120 * t)
+            got, want = (subprocess.run(['ffmpeg', '-v', 'error', '-ss', f'{t:.2f}', '-i', str(f), '-frames:v', '1', '-vf', f'crop=40:40:{x}:110', '-f', 'rawvideo',
+                                         '-pix_fmt', 'gray', '-'], capture_output=True).stdout for f in (MEDIA / meta(rm['media'])['file'], HOME / 'clean.mp4'))
+            mse = sum((a - b) ** 2 for a, b in zip(got, want)) / max(1, len(want))
+            worst = min(worst, 10 * math.log10(255 ** 2 / max(mse, 1e-9)))
+        assert rm['frames'] == 60 and worst > 30, ('object removal', rm, worst)
+        print(f'object removal ok: tracked both ways, fill vs clean shot >= {worst:.1f} dB')
     shutil.rmtree(HOME)
     print('selftest OK')
 

@@ -394,6 +394,8 @@ function renderMediaList() {
       <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : ' · preparing'}</span></div>
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
+  const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
+  if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}">${esc(x.name)} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
 }
 
 // ---------- inspector ----------
@@ -521,7 +523,7 @@ function mediaPanel(c, lane) {
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
@@ -894,7 +896,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     let xx = x0;
     for (const ch of w) { if (stroke) ctx.strokeText(ch, xx, y0); else ctx.fillText(ch, xx, y0); xx += ctx.measureText(ch).width + LS; }
   };
-  const sp = ctx.measureText(' ').width + LS, maxW = st.maxW * P.w * k, lines = [];
+  const cjk = /[぀-ヿ㐀-鿿＀-￯　-〿]/.test(paras.flat().join('')); // Chinese / Japanese words are characters: no gaps
+  const sp = (cjk ? 0 : ctx.measureText(' ').width) + LS, maxW = st.maxW * P.w * k, lines = [];
   const grow = timed && st.pop ? 1.12 : 1; // every word reserves its popped width: no overlap, and the line doesn't jitter
   let idx = 0;
   for (const para of paras) {
@@ -1375,11 +1378,32 @@ function startTrack(c, lane) { // pick a target on the main-track video; the cli
   S.pick = { c, lane, host };
   toast('Drag a box around what this clip should follow');
 }
+function canvasToSrc(c, T) { // project-canvas point -> normalized source-frame point of clip c at timeline time T (undoes fit, crop, flip)
+  const g = geom(M.get(c.media), c, P.w, P.h, propsAt(c, T - c.start)), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
+  return (cx, cy) => { let u = (cx - g.x) / g.w; if (c.flip) u = 1 - u; return [(cr.l || 0) + u * fx, (cr.t || 0) + ((cy - g.y) / g.h) * fy]; };
+}
+function startRemove(c, lane) { // CapCut's "Remove object": box it at any frame; it is tracked both ways and filled in through the clip
+  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast('Move the playhead to a frame of this clip where the object shows');
+  if (S.playing) pause();
+  S.pick = { c, lane, remove: true };
+  toast('Drag a box around the object to remove (Esc cancels)');
+}
+async function removeObject(c, lane, rect, T = S.t) { // rect in project canvas units; the clip switches to a cleaned copy of its range
+  const toSrc = canvasToSrc(c, T), [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
+  const box = { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) };
+  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box }, 'Removing the object');
+  await loadMedia();
+  const a = c.in, d = M.get(j.media).duration;
+  change(() => { c.media = j.media; c.in = 0; c.out = Math.min(d, c.out - a); if (c.beats) c.beats = c.beats.map(b => b - a).filter(b => b >= 0 && b <= c.out); });
+  toast(`Removed it from ${j.frames} frames${j.lost ? ' (it got hard to follow part of the way; the last position was held)' : ''}`);
+  return brief(c, lane);
+}
+function finishRemove(rect) { const { c, lane } = S.pick; S.pick = null; removeObject(c, lane, rect).catch(e => setStatus(e.message)); }
 async function finishTrack(rect) { // rect in project canvas units
   const { c, lane, host } = S.pick, m = M.get(host.media), t0 = S.t;
   S.pick = null;
-  const g = geom(m, host, P.w, P.h, propsAt(host, t0 - host.start)), cr = host.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
-  const toSrc = (cx, cy) => { let u = (cx - g.x) / g.w; if (host.flip) u = 1 - u; return [(cr.l || 0) + u * fx, (cr.t || 0) + ((cy - g.y) / g.h) * fy]; };
+  const cr = host.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
+  const toSrc = canvasToSrc(host, t0);
   const toCanvas = (sx, sy, G) => { let u = (sx - (cr.l || 0)) / fx; if (host.flip) u = 1 - u; return [(G.x + u * G.w) / P.w, (G.y + ((sy - (cr.t || 0)) / fy) * G.h) / P.h]; };
   const gAt = T => geom(m, host, P.w, P.h, propsAt(host, T - host.start)); // the host may be zooming / reframed
   const [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
@@ -1748,6 +1772,30 @@ function wire() {
     catch (e) { $('#aiStatus').textContent = e.message; }
     finally { b.disabled = false; }
   });
+  $('#btnShorts').addEventListener('click', async () => {
+    const b = $('#btnShorts'), [mn, mx] = $('#hlLen').value.split('-').map(Number);
+    if (!$('#hlSrc').value) return toast('Import a video with speech first');
+    b.disabled = true;
+    try { await makeShorts({ media: $('#hlSrc').value, count: +$('#hlCount').value, min: mn, max: mx, captions: $('#hlCaps').checked, reframe: $('#hlReframe').checked, title: $('#hlTitle').checked, lang: $('#capLang').value }); }
+    catch (e) { $('#hlStatus').textContent = e.message; }
+    finally { b.disabled = false; }
+  });
+  $('#hlStatus').addEventListener('click', e => { const b = e.target.closest('[data-openproj]'); if (b) openProject(b.dataset.openproj).catch(err => toast(err.message)); });
+  $('#btnHooks').addEventListener('click', async () => {
+    const b = $('#btnHooks');
+    b.disabled = true; $('#hookList').innerHTML = '<p class="muted">Writing on this Mac…</p>';
+    try { const { hooks } = await hookTitles(); $('#hookList').innerHTML = hooks.map(h => `<button class="wide" data-hook="${esc(h)}">${esc(h)}</button>`).join('') + '<p class="hint">Click one to add it at the start.</p>'; }
+    catch (e) { $('#hookList').innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+    finally { b.disabled = false; }
+  });
+  $('#hookList').addEventListener('click', e => { const b = e.target.closest('[data-hook]'); if (b) addHook(b.dataset.hook); });
+  $('#btnTranslate').addEventListener('click', async () => {
+    const b = $('#btnTranslate');
+    b.disabled = true; $('#trStatus').textContent = 'Translating on this Mac…';
+    try { const r = await translateCaptions({ to: $('#trLang').value }); $('#trStatus').textContent = `${r.sentences} sentences translated${r.kept ? ` (${r.kept} kept as they were)` : ''}.`; }
+    catch (e) { $('#trStatus').textContent = e.message; }
+    finally { b.disabled = false; }
+  });
   $('#btnAiVoice').addEventListener('click', async () => {
     const text = $('#aiText').value.trim(), b = $('#btnAiVoice');
     if (!text) return toast('Type the script first');
@@ -1850,7 +1898,7 @@ function wire() {
         removeEventListener('pointermove', mv); removeEventListener('pointerup', upp);
         const R = S.pickRect;
         S.pickRect = null; S.dirty = true;
-        if (R && R.w > 8 && R.h > 8) finishTrack(R); else { S.pick = null; toast('Tracking cancelled'); }
+        if (R && R.w > 8 && R.h > 8) (S.pick.remove ? finishRemove : finishTrack)(R); else { S.pick = null; toast('Cancelled'); }
       };
       addEventListener('pointermove', mv);
       addEventListener('pointerup', upp);
@@ -1927,6 +1975,7 @@ function wire() {
     else if (d.act === 'movelane') moveLane(c, S.sel.lane);
     else if (d.act === 'matte') removeBackground(c);
     else if (d.act === 'track') startTrack(c, S.sel.lane);
+    else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
     else if (d.mask) change(() => { if (d.mask === 'none') delete c.mask; else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
     else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
     else if (d.act === 'detach') detachAudio(c);
@@ -1982,7 +2031,7 @@ function wire() {
     else if ((key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); seekTo(S.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / P.fps)); }
     else if ((key === 'home' || key === 'end') && !field) { e.preventDefault(); seekTo(key === 'home' ? 0 : total()); }
     else if (key === 'escape' && S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
-    else if (key === 'escape' && S.pick) { S.pick = null; toast('Tracking cancelled'); }
+    else if (key === 'escape' && S.pick) { S.pick = null; toast('Cancelled'); }
     else if (key === 'escape' && S.sel) { S.sel = null; renderAll(); S.dirty = true; }
   });
   new ResizeObserver(fitStage).observe($('#stage'));
@@ -2017,6 +2066,71 @@ async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
   addMedia(jb.media, 'audio', at);
   return brief(...cfind(S.sel.id));
 }
+async function makeShorts({ media, count = 3, min = 15, max = 45, captions = true, reframe = true, title = true, lang = 'auto' }) { // long video -> shorts, on this Mac
+  const m = mediaBy(media);
+  if (m.kind !== 'video' || !m.hasAudio) throw new Error('pick a video with speech');
+  const st = $('#hlStatus'), say = x => { if (st) st.textContent = x; };
+  say('Reading the transcript and picking the best moments…');
+  const { clips } = await job('/api/ai/highlights', { media: m.id, count, min, max, lang }, 'Finding highlights');
+  const made = [];
+  for (const [i, h] of clips.entries()) {
+    say(`Building short ${i + 1} of ${clips.length}: ${h.title || ''}`);
+    setProject(newProject('9:16'));
+    P.name = h.title || `${m.name} short ${i + 1}`;
+    addMedia(m.id, 'main');
+    const c = P.main[0];
+    change(() => { Object.assign(c, { in: h.start, out: h.end, fit: 'fill' }); });
+    if (reframe) await autoReframe(c);
+    if (captions) await autoCaptions(true);
+    if (title && h.title) {
+      S.t = 0; addText('Title');
+      const tx = P.text.at(-1);
+      change(() => { Object.assign(tx, { text: h.title, dur: Math.min(3, len(c)), y: 0.16 }); tx.style.anim = 'pop'; });
+    }
+    await api(`/api/projects/${P.id}`, P, 'PUT');
+    made.push({ id: P.id, name: P.name, start: h.start, end: h.end, reason: h.reason });
+  }
+  if (made.length) await openProject(made[0].id);
+  if (st) st.innerHTML = made.map(x => `<button class="wide" data-openproj="${x.id}" title="${esc(x.reason)}">${esc(x.name)} · ${fmtDur(x.end - x.start)}</button>`).join('');
+  return { shorts: made };
+}
+async function translateCaptions({ to }) { // whole sentences are translated, then re-cut into captions over the same time (fragments translate badly)
+  if (!P.captions.length) throw new Error('no captions to translate yet (generate captions first)');
+  const groups = [];
+  for (const c of [...P.captions].sort((x, y) => x.start - y.start)) {
+    const g = groups.at(-1), prev = g?.at(-1);
+    if (prev && c.start - (prev.start + prev.dur) < 0.6 && !/[.?!…。？！]$/.test(prev.text.trim())) g.push(c); else groups.push([c]);
+  }
+  const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating');
+  const per = Math.max(1, +$('#capWords').value || 3), CJK = '぀-ヿ㐀-鿿＀-￯　-〿';
+  change(() => {
+    const out = [];
+    groups.forEach((g, gi) => {
+      const tr = String(texts[gi] || '').trim(), cjk = new RegExp(`[${CJK}]`).test(tr); // Chinese / Japanese: cut by character
+      const units = (cjk ? tr.match(new RegExp(`[${CJK}]|[^\\s${CJK}]+`, 'g')) : tr.split(/\s+/))?.filter(Boolean) || [];
+      const size = cjk ? per * 3 : per, chunks = [];
+      for (let i = 0; i < units.length; i += size) chunks.push(units.slice(i, i + size));
+      for (let i = chunks.length - 1; i > 0; i--) if (/^[\p{P}\s]+$/u.test(chunks[i].join(''))) chunks[i - 1].push(...chunks.splice(i, 1)[0]); // no lone "。"
+      const t0 = g[0].start, t1 = g.at(-1).start + g.at(-1).dur, w8 = ch => ch.join('').length + ch.length, tot = chunks.reduce((s, ch) => s + w8(ch), 0) || 1;
+      let at = t0;
+      for (const ch of chunks) { // reading time follows text length
+        const dur = ((t1 - t0) * w8(ch)) / tot, n = ch.length;
+        out.push({ id: hex12(), start: at, dur, text: ch.join(cjk ? '' : ' '), words: ch.map((w, i) => ({ w, s: (i * dur) / n, e: ((i + 1) * dur) / n })) });
+        at += dur;
+      }
+    });
+    P.captions = out;
+    if (S.sel?.lane === 'captions') S.sel = null;
+  });
+  return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text) };
+}
+async function hookTitles() {
+  packMain();
+  const ranges = P.main.filter(c => M.get(c.media)?.hasAudio).map(c => ({ media: c.media, in: c.in, out: c.out }));
+  if (!ranges.length) throw new Error('no speech on the main track');
+  return job('/api/ai/hooks', { ranges, lang: $('#capLang').value }, 'Writing hooks');
+}
+function addHook(text) { S.t = 0; addText('Title'); const tx = P.text.at(-1); change(() => { Object.assign(tx, { text, dur: 3, y: 0.16 }); tx.style.anim = 'pop'; }); return brief(tx, 'text'); }
 async function loadAI() { // fill the AI tab from what is installed
   let s;
   try { s = await api('/api/ai/status'); } catch { return; }
@@ -2024,6 +2138,8 @@ async function loadAI() { // fill the AI tab from what is installed
   $('#btnAiImage').disabled = !s.image; $('#btnAiVoice').disabled = !s.voice;
   if (!s.image) $('#aiStatus').textContent = 'The image model is not installed (README: On-device AI).';
   if (!s.voice) $('#aiVoiceStatus').textContent = 'The voice model is not installed (README: On-device AI).';
+  for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
+  if (!s.llm) $('#hlStatus').textContent = 'Needs Ollama with a model (ollama pull qwen3.5:9b).';
 }
 
 // ---------- remote control: Claude Code drives this editor through the Cutroom MCP server ----------
@@ -2168,8 +2284,20 @@ const REMOTE = {
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
+  async remove_object({ id, box, t }) { // box = where it is on the canvas (snapshot), as fractions {x, y, w, h}
+    const [c, L] = cfind(id);
+    if (M.get(c.media)?.kind !== 'video') throw new Error('remove_object works on video clips');
+    if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
+    const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
+    if (T < c.start || T >= c.start + tdur(c, L)) throw new Error('t must be a time inside the clip');
+    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T);
+  },
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
+  async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
+  async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
+  async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
+  async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
   async snapshot({ t, max = 720, preview = false }) {

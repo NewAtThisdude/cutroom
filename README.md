@@ -63,6 +63,8 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
+| | **Remove object** from video: drag a box round it at any frame | Apple Vision follows it both ways through the clip. Each frame's hole is filled with the real background from the nearest frames that show it, aligned for camera motion. What no frame shows (a static object in a locked-off shot) is synthesized once from the surrounding texture and carried through the shot, so it doesn't flicker. Poisson blending hides exposure seams. `ai/remove.py`, OpenCV |
+| | **Long video → Shorts**, caption translation, hook titles | A local language model (Ollama, qwen3.5:9b) reads the on-device transcript. Shorts: its picks snap to sentence edges, and each becomes a 9:16 project with face reframing, captions and a hook title. Translation works on whole sentences, then re-cuts them into captions over the same time (by character for Chinese and Japanese) |
 | Claude Code control | Tell Claude Code in VS Code what to do and it edits the open project | The Cutroom MCP server (see below) |
 
 ## Control it from Claude Code (MCP)
@@ -73,9 +75,10 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 28 tools cover projects, media import, clips (add, update any setting,
+the preview frame as an image), and exports. The 33 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, captions, pause and filler removal, voiceovers, the smart tools,
-undo/redo, snapshots, export, and on-device image and voice generation.
+undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
+object's position off a snapshot), `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -85,8 +88,9 @@ with the export engine, so it shows exactly what the export will, even while the
 
 ## On-device AI
 
-Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup: `ai/setup.sh` (about 32 GB of
-downloads into `~/.cache/huggingface`, plus a 5.5 GB 4-bit copy in `~/Movies/Cutroom/ai`).
+Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup: `ai/setup.sh`. The image model
+downloads about 32 GB once; after the 4-bit copy is saved (5.5 GB in `~/Movies/Cutroom/ai`) the originals are deleted, so
+about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9b`, 6.6 GB); Cutroom starts it when needed.
 
 | | Model | Measured here |
 |---|---|---|
@@ -94,6 +98,8 @@ downloads into `~/.cache/huggingface`, plus a 5.5 GB 4-bit copy in `~/Movies/Cut
 | Stickers | the image above + Apple Vision subject lifting | the prompt asks for a plain backdrop so the cut-out is clean |
 | Natural voiceover (AI tab, `ai_voiceover`) | Kokoro-82M via mlx-audio, 54 voices in 9 languages | 7.7 s of speech in about 5 s, most of it model load |
 | Background removal for photos | Apple Vision `VNGenerateForegroundInstanceMaskRequest` | under a second; any subject, not only people |
+| Remove object (video) | Apple Vision tracking + `ai/remove.py` (OpenCV, no model) | 4 s of 720p in about 11 s. Against the clean footage: 40-44 dB inside the hole for a moving object or a moving camera (indistinguishable), and plausible synthesized texture for a static object in a static shot |
+| Shorts, translation, hooks | qwen3.5:9b (Q4) on Ollama, thinking off | a 94 s talk: 3 shorts picked and built in about 8 s; 6 sentences translated in about 3 s |
 
 The full-precision image model needs more than 30 GB while it loads and pushes a 36 GB Mac into swap (about 9 minutes
 per image). That is why Cutroom keeps a 4-bit copy, which loads in about 4 s.
@@ -146,6 +152,9 @@ once in the browser also guarantees the export matches the preview.
 - **WebKit** (the app) has no `ctx.filter` and drops VP9's alpha. Filters, the blur fill and mask
   feathering are done by hand there (`colorPass`, `featherAlpha`; the exported mask PNG is drawn the
   same way), and transparent clips get an HEVC-with-alpha preview copy (`/media/<id>?alpha=hevc`).
+- **Object removal:** OpenCV 5's `seamlessClone` overwrites the mask you pass it (the paste mask became a thin ring
+  and the object stayed), so it gets a copy. Patch matching runs in BGR: in YUV it under-weights colour and pastes
+  wrong-coloured chunks. Vision's tracking box drifts smaller, so the hole never shrinks below the box you drew.
 - **Blend modes:** ffmpeg's `blend` filter disagrees with the W3C formulas that the canvas uses:
   soft-light is off by up to 31 levels, dodge and burn miss the edge cases, and "overlay" versus
   "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels.
@@ -162,7 +171,8 @@ once in the browser also guarantees the export matches the preview.
 - `tools/matte.swift`, `tools/track.swift`, `tools/faces.swift`: Apple Vision helpers, compiled on first use.
 - `app/Cutroom.swift`, `app/build.sh`: the native app.
 - `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
-- `ai/setup.sh`: installs the on-device AI (venv in `ai/.venv`, gitignored). `tools/lift.swift`: Vision subject lifting.
+- `ai/setup.sh`: installs the on-device AI (venv in `ai/.venv`, gitignored). `ai/remove.py`: the object-removal
+  engine (runs in that venv). `tools/lift.swift`: Vision subject lifting.
 - `cutroom`: the Chrome-window launcher (also downloads the VAD model if missing).
 
 ## Limits (honest)
@@ -190,5 +200,14 @@ once in the browser also guarantees the export matches the preview.
   best in English; the other languages have fewer, plainer voices. A subject cut-out can drop thin details (steam,
   smoke). Video generation (image-to-video) is not built: on this Mac it would take minutes per few-second clip,
   well below CapCut's cloud quality. The 4090 box (Wan 2.2) is the better place for that.
+- **Remove object:** the hole is the tracked box, not the object's exact outline, so the background right around the
+  object is rebuilt too (invisible when that background shows in other frames). A static object in a locked-off shot is
+  filled by texture synthesis, not a neural inpainter: fine on walls, sky, road and grass, visibly repetitive on busy
+  detail such as a bookshelf. Strong parallax or an object over moving texture (water, crowds) can leave soft or
+  ghosted patches. Shadows and reflections of the object are not removed. Verified on synthetic composites (with
+  ground truth), not yet on real phone footage.
+- **Language model:** a 9B local model. Its picks for shorts were right on a clear multi-topic talk; hook titles sometimes
+  ignore the word limit (two-clause titles are cut to the first clause). Translation is good in Spanish and Russian;
+  Japanese had an occasional wrong word (Chinese 咖啡 for "coffee").
 - **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
 - **Not built:** multi-camera, user-drawn curves, keyframeable masks and filters, and AI video generation.
