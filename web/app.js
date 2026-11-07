@@ -48,8 +48,8 @@ const CAP_PRESETS = {
   Neon: { font: 'Anton', weight: 400, size: 96, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#3dff8b', upper: true, pop: true },
 };
 const ICON = {
-  play: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>',
-  pause: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
+  play: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>',
+  pause: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
 };
 
 const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['wipeleft', 'Wipe'], ['slideleft', 'Slide'], ['circleopen', 'Circle'], ['zoomin', 'Zoom']];
@@ -224,6 +224,12 @@ function clipHTML(lane, c, top = 0, h = 42) {
 }
 
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }
+function seekTo(t) { // paused seek used by arrows, Home/End and the transport buttons
+  if (S.playing) pause();
+  S.t = snap(clamp(t, 0, total()));
+  placePlayhead(); follow(); S.dirty = true;
+  if (selClip()?.kf) renderInspector();
+}
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
 function thumbStyle(m) {
@@ -243,7 +249,8 @@ function renderMediaList() {
 
 // ---------- inspector ----------
 const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's' ? `${(+v).toFixed(2)}s` : unit === '°' ? `${Math.round(v)}°` : `${Math.round(v * 10) / 10}`);
-const slider = (k, label, v, min, max, step, unit = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}" min="${min}" max="${max}" step="${step}" value="${v}"><output>${fmt(v, unit)}</output></label>`;
+const fill = el => el.style.setProperty('--p', `${(el.value - el.min) / (el.max - el.min) * 100}%`); // slider track fill
+const slider = (k, label, v, min, max, step, unit = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}" min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${clamp((v - min) / (max - min), 0, 1) * 100}%"><output>${fmt(v, unit)}</output></label>`;
 const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><select data-k="${k}"${typeof opts[0][0] === 'number' ? ' data-num' : ''}>${opts.map(([val, txt]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
 const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"></label>`;
 const tick = (k, label, v) => `<label class="row chk"><span>${label}</span><input type="checkbox" data-k="${k}"${v ? ' checked' : ''}></label>`;
@@ -273,73 +280,76 @@ function projectPanel() {
     ${segs('ratio', 'Canvas', ratio, Object.keys(RATIOS).map(r => [r, r]))}
     ${pick('p.fps', 'Frame rate', P.fps, [[24, '24'], [25, '25'], [30, '30'], [50, '50'], [60, '60']])}
     ${colour('p.bg', 'Background', P.bg)}
-    <h4>Shortcuts</h4><p class="hint">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ one frame (⇧ one second) · ⌘Z / ⇧⌘Z · ⌘+scroll zooms the timeline</p>`;
+    <h4>Shortcuts</h4><p class="hint">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ one frame (⇧ one second) · Home/End · M marker · ⌘Z / ⇧⌘Z · ⌘+scroll zooms the timeline</p>`;
+}
+const SPEEDS = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 10];
+function tabbed(sections) { // inspector tabs; empty tabs are hidden and the open tab survives re-renders
+  const live = sections.filter(s => s[1]), cur = live.some(s => s[0] === S.itab) ? S.itab : live[0][0];
+  return `<div class="itabs">${live.map(([n]) => `<button data-itab="${n}" class="${n === cur ? 'on' : ''}">${n}</button>`).join('')}</div>`
+    + live.map(([n, h]) => `<div class="isec${n === cur ? ' on' : ''}" data-sec="${n}">${h}</div>`).join('');
 }
 function mediaPanel(c, lane) {
   const m = M.get(c.media);
   if (!m) return '<h3>Missing media</h3><div class="actions"><button data-act="delete">Delete</button></div>';
-  const pr = propsAt(c, S.t - c.start), cr = c.crop || {};
-  let h = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(tdur(c, lane))}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha ? ' · transparent' : ''}</p>`;
-  if (m.kind !== 'image') h += pick('c.speed', 'Speed', c.speed, [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].map(s => [s, `${s}×`]));
-  if (m.hasAudio) h += slider('c.volume', 'Volume', c.volume, 0, 2, 0.01, '%') + tick('c.denoise', 'Reduce noise', c.denoise);
-  if (m.kind !== 'audio') {
-    h += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
-    h += slider('c.scale', 'Scale', pr.scale, 0.1, 4, 0.01, '%') + slider('c.x', 'Position X', pr.x, -1, 1, 0.005, '%') + slider('c.y', 'Position Y', pr.y, -1, 1, 0.005, '%');
-    if (lane === 'overlay') h += slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%');
-    h += slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + kfRow(c, lane);
-    h += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
-    h += `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', c.adj.b, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', c.adj.c, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', c.adj.s, 0, 3, 0.01, '%')}`;
-    h += `<h4>Crop</h4>${slider('c.crop.l', 'Left', cr.l || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.r', 'Right', cr.r || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
-    h += `<h4>Chroma key</h4>${c.key ? `${colour('c.key.color', 'Key colour', c.key.color)}${slider('c.key.sim', 'Strength', c.key.sim, 0.01, 1, 0.01, '%')}${slider('c.key.blend', 'Softness', c.key.blend, 0, 0.5, 0.01, '%')}<div class="actions"><button data-act="keyoff">Turn off</button></div>`
-      : '<div class="actions"><button data-act="keyon">Remove green screen</button></div>'}`;
-    const mk = c.mask;
-    h += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}</div>`;
-    if (mk) {
-      h += slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
+  const pr = propsAt(c, S.t - c.start), cr = c.crop || {}, vis = m.kind !== 'audio', vid = m.kind === 'video', mk = c.mask;
+  const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(tdur(c, lane))}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
+  let basic = m.kind !== 'image' ? pick('c.speed', 'Speed', c.speed, SPEEDS.map(s => [s, `${s}×`])) : '';
+  if (vis) {
+    basic += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
+    basic += `<h4>Transform</h4>${slider('c.scale', 'Scale', pr.scale, 0.1, 4, 0.01, '%')}${slider('c.x', 'Position X', pr.x, -1, 1, 0.005, '%')}${slider('c.y', 'Position Y', pr.y, -1, 1, 0.005, '%')}`
+      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + (lane === 'overlay' ? slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') : '') + kfRow(c, lane);
+  }
+  basic += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, 3, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, 3, 0.05, 's')}`;
+  let look = '';
+  if (vis) {
+    look += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
+    look += `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', c.adj.b, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', c.adj.c, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', c.adj.s, 0, 3, 0.01, '%')}`;
+    look += `<h4>Crop</h4>${slider('c.crop.l', 'Left', cr.l || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.r', 'Right', cr.r || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
+    look += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
+      + (mk ? slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
         + (['circle', 'rect'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
         + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
-        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert);
-    }
-    if (m.kind === 'video') h += `<h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
-      <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable.</p>`;
+        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert) : '');
+    look += `<h4>Chroma key</h4>${c.key ? `${colour('c.key.color', 'Key colour', c.key.color)}${slider('c.key.sim', 'Strength', c.key.sim, 0.01, 1, 0.01, '%')}${slider('c.key.blend', 'Softness', c.key.blend, 0, 0.5, 0.01, '%')}<div class="actions"><button data-act="keyoff">Turn off</button></div>`
+      : '<div class="actions"><button data-act="keyon">Remove green screen</button></div>'}`;
   }
-  if (m.hasAudio) h += `<h4>Volume envelope</h4>${c.vkf?.length ? `<p class="muted">${c.vkf.length} volume points</p>` : ''}<div class="actions">${lane === 'audio' ? '<button data-act="duck">Auto duck under speech</button>' : ''}${c.vkf?.length ? '<button data-act="vkfclear">Clear envelope</button>' : ''}</div>`;
+  let audio = '';
+  if (m.hasAudio) {
+    audio += slider('c.volume', 'Volume', c.volume, 0, 4, 0.01, '%') + tick('c.denoise', 'Reduce noise', c.denoise)
+      + `<h4>Volume envelope</h4>${c.vkf?.length ? `<p class="muted">${c.vkf.length} volume points</p>` : lane === 'audio' ? '<p class="hint">Auto duck lowers this clip wherever another clip has speech.</p>' : ''}<div class="actions">${lane === 'audio' ? '<button data-act="duck">Auto duck under speech</button>' : ''}${c.vkf?.length ? '<button data-act="vkfclear">Clear envelope</button>' : ''}${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}</div>`;
+  }
   if (lane === 'audio') {
-    h += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
+    audio += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
       <div class="row"><span>Cut main every</span><select id="beatEvery"><option value="1">beat</option><option value="2" selected>2 beats</option><option value="4">4 beats</option><option value="8">8 beats</option></select></div>
       <div class="actions"><button data-act="beatsync">Sync main cuts to beats</button></div>` : '<div class="actions"><button data-act="beats">Detect beats</button></div>'}`;
   }
-  h += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, 3, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, 3, 0.05, 's')}`;
   const acts = ['<button data-act="split">Split</button>', '<button data-act="dup">Duplicate</button>'];
-  if (m.kind === 'video') acts.push('<button data-act="freeze">Freeze frame</button>', `<button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button>`,
-    '<button data-act="reverse">Reverse</button>', '<button data-act="stabilize">Stabilize</button>', '<button data-act="reframe">Auto reframe</button>');
-  if (m.hasAudio && lane !== 'audio' && c.volume > 0) acts.push('<button data-act="detach">Detach audio</button>');
-  if (m.kind === 'video' && c.speed < 1) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
+  if (vid) acts.push('<button data-act="freeze">Freeze frame</button>', '<button data-act="reverse">Reverse</button>');
+  if (vid && c.speed < 1) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
-  if (lane === 'overlay') acts.push('<button data-act="track">Track motion</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  return `${h}<div class="actions">${acts.join('')}</div><p id="clipStatus" class="muted"></p>`;
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+    <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
+    <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable.</p>` : '';
+  tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
+  return head + tabbed([['Basic', basic], ['Look', look], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
 }
 function textPanel(c, lane) {
-  const cap = lane === 'captions', st = textStyle(c, lane), r = cap ? 'cap' : 'c.style';
-  let h = `<h3>${cap ? 'Caption' : 'Text'}</h3><textarea data-k="c.text" rows="3" spellcheck="false">${esc(c.text)}</textarea>`;
-  h += cap
-    ? `<p class="hint">Style edits apply to every caption.</p><div class="presets small">${Object.keys(CAP_PRESETS).map(n => `<button data-cappreset="${n}">${n}</button>`).join('')}</div>`
-    : `<div class="presets small">${Object.keys(TEXT_PRESETS).map(n => `<button data-textpreset="${n}">${n}</button>`).join('')}</div>`;
-  h += pick(`${r}.font`, 'Font', st.font, FONTS.map(f => [f, f])) + pick(`${r}.weight`, 'Weight', st.weight, [[400, 'Regular'], [600, 'Semibold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']])
-    + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Color', st.color)
-    + slider(`${r}.strokeW`, 'Outline', st.strokeW, 0, 20, 0.5) + colour(`${r}.stroke`, 'Outline color', st.stroke)
-    + tick(`${r}.shadow`, 'Shadow', st.shadow) + tick(`${r}.box`, 'Background', st.box)
-    + colour(`${r}.boxColor`, 'Background color', st.boxColor) + slider(`${r}.boxAlpha`, 'Bg opacity', st.boxAlpha, 0, 1, 0.01, '%')
-    + tick(`${r}.upper`, 'All caps', st.upper) + slider(`${r}.maxW`, 'Max width', st.maxW, 0.2, 1, 0.01, '%')
-    + pick(`${r}.anim`, 'Animation in', st.anim || 'none', ANIMS) + pick(`${r}.out`, 'Animation out', st.out || 'none', OUTS) + pick(`${r}.loop`, 'Loop', st.loop || 'none', LOOPS);
-  const pr = cap ? null : propsAt(c, S.t - c.start);
-  h += cap
-    ? colour('cap.hl', 'Highlight', st.hl) + tick('cap.pop', 'Pop active word', st.pop) + slider('cap.y', 'Position Y', P.capStyle.y, 0, 1, 0.005, '%')
+  const cap = lane === 'captions', st = textStyle(c, lane), r = cap ? 'cap' : 'c.style', pr = cap ? null : propsAt(c, S.t - c.start);
+  const style = `<textarea data-k="c.text" rows="3" spellcheck="false">${esc(c.text)}</textarea>`
+    + (cap ? `<p class="hint">Style edits apply to every caption.</p><div class="presets small">${Object.keys(CAP_PRESETS).map(n => `<button data-cappreset="${n}">${n}</button>`).join('')}</div>`
+      : `<div class="presets small">${Object.keys(TEXT_PRESETS).map(n => `<button data-textpreset="${n}">${n}</button>`).join('')}</div>`)
+    + pick(`${r}.font`, 'Font', st.font, FONTS.map(f => [f, f])) + pick(`${r}.weight`, 'Weight', st.weight, [[400, 'Regular'], [600, 'Semibold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']])
+    + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Color', st.color) + (cap ? colour('cap.hl', 'Highlight', st.hl) + tick('cap.pop', 'Pop active word', st.pop) : '')
+    + `<h4>Outline &amp; background</h4>${slider(`${r}.strokeW`, 'Outline', st.strokeW, 0, 20, 0.5)}${colour(`${r}.stroke`, 'Outline color', st.stroke)}${tick(`${r}.shadow`, 'Shadow', st.shadow)}`
+    + tick(`${r}.box`, 'Background', st.box) + colour(`${r}.boxColor`, 'Background color', st.boxColor) + slider(`${r}.boxAlpha`, 'Bg opacity', st.boxAlpha, 0, 1, 0.01, '%')
+    + `<h4>Layout</h4>${tick(`${r}.upper`, 'All caps', st.upper)}${slider(`${r}.maxW`, 'Max width', st.maxW, 0.2, 1, 0.01, '%')}`;
+  const anim = pick(`${r}.anim`, 'In', st.anim || 'none', ANIMS) + pick(`${r}.out`, 'Out', st.out || 'none', OUTS) + pick(`${r}.loop`, 'Loop', st.loop || 'none', LOOPS);
+  const pos = cap ? slider('cap.y', 'Position Y', P.capStyle.y, 0, 1, 0.005, '%') + '<p class="hint">Captions sit on one line position; drag one on the preview to move them all.</p>'
     : slider('c.x', 'Position X', pr.x, 0, 1, 0.005, '%') + slider('c.y', 'Position Y', pr.y, 0, 1, 0.005, '%') + slider('c.scale', 'Scale', pr.scale, 0.2, 4, 0.01, '%')
-      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°')
-      + slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') + kfRow(c, lane);
-  return `${h}<div class="actions"><button data-act="split">Split</button>${cap ? '' : '<button data-act="dup">Duplicate</button><button data-act="track">Track motion</button>'}<button data-act="delete">Delete</button>${cap ? '<button data-act="clearcaps">Delete all captions</button>' : ''}</div><p id="clipStatus" class="muted"></p>`;
+      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') + kfRow(c, lane);
+  return `<h3>${cap ? 'Caption' : 'Text'}</h3>` + tabbed([['Style', style], ['Animate', anim], ['Position', pos]])
+    + `<div class="actions"><button data-act="split">Split</button>${cap ? '' : '<button data-act="dup">Duplicate</button><button data-act="track">Track motion</button>'}<button data-act="delete">Delete</button>${cap ? '<button data-act="clearcaps">Delete all captions</button>' : ''}</div><p id="clipStatus" class="muted"></p>`;
 }
 function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" -> caption style ; "p.fps" -> project
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
@@ -1337,6 +1347,10 @@ function wire() {
   $('#capPresets').innerHTML = Object.entries(CAP_PRESETS).map(([n, s]) => `<button data-cap="${n}" style="font-family:'${s.font}';font-weight:${s.weight};color:${s.hl}">${n}</button>`).join('');
 
   $('#btnPlay').addEventListener('click', () => (S.playing ? pause() : play()));
+  $('#btnStart').addEventListener('click', () => P && seekTo(0));
+  $('#btnEnd').addEventListener('click', () => P && seekTo(total()));
+  $('#btnBack').addEventListener('click', () => P && seekTo(S.t - 1 / P.fps));
+  $('#btnFwd').addEventListener('click', () => P && seekTo(S.t + 1 / P.fps));
   $('#btnUndo').addEventListener('click', () => restore(undo, redo));
   $('#btnRedo').addEventListener('click', () => restore(redo, undo));
   $('#btnSplit').addEventListener('click', split);
@@ -1463,6 +1477,7 @@ function wire() {
     if (!e.target.dataset.k) return;
     pending ??= JSON.stringify(P); // one undo step per gesture, committed on 'change'
     apply(e.target);
+    if (e.target.type === 'range') fill(e.target);
     const out = e.target.parentElement.querySelector('output');
     if (out) out.textContent = fmt(+e.target.value, e.target.dataset.unit);
     S.dirty = true;
@@ -1479,7 +1494,11 @@ function wire() {
     const b = e.target.closest('button');
     if (!b) return;
     const c = selClip(), d = b.dataset;
-    if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
+    if (d.itab) {
+      S.itab = d.itab;
+      $$('#inspector .itabs button').forEach(x => x.classList.toggle('on', x === b));
+      $$('#inspector .isec').forEach(x => x.classList.toggle('on', x.dataset.sec === d.itab));
+    } else if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
     else if (d.fit) change(() => { c.fit = d.fit; });
     else if (d.cappreset) change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[d.cappreset], y: P.capStyle.y }; });
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
@@ -1541,13 +1560,9 @@ function wire() {
     else if ((mod && key === 'b') || (!mod && key === 's')) { e.preventDefault(); split(); }
     else if (!mod && key === 'm') { e.preventDefault(); toggleMarker(); }
     else if (key === 'backspace' || key === 'delete') { e.preventDefault(); del(); }
-    else if (key === 'arrowleft' || key === 'arrowright') {
-      e.preventDefault();
-      if (S.playing) pause();
-      S.t = snap(clamp(S.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / P.fps), 0, total()));
-      placePlayhead(); follow(); S.dirty = true;
-      if (selClip()?.kf) renderInspector();
-    } else if (key === 'escape' && S.pick) { S.pick = null; toast('Tracking cancelled'); }
+    else if (key === 'arrowleft' || key === 'arrowright') { e.preventDefault(); seekTo(S.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / P.fps)); }
+    else if (key === 'home' || key === 'end') { e.preventDefault(); seekTo(key === 'home' ? 0 : total()); }
+    else if (key === 'escape' && S.pick) { S.pick = null; toast('Tracking cancelled'); }
     else if (key === 'escape' && S.sel) { S.sel = null; renderAll(); S.dirty = true; }
   });
   new ResizeObserver(fitStage).observe($('#stage'));

@@ -4,36 +4,39 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cutroom</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ff7a45'/%3E%3Cpath d='M9 8v16M15 8v16M21 8l4 8-4 8' stroke='%231d0c03' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M9 8v16M15 8v16M21 8l4 8-4 8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="top">
-  <button id="btnProjects" title="Projects">Projects</button>
-  <button id="btnTemplates" title="Templates">Templates</button>
+  <div class="brand"><i><svg class="i" viewBox="0 0 24 24"><path d="M6 5v14M11 5v14M15 5l5 7-5 7"/></svg></i>Cutroom</div>
+  <button id="btnProjects" class="ghost" title="Projects"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Projects</button>
+  <button id="btnTemplates" class="ghost" title="Templates"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Templates</button>
+  <span class="spacer"></span>
   <input id="projName" class="name" spellcheck="false" aria-label="Project name">
   <span class="spacer"></span>
   <span id="saveState" class="muted"></span>
-  <button id="btnExport" class="primary">Export</button>
+  <button id="btnExport" class="primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Export</button>
 </header>
 
 <main class="work">
   <aside class="left">
     <nav class="tabs">
       <button data-tab="media" class="on">Media</button>
-      <button data-tab="text">Text</button>
+      <button data-tab="text">Text &amp; voice</button>
       <button data-tab="captions">Captions</button>
     </nav>
     <section id="tab-media" class="pane on">
-      <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv">+ Import media</label>
-      <p class="hint">or drop files anywhere. Drag items onto a track, or press +.</p>
+      <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
+      <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
       <div id="mediaList" class="media-list"></div>
     </section>
     <section id="tab-text" class="pane">
+      <h4>Text</h4>
       <p class="hint">Adds a text clip at the playhead. Drag it on the preview to move it.</p>
       <div id="textPresets" class="presets"></div>
       <h4>Voiceover</h4>
-      <p class="hint">Text to speech with this Mac's voices. Better ones: System Settings → Accessibility → Spoken Content → System voice → Manage Voices.</p>
+      <p class="hint">Text to speech with this Mac's voices. Better voices: System Settings → Accessibility → Spoken Content → System voice → Manage Voices.</p>
       <textarea id="ttsText" rows="4" placeholder="Type the script…" spellcheck="true"></textarea>
       <label class="row"><span>Voice</span><select id="ttsVoice"></select></label>
       <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
@@ -48,6 +51,7 @@
       </select></label>
       <label class="row"><span>Words per caption</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
       <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
+      <h4>Style</h4>
       <div id="capPresets" class="presets"></div>
       <button id="btnCaptions" class="primary wide">Generate captions</button>
       <p id="capStatus" class="muted"></p>
@@ -58,7 +62,14 @@
     <div id="stage" class="stage"><canvas id="cv"></canvas></div>
     <div class="transport">
       <span id="tc" class="tc">00:00:00</span>
-      <button id="btnPlay" class="play" title="Play / pause (Space)"></button>
+      <span class="spacer"></span>
+      <div class="tbtns">
+        <button id="btnStart" title="Go to start (Home)" aria-label="Go to start"><svg class="i" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8v16ZM5 19V5"/></svg></button>
+        <button id="btnBack" title="Previous frame (←)" aria-label="Previous frame"><svg class="i" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+        <button id="btnPlay" class="play" title="Play / pause (Space)" aria-label="Play or pause"></button>
+        <button id="btnFwd" title="Next frame (→)" aria-label="Next frame"><svg class="i" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+        <button id="btnEnd" title="Go to end (End)" aria-label="Go to end"><svg class="i" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8V4ZM19 5v14"/></svg></button>
+      </div>
       <span class="spacer"></span>
       <span id="ratioLabel" class="muted"></span>
     </div>
@@ -69,16 +80,16 @@
 
 <footer class="timeline">
   <div class="toolbar">
-    <button id="btnUndo" title="Undo (⌘Z)">Undo</button>
-    <button id="btnRedo" title="Redo (⇧⌘Z)">Redo</button>
+    <button id="btnUndo" title="Undo (⌘Z)" aria-label="Undo"><svg class="i" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button id="btnRedo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg class="i" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
     <span class="sep"></span>
-    <button id="btnSplit" title="Split at playhead (S)">Split</button>
-    <button id="btnDelete" title="Delete (⌫)">Delete</button>
+    <button id="btnSplit" title="Split at playhead (S)"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Split</button>
+    <button id="btnDelete" title="Delete (⌫)"><svg class="i" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete</button>
     <span class="sep"></span>
-    <button id="btnPauses" title="Cut silent gaps out of main-track clips">Remove pauses</button>
+    <button id="btnPauses" title="Cut silent gaps out of main-track clips"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg>Remove pauses</button>
     <select id="pauseLen" title="Shortest pause to remove"><option value="0.3">&gt; 0.3 s</option><option value="0.5" selected>&gt; 0.5 s</option><option value="1">&gt; 1 s</option></select>
     <span class="spacer"></span>
-    <label class="zoom">Zoom <input id="zoom" type="range" min="0" max="5.6" step="0.01"></label>
+    <label class="zoom"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg><input id="zoom" type="range" min="0" max="5.6" step="0.01" aria-label="Timeline zoom"></label>
   </div>
   <div class="tl-body">
     <div id="heads" class="heads"></div>
