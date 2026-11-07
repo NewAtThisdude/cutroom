@@ -38,6 +38,7 @@ Data lives in `~/Movies/Cutroom/`:
 | | Filters (vivid, mono, sepia, warm, cool, teal) with strength; brightness, contrast, saturation | Colour matrices: an SVG `feColorMatrix` in the preview, `colorchannelmixer` in the export |
 | | Crop, mirror, rotation, chroma key (green screen) | The preview's key uses ffmpeg `colorkey`'s exact formula |
 | | Masks: circle, rectangle, linear, mirror; feather and invert | Drawn by one canvas routine for both the preview and the export PNG (`alphamerge`). Combined with a chroma key, the alphas multiply |
+| | Overlay blend modes: multiply, screen, overlay, darken, lighten, color dodge, color burn, hard light, soft light, difference, exclusion | The preview uses canvas `globalCompositeOperation`. The export runs the same W3C formulas through `lut2`; ffmpeg's own `blend` modes give different results |
 | | Stabilize, auto reframe | Stabilize: `deshake` plus an 8% zoom. Auto reframe: Apple Vision faces, written as eased keyframes |
 | | HDR iPhone footage (HLG/PQ) | Tone-mapped to SDR by VideoToolbox (`scale_vt`), with rotation handled |
 | Text | Text clips with 7 presets (including emoji stickers), 4 bundled OFL fonts plus system fonts | Pop, fade or slide-in animations. Keyframed position and scale |
@@ -94,6 +95,9 @@ once in the browser also guarantees the export matches the preview.
   decoder; the native one drops the alpha plane.
 - **Transitions:** chain inputs need identical timebases (`settb=AVTB`). The clamp
   (≤ half the shorter clip) is shared by `trF()` (UI) and `overlap()` (server).
+- **Blend modes:** ffmpeg's `blend` filter disagrees with the W3C formulas that the canvas uses:
+  soft-light is off by up to 31 levels, dodge and burn miss the edge cases, and "overlay" versus
+  "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels.
 
 ## Files
 
@@ -123,4 +127,4 @@ once in the browser also guarantees the export matches the preview.
 - **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only,
   verified on a 3D-avatar clip.
 - **Mic recording** is untested end to end: the test browser has no microphone.
-- **Not built:** multi-camera, blend modes, and AI generation (CapCut's AIGC is cloud-based).
+- **Not built:** multi-camera and AI generation (CapCut's AIGC is cloud-based).
