@@ -30,6 +30,14 @@ PROPAINTER = VENDOR / 'ProPainter' / 'inference_propainter.py'
 OFFSETS = [o for d in [*range(1, 11), 12, 15, 19, 24, 30, 38, 48, 60, 75, 95, 120, 150, 190, 240, 300] for o in (d, -d)]
 
 
+def labels(tags):
+    """The source's colour labels as a setparams filter: ffmpeg takes primaries and transfer from the frames, which a raw
+    pipe leaves unset, so encoder options alone label only the matrix."""
+    opt = {'-colorspace': 'colorspace', '-color_primaries': 'color_primaries', '-color_trc': 'color_trc'}
+    kv = [f'{opt[k]}={v}' for k, v in zip(tags[::2], tags[1::2]) if k in opt]
+    return ['-vf', 'setparams=' + ':'.join(kv)] if kv else []
+
+
 def say(p):
     print(f'progress {min(1.0, max(0.0, p)):.3f}', flush=True)
 
@@ -305,8 +313,8 @@ def cutout(job, n):
     print('engine sam2', flush=True)
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuva444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a?',
-                            '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '28', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
-                            *job['tags'], '-c:a', 'libopus', '-b:a', '128k', '-shortest', job['out']], stdin=subprocess.PIPE)
+                            *labels(job['tags']), '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '28', '-deadline', 'realtime', '-cpu-used', '8',
+                            '-row-mt', '1', *job['tags'], '-c:a', 'libopus', '-b:a', '128k', '-shortest', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):
         a = cv2.resize(alpha[min(t, len(alpha) - 1)], (W, H), interpolation=cv2.INTER_LINEAR)  # smooth upscaled edge
         enc.stdin.write(np.ascontiguousarray(fr.transpose(2, 0, 1)).tobytes() + a.tobytes())
@@ -392,7 +400,7 @@ def main(path):
     del F
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a?',
-                            '-c:v', 'libx264', '-preset', 'fast', '-crf', '16', '-pix_fmt', 'yuv420p', *job['tags'],
+                            *labels(job['tags']), '-c:v', 'libx264', '-preset', 'fast', '-crf', '16', '-pix_fmt', 'yuv420p', *job['tags'],
                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):
         fr = fr.copy()

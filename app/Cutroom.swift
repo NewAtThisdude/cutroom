@@ -48,6 +48,8 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     var server: Process? // set only when this app started the server
     var popups: [NSWindow] = [] // window.open() targets, released on close
     var activity: NSObjectProtocol? // holds off App Nap while the app runs
+    var pending: [URL] = [] // files opened with the app (Finder, Dock icon) before the editor is up
+    var ready = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -101,6 +103,31 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    // Files dropped on the Dock icon or opened with Cutroom from Finder: imported into the library
+    func application(_ application: NSApplication, open urls: [URL]) {
+        pending += urls.filter(\.isFileURL)
+        if ready { importPending() }
+    }
+
+    func importPending() {
+        let urls = pending
+        pending = []
+        guard !urls.isEmpty else { return }
+        Task {
+            var n = 0
+            for u in urls {
+                var req = URLRequest(url: base.appendingPathComponent("api/import_path"), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 900)
+                req.httpMethod = "POST"
+                req.setValue("1", forHTTPHeaderField: "X-Cutroom") // the server's write guard
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.httpBody = try? JSONSerialization.data(withJSONObject: ["path": u.path])
+                if let (_, r) = try? await URLSession.shared.data(for: req), (r as? HTTPURLResponse)?.statusCode == 200 { n += 1 }
+            }
+            let msg = n == urls.count ? "Imported \(n) file\(n == 1 ? "" : "s")" : "Imported \(n) of \(urls.count) files"
+            _ = try? await web.evaluateJavaScript("loadMedia().then(() => toast('\(msg)'))")
+        }
+    }
 
     func applicationWillTerminate(_ note: Notification) {
         guard let p = server, p.isRunning else { return }
@@ -172,6 +199,8 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     // MARK: WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        ready = true
+        importPending()
         guard webView.isHidden else { return }
         webView.isHidden = false
         window.makeFirstResponder(webView) // keyboard shortcuts work without a first click

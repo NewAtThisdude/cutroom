@@ -2110,7 +2110,7 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
   if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
   const st = $('#scStatus'), say = x => { if (st) st.textContent = x; };
   say('Looking at every shot…');
-  const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id }, 'Combining');
+  const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id, sound }, 'Combining');
   setProject(newProject(ratio));
   P.name = plan.title || `Smart combine ${new Date().toLocaleDateString()}`;
   for (const s of plan.shots) {
@@ -2135,6 +2135,7 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
         const half = (x.tr?.d || 0) / 2, endT = x.start + tdur(x, 'main') - half;
         const mk = marks.reduce((best, v) => (Math.abs(v - endT) < Math.abs(best - endT) ? v : best), Infinity);
         const want = x.in + (mk + half - x.start) * x.speed;
+        if (plan.shots[i].speech) return; // someone is talking: the cut stays where the word ends
         if (Number.isFinite(mk) && mk - x.start > 0.8 && want <= Math.min(plan.shots[i].lim ?? Infinity, M.get(x.media).duration)) x.out = want;
       });
     });

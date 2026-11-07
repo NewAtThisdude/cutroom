@@ -805,7 +805,7 @@ COMBINE_STYLES = {  # shot length range (s), transition for a change of place, i
     'balanced': (2.0, 3.5, 'fade', 0.4), 'energetic': (1.0, 2.0, 'slideleft', 0.25), 'calm': (3.0, 5.0, 'fade', 0.8), 'cinematic': (3.0, 5.5, 'fadeblack', 0.7)}
 
 
-def combine(st, mids, target=0, style='balanced', order='auto', music=None):
+def combine(st, mids, target=0, style='balanced', order='auto', music=None, sound=False):
     """Smart combine (CapCut's AutoCut), on this Mac: the best-looking moment of every scene across the clips, in an
     order (as shot, or a story the local model picks from what each shot shows), fitted to the length, with transitions
     picked from what changes between shots: a hard cut inside one take, a dip on a big brightness jump, the style's
@@ -820,6 +820,9 @@ def combine(st, mids, target=0, style='balanced', order='auto', music=None):
     cands = []
     for mi, (mid, sh_) in enumerate(info):
         fr = sh_['frames']
+        take_end = {}
+        for sc in sh_['scenes']:
+            take_end[sc['take']] = max(take_end.get(sc['take'], 0), sc['b'])
         for sc in sh_['scenes']:
             a, b = sc['a'] + 0.15, sc['b'] - 0.15  # stay clear of the cuts
             if b - a < min(lo, 1.0):
@@ -831,7 +834,8 @@ def combine(st, mids, target=0, style='balanced', order='auto', music=None):
             win = [f for f in pts if s0 <= f['t'] <= s0 + L] or pts[:1] or fr[:1]
             mot = statistics.fmean(f['m'] for f in win)
             q = score(s0) * (0.6 + 0.08 * sc.get('look', 3)) * ((1 + min(mot, 20) / 40) if style == 'energetic' else (1 - min(mot, 30) / 90))
-            cands.append({'media': mid, 'in': round(s0, 3), 'out': round(s0 + L, 3), 'lim': b, 'q': round(q, 3), 'y0': win[0]['y'], 'y1': win[-1]['y'],
+            cands.append({'media': mid, 'in': round(s0, 3), 'out': round(s0 + L, 3), 'base': a, 'lim': take_end[sc['take']] - 0.15, 'q': round(q, 3),
+                          'y0': win[0]['y'], 'y1': win[-1]['y'],
                           'take': (mi, sc['take']), 'mi': mi, **{k: sc[k] for k in ('desc', 'place', 'shot', 'subject', 'energy') if k in sc}})
     if not cands:
         raise RuntimeError('no usable shots (the clips are too short, too dark or too blurry)')
@@ -861,6 +865,34 @@ def combine(st, mids, target=0, style='balanced', order='auto', music=None):
             f = min(1.6, target / max(tot(cands), 0.1))
             for c in cands:
                 c['out'] = round(min(c['lim'], c['in'] + (c['out'] - c['in']) * f), 3)
+    if sound:  # their sound stays in: never start or end a shot in the middle of a spoken word (on-device transcript)
+        words = {}
+        for mid in {c['media'] for c in cands}:
+            try:
+                words[mid] = [(w['s'], w['e'], w['w']) for w in transcribe(mid, 'auto')] if meta(mid).get('hasAudio') else []
+            except (RuntimeError, OSError, ValueError):
+                words[mid] = []
+        def between(ws, t, lo, hi):  # t moved to the nearer edge of the word it falls in (padding at most half the gap, so
+            for i, (w0, w1, _) in enumerate(ws):  # back-to-back words are cut exactly between them), kept inside [lo, hi]
+                if w0 < t < w1:
+                    before = w0 - min(0.08, max(0.0, w0 - (ws[i - 1][1] if i else w0 - 1)) / 2)
+                    after = w1 + min(0.12, max(0.0, (ws[i + 1][0] if i + 1 < len(ws) else w1 + 1) - w1) / 2)
+                    ok = [x for x in (before, after) if lo <= x <= hi]
+                    return min(ok, key=lambda x: abs(x - t)) if ok else t
+            return t
+        def sentence(ws, t, lo, hi, ends):  # the nearest sentence start / end in [lo, hi] (punctuation from the transcript)
+            pts = [w0 - 0.05 for i, (w0, _, _) in enumerate(ws) if i == 0 or re.search(r'[.?!]$', ws[i - 1][2])] if not ends else \
+                  [w1 + 0.12 for w0, w1, tx in ws if re.search(r'[.?!]$', tx)]
+            pts = [x for x in pts if lo <= x <= hi]
+            return min(pts, key=lambda x: abs(x - t)) if pts else None
+        for c in cands:
+            ws = sorted(words.get(c['media']) or [])
+            if ws:  # whole sentences when one is close, else at least whole words
+                a0 = sentence(ws, c['in'], max(c['base'], c['in'] - 1.0), c['in'] + 1.0, False)
+                c['in'] = round(a0 if a0 is not None else between(ws, c['in'], c['base'], c['out'] - 1.0), 3)
+                b0 = sentence(ws, c['out'], max(c['in'] + 1.0, c['out'] - 1.0), min(c['lim'], c['out'] + 1.5), True)
+                c['out'] = round(b0 if b0 is not None else between(ws, c['out'], c['in'] + 1.0, min(c['lim'], c['out'] + 0.8)), 3)
+            c['speech'] = bool(ws) and any(w0 < c['out'] and w1 > c['in'] for w0, w1, _ in ws)
     for k, c in enumerate(cands):  # transitions from what changes
         n = cands[k + 1] if k + 1 < len(cands) else None
         if not n:
@@ -882,7 +914,7 @@ def combine(st, mids, target=0, style='balanced', order='auto', music=None):
         bp = beats(music)
         beat = 60 / max(40, bp.get('bpm') or 120)
         every = max(1, round(((lo + hi) / 2) / beat))  # cuts every N beats, near the style's shot length
-    keep = ('media', 'in', 'out', 'lim', 'tr', 'desc', 'place')
+    keep = ('media', 'in', 'out', 'lim', 'tr', 'desc', 'place', 'speech')
     return {'shots': [{k: c[k] for k in keep if k in c} for c in cands], 'title': title, 'every': every, 'vision': vision}
 
 
@@ -1676,7 +1708,7 @@ class App(BaseHTTPRequestHandler):
                                                   body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove')})
             if u.path == '/api/ai/combine':
                 return self.reply({'job': run_job(combine, body.get('media') or [], body.get('target', 0), body.get('style', 'balanced'),
-                                                  body.get('order', 'auto'), body.get('music'))})
+                                                  body.get('order', 'auto'), body.get('music'), bool(body.get('sound')))})
             if u.path == '/api/ai/highlights':
                 return self.reply({'job': run_job(highlights, body['media'], body.get('lang', 'auto'), body.get('count', 3), body.get('min', 15), body.get('max', 45))})
             if u.path == '/api/ai/translate':
@@ -1801,6 +1833,10 @@ def selftest():
         assert len(fit) == 2 and sum(x['out'] - x['in'] for x in fit) <= 7.5, fit
         long = combine({}, ['A'], 30, 'calm', 'shot')['shots']
         assert all(x['out'] <= x['lim'] + 1e-6 for x in long), long
+        words[:] = [{'w': 'mid', 's': 2.0, 'e': 4.0}]  # one word across the first shot's end (0.25-3.67 s), no sentence end near
+        globals()['meta'] = lambda mid: {'duration': 43.0, 'hasAudio': True}
+        talk = combine({}, ['A'], 0, 'balanced', 'shot', None, True)['shots']
+        assert talk[0]['out'] >= 4.0 and talk[0]['speech'] and not talk[1]['speech'], talk
     finally:
         globals().update(keep)
     HOME = Path(tempfile.mkdtemp(prefix='cutroom-test-'))
