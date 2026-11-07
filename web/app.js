@@ -60,6 +60,8 @@ const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['p
 const ANIM_T = 0.3; // text "in" animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
+const BLENDS = [['normal', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'], ['darken', 'Darken'], ['lighten', 'Lighten'], // canvas modes; the export runs the same formulas
+  ['color-dodge', 'Color dodge'], ['color-burn', 'Color burn'], ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'], ['exclusion', 'Exclusion']];
 const RAMPS = { // speed multipliers over 8 equal parts of the clip (CapCut's curve presets, baked into editable parts)
   montage: [1, 1.6, 0.5, 2, 1, 0.5, 1.8, 1], hero: [1, 1, 0.5, 0.25, 0.25, 0.5, 1, 1], bullet: [2, 2, 0.35, 0.2, 0.35, 2, 2, 2],
   jumpcut: [1, 1, 3, 3, 1, 1, 3, 3], flashin: [4, 3, 2, 1.5, 1, 1, 1, 1], flashout: [1, 1, 1, 1, 1.5, 2, 3, 4],
@@ -297,7 +299,7 @@ function mediaPanel(c, lane) {
   if (vis) {
     basic += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
     basic += `<h4>Transform</h4>${slider('c.scale', 'Scale', pr.scale, 0.1, 4, 0.01, '%')}${slider('c.x', 'Position X', pr.x, -1, 1, 0.005, '%')}${slider('c.y', 'Position Y', pr.y, -1, 1, 0.005, '%')}`
-      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + (lane === 'overlay' ? slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') : '') + kfRow(c, lane);
+      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + (lane === 'overlay' ? slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') + pick('c.blend', 'Blend', c.blend || 'normal', BLENDS) : '') + kfRow(c, lane);
   }
   basic += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, 3, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, 3, 0.05, 's')}`;
   let look = '';
@@ -528,7 +530,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
     draw(((P.w - mw * s) / 2) * k, ((P.h - mh * s) / 2) * k, mw * s * k, mh * s * k, false);
   }
   ctx.filter = filt || 'none';
-  if (lane === 'overlay') ctx.globalAlpha = pr.opacity * f;
+  if (lane === 'overlay') { ctx.globalAlpha = pr.opacity * f; if (c.blend && c.blend !== 'normal') ctx.globalCompositeOperation = c.blend; }
   draw(g.x * k, g.y * k, g.w * k, g.h * k);
   ctx.restore();
   if (lane === 'main' && f < 1) { ctx.fillStyle = `rgba(0,0,0,${1 - f})`; ctx.fillRect(0, 0, P.w * k, P.h * k); } // ffmpeg fade = to black
@@ -1132,7 +1134,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     const m = M.get(c.media);
     if (!m) throw new Error('a clip points at missing media; delete it first');
     const o = { media: c.media, start: c.start, in: c.in, out: c.out, speed: c.speed, volume: c.volume, frames: frames(c), fadeIn: c.fadeIn, fadeOut: c.fadeOut,
-      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, look: lookMatrix(c), key: c.key, angle: c.rot ?? 0 };
+      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, look: lookMatrix(c), key: c.key, angle: c.rot ?? 0, blend: lane === 'overlay' && c.blend !== 'normal' ? c.blend : undefined };
     if (m.kind !== 'audio') {
       const g = geom(m, c, P.w, P.h);
       o.geom = { x: g.x * k, y: g.y * k, w: g.w * k, h: g.h * k };
@@ -1505,7 +1507,7 @@ function wire() {
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.blend; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });

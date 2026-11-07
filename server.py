@@ -27,6 +27,14 @@ IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9', 'av1'}, {'.mp4', '.mov', '.m4v', '.webm'}
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
 XFADES = {'fade', 'fadeblack', 'wipeleft', 'slideleft', 'circleopen', 'zoomin'}  # the UI mirrors these per pixel
+BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expressions; x = backdrop, y = clip, 0..255 (ffmpeg's own blend modes differ)
+    'multiply': 'x*y/255', 'screen': 'x+y-x*y/255', 'darken': 'min(x,y)', 'lighten': 'max(x,y)',
+    'overlay': 'if(lte(x,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
+    'hard-light': 'if(lte(y,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
+    'soft-light': 'if(lte(y,127.5),x-(255-2*y)*x*(255-x)/65025,x+(2*y-255)*(if(lte(x,63.75),((16*x/255-12)*x/255+4)*x/255,sqrt(x/255))*255-x)/255)',
+    'color-dodge': 'if(eq(x,0),0,if(eq(y,255),255,min(255,x*255/(255-y))))',
+    'color-burn': 'if(eq(x,255),255,if(eq(y,0),0,255-min(255,(255-x)*255/y)))',
+    'difference': 'abs(x-y)', 'exclusion': 'x+y-2*x*y/255'}
 NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Good News', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox'}
 ID = re.compile(r'[a-f0-9]{12}')
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
@@ -472,6 +480,7 @@ def clean_plan(p):
         k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0}
                    for f in kf] or None
         k['angle'] = fnum(c.get('angle', 0), -3600, 3600)
+        k['blend'] = c.get('blend') if c.get('blend') in BLENDS else None
         k['trans'] = bool(m.get('trans'))
         k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 4), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
@@ -685,6 +694,13 @@ def graph(p, td):
         fg.append(f'[{cur[0]}][{src}]overlay={x}:{y}:eof_action=pass[{nxt}]')
         cur[0] = nxt
 
+    def blended(src, x, y, mode):  # place the clip on a clear full frame, blend its RGB with the layers below, mix by its alpha
+        e, t = f"'{BLENDS[mode]}+0.5'", f'B{len(fg)}'
+        fg.append(f'color=c=black@0:s={W}x{H}:r={F:g}:d={D:.6f},format=rgba[{t}e];[{t}e][{src}]overlay={x}:{y}:eof_action=pass:format=auto,format=gbrap[{t}o];'
+                  f'[{cur[0]}]split[{t}b][{t}k];[{t}b]format=gbrap[{t}g];[{t}g][{t}o]lut2=c0={e}:c1={e}:c2={e}:c3=y[{t}l]')
+        cur[0] = f'{t}k'
+        over(f'{t}l')
+
     if p['main']:
         over('vm')
     for k, c in enumerate(p['overlay']):
@@ -705,7 +721,10 @@ def graph(p, td):
         if kf:  # size changes per frame: last step (see place())
             v += sc
         fg.append(v + f",setpts=PTS+{c['start']:.6f}/TB[o{k}]")  # shifted to its timeline start
-        over(f'o{k}', ox, oy)
+        if c.get('blend'):
+            blended(f'o{k}', ox, oy, c['blend'])
+        else:
+            over(f'o{k}', ox, oy)
         if c['kind'] == 'video' and c['hasAudio'] and c['volume'] > 0:
             fg.append(audio(i, c, dur, c['start']) + f'[oa{k}]')
             mix.append(f'[oa{k}]')
@@ -1107,6 +1126,22 @@ def selftest():
                   'main': [{'media': G['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(G), 'key': {'color': '#00ff00', 'sim': 0.3, 'blend': 0.1}}]}, 30)
     assert pixel(out, 0.5, 20, 150)[2] > 200 and pixel(out, 0.5, 135, 240)[0] > 200, 'chroma key: green must turn transparent, red stays'
     print('chroma key ok')
+    for name, col in (('base', '0xc87828'), ('top', '0x3c648c')):
+        gen('-f', 'lavfi', '-i', f'color=c={col}:s=320x320', '-frames:v', '1', str(HOME / f'{name}.png'))
+    Ba, To = imp('base.png'), imp('top.png')
+    bov = lambda mode, op, x: {'media': To['id'], 'start': 0, 'in': 0, 'out': 1, 'frames': 30, 'opacity': op, 'blend': mode, 'geom': {'x': x, 'y': 0, 'w': 90, 'h': 90}}
+    out = render({'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#000000', 'name': 'blend', 'audio': [],
+                  'main': [{'media': Ba['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(Ba, 'fill')}],
+                  'overlay': [bov('multiply', 1, 0), bov('soft-light', 0.5, 90), bov('color-dodge', 1, 180)]}, 30)
+    w3c = {'multiply': lambda b, s: b * s,  # the canvas formulas, written independently of the lut2 expressions
+           'soft-light': lambda b, s: b - (1 - 2 * s) * b * (1 - b) if s <= 0.5 else b + (2 * s - 1) * ((((16 * b - 12) * b + 4) * b if b <= 0.25 else math.sqrt(b)) - b),
+           'color-dodge': lambda b, s: 0 if b == 0 else 1 if s >= 1 else min(1, b / (1 - s))}
+    for mode, op, x in (('multiply', 1, 45), ('soft-light', 0.5, 135), ('color-dodge', 1, 225)):
+        want = [round(b * (1 - op) + 255 * w3c[mode](b / 255, s / 255) * op) for b, s in zip((200, 120, 40), (60, 100, 140))]
+        got = pixel(out, 0.5, x, 45)
+        assert all(abs(g - w) <= 8 for g, w in zip(got, want)), (mode, got, want)
+    assert all(abs(g - w) <= 8 for g, w in zip(pixel(out, 0.5, 135, 300), (200, 120, 40))), 'blend: outside the clips the base stays'
+    print('blend modes ok: multiply, soft-light at 50%, color dodge match the canvas formulas')
     one = lambda name, clip: render({'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': name, 'overlay': [], 'audio': [], 'main': [clip]}, 60)
     out = one('rotate', {'media': R['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(R), 'angle': 45})
     assert max(pixel(out, 1, 8, 112)) < 40 and pixel(out, 1, 135, 240)[0] > 200, 'rotation: the square corner must turn into background'
