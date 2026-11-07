@@ -42,12 +42,12 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     return a
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var web: WKWebView!
     var server: Process? // set only when this app started the server
     var popups: [NSWindow] = [] // window.open() targets, released on close
-    var activity: NSObjectProtocol? // holds off App Nap while the app runs
+    var activity: NSObjectProtocol? // holds off App Nap while work runs (the page says when: jobs, MCP commands, playback)
     var pending: [URL] = [] // files opened with the app (Finder, Dock icon) before the editor is up
     var ready = false
 
@@ -58,7 +58,7 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
         let cfg = WKWebViewConfiguration()
         cfg.mediaTypesRequiringUserActionForPlayback = [] // the preview plays <video>s from code
         cfg.preferences.inactiveSchedulingPolicy = .none // keep running behind other windows: Claude Code drives it (MCP), exports run
-        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Cutroom stays live for edits and exports") // no App Nap
+        cfg.userContentController.add(self, name: "busy") // at rest the app may nap like any other: it used to hold App Nap off for good
         web = WKWebView(frame: .zero, configuration: cfg)
         web.isInspectable = true
         web.uiDelegate = self
@@ -76,6 +76,16 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
         connect()
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "busy" else { return }
+        if (message.body as? Bool) == true {
+            if activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Cutroom is working") }
+        } else if let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
+            activity = nil
+        }
     }
 
     func connect() {

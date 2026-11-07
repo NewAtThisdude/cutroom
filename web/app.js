@@ -107,7 +107,10 @@ const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1);
 
 let P = null;                        // current project
 const M = new Map();                 // media id -> server metadata
-const S = { sel: null, multi: new Set(), t: 0, playing: false, pps: 60, dirty: true, t0: 0, wall0: 0, end: 0, exporting: false }; // multi: more selected clips ('lane:id')
+const S = { sel: null, multi: new Set(), t: 0, playing: false, pps: 60, t0: 0, wall0: 0, end: 0, exporting: false }; // multi: more selected clips ('lane:id')
+let rafId = 0; // the preview draws only when something changed or it plays: an always-on 60 Hz loop kept 8 % of a core busy at rest
+const kick = () => { if (!rafId) rafId = requestAnimationFrame(frame); };
+{ let d = true; Object.defineProperty(S, 'dirty', { get: () => d, set: v => { d = v; if (v) kick(); }, enumerable: true }); }
 let undo = [], redo = [], pending = null, saveTimer = 0, hits = [];
 const uploads = [], pool = new Map(), imgs = new Map();
 
@@ -627,7 +630,7 @@ function vidFor(key, m) {
     v = document.createElement('video');
     v.preload = 'auto';
     v.playsInline = true;
-    v.addEventListener('seeked', () => { S.dirty = true; });
+    v.addEventListener('seeked', () => { S.dirty = true; setTimeout(() => { S.dirty = true; }, 50); }); // WebKit hands drawImage the new frame a moment later
     v.addEventListener('loadeddata', () => { S.dirty = true; });
     $('#mediaPool').append(v);
     pool.set(key, v);
@@ -1229,7 +1232,6 @@ function pixelTr(ctx, A, B, type, P1) { // the transitions that need every pixel
 
 // ---------- the library panel: galleries of effects, transitions, filters, text styles, stickers and sounds ----------
 const G = { tab: 'media', fxCat: 'all', stCat: 'Smileys', mfilter: 'all', hover: null, raf: 0, frame: 0, sfx: [], audio: null };
-const RM = matchMedia('(prefers-reduced-motion: reduce)');
 const EMOJI = {
   Smileys: '😀😂🤣😊😍🥰😘😎🤩🥳😇🙂😉😜🤪🤔🙄😴🤤😭😡🤯😱🥶🤡👻💀👽🤖😺',
   Hands: '👍👎👏🙌🙏💪✌️🤞👌🤙👋☝️👉👈👆👇✊👊🤝🫶✍️💅',
@@ -1274,7 +1276,6 @@ function renderPane() { // the open gallery, refreshed (cheap: called on tab cha
   else if (t === 'text') renderTextTiles();
   else if (t === 'script') renderScript();
   else if (t === 'captions') renderCapList();
-  if ((t === 'effects' || t === 'transitions') && !G.raf) G.raf = requestAnimationFrame(galleryLoop);
 }
 function renderEffects() {
   $('#fxCats').innerHTML = FX_CATS.map(([k, n]) => `<button data-fxcat="${k}" class="${G.fxCat === k ? 'on' : ''}">${n}</button>`).join('');
@@ -1376,13 +1377,13 @@ function textSwatch(n, s0) { // the style drawn with CSS: close to drawText, for
 function renderTextTiles() {
   $('#tplList').innerHTML = Object.entries(TEXT_TEMPLATES).map(([n, layers]) => `<button data-tpl="${esc(n)}" title="Add ${esc(n)} at the playhead">${textSwatch(n, { ...TEXT_PRESETS[layers[0][0]], ...layers[0][2], size: 60, maxW: 1 })}<i>${layers.length} layer${layers.length > 1 ? 's' : ''}</i></button>`).join('');
   $('#textPresets').innerHTML = Object.entries(TEXT_PRESETS).map(([n, s]) => `<button data-addtext="${n}" title="Add ${n} text at the playhead">${textSwatch(n, s)}</button>`).join(''); }
-function drawTiles(force, now = performance.now()) { // animated tiles: only the ones in view; with reduced motion only the one under the pointer moves
-  const pane = $(`#tab-${G.tab}`), pr = pane?.getBoundingClientRect(), anim = !RM.matches;
+function drawTiles(force, now = performance.now()) { // still tiles; the one under the pointer plays (every tile playing took a third of a core)
+  const pane = $(`#tab-${G.tab}`), pr = pane?.getBoundingClientRect();
   if (!pr) return;
   for (const b of $$('.tile[data-fx], .tile[data-trset]', pane)) {
     const r = b.getBoundingClientRect();
     if (r.bottom < pr.top || r.top > pr.bottom) continue;
-    const moving = anim || G.hover === b;
+    const moving = G.hover === b;
     if (!force && !moving) continue;
     const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }), tsec = moving ? now / 1000 : null;
     x.save();
@@ -1407,7 +1408,7 @@ function drawTiles(force, now = performance.now()) { // animated tiles: only the
 }
 function galleryLoop(now) {
   G.raf = 0;
-  if (G.tab !== 'effects' && G.tab !== 'transitions') return;
+  if ((G.tab !== 'effects' && G.tab !== 'transitions') || !G.hover) return;
   if (++G.frame % 2 === 0) drawTiles(false, now); // 30 fps is plenty for thumbnails
   G.raf = requestAnimationFrame(galleryLoop);
 }
@@ -1882,27 +1883,27 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   }
 }
 function frame(now) {
-  if (P) {
-    if (S.playing) {
-      S.t = Math.min(S.t0 + (now - S.wall0) / 1000, S.end);
-      if (S.t >= S.end) pause();
-      S.dirty = true;
-      placePlayhead();
-      follow();
-    }
-    if (S.dirty) { S.dirty = false; paint(); }
+  rafId = 0;
+  if (!P) return;
+  if (S.playing) {
+    S.t = Math.min(S.t0 + (now - S.wall0) / 1000, S.end);
+    if (S.t >= S.end) pause();
+    const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
+    if (f !== S.shown || !S.playing) { S.shown = f; S.dirty = true; placePlayhead(); follow(); }
+    kick();
   }
-  requestAnimationFrame(frame);
+  if (S.dirty) { S.dirty = false; paint(); }
 }
 function play() {
   const D = total();
   if (D <= 0) return;
   if (S.t >= D - 1e-3) S.t = 0;
   audioOn();
+  if (!S.playing) busy(1);
   Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { S.playing = false; S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { if (S.playing) busy(-1); S.playing = false; S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t) {
@@ -2034,15 +2035,20 @@ async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect
 }
 
 const setStatus = msg => { if (remoteLog) remoteLog.push(String(msg)); const s = $('#clipStatus'); if (s) s.textContent = msg; else toast(msg); };
+let busyN = 0; // the Mac app keeps App Nap off only while this is above 0
+const busy = d => { const was = busyN > 0; busyN = Math.max(0, busyN + d); if (was !== busyN > 0) window.webkit?.messageHandlers?.busy?.postMessage(busyN > 0); };
 async function job(path, body, label, say = setStatus) { // start a server job and poll it, showing progress next to the clip (or where say puts it)
-  const { job: id } = await api(path, body);
-  for (;;) {
-    await new Promise(r => setTimeout(r, 500));
-    const j = await api(`/api/jobs/${id}`);
-    if (j.state === 'done') return j;
-    if (j.state !== 'running') throw new Error((j.error || `${label} failed`).slice(-300));
-    say(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
-  }
+  busy(1);
+  try {
+    const { job: id } = await api(path, body);
+    for (;;) {
+      await new Promise(r => setTimeout(r, 500));
+      const j = await api(`/api/jobs/${id}`);
+      if (j.state === 'done') return j;
+      if (j.state !== 'running') throw new Error((j.error || `${label} failed`).slice(-300));
+      say(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
+    }
+  } finally { busy(-1); }
 }
 function kfOp(c, lane, op) {
   const lt = snap(clamp(S.t - c.start, 0, tdur(c, lane))), near = x => Math.abs(x.t - lt) < 0.5 / P.fps;
@@ -2868,8 +2874,8 @@ function wire() {
     else if (d.aitool) aiTool(d.aitool);
     else if (d.mfilter) { G.mfilter = d.mfilter; $$('#mediaFilter button').forEach(x => x.classList.toggle('on', x === b)); renderMediaList(); }
   });
-  panes.addEventListener('pointerover', e => { const t = e.target.closest('.tile'); if (t !== G.hover) { const was = G.hover; G.hover = t; if (RM.matches && was) drawTiles(true); } });
-  panes.addEventListener('pointerleave', () => { if (G.hover) { G.hover = null; if (RM.matches) drawTiles(true); } });
+  panes.addEventListener('pointerover', e => { const t = e.target.closest('.tile'); if (t !== G.hover) { const was = G.hover; G.hover = t; if (was) drawTiles(true); if (t && !G.raf) G.raf = requestAnimationFrame(galleryLoop); } });
+  panes.addEventListener('pointerleave', () => { if (G.hover) { G.hover = null; drawTiles(true); } });
   $$('.pane').forEach(p => p.addEventListener('scroll', () => { if (!G.scrollRaf) G.scrollRaf = requestAnimationFrame(() => { G.scrollRaf = 0; drawTiles(true); }); }, { passive: true }));
   for (const [id, unit] of [['trDur', 's'], ['lookAmt', '%']]) $(`#${id}`).addEventListener('input', e => { fill(e.target); e.target.nextElementSibling.textContent = fmt(+e.target.value, unit); });
   $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
@@ -3649,8 +3655,10 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     let ok = true, result;
     remoteLog = [];
     const p0 = P, u0 = undo.length;
+    busy(1);
     try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
     catch (e) { ok = false; result = e.message; }
+    finally { busy(-1); }
     if (P === p0 && undo.length > u0 + 1) undo.splice(u0 + 1); // one command = one undo step (a command may make several changes)
     const log = remoteLog;
     remoteLog = null;
@@ -3671,6 +3679,6 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     const ping = await api('/api/ping');
     if (!ping.whisper) $('#capStatus').textContent = 'Captions need whisper.cpp: brew install whisper-cpp';
   } catch (e) { toast(`Cannot reach the Cutroom server: ${e.message}`); }
-  requestAnimationFrame(frame);
+  kick();
   remoteLoop();
 })();

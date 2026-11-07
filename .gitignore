@@ -6,3 +6,4 @@ tools/faces
 ai/.venv/
 tools/lift
 ai/vendor/
+node_modules/
