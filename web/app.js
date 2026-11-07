@@ -2172,9 +2172,14 @@ const REMOTE = {
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
-  async snapshot({ t, max = 720 }) {
+  async snapshot({ t, max = 720, preview = false }) {
     if (S.playing) pause();
     if (t !== undefined) seekTo(+t);
+    if (!preview && total() > 0) { // the frame as the export renders it: exact, and works while the window is hidden
+      const k = Math.min(1, max / Math.max(P.w, P.h)), plan = await buildPlan(even(P.w * k), even(P.h * k), 'fast', 'snapshot', false, 'png');
+      plan.still = clamp(S.t, 0, Math.max(0, total() - 1 / P.fps));
+      return { t: r3(S.t), image: (await api('/api/still_frame', plan)).image };
+    }
     const sel = S.sel, pick0 = S.pickRect;
     S.sel = null; S.pickRect = null; // the frame as rendered: no selection box or tracking marquee
     try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; }

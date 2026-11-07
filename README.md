@@ -79,7 +79,9 @@ undo/redo, snapshots, export, and on-device image and voice generation.
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
-acknowledged, so a page reload can't lose a command. If no editor is open, the first call opens the app.
+acknowledged, so a page reload can't lose a command. If no editor is open, the first call opens the app. The app keeps the
+editor running while it is behind other windows (WebKit would otherwise suspend it), and `snapshot` renders the frame
+with the export engine, so it shows exactly what the export will, even while the window is hidden.
 
 ## On-device AI
 

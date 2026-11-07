@@ -1210,6 +1210,14 @@ class App(BaseHTTPRequestHandler):
                 done = ev.wait(fnum(body.get('timeout', 900), 1, 7200))
                 w = REMOTE_WAIT.pop(rid, {})
                 return self.reply(w.get('res') if done else {'ok': False, 'result': 'timed out waiting for the editor'})
+            if u.path == '/api/still_frame':  # one frame from the export renderer, returned inline (the MCP snapshot tool)
+                p = clean_plan({**body, 'format': 'png'})
+                with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+                    out = Path(td) / 'frame.png'
+                    run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda _x: None)
+                    if not out.exists():
+                        raise RuntimeError('no frame rendered')
+                    return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
             if u.path == '/api/remote/ack':  # the editor page got the command
                 REMOTE_SENT.pop(str(body.get('id')), None)
                 return self.reply({'ok': True})

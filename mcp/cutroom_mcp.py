@@ -117,7 +117,9 @@ TOOLS = [
      S({'text': txt, 'voice': txt, 'speed': num, 'at': num}, ['text']), 'ai_voiceover'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
-    ('snapshot', 'Look at the preview: returns the frame at time t (default: playhead) as an image.', S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}}), 'snapshot'),
+    ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
+                 'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
+     S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
     ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png (png = still at `at`); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'name': txt, 'loudness': boo, 'at': num}), 'export'),
 ]
