@@ -325,6 +325,67 @@ def matte(st, mid):
     return {'media': cut['id']}
 
 
+def reverse(st, mid):
+    """Reversed copy (CapCut 'Reverse'): 2 s pieces reversed (bounded memory), joined last-to-first."""
+    m = meta(mid)
+    if m['kind'] == 'image':
+        raise ValueError('an image has no direction')
+    video = m['kind'] == 'video'
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        n, parts = max(1, math.ceil(m['duration'] / 2)), []
+        for i in range(n):
+            f = Path(td) / f'r{i:04d}.mkv'
+            r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{i * 2:.3f}', '-t', '2', '-i', str(MEDIA / m['file']),
+                    *(['-vf', 'reverse', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '14'] if video else ['-vn']),
+                    *(['-af', 'areverse', '-c:a', 'pcm_s16le'] if m['hasAudio'] else ['-an']), str(f)])
+            if r.returncode:
+                raise RuntimeError('reverse failed: ' + r.stderr[-300:])
+            parts.append(f)
+            st['progress'] = 0.9 * (i + 1) / n
+        (Path(td) / 'list.txt').write_text(''.join(f"file '{f}'\n" for f in reversed(parts)))
+        out = Path(td) / ('rev.mp4' if video else 'rev.m4a')
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(Path(td) / 'list.txt'), *(['-c:v', 'copy'] if video else []),
+                *(['-c:a', 'aac', '-b:a', '192k'] if m['hasAudio'] else []), '-movflags', '+faststart', str(out)])
+        if r.returncode:
+            raise RuntimeError('joining the reversed pieces failed: ' + r.stderr[-300:])
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (reversed){out.suffix}", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
+def stabilize(st, mid):
+    """Stabilized copy: ffmpeg deshake, then an 8% zoom to hide the moving edges (no vidstab in this build)."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('only video can be stabilized')
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'stab.mp4'
+        vf = f"deshake=rx=48:ry=48:edge=mirror,crop=trunc(iw*0.92/2)*2:trunc(ih*0.92/2)*2,scale={even(m['w'])}:{even(m['h'])}"
+        run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-i', str(MEDIA / m['file']),
+                    '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-c:a', 'copy', '-movflags', '+faststart', str(out)],
+                   m['duration'], lambda x: st.update(progress=0.95 * x))
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (stabilized).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
+def faces(st, mid, t0, t1):
+    """Largest face over time (Apple Vision), for auto-reframe."""
+    proc = subprocess.Popen([build_tool('faces'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', '5'],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    pts = []
+    for line in proc.stdout:
+        d = json.loads(line)
+        pts.append({k: d[k] for k in ('t', 'x', 'y', 'w', 'h')})
+        st['progress'] = min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
+    err = proc.stderr.read()
+    if proc.wait():
+        raise RuntimeError(err.strip()[-300:] or 'face detection failed')
+    if not pts:
+        raise RuntimeError('no face found in this clip')
+    return {'points': pts}
+
+
 MATTE_VF = 'format=yuva444p'  # matte writes straight alpha (set to 'unpremultiply=inplace=1,...' if that ever changes)
 
 
@@ -382,7 +443,14 @@ def clean_plan(p):
         kf = c.get('kf') or []
         if len(kf) > 2000:
             raise ValueError('too many keyframes')
-        k['kf'] = [{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')} for f in kf] or None
+        k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0}
+                   for f in kf] or None
+        k['angle'] = fnum(c.get('angle', 0), -3600, 3600)
+        if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
+            k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
+        k['mask'] = base64.b64decode(c['mask'].split(',')[-1]) if c.get('mask') else None
+        if k['mask'] is not None and not k['mask'].startswith(b'\x89PNG'):
+            raise ValueError('mask must be PNG')
         if timed:
             k['start'] = fnum(c['start'], 0, 6 * 3600)
         if m['kind'] != 'audio' and 'geom' in c:
@@ -408,12 +476,26 @@ def even(x):
 
 
 def pw(kf, key, var='t'):
-    """Piecewise-linear ffmpeg expression through keyframes (same interpolation as the UI's propsAt)."""
+    """Keyframe curve as an ffmpeg expression (same interpolation as the UI's propsAt): linear, or smoothstep
+    per segment when the segment's first keyframe has e=1."""
     e = f'{kf[-1][key]:.4f}'
     for a, b in reversed(list(zip(kf, kf[1:]))):
         dt = max(b['t'] - a['t'], 1e-6)
-        e = f"if(lt({var},{b['t']:.6f}),{a[key]:.4f}+({b[key] - a[key]:.4f})*clip(({var}-{a['t']:.6f})/{dt:.6f},0,1),{e})"
+        u = f"clip(({var}-{a['t']:.6f})/{dt:.6f},0,1)"
+        if a.get('e'):
+            u = f'({u}*{u}*(3-2*{u}))'
+        e = f"if(lt({var},{b['t']:.6f}),{a[key]:.4f}+({b[key] - a[key]:.4f})*{u},{e})"
     return e
+
+
+def rotation(c):
+    """Rotate before scaling: the frame grows to its diagonal with transparent corners (positive = clockwise, like canvas)."""
+    kf = c.get('kf')
+    angles = {f['a'] for f in kf} if kf else {c.get('angle', 0)}
+    if all(abs(a) < 0.01 for a in angles):
+        return ''
+    a = f"({pw(kf, 'a')})*PI/180" if len(angles) > 1 else f'{next(iter(angles)) * math.pi / 180:.6f}'
+    return f",format=rgba,rotate=a='{a}':ow='hypot(iw,ih)':oh=ow:c=none"
 
 
 def look(c):
@@ -497,24 +579,48 @@ def graph(p, td):
             a += f',adelay={round(delay * 1000)}:all=1'
         return a
 
+    def masked(v, c, tag, dur):  # mask = PNG drawn by the browser's maskCanvas(); its luma becomes alpha
+        if not c.get('mask'):
+            return v
+        f = Path(td) / f'mask_{tag}.png'
+        f.write_bytes(c['mask'])
+        ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
+        j = len(ins) - 1
+        if c.get('key'):  # key alpha x mask (alphamerge alone would throw the key's alpha away)
+            return v + (f',format=rgba,split[{tag}c][{tag}k];[{tag}k]alphaextract[{tag}a];[{j}:v]format=gray[{tag}m];'
+                        f'[{tag}m][{tag}a]scale2ref=w=main_w:h=main_h[{tag}ms][{tag}as];[{tag}as][{tag}ms]blend=all_mode=multiply[{tag}am];'
+                        f'[{tag}c][{tag}am]alphamerge')
+        return v + (f',format=rgba[{tag}c];[{j}:v]format=gray[{tag}m];[{tag}m][{tag}c]scale2ref=w=main_w:h=main_h[{tag}ms][{tag}cs];'
+                    f'[{tag}cs][{tag}ms]alphamerge')
+
+    def place(c, var):
+        """Foreground scale + position: (scale filters, x, y). One formula for static, keyframed and rotated clips:
+        the rect's centre is kept, and a rotated frame is its diagonal (E) wide. Keyframed size changes every
+        frame, so convert to yuva420p BEFORE that scale: a converter after it would keep frame 1's size and crop."""
+        g, kf, mw, mh = c['geom'], c.get('kf'), c['mw'], c['mh']
+        Ew, Eh = (math.hypot(mw, mh),) * 2 if rotation(c) else (mw, mh)
+        if kf:
+            S = lambda v_: f"(({pw(kf, 'w', v_)})/{mw:.4f})"
+            return (f",format=yuva420p,scale=w='2*trunc(iw*{S('t')}/2)':h=-2:eval=frame",
+                    f"'({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2'",
+                    f"'({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2':eval=frame")
+        sw, sh = max(2, even(Ew * g['w'] / mw)), max(2, even(Eh * g['w'] / mw))
+        return f',scale={sw}:{sh}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
+
     for k, c in enumerate(p['main']):  # magnetic main track -> one concat stream
         n = c['frames']
         dur = n / F
         i = inp(c, dur)
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
-        v, kf = video(i, c, n), c.get('kf')
-        if c['fit'] == 'blur' or kf or c.get('alpha') or c.get('key'):  # composite onto a base frame (blurred copy or background colour)
+        v, kf, rot = video(i, c, n), c.get('kf'), rotation(c)
+        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('key') or c.get('mask'):  # composite onto a base frame
             if c['fit'] == 'blur':
-                v += f',split=2[f{k}][b{k}];[b{k}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]'
+                v += f',split=2[f{k}][b{k}];[b{k}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]null'
             else:
-                v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}[bb{k}];[f{k}]'
-            if kf:  # per-frame zoom/pan; same curve as the preview. Convert BEFORE the size-changing scale: a format
-                # converter after it would stay at the first frame's size and crop every later frame
-                v += (f"format=yuva420p,scale=w='2*trunc(({pw(kf, 'w')})/2)':h=-2:eval=frame[ff{k}];"
-                      f"[bb{k}][ff{k}]overlay=x='{pw(kf, 'x')}':y='{pw(kf, 'y')}':eval=frame:shortest=1")
-            else:
-                v += f'scale={w}:{h}[ff{k}];[bb{k}][ff{k}]overlay={x}:{y}:shortest=1'
+                v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}[bb{k}];[f{k}]null'
+            sc, px_, py_ = place(c, 't')
+            v = masked(v, c, f'm{k}', dur) + rot + sc + f'[ff{k}];[bb{k}][ff{k}]overlay=x={px_}:y={py_}:shortest=1'
         else:
             cx, cy = max(0, -x), max(0, -y)
             cw, ch = min(w - cx, W - max(0, x)), min(h - cy, H - max(0, y))
@@ -557,7 +663,8 @@ def graph(p, td):
         dur = n / F
         i = inp(c, dur)
         g, kf = c['geom'], c.get('kf')
-        v = video(i, c, n) + ('' if kf else f",scale={max(2, even(g['w']))}:{max(2, even(g['h']))}") + ',format=rgba'
+        sc, ox, oy = place(c, f"(t-{c['start']:.6f})")
+        v = masked(video(i, c, n), c, f'o{k}', dur) + rotation(c) + ('' if kf else sc) + ',format=rgba'
         if kf and len({f['op'] for f in kf}) > 1:  # animated opacity: per-pixel alpha scale, only when it actually varies
             v += f",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({pw(kf, 'op', 'T')})'"
         elif (kf[0]['op'] if kf else c['opacity']) < 1:
@@ -566,14 +673,10 @@ def graph(p, td):
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}:alpha=1"
         if c['fadeOut']:
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}:alpha=1"
-        if kf:  # size changes per frame: last step, already in overlay's input format (see the main-track note)
-            v += f",format=yuva420p,scale=w='2*trunc(({pw(kf, 'w')})/2)':h=-2:eval=frame"
+        if kf:  # size changes per frame: last step (see place())
+            v += sc
         fg.append(v + f",setpts=PTS+{c['start']:.6f}/TB[o{k}]")  # shifted to its timeline start
-        if kf:
-            lt = f"(t-{c['start']:.6f})"
-            over(f'o{k}', f"'{pw(kf, 'x', lt)}'", f"'{pw(kf, 'y', lt)}':eval=frame")
-        else:
-            over(f'o{k}', even(g['x']), even(g['y']))
+        over(f'o{k}', ox, oy)
         if c['kind'] == 'video' and c['hasAudio'] and c['volume'] > 0:
             fg.append(audio(i, c, dur, c['start']) + f'[oa{k}]')
             mix.append(f'[oa{k}]')
@@ -787,6 +890,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': job})
             if u.path == '/api/matte':
                 return self.reply({'job': run_job(matte, body['media'])})
+            if u.path in ('/api/reverse', '/api/stabilize'):
+                return self.reply({'job': run_job(reverse if u.path == '/api/reverse' else stabilize, body['media'])})
+            if u.path == '/api/faces':
+                return self.reply({'job': run_job(faces, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6))})
             if u.path == '/api/track':
                 b = body.get('box') or {}
                 box = {k: fnum(b.get(k), 0, 1) for k in 'xywh'}
@@ -945,6 +1052,21 @@ def selftest():
                   'main': [{'media': G['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(G), 'key': {'color': '#00ff00', 'sim': 0.3, 'blend': 0.1}}]}, 30)
     assert pixel(out, 0.5, 20, 150)[2] > 200 and pixel(out, 0.5, 135, 240)[0] > 200, 'chroma key: green must turn transparent, red stays'
     print('chroma key ok')
+    one = lambda name, clip: render({'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': name, 'overlay': [], 'audio': [], 'main': [clip]}, 60)
+    out = one('rotate', {'media': R['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(R), 'angle': 45})
+    assert max(pixel(out, 1, 8, 112)) < 40 and pixel(out, 1, 135, 240)[0] > 200, 'rotation: the square corner must turn into background'
+    gen('-f', 'lavfi', '-i', 'color=c=black:s=320x320', '-vf', "format=gray,geq=lum='if(lt(hypot(X-160,Y-160),110),255,0)'", '-frames:v', '1', str(HOME / 'circle.png'))
+    out = one('mask', {'media': B['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(B), 'mask': png('circle')})
+    assert pixel(out, 1, 135, 240)[2] > 200 and max(pixel(out, 1, 8, 112)) < 40, 'mask: centre kept, corner cut'
+    ease_kf = [{'t': 0, 'w': 135, 'x': 67.5, 'y': 172.5, 'op': 1, 'e': 1}, {'t': 2, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]
+    out = one('ease', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': ease_kf})
+    assert max(pixel(out, 0.5, 54, 240)) < 40 and pixel(out, 0.5, 70, 240)[0] > 200, 'easing: at u=.25 the eased edge (57 px) must lag linear (51 px)'
+    gen('-f', 'lavfi', '-i', 'color=c=white:s=64x64:r=30:d=4', '-vf', 'fade=t=in:st=0:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'ramp.mp4'))
+    rv = meta(reverse({}, imp('ramp.mp4')['id'])['media'])
+    assert pixel(MEDIA / rv['file'], 0.1, 32, 32)[0] > 200 and pixel(MEDIA / rv['file'], 3.8, 32, 32)[0] < 60 and abs(rv['duration'] - 4) < 0.2, rv
+    sb = meta(stabilize({}, L['id'])['media'])
+    assert (sb['w'], sb['h']) == (L['w'], L['h']) and abs(sb['duration'] - L['duration']) < 0.2, sb
+    print('rotation + mask + easing + reverse + stabilize ok')
     plan['loud'] = True
     plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True)
     render(plan, 270)

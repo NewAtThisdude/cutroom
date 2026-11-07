@@ -55,7 +55,13 @@ const ICON = {
 const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['wipeleft', 'Wipe'], ['slideleft', 'Slide'], ['circleopen', 'Circle'], ['zoomin', 'Zoom']];
 const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up']];
 const ANIM_T = 0.3; // text "in" animation length, seconds
-const KF_PROPS = ['scale', 'x', 'y', 'opacity'];
+const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
+const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
+const RAMPS = { // speed multipliers over 8 equal parts of the clip (CapCut's curve presets, baked into editable parts)
+  montage: [1, 1.6, 0.5, 2, 1, 0.5, 1.8, 1], hero: [1, 1, 0.5, 0.25, 0.25, 0.5, 1, 1], bullet: [2, 2, 0.35, 0.2, 0.35, 2, 2, 2],
+  jumpcut: [1, 1, 3, 3, 1, 1, 3, 3], flashin: [4, 3, 2, 1.5, 1, 1, 1, 1], flashout: [1, 1, 1, 1, 1.5, 2, 3, 4],
+};
+const RAMP_NAMES = { montage: 'Montage', hero: 'Hero', bullet: 'Bullet', jumpcut: 'Jump cut', flashin: 'Flash in', flashout: 'Flash out' };
 const sat = s => [.213 + .787 * s, .715 - .715 * s, .072 - .072 * s, .213 - .213 * s, .715 + .285 * s, .072 - .072 * s, .213 - .213 * s, .715 - .715 * s, .072 + .928 * s];
 const LOOKS = { // 3x3 RGB matrices: the preview uses them as SVG feColorMatrix, the export as colorchannelmixer
   vivid: sat(1.45), mono: sat(0), sepia: [.393, .769, .189, .349, .686, .168, .272, .534, .131],
@@ -86,13 +92,15 @@ const fmtDur = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart
 
 function propsAt(c, lt) { // keyframed scale/x/y/opacity at clip-local time: linear, exactly like the server's pw()
   const k = c.kf;
-  if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1 };
+  if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1, rot: c.rot ?? 0 };
   let i = 0;
   while (i + 1 < k.length && k[i + 1].t <= lt) i++;
   const a = k[i], b = k[i + 1];
-  if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity }; // never leak a keyframe's own t
-  const u = clamp((lt - a.t) / Math.max(1e-6, b.t - a.t), 0, 1), mix = p => a[p] + (b[p] - a[p]) * u;
-  return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity') };
+  if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity, rot: a.rot ?? 0 }; // never leak a keyframe's own t
+  let u = clamp((lt - a.t) / Math.max(1e-6, b.t - a.t), 0, 1);
+  if (c.ease) u = u * u * (3 - 2 * u); // smoothstep, same as the server's pw() with e=1
+  const mix = p => (a[p] ?? 0) + ((b[p] ?? 0) - (a[p] ?? 0)) * u;
+  return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity'), rot: mix('rot') };
 }
 function geom(m, c, W, H, pr = propsAt(c, 0)) { // media rect on the canvas: crop, fit/fill, then scale and offset (fractions of canvas)
   const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0));
@@ -221,7 +229,7 @@ function renderMediaList() {
 }
 
 // ---------- inspector ----------
-const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's' ? `${(+v).toFixed(2)}s` : `${Math.round(v * 10) / 10}`);
+const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's' ? `${(+v).toFixed(2)}s` : unit === '°' ? `${Math.round(v)}°` : `${Math.round(v * 10) / 10}`);
 const slider = (k, label, v, min, max, step, unit = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}" min="${min}" max="${max}" step="${step}" value="${v}"><output>${fmt(v, unit)}</output></label>`;
 const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><select data-k="${k}"${typeof opts[0][0] === 'number' ? ' data-num' : ''}>${opts.map(([val, txt]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
 const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"></label>`;
@@ -242,7 +250,7 @@ function trPanel(c) {
 }
 function kfRow(c, lane) {
   const lt = S.t - c.start, on = c.kf?.some(f => Math.abs(f.t - lt) < 0.5 / P.fps), inside = lt >= 0 && lt <= tdur(c, lane);
-  return `<h4>Keyframes</h4><div class="actions">${on ? '<button data-act="kfdel">Remove keyframe</button>' : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>
+  return `<h4>Keyframes</h4><div class="actions">${on ? '<button data-act="kfdel">Remove keyframe</button>' : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>${c.kf?.length ? tick('c.ease', 'Ease in/out', c.ease) : ''}
     <p class="hint">${c.kf?.length ? 'Scale, position and opacity animate between the diamonds. Changing them at the playhead edits or adds a keyframe there.' : 'Add a keyframe, move the playhead, then change scale or position: zoom, pan, punch-in.'}</p>`;
 }
 function projectPanel() {
@@ -264,12 +272,22 @@ function mediaPanel(c, lane) {
     h += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
     h += slider('c.scale', 'Scale', pr.scale, 0.1, 4, 0.01, '%') + slider('c.x', 'Position X', pr.x, -1, 1, 0.005, '%') + slider('c.y', 'Position Y', pr.y, -1, 1, 0.005, '%');
     if (lane === 'overlay') h += slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%');
-    h += kfRow(c, lane);
+    h += slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + kfRow(c, lane);
     h += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
     h += `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', c.adj.b, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', c.adj.c, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', c.adj.s, 0, 3, 0.01, '%')}`;
     h += `<h4>Crop</h4>${slider('c.crop.l', 'Left', cr.l || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.r', 'Right', cr.r || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
     h += `<h4>Chroma key</h4>${c.key ? `${colour('c.key.color', 'Key colour', c.key.color)}${slider('c.key.sim', 'Strength', c.key.sim, 0.01, 1, 0.01, '%')}${slider('c.key.blend', 'Softness', c.key.blend, 0, 0.5, 0.01, '%')}<div class="actions"><button data-act="keyoff">Turn off</button></div>`
       : '<div class="actions"><button data-act="keyon">Remove green screen</button></div>'}`;
+    const mk = c.mask;
+    h += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}</div>`;
+    if (mk) {
+      h += slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
+        + (['circle', 'rect'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
+        + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
+        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert);
+    }
+    if (m.kind === 'video') h += `<h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
+      <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable.</p>`;
   }
   if (lane === 'audio') {
     h += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
@@ -278,7 +296,9 @@ function mediaPanel(c, lane) {
   }
   h += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, 3, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, 3, 0.05, 's')}`;
   const acts = ['<button data-act="split">Split</button>', '<button data-act="dup">Duplicate</button>'];
-  if (m.kind === 'video') acts.push('<button data-act="freeze">Freeze frame</button>', `<button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button>`);
+  if (m.kind === 'video') acts.push('<button data-act="freeze">Freeze frame</button>', `<button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button>`,
+    '<button data-act="reverse">Reverse</button>', '<button data-act="stabilize">Stabilize</button>', '<button data-act="reframe">Auto reframe</button>');
+  if (m.hasAudio && lane !== 'audio' && c.volume > 0) acts.push('<button data-act="detach">Detach audio</button>');
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="track">Track motion</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
@@ -301,6 +321,7 @@ function textPanel(c, lane) {
   h += cap
     ? colour('cap.hl', 'Highlight', st.hl) + tick('cap.pop', 'Pop active word', st.pop) + slider('cap.y', 'Position Y', P.capStyle.y, 0, 1, 0.005, '%')
     : slider('c.x', 'Position X', pr.x, 0, 1, 0.005, '%') + slider('c.y', 'Position Y', pr.y, 0, 1, 0.005, '%') + slider('c.scale', 'Scale', pr.scale, 0.2, 4, 0.01, '%')
+      + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°')
       + slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') + kfRow(c, lane);
   return `${h}<div class="actions"><button data-act="split">Split</button>${cap ? '' : '<button data-act="dup">Duplicate</button><button data-act="track">Track motion</button>'}<button data-act="delete">Delete</button>${cap ? '<button data-act="clearcaps">Delete all captions</button>' : ''}</div><p id="clipStatus" class="muted"></p>`;
 }
@@ -461,13 +482,15 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   const vw = el.videoWidth || el.naturalWidth, vh = el.videoHeight || el.naturalHeight, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const filt = [a.b !== 1 || a.c !== 1 || a.s !== 1 ? `brightness(${a.b}) contrast(${a.c}) saturate(${a.s})` : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const draw = (x, y, w, h, key = true) => { // crop = source rect; mirror flips inside the destination rect (server: crop, hflip)
-    if (key && c.key) { // chroma key needs pixels: filter + flip + key on an offscreen canvas, then composite
-      const kc = keyed(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt);
-      ctx.save(); ctx.filter = 'none'; ctx.drawImage(kc, x, y, w, h); ctx.restore();
+  const rad = ((pr.rot || 0) * Math.PI) / 180;
+  const draw = (x, y, w, h, fgr = true) => { // crop = source rect; mirror flips inside the rect; rotation spins about its centre
+    ctx.save();
+    if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
+    if (fgr && (c.key || c.mask)) { // needs pixels: filter + mirror + key + mask on an offscreen canvas, then composite
+      const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt);
+      ctx.filter = 'none'; ctx.drawImage(oc, x, y, w, h); ctx.restore();
       return;
     }
-    ctx.save();
     if (c.flip) { ctx.translate(2 * x + w, 0); ctx.scale(-1, 1); }
     ctx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, x, y, w, h);
     ctx.restore();
@@ -486,27 +509,57 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k });
 }
 const keyCv = document.createElement('canvas'), hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
-function keyed(el, c, src, w, h, filt) { // alpha = clip((dist - similarity) / blend): ffmpeg colorkey's formula, per pixel
+function offscreen(el, c, src, w, h, filt) { // filter + mirror, then chroma key (colorkey's formula) x mask, like the export
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h));
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
-  x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, W, H); x.filter = filt || 'none';
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H); x.filter = filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
-  const img = x.getImageData(0, 0, W, H), d = img.data, [kr, kg, kb] = hexRgb(c.key.color), sim = c.key.sim, bl = c.key.blend;
-  for (let i = 0; i < d.length; i += 4) {
-    const dr = d[i] - kr, dg = d[i + 1] - kg, db = d[i + 2] - kb, diff = Math.sqrt((dr * dr + dg * dg + db * db) / 195075);
-    d[i + 3] *= bl > 0.0001 ? clamp((diff - sim) / bl, 0, 1) : diff > sim ? 1 : 0;
+  x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none';
+  if (c.key) { // alpha *= clip((dist - similarity) / blend)
+    const img = x.getImageData(0, 0, W, H), d = img.data, [kr, kg, kb] = hexRgb(c.key.color), sim = c.key.sim, bl = c.key.blend;
+    for (let i = 0; i < d.length; i += 4) {
+      const dr = d[i] - kr, dg = d[i + 1] - kg, db = d[i + 2] - kb, diff = Math.sqrt((dr * dr + dg * dg + db * db) / 195075);
+      d[i + 3] *= bl > 0.0001 ? clamp((diff - sim) / bl, 0, 1) : diff > sim ? 1 : 0;
+    }
+    x.putImageData(img, 0, 0);
   }
-  x.putImageData(img, 0, 0);
+  if (c.mask) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(c.mask, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
   return keyCv;
+}
+const maskCache = new Map();
+function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview and the exported mask PNG
+  const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h)), key = `${W}x${H}${JSON.stringify(mk)}`;
+  if (maskCache.has(key)) return maskCache.get(key);
+  const cv = new OffscreenCanvas(W, H), x = cv.getContext('2d'), big = 4 * Math.hypot(W, H);
+  const rw = (mk.w * W) / 2, rh = (mk.h * H) / 2, f = mk.feather * Math.min(W, H);
+  x.fillStyle = '#fff';
+  if (f > 0.5) x.filter = `blur(${f}px)`;
+  x.translate(W * (0.5 + mk.x), H * (0.5 + mk.y)); x.rotate((mk.rot * Math.PI) / 180);
+  x.beginPath();
+  if (mk.type === 'circle') x.ellipse(0, 0, Math.max(1, rw), Math.max(1, rh), 0, 0, Math.PI * 2);
+  else if (mk.type === 'rect') x.rect(-rw, -rh, rw * 2, rh * 2);
+  else if (mk.type === 'linear') x.rect(-big, 0, big * 2, big); // keep everything below the line
+  else x.rect(-big, -rh, big * 2, rh * 2); // mirror: a band through the centre
+  x.fill();
+  if (mk.invert) { x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none'; x.globalCompositeOperation = 'xor'; x.fillRect(0, 0, W, H); }
+  if (maskCache.size > 12) maskCache.delete(maskCache.keys().next().value);
+  maskCache.set(key, cv);
+  return cv;
+}
+async function maskPNG(c, m) { // export: opaque greyscale (luma -> alpha via alphamerge) at the cropped source aspect
+  const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0)), s = Math.min(1, 1280 / Math.max(mw, mh));
+  const W = Math.round(mw * s), H = Math.round(mh * s), cv = new OffscreenCanvas(W, H), x = cv.getContext('2d');
+  x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(c.mask, W, H), 0, 0);
+  return blobURL(await cv.convertToBlob({ type: 'image/png' }));
 }
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? P.capStyle : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
   for (const lane of ['text', 'captions']) for (const it of P[lane]) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
 }
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
-  const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1 } : propsAt(it, lt);
+  const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
   const u = (Math.min(P.w, P.h) / 1080) * k * pr.scale, size = st.size * u;
   const timed = it.words?.length ? it.words : null;
   const paras = timed ? [timed.map(w => w.w)] : String(it.text ?? '').split('\n').map(p => p.split(/\s+/).filter(Boolean));
@@ -532,6 +585,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   }
   const lh = size * st.lh, x = pr.x * P.w * k, y = pr.y * P.h * k;
   const top = y - (lines.length * lh) / 2, padX = size * 0.3;
+  if (pr.rot) { ctx.translate(x, y); ctx.rotate((pr.rot * Math.PI) / 180); ctx.translate(-x, -y); }
   const av = st.anim && st.anim !== 'none' ? clamp(lt / ANIM_T, 0, 1) : 1; // "in" animation progress
   ctx.globalAlpha = pr.opacity * (st.anim === 'pop' ? Math.min(1, av * 2) : av);
   if (av < 1 && st.anim === 'pop') { const s = 0.6 + 0.4 * easeOutBack(av); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
@@ -763,6 +817,60 @@ async function removeBackground(c) { // Apple Vision person segmentation, on thi
     toast('Background removed. Put it on the overlay track over B-roll.');
   } catch (e) { setStatus(e.message); }
 }
+function ramp(c, lane, name) { // speed curve baked into 8 editable parts (inner cuts are hard cuts)
+  const curve = RAMPS[name], n = curve.length, step = (c.out - c.in) / n;
+  change(() => {
+    const parts = curve.map((s, i) => ({ ...structuredClone(c), id: i ? hex12() : c.id, in: c.in + i * step, out: c.in + (i + 1) * step, speed: clamp(c.speed * s, 0.1, 10),
+      fadeIn: i ? 0 : c.fadeIn, fadeOut: i === n - 1 ? c.fadeOut : 0, tr: i === n - 1 ? c.tr : undefined, kf: undefined }));
+    if (lane !== 'main') { let t = c.start; for (const p of parts) { p.start = t; t += len(p); } }
+    P[lane].splice(P[lane].indexOf(c), 1, ...parts);
+    S.sel = { lane, id: c.id };
+  });
+  toast(`${RAMP_NAMES[name]} ramp applied`);
+}
+function detachAudio(c) { // the clip's sound moves to the audio track at the same time; the clip goes silent
+  change(() => {
+    packMain();
+    const a = { id: hex12(), media: c.media, start: c.start, in: c.in, out: c.out, speed: c.speed, volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, denoise: c.denoise,
+      fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, adj: { b: 1, c: 1, s: 1 } };
+    P.audio.push(a);
+    c.volume = 0;
+    S.sel = { lane: 'audio', id: a.id };
+  });
+}
+async function remake(c, kind) { // reverse / stabilize render a new library item; the clip switches to it
+  try {
+    const j = await job(`/api/${kind}`, { media: c.media }, kind === 'reverse' ? 'Reversing' : 'Stabilizing');
+    await loadMedia();
+    const d = M.get(j.media).duration;
+    change(() => {
+      if (kind === 'reverse') { const a = c.in, b = c.out; c.in = Math.max(0, d - b); c.out = Math.min(d, d - a); }
+      c.media = j.media;
+    });
+    toast(kind === 'reverse' ? 'Reversed' : 'Stabilized');
+  } catch (e) { setStatus(e.message); }
+}
+async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
+  const m = M.get(c.media);
+  try {
+    const j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out }, 'Finding faces');
+    change(() => {
+      c.fit = 'fill';
+      const base = propsAt(c, 0), g0 = geom(m, c, P.w, P.h, { ...base, x: 0, y: 0 }), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
+      const mx = Math.max(0, (g0.w - P.w) / 2 / P.w), my = Math.max(0, (g0.h - P.h) / 2 / P.h);
+      const pts = j.points.map(p => {
+        let u = (p.x + p.w / 2 - (cr.l || 0)) / fx;
+        if (c.flip) u = 1 - u;
+        const v = (p.y + p.h / 2 - (cr.t || 0)) / fy;
+        return { t: (p.t - c.in) / c.speed, x: clamp((0.5 * P.w - (g0.x + u * g0.w)) / P.w, -mx, mx), y: clamp((0.42 * P.h - (g0.y + v * g0.h)) / P.h, -my, my) };
+      }).filter(p => p.t >= 0 && p.t <= len(c));
+      const avg = (i, k) => { const w = pts.slice(Math.max(0, i - 2), i + 3); return w.reduce((s, q) => s + q[k], 0) / w.length; }; // smooth the jitter
+      c.kf = pts.map((p, i) => ({ t: p.t, scale: base.scale, opacity: base.opacity, rot: base.rot, x: avg(i, 'x'), y: avg(i, 'y') })).filter((_, i, a) => i % 2 === 0 || i === a.length - 1);
+      c.ease = true;
+    });
+    toast(`Reframed from ${j.points.length} face samples`);
+  } catch (e) { setStatus(e.message); }
+}
 function startTrack(c, lane) { // pick a target on the main-track video; the clip then follows it via keyframes
   packMain();
   const host = P.main.find(x => S.t >= x.start && S.t < x.start + tdur(x, 'main'));
@@ -876,16 +984,17 @@ function exportSizes() {
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud) {
   const k = w / P.w, D = total();
-  const clip = (c, lane, i) => {
+  const clip = async (c, lane, i) => {
     const m = M.get(c.media);
     if (!m) throw new Error('a clip points at missing media; delete it first');
     const o = { media: c.media, start: c.start, in: c.in, out: c.out, speed: c.speed, volume: c.volume, frames: frames(c), fadeIn: c.fadeIn, fadeOut: c.fadeOut,
-      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, look: lookMatrix(c), key: c.key };
+      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, look: lookMatrix(c), key: c.key, angle: c.rot ?? 0 };
     if (m.kind !== 'audio') {
       const g = geom(m, c, P.w, P.h);
       o.geom = { x: g.x * k, y: g.y * k, w: g.w * k, h: g.h * k };
-      // keyframes as export-pixel width + top-left: those interpolate linearly exactly like scale/x/y do
-      if (c.kf?.length) o.kf = c.kf.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1 }; });
+      // keyframes as export-pixel width + top-left: those interpolate exactly like scale/x/y do (same easing)
+      if (c.kf?.length) o.kf = c.kf.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: c.ease ? 1 : 0 }; });
+      if (c.mask) o.mask = await maskPNG(c, m);
     }
     if (lane === 'main' && trF(i)) o.tr = { type: c.tr.type, frames: trF(i) };
     return o;
@@ -919,7 +1028,8 @@ async function buildPlan(w, h, quality, name, loud) {
     text = { pngs, frames: spans };
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text,
-    main: P.main.map((c, i) => clip(c, 'main', i)), overlay: P.overlay.map(c => clip(c, 'overlay')), audio: P.audio.map(c => clip(c, 'audio')) };
+    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: await Promise.all(P.overlay.map(c => clip(c, 'overlay'))),
+    audio: await Promise.all(P.audio.map(c => clip(c, 'audio'))) };
 }
 function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
@@ -1231,7 +1341,7 @@ function wire() {
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
@@ -1243,6 +1353,11 @@ function wire() {
     else if (d.act === 'movelane') moveLane(c, S.sel.lane);
     else if (d.act === 'matte') removeBackground(c);
     else if (d.act === 'track') startTrack(c, S.sel.lane);
+    else if (d.mask) change(() => { if (d.mask === 'none') delete c.mask; else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
+    else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
+    else if (d.act === 'detach') detachAudio(c);
+    else if (d.act === 'reverse' || d.act === 'stabilize') remake(c, d.act);
+    else if (d.act === 'reframe') autoReframe(c);
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
   });

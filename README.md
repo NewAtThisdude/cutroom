@@ -31,11 +31,14 @@ Data lives in `~/Movies/Cutroom/`:
 |---|---|---|
 | Edit | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder, and edge-drag to trim; both snap to the playhead, clip edges and beat marks. S splits, ⌫ deletes, ⌘D duplicates, ⌘Z / ⇧⌘Z undo and redo. Clips move between the main and overlay tracks |
 | | Transitions: dissolve, dip to black, wipe, slide, circle, zoom | The two clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel math |
-| | Keyframes for scale, position and opacity | Linear interpolation, identical in the preview and the export (ffmpeg per-frame expressions). Used for zoom, pan and punch-in |
+| | Keyframes for scale, position, opacity and rotation, linear or eased | Identical curves in the preview and the export (ffmpeg per-frame expressions, smoothstep easing). Used for zoom, pan and punch-in |
+| | Speed ramps (montage, hero, bullet, jump cut, flash in, flash out) and reverse | A ramp splits the clip into 8 editable parts. Reverse renders a reversed copy |
 | | Speed 0.25×–4×, volume up to 200%, fades, freeze frame | The preview uses Web Audio gain, so above-100% volume and transition crossfades are audible |
 | Look | Canvas 9:16, 16:9, 1:1, 4:5; fit, fill or blurred-background fill | One geometry function drives the preview and the export |
 | | Filters (vivid, mono, sepia, warm, cool, teal) with strength; brightness, contrast, saturation | Colour matrices: an SVG `feColorMatrix` in the preview, `colorchannelmixer` in the export |
-| | Crop, mirror, chroma key (green screen) | The preview's key uses ffmpeg `colorkey`'s exact formula |
+| | Crop, mirror, rotation, chroma key (green screen) | The preview's key uses ffmpeg `colorkey`'s exact formula |
+| | Masks: circle, rectangle, linear, mirror; feather and invert | Drawn by one canvas routine for both the preview and the export PNG (`alphamerge`). Combined with a chroma key, the alphas multiply |
+| | Stabilize, auto reframe | Stabilize: `deshake` plus an 8% zoom. Auto reframe: Apple Vision faces, written as eased keyframes |
 | | HDR iPhone footage (HLG/PQ) | Tone-mapped to SDR by VideoToolbox (`scale_vt`), with rotation handled |
 | Text | Text clips with 7 presets (including emoji stickers), 4 bundled OFL fonts plus system fonts | Pop, fade or slide-in animations. Keyframed position and scale |
 | | Auto-captions with word-by-word highlight, 4 styles | whisper.cpp on-device, with DTW word timing and a Silero VAD filter |
@@ -43,7 +46,7 @@ Data lives in `~/Movies/Cutroom/`:
 | | Motion tracking | Drag a box on the preview and the text or overlay follows it (Apple Vision object tracker, written as keyframes) |
 | | Voiceover (text-to-speech) | The Mac's own voices (`say`), added on the audio track |
 | | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking. Main-track cuts snap to every 1, 2, 4 or 8 beats |
-| | Remove pauses (jump cuts), reduce noise, loudness normalization (−14 LUFS) | `silencedetect`, `afftdn`, `loudnorm` |
+| | Remove pauses (jump cuts), reduce noise, loudness normalization (−14 LUFS), detach audio | `silencedetect`, `afftdn`, `loudnorm` |
 | Output | MP4 export from 720p to 4K | H.264 via VideoToolbox (fast) or x264 (best), with a progress bar and Show in Finder |
 | Library | Proxies for ProRes and MKV, HEIC import, project and media delete (to trash) | |
 
@@ -96,7 +99,7 @@ once in the browser also guarantees the export matches the preview.
 - `web/app.js`: the timeline model, undo, the preview engine (alternating `<video>` elements, transition
   layers, Web Audio), the editing UI and the export plan builder.
 - `web/index.html`, `web/style.css`, `web/fonts/` (OFL fonts from Google Fonts).
-- `tools/matte.swift`, `tools/track.swift`: Apple Vision helpers, compiled on first use.
+- `tools/matte.swift`, `tools/track.swift`, `tools/faces.swift`: Apple Vision helpers, compiled on first use.
 - `cutroom`: the launcher. `~/Applications/Cutroom.app` just calls it.
 
 ## Limits (honest)
@@ -110,6 +113,8 @@ once in the browser also guarantees the export matches the preview.
   main-track video at the playhead. Verified on synthetic motion.
 - **HDR:** verified on synthetic HLG, including rotation. Real iPhone Dolby Vision metadata is ignored
   (its HLG base layer is used).
-- **Keyframes:** linear only, with no easing curves. There is no clip rotation (mirror only) and no
-  text rotation.
-- **Not built:** reverse playback, speed curves, masks, keyframed filters, multi-camera.
+- **Speed ramps** are stepped (8 parts), not a continuous curve. Masks and filters are static (not
+  keyframed). Easing is per clip (all segments), not per keyframe.
+- **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only,
+  verified on a 3D-avatar clip.
+- **Not built:** multi-camera, templates, AI generation (CapCut's AIGC is cloud-based).
