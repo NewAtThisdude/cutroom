@@ -45,6 +45,13 @@
     <section id="tab-audio" class="pane">
       <div class="phead"><b>Sound effects</b><span>made on this Mac · ▶ listen · + add</span></div>
       <div id="sfxList" class="sfx"></div>
+      <h4>AI music</h4>
+      <p class="hint">Describe it, or pick a style. Made on this Mac (MusicGen) in about the time it lasts; nothing is uploaded.</p>
+      <div id="musicStyles" class="chips"></div>
+      <textarea id="musicPrompt" rows="2" placeholder="Upbeat pop, bright synths, punchy drums, 120 bpm" spellcheck="true"></textarea>
+      <label class="row"><span>Length</span><select id="musicLen"><option value="10">10 s</option><option value="15">15 s</option><option value="20" selected>20 s</option><option value="30">30 s</option><option value="45">45 s</option><option value="60">60 s</option></select></label>
+      <button id="btnMusic" class="primary wide">Make music</button>
+      <p id="musicStatus" class="muted"></p>
       <h4>Your music and audio</h4>
       <div id="audioList" class="sfx"></div>
       <h4>AI voiceover</h4>
@@ -175,7 +182,7 @@
 
   <section class="center">
     <div id="stage" class="stage"><canvas id="cv"></canvas>
-      <div id="confirmBar" class="confirm" role="dialog" aria-label="Confirm" hidden><span></span><button class="primary" data-ok>Remove it</button><button data-again>Draw again</button><button data-no>Cancel</button></div>
+      <div id="confirmBar" class="confirm" role="dialog" aria-label="Confirm" hidden><div class="q"><span></span><small>Missed a part? Click it. ⌥-click leaves one out.</small></div><button data-smaller title="Take less (a part of it)">Smaller</button><button data-bigger title="Take more (all of it)">Bigger</button><button class="primary" data-ok>Remove it</button><button data-again>Draw again</button><button data-no>Cancel</button></div>
     </div>
     <div class="transport">
       <div class="tside"><span id="tc" class="tc">00:00:00</span></div>

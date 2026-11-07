@@ -177,7 +177,10 @@ def sam2_masks(job, n, p0, p1, soft=False):
             amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
             with torch.inference_mode(), amp:
                 st = pred.init_state(video_path=str(d), offload_video_to_cpu=True)
-                if seed is None:
+                if seed is None and job.get('seed'):  # the outline the user confirmed in the preview: exactly that is followed
+                    sm = cv2.resize(cv2.imread(job['seed'], cv2.IMREAD_GRAYSCALE), (fw, fh), interpolation=cv2.INTER_NEAREST)
+                    pred.add_new_mask(st, frame_idx=seed_frame - a, obj_id=1, mask=sm > 127)
+                elif seed is None:
                     pred.add_new_points_or_box(st, frame_idx=seed_frame - a, obj_id=1, box=np.array([x * fw, y * fh, (x + w) * fw, (y + h) * fh], np.float32))
                 else:
                     pred.add_new_mask(st, frame_idx=seed_frame - a, obj_id=1, mask=seed > (127 if soft else 0))
@@ -200,10 +203,10 @@ def sam2_masks(job, n, p0, p1, soft=False):
 
 def propainter(F, holes, p0, p1):
     """ProPainter (Zhou et al., ICCV 2023) on the crop, at most 720 px: optical flow (RAFT) carries the real background
-    in from other frames, even with parallax; a transformer fills what no frame shows, consistently over time."""
+    in from other frames, even with parallax; a transformer fills what no frame shows, consistently over time.
+    Half precision (the same fill as full: 0.1/255 apart) in 40-frame batches, under the GPU memory cap set in AI_ENV
+    (server.py): stock settings took 30 GB on a head-sized hole and swapped the Mac. Still too big: again, smaller."""
     n, sh, sw = holes.shape
-    k = min(1.0, 720 / max(sw, sh))
-    pw, ph = max(8, int(sw * k) // 8 * 8), max(8, int(sh * k) // 8 * 8)
     with tempfile.TemporaryDirectory(prefix='cutroom-pp-') as td:
         vd, md = Path(td) / 'clip', Path(td) / 'mask'
         vd.mkdir()
@@ -211,17 +214,23 @@ def propainter(F, holes, p0, p1):
         for i in range(n):
             cv2.imwrite(str(vd / f'{i:05d}.png'), cv2.cvtColor(F[i], cv2.COLOR_YUV2BGR))
             cv2.imwrite(str(md / f'{i:05d}.png'), holes[i].astype(np.uint8) * 255)
-        proc = subprocess.Popen([sys.executable, '-E', '-s', str(PROPAINTER), '--video', str(vd), '--mask', str(md), '--output', str(Path(td) / 'out'),
-                                 '--save_frames', '--width', str(pw), '--height', str(ph), '--mask_dilation', '2'],
-                                cwd=PROPAINTER.parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors='replace',
-                                env={**{k: v for k, v in os.environ.items() if k != 'TQDM_DISABLE'}, 'PYTORCH_ENABLE_MPS_FALLBACK': '1'})
-        tail = ''
-        while chunk := proc.stderr.read(256):  # tqdm "7/16 [" -> progress
-            tail = (tail + chunk)[-2000:]
-            if hit := re.findall(r'(\d+)/(\d+) \[', tail):
-                say(p0 + (p1 - p0) * int(hit[-1][0]) / max(1, int(hit[-1][1])))
-        if proc.wait():
-            raise RuntimeError('ProPainter failed: ' + tail[-400:])
+        for px, batch in ((720, 40), (512, 20)):
+            k = min(1.0, px / max(sw, sh))
+            pw, ph = max(8, int(sw * k) // 8 * 8), max(8, int(sh * k) // 8 * 8)
+            proc = subprocess.Popen([sys.executable, '-E', '-s', str(PROPAINTER), '--video', str(vd), '--mask', str(md), '--output', str(Path(td) / 'out'),
+                                     '--save_frames', '--width', str(pw), '--height', str(ph), '--mask_dilation', '2', '--fp16', '--subvideo_length', str(batch)],
+                                    cwd=PROPAINTER.parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors='replace',
+                                    env={**{k: v for k, v in os.environ.items() if k != 'TQDM_DISABLE'}, 'PYTORCH_ENABLE_MPS_FALLBACK': '1'})
+            tail = ''
+            while chunk := proc.stderr.read(256):  # tqdm "7/16 [" -> progress
+                tail = (tail + chunk)[-2000:]
+                if hit := re.findall(r'(\d+)/(\d+) \[', tail):
+                    say(p0 + (p1 - p0) * int(hit[-1][0]) / max(1, int(hit[-1][1])))
+            if not proc.wait():
+                break
+            if 'out of memory' not in tail or px == 512:
+                raise RuntimeError('ProPainter failed: ' + tail[-400:])
+            print(f'ProPainter: out of GPU memory at {pw}x{ph}, again at 512 px', flush=True)
         filled = F.copy()
         for i in range(n):
             f = cv2.imread(str(Path(td) / 'out' / 'clip' / 'frames' / f'{i:04d}.png'))
@@ -343,13 +352,40 @@ def preview(job):
     dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     pred = SAM2ImagePredictor(build_sam2('configs/sam2.1/sam2.1_hiera_s.yaml', str(SAM2_CK), device=dev))
     x, y, w, h = job['box']
+    bx = np.array([x * fw, y * fh, (x + w) * fw, (y + h) * fh], np.float32)
+    pts = job.get('points') or []  # [x, y, 1 = keep this spot / 0 = leave it out], normalized
+    for px_, py_, keep in pts:  # a spot clicked outside the box is part of the object: the box grows past it (SAM 2 keeps to its box)
+        if keep and not (bx[0] <= px_ * fw <= bx[2] and bx[1] <= py_ * fh <= bx[3]):
+            mx, my = 0.25 * (bx[2] - bx[0]), 0.25 * (bx[3] - bx[1])
+            bx = np.array([min(bx[0], px_ * fw - mx), min(bx[1], py_ * fh - my), max(bx[2], px_ * fw + mx), max(bx[3], py_ * fh + my)], np.float32).clip(0, [fw, fh, fw, fh])
     amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
     with torch.inference_mode(), amp:
         pred.set_image(img)
-        masks, _, _ = pred.predict(box=np.array([x * fw, y * fh, (x + w) * fw, (y + h) * fh], np.float32), multimask_output=False)
-    m = (np.asarray(masks[0]) > 0).astype(np.uint8) * 255
-    cv2.imwrite(job['out'], m)
-    print(f'area {m.mean() / 255:.5f}', flush=True)
+        kw = {'point_coords': np.array([[p[0] * fw, p[1] * fh] for p in pts], np.float32), 'point_labels': np.array([int(p[2]) for p in pts], np.int32)} if pts else {}
+        masks, scores, _ = pred.predict(box=bx, multimask_output=True, **kw)
+    # a box is ambiguous between parts and wholes (hair / head / head and neck): keep every candidate, smallest first, and
+    # pick the one that fills the box without spilling out of it, in one piece; with clicked spots, one that takes them all
+    # in (and leaves the ⌥-clicked ones out). Clicked on a beard below a head box: hair + face + beard, not hair + beard
+    x0, y0, x1, y1 = (int(round(v)) for v in bx)
+    cands = []
+    for m, sc in zip(masks, scores):
+        m = np.asarray(m) > 0
+        if not m.any():
+            continue
+        inside = m[max(0, y0):y1, max(0, x0):x1].sum()
+        cover, spill = inside / max(1, (y1 - y0) * (x1 - x0)), 1 - inside / m.sum()
+        pieces = cv2.connectedComponents(m.astype(np.uint8))[0] - 1
+        obeys = all(m[min(fh - 1, int(q[1] * fh)), min(fw - 1, int(q[0] * fw))] == bool(q[2]) for q in pts)
+        cands.append((m.mean(), m, float(sc), (obeys, cover - spill - 0.002 * pieces + 0.05 * float(sc))))
+    if not cands:
+        raise RuntimeError('nothing found in that box')
+    cands.sort(key=lambda c: c[0])
+    pick = max(range(len(cands)), key=lambda i: cands[i][3])
+    base = job['out'][:-4]
+    for i, (area, m, _, _) in enumerate(cands):
+        cv2.imwrite(f'{base}{i}.png', m.astype(np.uint8) * 255)
+        print(f'candidate {i} {area:.5f}', flush=True)
+    print(f'pick {pick}', flush=True)
 
 
 def main(path):
@@ -368,7 +404,10 @@ def main(path):
             masks = None  # SAM 2 found nothing in the box: fall back to the tracked box
     if masks is not None:  # exact outline, grown a little for soft edges and motion blur
         n = len(masks)
-        ms, grow = masks.shape[2] / W, max(4, round(0.012 * max(masks.shape[1:])))  # covers motion blur and contact shadows
+        # grown to cover motion blur, contact shadows and stray hairs: SAM 2's edge misses scale with the object (a head's
+        # wisps poked 3-10 px past a 1.2 %-of-frame grow, and ProPainter smeared them over the wall: 6 % of its size took them)
+        sizes = [max(np.ptp(np.nonzero(m)[0]), np.ptp(np.nonzero(m)[1])) for m in masks if m.any()]
+        ms, grow = masks.shape[2] / W, max(4, round(0.012 * max(masks.shape[1:])), round(0.06 * float(np.median(sizes or [0]))))
         masks = np.stack([cv2.dilate(m.astype(np.uint8), np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)) > 0 for m in masks])
         rs = []
         for m in masks:

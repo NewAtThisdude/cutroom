@@ -41,4 +41,6 @@ fetch $PP/raft-things.pth vendor/ProPainter/weights/raft-things.pth fcfa4125d641
 tmp=$(mktemp -d)
 env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav', 'wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(bytes(4 * 44100)); w.close()"
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
+# AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
+env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
 echo "On-device AI ready."

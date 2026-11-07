@@ -416,7 +416,7 @@ function renderMediaList() {
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
   if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)} · ${fmtDur(x.duration)}</span><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
-  if (mu) { mu.innerHTML = '<option value="">No music</option>' + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); if (mkeep) mu.value = mkeep; }
+  if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
   if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}">${esc(x.name)} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
 }
@@ -2034,14 +2034,14 @@ async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect
 }
 
 const setStatus = msg => { if (remoteLog) remoteLog.push(String(msg)); const s = $('#clipStatus'); if (s) s.textContent = msg; else toast(msg); };
-async function job(path, body, label) { // start a server job and poll it, showing progress next to the clip
+async function job(path, body, label, say = setStatus) { // start a server job and poll it, showing progress next to the clip (or where say puts it)
   const { job: id } = await api(path, body);
   for (;;) {
     await new Promise(r => setTimeout(r, 500));
     const j = await api(`/api/jobs/${id}`);
     if (j.state === 'done') return j;
     if (j.state !== 'running') throw new Error((j.error || `${label} failed`).slice(-300));
-    setStatus(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
+    say(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
   }
 }
 function kfOp(c, lane, op) {
@@ -2342,11 +2342,30 @@ async function tintMask(b64) { // the grey outline PNG as a pink see-through ove
   x.putImageData(d, 0, 0);
   return cv;
 }
-async function maskPreview(c, lane, rect, T, mode) { // SAM 2's outline of the box on this frame, tinted on the preview (a second or two)
-  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T) });
-  S.maskPreview = { id: c.id, c, lane, rect, T, mode, area: r.area, img: await tintMask(r.mask) };
+async function maskPreview(c, lane, rect, T, mode, points = []) { // SAM 2's outlines of the box on this frame (part ... whole), the best fit tinted on the preview
+  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T), points });
+  S.maskPreview = { id: c.id, c, lane, rect, T, mode, points, b64: r.masks, areas: r.areas, pick: r.pick, imgs: await Promise.all(r.masks.map(tintMask)) };
+  Object.defineProperty(S.maskPreview, 'img', { get() { return this.imgs[this.pick]; } });
   S.dirty = true;
+  markPreview();
   return r;
+}
+function previewFor(c, r) { // the outline previewed for this clip and (about) this box, if any: another box means another object
+  const m = S.maskPreview, near = (k, d) => Math.abs(m.rect[k] - r[k]) < 0.02 * d;
+  return m?.id === c.id && near('x', P.w) && near('w', P.w) && near('y', P.h) && near('h', P.h) ? m : null;
+}
+function markPreview() { // the confirm bar's Smaller / Bigger follow the candidates
+  const mp = S.maskPreview, bar = $('#confirmBar');
+  if (!mp || !bar) return;
+  bar.querySelector('[data-smaller]').disabled = mp.pick <= 0;
+  bar.querySelector('[data-bigger]').disabled = mp.pick >= mp.imgs.length - 1;
+}
+function stepPreview(d) { const mp = S.maskPreview; if (!mp) return; mp.pick = clamp(mp.pick + d, 0, mp.imgs.length - 1); S.dirty = true; markPreview(); }
+async function refinePreview(cx, cy, keep) { // a click on the frame: include that spot (or, with ⌥, leave it out), and outline again
+  const mp = S.maskPreview, [sx, sy] = canvasToSrc(mp.c, mp.T)(cx, cy);
+  if (sx < 0 || sx > 1 || sy < 0 || sy > 1) return;
+  setStatus(keep ? 'Adding that spot…' : 'Leaving that spot out…');
+  try { await maskPreview(mp.c, mp.lane, mp.rect, mp.T, mp.mode, [...mp.points, [sx, sy, keep ? 1 : 0]]); setStatus(''); } catch (e) { setStatus(e.message); }
 }
 function overlayMask(ctx, mp, h) { // the tinted outline over the clip's rect h ({x0, y0, x1, y1, rot}, canvas pixels): crop, mirror and rotation as drawn
   const cr = mp.c.crop || {}, b = selBox(h), W = mp.img.width, H = mp.img.height;
@@ -2355,17 +2374,18 @@ function overlayMask(ctx, mp, h) { // the tinted outline over the clip's rect h 
   ctx.drawImage(mp.img, (cr.l || 0) * W, (cr.t || 0) * H, (1 - (cr.l || 0) - (cr.r || 0)) * W, (1 - (cr.t || 0) - (cr.b || 0)) * H, -b.hw, -b.hh, b.hw * 2, b.hh * 2);
   ctx.restore();
 }
-function endPreview(go) { // the confirm bar's answer: remove (or cut out), draw the box again, or leave it
+function endPreview(go) { // the confirm bar's answer: remove (or cut out) exactly the outline shown, draw the box again, or leave it
   const mp = S.maskPreview;
+  if (go === 'smaller' || go === 'bigger') return stepPreview(go === 'smaller' ? -1 : 1);
   S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true;
   if (!mp) return;
-  if (go === 'ok') removeObject(mp.c, mp.lane, mp.rect, mp.T, 'best', mp.mode).catch(e => setStatus(e.message));
+  if (go === 'ok') removeObject(mp.c, mp.lane, mp.rect, mp.T, 'best', mp.mode, mp.b64[mp.pick]).catch(e => setStatus(e.message));
   else if (go === 'again') { seekTo(mp.T); startRemove(mp.c, mp.lane, mp.mode); }
 }
-async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove') { // rect in project canvas units; the clip switches to the new copy of its range
+async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove', seed) { // rect in project canvas units; the clip switches to the new copy of its range
   if (S.maskPreview) { S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true; }
-  const box = srcBox(c, rect, T);
-  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
+  const box = srcBox(c, rect, T); // seed: the confirmed outline (PNG), which SAM 2 then follows through the clip
+  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode, seed }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
   await loadMedia();
   const a = c.in, d = M.get(j.media).duration;
   change(() => { c.media = j.media; c.in = 0; c.out = Math.min(d, c.out - a); if (c.beats) c.beats = c.beats.map(b => b - a).filter(b => b >= 0 && b <= c.out); });
@@ -2383,10 +2403,11 @@ async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline fi
   try {
     const r = await maskPreview(c, lane, rect, T, mode);
     setStatus('');
-    if (r.area < 0.0004) { S.maskPreview = null; S.dirty = true; toast('Nothing found in that box: draw it around the object'); return startRemove(c, lane, mode); }
+    if (r.areas.at(-1) < 0.0004) { S.maskPreview = null; S.dirty = true; toast('Nothing found in that box: draw it around the object'); return startRemove(c, lane, mode); }
   } catch (e) { setStatus(''); return removeObject(c, lane, rect, T, q, mode).catch(err => setStatus(err.message)); } // no SAM 2 here: straight on, with the box
   const bar = $('#confirmBar');
-  bar.querySelector('span').textContent = mode === 'cutout' ? 'Keep only the highlighted part?' : 'Remove the highlighted part from the whole clip?';
+  bar.querySelector('span').textContent = mode === 'cutout' ? 'Keep only the pink part?' : 'Remove the pink part from the whole clip?';
+  bar.title = 'Smaller / Bigger: a part of it, or more of it.';
   bar.querySelector('[data-ok]').textContent = mode === 'cutout' ? 'Cut it out' : 'Remove it';
   bar.hidden = false;
   bar.querySelector('[data-ok]').focus();
@@ -2854,6 +2875,16 @@ function wire() {
   $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
   $('#btnTrNone').addEventListener('click', () => applyTransition('none'));
   $('#btnAddText').addEventListener('click', () => addText('Subtitle'));
+  $('#musicStyles').innerHTML = Object.keys(MUSIC_STYLES).map(k => `<button data-mstyle="${esc(k)}">${esc(k)}</button>`).join('');
+  $('#musicStyles').addEventListener('click', e => { const b = e.target.closest('[data-mstyle]'); if (b) { $('#musicPrompt').value = MUSIC_STYLES[b.dataset.mstyle]; for (const x of $('#musicStyles').children) x.classList.toggle('on', x === b); } });
+  $('#btnMusic').addEventListener('click', async () => {
+    const b = $('#btnMusic'), prompt = $('#musicPrompt').value.trim();
+    if (!prompt) return toast('Describe the music, or pick a style');
+    b.disabled = true;
+    try { const r = await aiMusic({ prompt, duration: +$('#musicLen').value }); $('#musicStatus').textContent = `Added "${r.media}" at the playhead.`; }
+    catch (err) { $('#musicStatus').textContent = err.message; }
+    finally { b.disabled = false; }
+  });
   $('#btnStickerAI').addEventListener('click', async () => {
     const prompt = $('#stPrompt').value.trim(), b = $('#btnStickerAI');
     if (!prompt) return toast('Describe the sticker first');
@@ -2981,6 +3012,7 @@ function wire() {
       addEventListener('pointerup', upp);
       return;
     }
+    if (S.maskPreview) return refinePreview(x / (cv.width / P.w), y / (cv.width / P.w), !e.altKey); // clicks shape the outline
     const hs = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(h => h.id === S.sel.id), hk = hs && handleAt(hs, x, y);
     if (hk) return handleDrag(e, hs, hk, cv);
     const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
@@ -3022,7 +3054,7 @@ function wire() {
     if (!isSel(hit.lane, c.id)) { S.multi.clear(); S.sel = { lane: hit.lane, id: c.id }; renderAll(); S.dirty = true; }
     openMenu(e.clientX, e.clientY, clipMenu(c, hit.lane));
   });
-  $('#confirmBar').addEventListener('click', e => { const b = e.target.closest('button'); if (b) endPreview('ok' in b.dataset ? 'ok' : 'again' in b.dataset ? 'again' : null); });
+  $('#confirmBar').addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled) endPreview(['ok', 'again', 'smaller', 'bigger'].find(k => k in b.dataset) || null); });
   $('#btnTheater').innerHTML = ICON.expand;
   $('#btnTheater').addEventListener('click', () => toggleTheater());
   $('#scriptBody').addEventListener('pointerdown', e => { // click a word: jump there; drag or ⇧-click: select words
@@ -3206,9 +3238,17 @@ async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
   addMedia(jb.media, 'audio', at);
   return brief(...cfind(S.sel.id));
 }
+const COMBINE_MUSIC = { // what 'AI music, made to fit' asks MusicGen for, per smart-combine style
+  balanced: 'uplifting indie pop, warm guitars, steady drums, feel good, 110 bpm', energetic: 'energetic electronic pop, punchy drums, bright synths, 124 bpm',
+  calm: 'calm acoustic ambient, soft piano and guitar, gentle, 80 bpm', cinematic: 'epic cinematic orchestral, strings and big drums, building, 100 bpm' };
 async function smartCombine({ media, length = 30, style = 'balanced', order = 'auto', music, ratio = '9:16', sound = true, title = false, reframe = true }) { // CapCut's AutoCut, on this Mac
   const vids = [...new Set((Array.isArray(media) ? media : [media]).map(q => mediaBy(q)))].filter(m => m.kind === 'video');
   if (!vids.length) throw new Error('pick at least one video');
+  if (music === 'ai') { // music made for this edit: the style's sound, as long as the edit asks (or the longest MusicGen piece)
+    const st0 = $('#scStatus'), say0 = x => { if (st0) st0.textContent = x; };
+    const r = await aiMusic({ prompt: COMBINE_MUSIC[style] || COMBINE_MUSIC.balanced, duration: Math.min(60, +length || 60), add: false, say: say0 });
+    music = r.id;
+  }
   const mus = music ? mediaBy(music) : null;
   if (mus && !mus.hasAudio) throw new Error(`${mus.name} has no sound`);
   if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
@@ -3313,6 +3353,20 @@ async function translateCaptions({ to }) { // whole sentences are translated, th
   });
   return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text) };
 }
+const MUSIC_STYLES = { // prompts MusicGen does well with
+  'Upbeat pop': 'upbeat pop, bright synths, punchy drums, catchy, 120 bpm', 'Lo-fi': 'lo-fi hip hop beat, mellow piano, soft drums, relaxed, 85 bpm',
+  Cinematic: 'epic cinematic orchestral, strings and big drums, building, 100 bpm', 'Hip hop': 'hip hop beat, deep 808 bass, crisp hi-hats, 90 bpm',
+  EDM: 'energetic EDM, big synth leads, four on the floor, 128 bpm', Acoustic: 'warm acoustic guitar, light percussion, feel good, 100 bpm',
+  Corporate: 'inspiring corporate background music, piano and soft drums, 110 bpm', Ambient: 'calm ambient pads, soft textures, slow, peaceful',
+  Funk: 'funky groove, slap bass, wah guitar, tight drums, 105 bpm', Trap: 'dark trap beat, heavy 808, rolling hi-hats, 140 bpm' };
+async function aiMusic({ prompt, duration = 20, seed, at = S.t, add = true, say }) { // music from a description, on this Mac (MusicGen): into the library, and onto the audio track
+  if (!String(prompt || '').trim()) throw new Error('describe the music');
+  const j = await job('/api/ai/music', { prompt, dur: duration, seed }, 'Making music', say || (x => { const e = $('#musicStatus'); if (e) e.textContent = x; else setStatus(x); }));
+  await loadMedia();
+  const m = M.get(j.media);
+  if (add) addMedia(j.media, 'audio', at);
+  return { id: j.media, media: m?.name, duration: m?.duration, ...(add ? { clip: brief(...cfind(S.sel.id)) } : {}) };
+}
 async function hookTitles() {
   packMain();
   const ranges = P.main.filter(c => M.get(c.media)?.hasAudio).map(c => ({ media: c.media, in: c.in, out: c.out }));
@@ -3330,6 +3384,9 @@ async function loadAI() { // fill the AI tab from what is installed
   for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
   if (!s.llm) $('#scStatus').textContent = 'Without the local model, shots are kept in the order they were filmed.';
   if (!s.llm) $('#hlStatus').textContent = 'Needs Ollama with a model (ollama pull qwen3.5:9b).';
+  G.ai = s; $('#btnMusic').disabled = !s.music;
+  if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
+  renderMediaList();
 }
 
 // ---------- remote control: Claude Code drives this editor through the Cutroom MCP server ----------
@@ -3490,28 +3547,33 @@ const REMOTE = {
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     if (T < c.start || T >= c.start + tdur(c, L)) throw new Error('t must be a time inside the clip');
-    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, quality === 'fast' ? 'fast' : 'best');
+    const rect = { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, mp = previewFor(c, rect);
+    return removeObject(c, L, rect, mp ? mp.T : T, quality === 'fast' && !mp ? 'fast' : 'best', 'remove', mp?.b64[mp.pick]);
   },
-  async preview_object({ id, box, t, mode = 'remove' }) { // SAM 2's outline of a box, tinted on the frame: check it before remove_object / cut_out_object
+  async preview_object({ id, box, t, mode = 'remove', candidate, points = [] }) { // SAM 2's outline of a box, tinted on the frame: check it before remove_object / cut_out_object
     const [c, L] = cfind(id);
     if (M.get(c.media)?.kind !== 'video') throw new Error('preview_object works on video clips');
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     seekTo(T);
-    const r = await maskPreview(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, mode);
+    const toSrc = canvasToSrc(c, S.t), pts = (Array.isArray(points) ? points : []).map(q => [...toSrc(q[0] * P.w, q[1] * P.h), q[2] ? 1 : 0]); // canvas fractions -> source
+    const r = await maskPreview(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, mode, pts);
+    if (Number.isInteger(candidate)) { S.maskPreview.pick = clamp(candidate, 0, r.masks.length - 1); markPreview(); }
     const snap = await REMOTE.snapshot({ max: 720 }); // the export renderer's frame: right even while the window is covered (no video decoding then)
     const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = `data:image/png;base64,${snap.image}`; });
     const cv = document.createElement('canvas'), x = cv.getContext('2d'), k = im.width / P.w, pr = propsAt(c, S.t - c.start), g = geom(M.get(c.media), c, P.w, P.h, pr);
     cv.width = im.width; cv.height = im.height; x.drawImage(im, 0, 0);
     overlayMask(x, S.maskPreview, { x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
-    return { t: r3(S.t), area: +r.area.toFixed(4), image: cv.toDataURL('image/png').split(',')[1], note: 'pink = what will be taken; call remove_object (or cut_out_object) with the same box and t, or try another box' };
+    return { t: r3(S.t), candidates: r.areas.map(a => +a.toFixed(4)), candidate: S.maskPreview.pick, image: cv.toDataURL('image/png').split(',')[1],
+      note: 'pink = what will be taken (candidates: area of each outline, smallest first; pass candidate to show another). remove_object / cut_out_object with the same box then take exactly this outline' };
   },
   async cut_out_object({ id, box, t }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency
     const [c, L] = cfind(id);
     if (M.get(c.media)?.kind !== 'video') throw new Error('cut_out_object works on video clips');
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
-    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, 'best', 'cutout');
+    const rect = { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, mp = previewFor(c, rect);
+    return removeObject(c, L, rect, mp ? mp.T : T, 'best', 'cutout', mp?.b64[mp.pick]);
   },
   async cut_timeline({ ranges }) { // ripple-delete [start, end] ranges (timeline seconds) from the main track
     if (!Array.isArray(ranges) || !ranges.length || ranges.some(r => !Array.isArray(r) || !(r[1] > r[0]))) throw new Error('ranges: [[start, end], ...] in timeline seconds');
@@ -3533,6 +3595,7 @@ const REMOTE = {
     return addSfx(s.id, at);
   },
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
+  async generate_music(args) { if (!args.prompt) throw new Error('prompt is required (or a style: ' + Object.keys(MUSIC_STYLES).join(', ') + ')'); return aiMusic({ ...args, prompt: MUSIC_STYLES[args.prompt] || args.prompt }); },
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
   async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
   async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },

@@ -128,6 +128,10 @@ TOOLS = [
     ('generate_image', 'Generate an image ON THIS MAC (Z-Image-Turbo, about 25-50 s) and put it on the timeline. sticker=true cuts the subject out (transparent PNG). '
                        'shape canvas|1:1|16:9|9:16|4:5; steps 4 (draft) or 8 (best); put overlay|main|library; start/duration in seconds.',
      S({'prompt': txt, 'shape': txt, 'sticker': boo, 'steps': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'put': txt, 'start': num, 'duration': num}, ['prompt']), 'ai_image'),
+    ('generate_music', 'Make music ON THIS MAC (MusicGen, about as long as the music takes to play) from a description or a style '
+                       '(Upbeat pop, Lo-fi, Cinematic, Hip hop, EDM, Acoustic, Corporate, Ambient, Funk, Trap) and put it on the audio track at `at`. '
+                       'duration 4-60 s; add=false keeps it in the library only. smart_combine also takes music="ai" to make music to fit the edit.',
+     S({'prompt': txt, 'duration': num, 'at': num, 'seed': {'type': 'integer'}, 'add': boo}, ['prompt']), 'generate_music'),
     ('ai_voiceover', 'Natural voiceover generated ON THIS MAC (Kokoro), added on the audio track at `at` (default: playhead). '
                      'voice ids: first letter = language (a US, b UK English, e Spanish, f French, h Hindi, i Italian, j Japanese, p Portuguese, z Chinese), '
                      'second = f/m; e.g. af_heart, af_bella, am_michael, bf_emma, bm_george. speed 0.5-2.',
@@ -142,10 +146,13 @@ TOOLS = [
                                                             'ratio': txt, 'sound': boo, 'title': boo}, ['media']), 'smart_combine'),
     ('preview_object', 'Before remove_object / cut_out_object: SAM 2 outlines what the box covers at time t and the editor shows it tinted pink on the frame. '
                        'Returns that frame as an image plus the outlined area, so you can check the pick (and adjust the box) before the slow job runs.',
-     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'mode': {'type': 'string', 'enum': ['remove', 'cutout']}}, ['id', 'box']), 'preview_object'),
+     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'mode': {'type': 'string', 'enum': ['remove', 'cutout']},
+        'candidate': {'type': 'integer', 'description': 'which outline: 0 = smallest part ... last = the whole thing (default: the best fit for the box)'},
+        'points': {'type': 'array', 'items': {'type': 'array', 'items': num}, 'description': 'spots as [x, y, 1 = take it in | 0 = leave it out], canvas fractions; one outside the box grows it (a beard under a head box)'}},
+       ['id', 'box']), 'preview_object'),
     ('remove_object', 'Remove an object from a video clip, on this Mac: box = where it is on the canvas as fractions {x, y, w, h} '
                       '(read it off a snapshot at time t); it is tracked through the whole clip and the background filled in. '
-                      'The clip switches to a cleaned copy. quality: best (SAM 2 exact outline + ProPainter, about a minute per 4 s) | fast (seconds).',
+                      'After preview_object with the same box it takes exactly the outline shown. The clip switches to a cleaned copy. quality: best (SAM 2 exact outline + ProPainter, about a minute per 4 s) | fast (seconds).',
      S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'quality': txt}, ['id', 'box']), 'remove_object'),
     ('transcript', "Timestamped sentences of a library item's speech (on-device whisper, cached). Use it to pick moments yourself, then add_clip with in/out.",
      S({'media': txt, 'lang': txt}, ['media']), 'transcript'),
@@ -178,7 +185,7 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

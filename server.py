@@ -377,7 +377,7 @@ def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     return {'points': pts, 'lost': lost}
 
 
-def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove'):
+def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=None):
     """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
     [t0, t1] gets the background filled in (ai/remove.py; best = SAM 2 outline + ProPainter when installed)
     -> a new library item covering just that range."""
@@ -423,9 +423,15 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove'):
                 if probe_tags.get(key) not in (None, '', 'unknown', 'reserved'):
                     tags += [opt, probe_tags[key]]
         out, jf = Path(td) / ('cut.webm' if mode == 'cutout' else 'clean.mp4'), Path(td) / 'job.json'
+        seed_png = None
+        if seed:  # the outline confirmed in the preview (a PNG mask of the picked frame): SAM 2 follows exactly that
+            seed_png = Path(td) / 'seed.png'
+            seed_png.write_bytes(base64.b64decode(str(seed).split(',')[-1]))
+            if not seed_png.read_bytes().startswith(b'\x89PNG'):
+                raise ValueError('seed must be a PNG mask')
         jf.write_text(json.dumps({'src': src, 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': m['w'], 'h': m['h'],
                                   'boxes': boxes, 'pick': round((t - t0) * fps), 'box': [b['x'], b['y'], b['w'], b['h']], 'mode': mode,
-                                  'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags}))
+                                  'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags, 'seed': str(seed_png) if seed_png else None}))
         proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env=AI_ENV)  # one pipe: model warnings can't fill a second one and stall it
         engine, said = 'classical', []
@@ -444,7 +450,7 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove'):
     return {'media': res['id'], 'frames': n, 'lost': lost, 'engine': engine}
 
 
-def mask_preview(mid, t, box):
+def mask_preview(mid, t, box, points=None):
     """The exact outline (SAM 2) of what a box covers on one frame: the user checks it before Best removal runs."""
     m = meta(mid)
     if m['kind'] != 'video':
@@ -454,17 +460,22 @@ def mask_preview(mid, t, box):
     t, b = fnum(t, 0, m['duration']), {k: fnum((box or {}).get(k), 0, 1) for k in 'xywh'}
     if b['w'] < 0.004 or b['h'] < 0.004:
         raise ValueError('draw a box around the object')
+    pts = [[fnum(q[0], 0, 1), fnum(q[1], 0, 1), 1 if q[2] else 0] for q in (points or [])[:20]]  # clicked spots: keep (1) / leave out (0)
     dec, vf = hdr_decode(m)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out, jf = Path(td) / 'mask.png', Path(td) / 'job.json'
         jf.write_text(json.dumps({'mode': 'preview', 'src': str(MEDIA / m['file']), 'out': str(out), 't': t, 'w': m['w'], 'h': m['h'],
-                                  'box': [b['x'], b['y'], b['w'], b['h']], 'dec': dec, 'vf': vf}))
+                                  'box': [b['x'], b['y'], b['w'], b['h']], 'points': pts, 'dec': dec, 'vf': vf}))
         r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            text=True, errors='replace', env=AI_ENV, timeout=180)
-        area = next((float(x.split()[1]) for x in r.stdout.splitlines() if x.startswith('area ')), None)
-        if r.returncode or area is None or not out.exists():
+        areas = [float(x.split()[2]) for x in r.stdout.splitlines() if x.startswith('candidate ')]
+        pick = next((int(x.split()[1]) for x in r.stdout.splitlines() if x.startswith('pick ')), None)
+        files = [Path(td) / f'mask{i}.png' for i in range(len(areas))]
+        if r.returncode or pick is None or not all(f.exists() for f in files):
             raise RuntimeError('finding the object failed: ' + (r.stdout.strip().splitlines() or ['no output'])[-1][-300:])
-        return {'mask': base64.b64encode(out.read_bytes()).decode(), 'area': area}
+        # every candidate outline (smallest first: part ... whole) and the one that fits the box; the client steps through them
+        return {'masks': [base64.b64encode(f.read_bytes()).decode() for f in files], 'areas': areas, 'pick': pick, 'area': areas[pick],
+                'mask': base64.b64encode(files[pick].read_bytes()).decode()}
 
 
 def isolate(st, mid, keep='voice'):
@@ -622,7 +633,11 @@ def silences(mid, noise=-35.0, mind=0.5):
 
 AI_DIR = Path(__file__).resolve().parent / 'ai'
 AI_BIN = AI_DIR / '.venv' / 'bin'
-AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+# PyTorch's GPU cache grows to 1.7x the GPU budget (~48 GB on this 36 GB Mac) before it frees anything, and on a Mac that is
+# system memory: stock ProPainter on a head-sized hole took 30 GB and swapped for 15 minutes. Capped, the cache is freed instead
+# (that job in half precision: 54-55 s at a cap of 0.35 or 0.6), and a job that really needs more fails fast rather than swap.
+AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+          'PYTORCH_MPS_HIGH_WATERMARK_RATIO': '0.45', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': '0.35'}
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
 HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
 AI_LOCK = threading.Lock()  # one generation at a time: two image models at once would push the Mac into swap
@@ -822,7 +837,32 @@ def ai_status():
     manifests = Path.home() / '.ollama' / 'models' / 'manifests'
     return {'voice': venv and (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').exists(),
             'image': venv and (HOME / 'ai' / 'z-image-turbo-4bit' / 'mflux_model.json').exists(),
-            'llm': Path(OLLAMA).exists() and manifests.is_dir() and any(f.is_file() for f in manifests.rglob('*'))}
+            'llm': Path(OLLAMA).exists() and manifests.is_dir() and any(f.is_file() for f in manifests.rglob('*')),
+            'music': venv and (HUB / 'models--facebook--musicgen-small' / 'snapshots').exists()}
+
+
+def ai_music(st, prompt, dur=20, seed=None):
+    """Music from a description, on this Mac (MusicGen small; weights CC-BY-NC, personal use) -> a library item."""
+    prompt = ' '.join(str(prompt).split())[:300]
+    if not prompt:
+        raise ValueError('describe the music')
+    job = {'prompt': prompt, 'dur': fnum(dur, 4, 60), 'seed': None if seed is None else int(fnum(seed, 0, 2 ** 31))}
+    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out, jf = Path(td) / 'music.wav', Path(td) / 'job.json'
+        jf.write_text(json.dumps({**job, 'out': str(out)}))
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'music.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # one pipe, as with removal; never a download mid-job
+        said = []
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.95 * float(line.split()[1])
+            elif line.strip():
+                said = (said + [line.strip()])[-5:]
+        if proc.wait() or not out.exists():
+            raise RuntimeError('music generation failed: ' + (said[-1][-300:] if said else 'no output'))
+        with open(out, 'rb') as fh:
+            m = import_file(f'AI music - {prompt[:40]}.wav', fh, out.stat().st_size, background=False)
+    return {'media': m['id']}
 
 
 def ai_voices():
@@ -2000,6 +2040,8 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError(f'no such file: {f}')
                 with open(f, 'rb') as fh:
                     return self.reply(import_file(f.name, fh, f.stat().st_size))
+            if u.path == '/api/ai/music':
+                return self.reply({'job': run_job(ai_music, body.get('prompt', ''), body.get('dur', 20), body.get('seed'))})
             if u.path == '/api/ai/voice':
                 return self.reply({'job': run_job(ai_voice, body.get('text', ''), body.get('voice', 'af_heart'), body.get('speed', 1))})
             if u.path == '/api/ai/image':
@@ -2010,10 +2052,10 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/isolate':
                 return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
             if u.path == '/api/mask_preview':  # one frame's SAM 2 outline, a second or two: shown before Best removal runs
-                return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box')))
+                return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box'), body.get('points')))
             if u.path == '/api/remove_object':
                 return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'),
-                                                  body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove')})
+                                                  body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove', body.get('seed'))})
             if u.path == '/api/ai/combine':
                 return self.reply({'job': run_job(combine, body.get('media') or [], body.get('target', 0), body.get('style', 'balanced'),
                                                   body.get('order', 'auto'), body.get('music'), bool(body.get('sound')))})
