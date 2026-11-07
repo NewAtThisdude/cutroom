@@ -326,8 +326,36 @@ def cutout(job, n):
     say(1)
 
 
+def preview(job):
+    """The outline Best would take, on the one frame the box was drawn on (SAM 2's image model, a second or two):
+    shown to the user before the whole clip is processed. Writes a grey mask PNG (255 = the object)."""
+    import torch
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    W, H = job['w'], job['h']
+    k = min(1.0, 1024 / max(W, H))
+    fw, fh = max(2, int(W * k) // 2 * 2), max(2, int(H * k) // 2 * 2)
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', *job['dec'], '-ss', f"{job['t']:.6f}", '-i', job['src'], '-frames:v', '1',
+                          '-vf', f"{job['vf']}scale={fw}:{fh}", '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+    if len(raw) < fw * fh * 3:
+        raise RuntimeError('could not read that frame')
+    img = np.frombuffer(raw[:fw * fh * 3], np.uint8).reshape(fh, fw, 3)
+    dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    pred = SAM2ImagePredictor(build_sam2('configs/sam2.1/sam2.1_hiera_s.yaml', str(SAM2_CK), device=dev))
+    x, y, w, h = job['box']
+    amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
+    with torch.inference_mode(), amp:
+        pred.set_image(img)
+        masks, _, _ = pred.predict(box=np.array([x * fw, y * fh, (x + w) * fw, (y + h) * fh], np.float32), multimask_output=False)
+    m = (np.asarray(masks[0]) > 0).astype(np.uint8) * 255
+    cv2.imwrite(job['out'], m)
+    print(f'area {m.mean() / 255:.5f}', flush=True)
+
+
 def main(path):
     job = json.load(open(path))
+    if job.get('mode') == 'preview':
+        return preview(job)
     W, H, fps = job['w'], job['h'], job['fps']
     n = max(1, len(job['boxes']))
     if job.get('mode') == 'cutout':

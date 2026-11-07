@@ -778,6 +778,8 @@ function paint() {
   S.live = live;
   fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
+  const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
+  if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
     const R = S.pickRect, d = devicePixelRatio || 1;
     ctx.save(); ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = 2 * d; ctx.setLineDash([5 * d, 4 * d]);
@@ -2327,9 +2329,42 @@ function startRemove(c, lane, mode = 'remove') { // CapCut's "Remove object" / c
   S.pick = { c, lane, remove: true, mode };
   toast(mode === 'cutout' ? 'Drag a box around what to keep (Esc cancels)' : 'Drag a box around the object to remove (Esc cancels)');
 }
-async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove') { // rect in project canvas units; the clip switches to the new copy of its range
+function srcBox(c, rect, T) { // a box on the project canvas -> the same box in the clip's source frame (normalized)
   const toSrc = canvasToSrc(c, T), [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
-  const box = { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) };
+  return { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) };
+}
+async function tintMask(b64) { // the grey outline PNG as a pink see-through overlay
+  const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = `data:image/png;base64,${b64}`; });
+  const cv = document.createElement('canvas'), x = cv.getContext('2d', { willReadFrequently: true });
+  cv.width = im.width; cv.height = im.height; x.drawImage(im, 0, 0);
+  const d = x.getImageData(0, 0, cv.width, cv.height);
+  for (let i = 0; i < d.data.length; i += 4) { const a = d.data[i]; d.data[i] = 255; d.data[i + 1] = 61; d.data[i + 2] = 127; d.data[i + 3] = a; }
+  x.putImageData(d, 0, 0);
+  return cv;
+}
+async function maskPreview(c, lane, rect, T, mode) { // SAM 2's outline of the box on this frame, tinted on the preview (a second or two)
+  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T) });
+  S.maskPreview = { id: c.id, c, lane, rect, T, mode, area: r.area, img: await tintMask(r.mask) };
+  S.dirty = true;
+  return r;
+}
+function overlayMask(ctx, mp, h) { // the tinted outline over the clip's rect h ({x0, y0, x1, y1, rot}, canvas pixels): crop, mirror and rotation as drawn
+  const cr = mp.c.crop || {}, b = selBox(h), W = mp.img.width, H = mp.img.height;
+  ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rad); if (mp.c.flip) ctx.scale(-1, 1);
+  ctx.globalAlpha = 0.62;
+  ctx.drawImage(mp.img, (cr.l || 0) * W, (cr.t || 0) * H, (1 - (cr.l || 0) - (cr.r || 0)) * W, (1 - (cr.t || 0) - (cr.b || 0)) * H, -b.hw, -b.hh, b.hw * 2, b.hh * 2);
+  ctx.restore();
+}
+function endPreview(go) { // the confirm bar's answer: remove (or cut out), draw the box again, or leave it
+  const mp = S.maskPreview;
+  S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true;
+  if (!mp) return;
+  if (go === 'ok') removeObject(mp.c, mp.lane, mp.rect, mp.T, 'best', mp.mode).catch(e => setStatus(e.message));
+  else if (go === 'again') { seekTo(mp.T); startRemove(mp.c, mp.lane, mp.mode); }
+}
+async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove') { // rect in project canvas units; the clip switches to the new copy of its range
+  if (S.maskPreview) { S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true; }
+  const box = srcBox(c, rect, T);
   const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
   await loadMedia();
   const a = c.in, d = M.get(j.media).duration;
@@ -2340,7 +2375,22 @@ async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.v
   else toast(`Removed it from ${j.frames} frames (${how})${j.lost && !j.engine.startsWith('sam2') ? '; it got hard to follow part of the way' : ''}`);
   return { ...brief(c, lane), engine: j.engine };
 }
-function finishRemove(rect) { const { c, lane, mode } = S.pick; S.pick = null; removeObject(c, lane, rect, S.t, $('#rmQuality')?.value || 'best', mode).catch(e => setStatus(e.message)); }
+async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline first, so a wrong pick costs a second, not the whole clip
+  const { c, lane, mode } = S.pick, T = S.t, q = $('#rmQuality')?.value || 'best';
+  S.pick = null; $('#toast').hidden = true; // the "drag a box" hint is done
+  if (q === 'fast' && mode !== 'cutout') return removeObject(c, lane, rect, T, q, mode).catch(e => setStatus(e.message));
+  setStatus('Finding its outline (SAM 2)…');
+  try {
+    const r = await maskPreview(c, lane, rect, T, mode);
+    setStatus('');
+    if (r.area < 0.0004) { S.maskPreview = null; S.dirty = true; toast('Nothing found in that box: draw it around the object'); return startRemove(c, lane, mode); }
+  } catch (e) { setStatus(''); return removeObject(c, lane, rect, T, q, mode).catch(err => setStatus(err.message)); } // no SAM 2 here: straight on, with the box
+  const bar = $('#confirmBar');
+  bar.querySelector('span').textContent = mode === 'cutout' ? 'Keep only the highlighted part?' : 'Remove the highlighted part from the whole clip?';
+  bar.querySelector('[data-ok]').textContent = mode === 'cutout' ? 'Cut it out' : 'Remove it';
+  bar.hidden = false;
+  bar.querySelector('[data-ok]').focus();
+}
 async function finishTrack(rect) { // rect in project canvas units
   const { c, lane, host } = S.pick, m = M.get(host.media), t0 = S.t;
   S.pick = null;
@@ -2972,6 +3022,7 @@ function wire() {
     if (!isSel(hit.lane, c.id)) { S.multi.clear(); S.sel = { lane: hit.lane, id: c.id }; renderAll(); S.dirty = true; }
     openMenu(e.clientX, e.clientY, clipMenu(c, hit.lane));
   });
+  $('#confirmBar').addEventListener('click', e => { const b = e.target.closest('button'); if (b) endPreview('ok' in b.dataset ? 'ok' : 'again' in b.dataset ? 'again' : null); });
   $('#btnTheater').innerHTML = ICON.expand;
   $('#btnTheater').addEventListener('click', () => toggleTheater());
   $('#scriptBody').addEventListener('pointerdown', e => { // click a word: jump there; drag or ⇧-click: select words
@@ -3100,6 +3151,7 @@ function wire() {
     if (e.target.matches('textarea, select, input:not([type=range]):not([type=checkbox]):not([type=color])')) return;
     const mod = e.metaKey || e.ctrlKey, key = e.key.toLowerCase();
     const field = e.target.matches('input[type=range], input[type=checkbox], input[type=color]');
+    if (!$('#confirmBar').hidden && (key === 'enter' || key === 'escape')) { e.preventDefault(); return endPreview(key === 'enter' ? 'ok' : null); }
     if (e.code === 'Space' && !e.target.matches('input[type=checkbox], input[type=color]')) { e.preventDefault(); if (S.playing) pause(); else play(); }
     else if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) restore(redo, undo); else restore(undo, redo); }
     else if (mod && key === 'd') { e.preventDefault(); dup(); }
@@ -3318,8 +3370,9 @@ function merge(o, patch) { // deep merge; null deletes
 async function waitFrame() { // the preview shows the frame at S.t: every element at its time, then painted
   paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
   const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && Math.abs(v.currentTime - (v._want ?? v.currentTime)) <= 0.5 / P.fps + 0.002);
-  for (let i = 0; i < 250 && ![...(S.live || [])].every(at); i++) { // re-paint re-issues a seek skipped mid-seek
-    if (i === 75) for (const v of S.live || []) if (v.getAttribute('src') && v.readyState < 2) v.load(); // a first load that stalled for 3 s: ask again
+  const t0 = performance.now(); // wall clock, not a count: a covered window throttles timers and decodes no video
+  for (let kick = true; performance.now() - t0 < 6000 && ![...(S.live || [])].every(at);) { // re-paint re-issues a seek skipped mid-seek
+    if (kick && performance.now() - t0 > 2500) { kick = false; for (const v of S.live || []) if (v.getAttribute('src') && v.readyState < 2) v.load(); } // a first load that stalled: ask again
     await sleep(40); paint();
   }
   await sleep(40); // WebKit hands drawImage the new frame a moment after 'seeked'
@@ -3438,6 +3491,20 @@ const REMOTE = {
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     if (T < c.start || T >= c.start + tdur(c, L)) throw new Error('t must be a time inside the clip');
     return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, quality === 'fast' ? 'fast' : 'best');
+  },
+  async preview_object({ id, box, t, mode = 'remove' }) { // SAM 2's outline of a box, tinted on the frame: check it before remove_object / cut_out_object
+    const [c, L] = cfind(id);
+    if (M.get(c.media)?.kind !== 'video') throw new Error('preview_object works on video clips');
+    if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
+    const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
+    seekTo(T);
+    const r = await maskPreview(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, mode);
+    const snap = await REMOTE.snapshot({ max: 720 }); // the export renderer's frame: right even while the window is covered (no video decoding then)
+    const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = `data:image/png;base64,${snap.image}`; });
+    const cv = document.createElement('canvas'), x = cv.getContext('2d'), k = im.width / P.w, pr = propsAt(c, S.t - c.start), g = geom(M.get(c.media), c, P.w, P.h, pr);
+    cv.width = im.width; cv.height = im.height; x.drawImage(im, 0, 0);
+    overlayMask(x, S.maskPreview, { x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
+    return { t: r3(S.t), area: +r.area.toFixed(4), image: cv.toDataURL('image/png').split(',')[1], note: 'pink = what will be taken; call remove_object (or cut_out_object) with the same box and t, or try another box' };
   },
   async cut_out_object({ id, box, t }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency
     const [c, L] = cfind(id);

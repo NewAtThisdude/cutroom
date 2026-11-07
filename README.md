@@ -81,7 +81,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
-| | **Remove object** from video: drag a box round it at any frame | **Best:** SAM 2 traces the object's exact outline from the box, through the whole clip and behind things that cover it. On a still camera the hole is filled with the real background from the frames that show it (exact, sharp), and ProPainter fills what no frame shows; on a moving camera ProPainter fills it all, its optical flow handling parallax and blur. **Fast:** the box tracked by Apple Vision, filled from other frames with texture synthesis for the rest, in seconds. Poisson blending hides exposure seams. `ai/remove.py` |
+| | **Remove object** from video: drag a box round it at any frame; Best first shows SAM 2's outline of it on that frame (tinted pink, about 2 s) to confirm, draw again or cancel, before the whole clip is processed | **Best:** SAM 2 traces the object's exact outline from the box, through the whole clip and behind things that cover it. On a still camera the hole is filled with the real background from the frames that show it (exact, sharp), and ProPainter fills what no frame shows; on a moving camera ProPainter fills it all, its optical flow handling parallax and blur. **Fast:** the box tracked by Apple Vision, filled from other frames with texture synthesis for the rest, in seconds. Poisson blending hides exposure seams. `ai/remove.py` |
 | | **Cut out object**: any subject, not only people | Box it once; SAM 2 follows its outline through the clip and the clip becomes it on a transparent background (soft edges, VP9 alpha) |
 | | **Isolate voice / Remove voice** | Demucs (htdemucs) splits a clip's sound into the voice and everything else; the result goes on the audio track, locked to the clip, and the clip is muted |
 | | **Smart combine**: tick several clips and get one edit | Every scene of every clip is scored 4× a second for sharpness and exposure (ffmpeg `blurdetect`, `signalstats`), and the local vision model describes its best frame. Cutroom keeps the best window of each scene, orders the shots (a story from what they show, or as filmed), fits them to the length, snaps the cuts to the music's beats and picks each transition from what changes: a hard cut inside one take, a dip to black or white on a big brightness jump, the style's transition between places. Shots of another shape fill the canvas with face reframing. Styles: balanced, energetic, calm, cinematic |
@@ -96,11 +96,11 @@ mirror, rotate, remove pauses and fillers, fit) below.
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 39 tools cover projects, media import, clips (add, update any setting,
+the preview frame as an image), and exports. The 40 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
-object's position off a snapshot), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
+object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -189,6 +189,9 @@ once in the browser also guarantees the export matches the preview.
 - **Object removal:** OpenCV 5's `seamlessClone` overwrites the mask you pass it (the paste mask became a thin ring
   and the object stayed), so it gets a copy. Patch matching runs in BGR: in YUV it under-weights colour and pastes
   wrong-coloured chunks. Vision's tracking box drifts smaller, so the hole never shrinks below the box you drew.
+- **Covered window:** while the app's window is behind others, WebKit decodes no video and throttles timers (a 40 ms
+  sleep took about a second), so preview waits are bounded by wall-clock time and `preview_object` draws its outline
+  onto the export renderer's frame.
 - **Video effects:** a step that only covers part of the edit uses the filter's timeline switch on frame numbers
   (`enable='between(n,a,b)'`), not times: exact on every frame rate. Steps whose filters have no switch (mirror,
   split, zoom/shake, glow, grain) process a copy and overlay it with that switch. `rgbashift` moves the red plane right

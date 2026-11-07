@@ -205,7 +205,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 
 /* preview */
 .center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.stage { flex: 1; min-height: 0; display: grid; place-items: center; overflow: hidden; background: repeating-conic-gradient(#0b0c12 0 25%, #0d0f16 0 50%) 0 0 / 22px 22px; }
+.stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; overflow: hidden; background: repeating-conic-gradient(#0b0c12 0 25%, #0d0f16 0 50%) 0 0 / 22px 22px; }
 .stage canvas { background: #000; border-radius: 6px; box-shadow: 0 18px 50px -12px rgba(0, 0, 0, .8), 0 0 0 1px var(--line); cursor: default; }
 .transport { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; height: 52px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--panel); }
 .tside { display: flex; align-items: center; min-width: 0; }
@@ -294,3 +294,6 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 12px; 
 .numedit { width: 66px; padding: 2px 6px; font: inherit; font-size: 12px; text-align: right; }
 #exDone { display: contents; }
 select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-allowed; }
+.confirm { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-radius: 12px; background: rgba(20, 23, 36, .94); border: 1px solid var(--line2); box-shadow: 0 14px 34px rgba(0, 0, 0, .55); z-index: 5; max-width: calc(100% - 24px); }
+.confirm[hidden] { display: none; }
+.confirm span { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

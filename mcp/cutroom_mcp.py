@@ -140,6 +140,9 @@ TOOLS = [
                       'cut to the music\'s beats, transitions chosen from what changes between shots. style: balanced | energetic | calm | cinematic. '
                       'Builds and opens a new project.', S({'media': {'type': 'array', 'items': txt}, 'length': num, 'style': txt, 'order': txt, 'music': txt,
                                                             'ratio': txt, 'sound': boo, 'title': boo}, ['media']), 'smart_combine'),
+    ('preview_object', 'Before remove_object / cut_out_object: SAM 2 outlines what the box covers at time t and the editor shows it tinted pink on the frame. '
+                       'Returns that frame as an image plus the outlined area, so you can check the pick (and adjust the box) before the slow job runs.',
+     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'mode': {'type': 'string', 'enum': ['remove', 'cutout']}}, ['id', 'box']), 'preview_object'),
     ('remove_object', 'Remove an object from a video clip, on this Mac: box = where it is on the canvas as fractions {x, y, w, h} '
                       '(read it off a snapshot at time t); it is tracked through the whole clip and the background filled in. '
                       'The clip switches to a cleaned copy. quality: best (SAM 2 exact outline + ProPainter, about a minute per 4 s) | fast (seconds).',
@@ -175,11 +178,13 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'main_transcript', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('export', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':
         return [{'type': 'image', 'data': res['image'], 'mimeType': 'image/png'}, {'type': 'text', 'text': f"preview at {res['t']} s"}]
+    if name == 'preview_object':
+        return [{'type': 'image', 'data': res['image'], 'mimeType': 'image/png'}, {'type': 'text', 'text': json.dumps({k: v for k, v in res.items() if k != 'image'})}]
     text = json.dumps(res, ensure_ascii=False)
     if log:
         text += '\neditor said: ' + ' | '.join(dict.fromkeys(log))

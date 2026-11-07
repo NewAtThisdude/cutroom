@@ -444,6 +444,29 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove'):
     return {'media': res['id'], 'frames': n, 'lost': lost, 'engine': engine}
 
 
+def mask_preview(mid, t, box):
+    """The exact outline (SAM 2) of what a box covers on one frame: the user checks it before Best removal runs."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('pick a video clip')
+    if not (AI_BIN / 'python').exists() or not (AI_DIR / 'vendor' / 'sam2' / 'checkpoints' / 'sam2.1_hiera_small.pt').exists():
+        raise RuntimeError('SAM 2 is not installed (README: On-device AI)')
+    t, b = fnum(t, 0, m['duration']), {k: fnum((box or {}).get(k), 0, 1) for k in 'xywh'}
+    if b['w'] < 0.004 or b['h'] < 0.004:
+        raise ValueError('draw a box around the object')
+    dec, vf = hdr_decode(m)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out, jf = Path(td) / 'mask.png', Path(td) / 'job.json'
+        jf.write_text(json.dumps({'mode': 'preview', 'src': str(MEDIA / m['file']), 'out': str(out), 't': t, 'w': m['w'], 'h': m['h'],
+                                  'box': [b['x'], b['y'], b['w'], b['h']], 'dec': dec, 'vf': vf}))
+        r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, errors='replace', env=AI_ENV, timeout=180)
+        area = next((float(x.split()[1]) for x in r.stdout.splitlines() if x.startswith('area ')), None)
+        if r.returncode or area is None or not out.exists():
+            raise RuntimeError('finding the object failed: ' + (r.stdout.strip().splitlines() or ['no output'])[-1][-300:])
+        return {'mask': base64.b64encode(out.read_bytes()).decode(), 'area': area}
+
+
 def isolate(st, mid, keep='voice'):
     """CapCut's "Isolate voice", and its reverse (the music and ambience without the voice), on this Mac: Demucs
     (htdemucs, Defossez / Meta) splits the sound -> a new audio library item the length of the source, cached."""
@@ -1986,6 +2009,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(lift(body['media']))
             if u.path == '/api/isolate':
                 return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
+            if u.path == '/api/mask_preview':  # one frame's SAM 2 outline, a second or two: shown before Best removal runs
+                return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box')))
             if u.path == '/api/remove_object':
                 return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'),
                                                   body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove')})
@@ -2429,6 +2454,13 @@ def selftest():
             off = [a[y * 480 + x] for y in list(range(0, 90)) + list(range(170, 270)) for x in range(0, 480, 7)]
             assert min(on) > 200 and max(off) < 30, ('cutout alpha', min(on), max(off))
             print(f'cutout ok: alpha {min(on)}+ on the subject, {max(off)} or less around it')
+            pv = mask_preview(dirty['id'], 1.0, sq)  # the outline shown before Best runs: the square at t=1 is x 180-220, y 110-150
+            (HOME / 'pv.png').write_bytes(base64.b64decode(pv['mask']))
+            g = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(HOME / 'pv.png'), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], capture_output=True).stdout
+            on = [g[y * 480 + x] for y in range(115, 146) for x in range(185, 216)]
+            off = [g[y * 480 + x] for y in range(0, 270, 5) for x in range(0, 480, 5) if not (170 <= x <= 230 and 100 <= y <= 160)]
+            assert 0.008 < pv['area'] < 0.02 and min(on) == 255 and max(off) == 0, ('outline preview', pv['area'], min(on), max(off))
+            print(f"outline preview ok: {pv['area']:.4f} of the frame, exactly the square")
         if Path(AI_BIN / 'python').exists() and subprocess.run([str(AI_BIN / 'python'), '-I', '-c', 'import demucs'], capture_output=True).returncode == 0:
             # isolate voice: speech over a loud 55 Hz hum + 220 Hz tone; the voice track must lose the music
             subprocess.run(['say', '-o', str(HOME / 'talk.aiff'), 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.'], check=True)
