@@ -63,7 +63,9 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
-| | **Remove object** from video: drag a box round it at any frame | Apple Vision follows it both ways through the clip. Each frame's hole is filled with the real background from the nearest frames that show it, aligned for camera motion. What no frame shows (a static object in a locked-off shot) is synthesized once from the surrounding texture and carried through the shot, so it doesn't flicker. Poisson blending hides exposure seams. `ai/remove.py`, OpenCV |
+| | **Remove object** from video: drag a box round it at any frame | **Best:** SAM 2 traces the object's exact outline from the box, through the whole clip and behind things that cover it. On a still camera the hole is filled with the real background from the frames that show it (exact, sharp), and ProPainter fills what no frame shows; on a moving camera ProPainter fills it all, its optical flow handling parallax and blur. **Fast:** the box tracked by Apple Vision, filled from other frames with texture synthesis for the rest, in seconds. Poisson blending hides exposure seams. `ai/remove.py` |
+| | **Cut out object**: any subject, not only people | Box it once; SAM 2 follows its outline through the clip and the clip becomes it on a transparent background (soft edges, VP9 alpha) |
+| | **Isolate voice / Remove voice** | Demucs (htdemucs) splits a clip's sound into the voice and everything else; the result goes on the audio track, locked to the clip, and the clip is muted |
 | | **Smart combine**: tick several clips and get one edit | Every scene of every clip is scored 4× a second for sharpness and exposure (ffmpeg `blurdetect`, `signalstats`), and the local vision model describes its best frame. Cutroom keeps the best window of each scene, orders the shots (a story from what they show, or as filmed), fits them to the length, snaps the cuts to the music's beats and picks each transition from what changes: a hard cut inside one take, a dip to black or white on a big brightness jump, the style's transition between places. Shots of another shape fill the canvas with face reframing. Styles: balanced, energetic, calm, cinematic |
 | | **Long video → Shorts**, caption translation, hook titles | A local language model (Ollama, qwen3.5:9b) reads the on-device transcript. Shorts: its picks snap to sentence edges, and each becomes a 9:16 project with face reframing, captions and a hook title. Translation works on whole sentences, then re-cuts them into captions over the same time (by character for Chinese and Japanese) |
 | Claude Code control | Tell Claude Code in VS Code what to do and it edits the open project | The Cutroom MCP server (see below) |
@@ -76,10 +78,10 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 34 tools cover projects, media import, clips (add, update any setting,
+the preview frame as an image), and exports. The 35 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
-object's position off a snapshot), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
+object's position off a snapshot), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -92,6 +94,8 @@ with the export engine, so it shows exactly what the export will, even while the
 Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup: `ai/setup.sh`. The image model
 downloads about 32 GB once; after the 4-bit copy is saved (5.5 GB in `~/Movies/Cutroom/ai`) the originals are deleted, so
 about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9b`, 6.6 GB); Cutroom starts it when needed.
+`setup.sh` also installs SAM 2 (Meta, Apache-2.0) and ProPainter (S-Lab licence: personal, non-commercial use) from their
+official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every weight file checked by SHA-256), and Demucs.
 
 | | Model | Measured here |
 |---|---|---|
@@ -99,7 +103,10 @@ about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9
 | Stickers | the image above + Apple Vision subject lifting | the prompt asks for a plain backdrop so the cut-out is clean |
 | Natural voiceover (AI tab, `ai_voiceover`) | Kokoro-82M via mlx-audio, 54 voices in 9 languages | 7.7 s of speech in about 5 s, most of it model load |
 | Background removal for photos | Apple Vision `VNGenerateForegroundInstanceMaskRequest` | under a second; any subject, not only people |
-| Remove object (video) | Apple Vision tracking + `ai/remove.py` (OpenCV, no model) | 4 s of 720p in about 11 s. Against the clean footage: 40-44 dB inside the hole for a moving object or a moving camera (indistinguishable), and plausible synthesized texture for a static object in a static shot |
+| Remove object, Best | SAM 2.1 small (bf16 on the GPU, about 5 frames/s) + ProPainter (about 1 s per frame of the crop) | 4 s of 720p: about 30 s on a still camera, 1-2 min on a moving one. SAM 2's outline of a walking fox: 0.94 IoU against the true silhouette. Fills against the clean footage: 41-44 dB where other frames show the background; a handheld shot of a cyclist behind trees came out clean |
+| Remove object, Fast | Apple Vision tracking + OpenCV (no model) | 4 s of 720p in about 11 s; 40-44 dB on still or planar shots, seams on real handheld pans, texture synthesis for hidden areas |
+| Cut out object | SAM 2.1 small | 4 s of 720p in about 23 s; alpha vs the true silhouette: 0.94 IoU |
+| Isolate voice | Demucs htdemucs (GPU) | 20 s of sound in about 3 s; speech under loud music went from -7.9 to 12 dB SI-SDR, the music tones down 30-44 dB |
 | Smart combine | ffmpeg picture statistics + qwen3.5:9b looking at one frame per scene | three clips (5 scenes): analysed and described in about 15 s the first time (cached after that), the edit built in about 3 s |
 | Shorts, translation, hooks | qwen3.5:9b (Q4) on Ollama, thinking off | a 94 s talk: 3 shorts picked and built in about 8 s; 6 sentences translated in about 3 s |
 
@@ -154,6 +161,12 @@ once in the browser also guarantees the export matches the preview.
 - **WebKit** (the app) has no `ctx.filter` and drops VP9's alpha. Filters, the blur fill and mask
   feathering are done by hand there (`colorPass`, `featherAlpha`; the exported mask PNG is drawn the
   same way), and transparent clips get an HEVC-with-alpha preview copy (`/media/<id>?alpha=hevc`).
+- **SAM 2 / ProPainter on the Mac:** ProPainter imports its own modules, so it runs with `-E -s`, not `-I`. SAM 2's
+  progress bars can fill a pipe nobody reads, so they're off and the server reads one merged stream. The first run at
+  a new size compiles GPU kernels (3x slower once). Picking the engine: when the camera holds still the copy from other
+  frames is exact, but a moving camera changes blur and exposure between frames and the copies show seams, so moving
+  shots go to ProPainter. A tight outline lets the walking object's own edges into the camera estimate and fakes
+  parallax: the estimate excludes the outline's box. PyPI's `sam2` is not Meta's package.
 - **Object removal:** OpenCV 5's `seamlessClone` overwrites the mask you pass it (the paste mask became a thin ring
   and the object stayed), so it gets a copy. Patch matching runs in BGR: in YUV it under-weights colour and pastes
   wrong-coloured chunks. Vision's tracking box drifts smaller, so the hole never shrinks below the box you drew.
@@ -202,12 +215,15 @@ once in the browser also guarantees the export matches the preview.
   best in English; the other languages have fewer, plainer voices. A subject cut-out can drop thin details (steam,
   smoke). Video generation (image-to-video) is not built: on this Mac it would take minutes per few-second clip,
   well below CapCut's cloud quality. The 4090 box (Wan 2.2) is the better place for that.
-- **Remove object:** the hole is the tracked box, not the object's exact outline, so the background right around the
-  object is rebuilt too (invisible when that background shows in other frames). A static object in a locked-off shot is
-  filled by texture synthesis, not a neural inpainter: fine on walls, sky, road and grass, visibly repetitive on busy
-  detail such as a bookshelf. Strong parallax or an object over moving texture (water, crowds) can leave soft or
-  ghosted patches. Shadows and reflections of the object are not removed. Verified on synthetic composites (with
-  ground truth), not yet on real phone footage.
+- **Remove object:** Best is slower than CapCut's cloud on long clips (minutes for a 10 s handheld shot). ProPainter
+  works on the crop at up to 720 px, so on 4K the filled area is a little softer than its surroundings. What no frame
+  shows is the model's invention: convincing on walls, foliage, roads and shelves, but it can't know what was really
+  there. The outline grows 1.2 % to take soft edges and contact shadows; long shadows and reflections stay. Fast is
+  the tracked box with texture synthesis, which repeats on busy detail. Tested on synthetic composites with ground
+  truth and one real handheld clip (ProPainter's sample), not yet on your phone footage.
+- **Cut out object:** edges come from SAM 2's mask at up to 1024 px, smoothed when scaled up, so fine hair on 4K is
+  softer than a dedicated matting model would give.
+- **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
 - **Smart combine** judges a shot by sharpness and exposure and by what one frame of it shows; it doesn't hear speech or
   follow action, and the story order is the 9B model's call. Cuts move to the nearest beat. Transitions don't follow the
   camera's motion direction. Verified on synthetic clips (stills with camera moves), not yet on real phone footage.

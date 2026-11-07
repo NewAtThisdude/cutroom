@@ -106,7 +106,8 @@ TOOLS = [
     ('remove_fillers', 'Cut um / uh / er / hmm out of main-track clips (on-device transcript).', S(), 'remove_fillers'),
     ('voiceover', "Text to speech with the Mac's voices, added on the audio track at `at` (default: playhead).", S({'text': txt, 'voice': txt, 'rate': num, 'at': num}, ['text']), 'voiceover'),
     ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
-                  'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name).',
+                  'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), '
+                  'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num}, ['id', 'action']), 'clip_tool'),
     ('generate_image', 'Generate an image ON THIS MAC (Z-Image-Turbo, about 25-50 s) and put it on the timeline. sticker=true cuts the subject out (transparent PNG). '
                        'shape canvas|1:1|16:9|9:16|4:5; steps 4 (draft) or 8 (best); put overlay|main|library; start/duration in seconds.',
@@ -115,6 +116,9 @@ TOOLS = [
                      'voice ids: first letter = language (a US, b UK English, e Spanish, f French, h Hindi, i Italian, j Japanese, p Portuguese, z Chinese), '
                      'second = f/m; e.g. af_heart, af_bella, am_michael, bf_emma, bm_george. speed 0.5-2.',
      S({'text': txt, 'voice': txt, 'speed': num, 'at': num}, ['text']), 'ai_voiceover'),
+    ('cut_out_object', 'Keep only one subject of a video clip, any kind (person, car, pet, product), on a transparent background: box = where it '
+                       'is on the canvas as fractions {x, y, w, h} at time t; SAM 2 follows its exact outline through the clip.',
+     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num}, ['id', 'box']), 'cut_out_object'),
     ('smart_combine', 'Smart combine (CapCut AutoCut), on this Mac: from several videos, the best-looking part of every scene, ordered '
                       '(order: auto | story = by what each shot shows | shot = as filmed), fitted to length seconds (0 = all the good parts), '
                       'cut to the music\'s beats, transitions chosen from what changes between shots. style: balanced | energetic | calm | cinematic. '
@@ -122,9 +126,8 @@ TOOLS = [
                                                             'ratio': txt, 'sound': boo, 'title': boo}, ['media']), 'smart_combine'),
     ('remove_object', 'Remove an object from a video clip, on this Mac: box = where it is on the canvas as fractions {x, y, w, h} '
                       '(read it off a snapshot at time t); it is tracked through the whole clip and the background filled in. '
-                      'The clip switches to a cleaned copy. Best on moving objects or moving cameras; a static object in a locked-off shot is '
-                      'filled with synthesized texture.', S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')},
-                                                             't': num}, ['id', 'box']), 'remove_object'),
+                      'The clip switches to a cleaned copy. quality: best (SAM 2 exact outline + ProPainter, about a minute per 4 s) | fast (seconds).',
+     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'quality': txt}, ['id', 'box']), 'remove_object'),
     ('transcript', "Timestamped sentences of a library item's speech (on-device whisper, cached). Use it to pick moments yourself, then add_clip with in/out.",
      S({'media': txt, 'lang': txt}, ['media']), 'transcript'),
     ('make_shorts', 'Long video -> shorts on this Mac: a local language model picks the best moments; each becomes a new 9:16 project with captions, face reframing and a hook title. '
@@ -155,7 +158,7 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
-    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine')
+    long = name in ('export', 'auto_captions', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

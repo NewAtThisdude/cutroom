@@ -5,3 +5,4 @@ tools/track
 tools/faces
 ai/.venv/
 tools/lift
+ai/vendor/

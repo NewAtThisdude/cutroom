@@ -351,9 +351,10 @@ def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     return {'points': pts, 'lost': lost}
 
 
-def remove_object(st, mid, t, t0, t1, box):
+def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove'):
     """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
-    [t0, t1] gets the background filled in (ai/remove.py) -> a new library item covering just that range."""
+    [t0, t1] gets the background filled in (ai/remove.py; best = SAM 2 outline + ProPainter when installed)
+    -> a new library item covering just that range."""
     m = meta(mid)
     if m['kind'] != 'video':
         raise ValueError('pick a video clip')
@@ -368,10 +369,12 @@ def remove_object(st, mid, t, t0, t1, box):
         raise ValueError('draw a box around the object')
     src, pts, lost = str(MEDIA / m['file']), [{'t': t, **b}], False
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        if t1 - t > 1 / fps:
+        if mode == 'cutout':  # SAM 2 follows the subject itself
+            pass
+        elif t1 - t > 1 / fps:
             r = track(st, mid, t, t1, b, span=(0.0, 0.15))
             pts, lost = pts + r['points'], r['lost']
-        if t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
+        if mode != 'cutout' and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
             rev = Path(td) / 'rev.mp4'
             if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t - t0 + 1 / fps:.6f}', '-i', src, '-vf', 'scale=-2:480,reverse', '-an',
                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', str(rev)]).returncode:
@@ -393,20 +396,61 @@ def remove_object(st, mid, t, t0, t1, box):
             for opt, key in (('-colorspace', 'color_space'), ('-color_primaries', 'color_primaries'), ('-color_trc', 'color_transfer')):
                 if probe_tags.get(key) not in (None, '', 'unknown', 'reserved'):
                     tags += [opt, probe_tags[key]]
-        out, jf = Path(td) / 'clean.mp4', Path(td) / 'job.json'
+        out, jf = Path(td) / ('cut.webm' if mode == 'cutout' else 'clean.mp4'), Path(td) / 'job.json'
         jf.write_text(json.dumps({'src': src, 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': m['w'], 'h': m['h'],
-                                  'boxes': boxes, 'dec': dec, 'vf': vf, 'tags': tags}))
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=AI_ENV)
+                                  'boxes': boxes, 'pick': round((t - t0) * fps), 'box': [b['x'], b['y'], b['w'], b['h']], 'mode': mode,
+                                  'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags}))
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors='replace', env=AI_ENV)  # one pipe: model warnings can't fill a second one and stall it
+        engine, said = 'classical', []
         for line in proc.stdout:
             if line.startswith('progress '):
                 st['progress'] = 0.3 + 0.68 * float(line.split()[1])
-        err = proc.stderr.read()
+            elif line.startswith('engine '):
+                engine = line.split()[1]
+            elif line.strip():
+                said = (said + [line.strip()])[-5:]
         if proc.wait() or not out.exists():
-            raise RuntimeError('object removal failed: ' + (err.strip()[-300:] or 'no output'))
+            raise RuntimeError(('cutting out' if mode == 'cutout' else 'object removal') + ' failed: ' + (said[-1][-300:] if said else 'no output'))
         with open(out, 'rb') as fh:
-            res = import_file(f"{Path(m['name']).stem} (object removed).mp4", fh, out.stat().st_size, background=False)
-    return {'media': res['id'], 'frames': n, 'lost': lost}
+            res = import_file(f"{Path(m['name']).stem} ({'cutout' if mode == 'cutout' else 'object removed'}).{out.suffix[1:]}", fh, out.stat().st_size,
+                              background=False)
+    return {'media': res['id'], 'frames': n, 'lost': lost, 'engine': engine}
+
+
+def isolate(st, mid, keep='voice'):
+    """CapCut's "Isolate voice", and its reverse (the music and ambience without the voice), on this Mac: Demucs
+    (htdemucs, Defossez / Meta) splits the sound -> a new audio library item the length of the source, cached."""
+    m, keep = meta(mid), 'voice' if keep == 'voice' else 'music'
+    if not m.get('hasAudio'):
+        raise ValueError('this clip has no sound')
+    if not (AI_BIN / 'python').exists():
+        raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
+    memo = CACHE / f'{mid}.isolate.json'
+    done = json.loads(memo.read_text()) if memo.exists() else {}
+    if done.get(keep) and (MEDIA / f"{done[keep]}.json").exists():
+        return {'media': done[keep]}
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        wav = Path(td) / 'in.wav'
+        if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vn', '-ac', '2', '-ar', '44100', str(wav)]).returncode:
+            raise RuntimeError('could not read the sound')
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', '-m', 'demucs', '--two-stems', 'vocals', '-d', 'mps', '-o', td, str(wav)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env={**AI_ENV, 'PYTORCH_ENABLE_MPS_FALLBACK': '1'})
+        tail = ''
+        while chunk := proc.stdout.read(256):  # tqdm "11.7/23.4 [" (seconds of audio) -> progress
+            tail = (tail + chunk)[-2000:]
+            if hit := re.findall(r'([\d.]+)/([\d.]+) \[', tail):
+                st['progress'] = 0.9 * float(hit[-1][0]) / max(0.01, float(hit[-1][1]))
+        stem = Path(td) / 'htdemucs' / 'in' / ('vocals.wav' if keep == 'voice' else 'no_vocals.wav')
+        if proc.wait() or not stem.exists():
+            raise RuntimeError('voice separation failed: ' + tail.strip()[-300:])
+        out = Path(td) / 'out.m4a'
+        if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(stem), '-c:a', 'aac', '-b:a', '192k', str(out)]).returncode:
+            raise RuntimeError('encoding the separated sound failed')
+        with open(out, 'rb') as fh:
+            res = import_file(f"{Path(m['name']).stem} ({'voice' if keep == 'voice' else 'no voice'}).m4a", fh, out.stat().st_size, background=False)
+    memo.write_text(json.dumps({**done, keep: res['id']}))
+    return {'media': res['id']}
 
 
 def matte(st, mid):
@@ -1598,8 +1642,11 @@ class App(BaseHTTPRequestHandler):
                                                   body.get('steps', 8), bool(body.get('sticker')))})
             if u.path == '/api/lift':
                 return self.reply(lift(body['media']))
+            if u.path == '/api/isolate':
+                return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
             if u.path == '/api/remove_object':
-                return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'))})
+                return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'),
+                                                  body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove')})
             if u.path == '/api/ai/combine':
                 return self.reply({'job': run_job(combine, body.get('media') or [], body.get('target', 0), body.get('style', 'balanced'),
                                                   body.get('order', 'auto'), body.get('music'))})
@@ -1983,7 +2030,8 @@ def selftest():
         gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'clean.mp4'))
         gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-f', 'lavfi', '-i', 'color=c=0xff00ff:s=40x40', '-filter_complex', "[0][1]overlay=x='60+t*120':y=110:shortest=1",
             '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'dirty.mp4'))
-        rm = remove_object({}, imp('dirty.mp4')['id'], 1.0, 0, 2, {'x': 180 / 480, 'y': 110 / 270, 'w': 40 / 480, 'h': 40 / 270})
+        dirty, sq = imp('dirty.mp4'), {'x': 180 / 480, 'y': 110 / 270, 'w': 40 / 480, 'h': 40 / 270}
+        rm = remove_object({}, dirty['id'], 1.0, 0, 2, sq)
         worst = 99.0
         for t in (0.2, 1.0, 1.8):  # the square's own spot vs the clean shot
             x = int(60 + 120 * t)
@@ -1992,7 +2040,30 @@ def selftest():
             mse = sum((a - b) ** 2 for a, b in zip(got, want)) / max(1, len(want))
             worst = min(worst, 10 * math.log10(255 ** 2 / max(mse, 1e-9)))
         assert rm['frames'] == 60 and worst > 30, ('object removal', rm, worst)
-        print(f'object removal ok: tracked both ways, fill vs clean shot >= {worst:.1f} dB')
+        print(f"object removal ok ({rm['engine']}): followed both ways, fill vs clean shot >= {worst:.1f} dB")
+        if (AI_DIR / 'vendor' / 'sam2' / 'checkpoints' / 'sam2.1_hiera_small.pt').exists():  # any-subject cutout: opaque on it, clear around it
+            cut = remove_object({}, dirty['id'], 1.0, 0, 2, sq, mode='cutout')
+            a = subprocess.run(['ffmpeg', '-v', 'error', '-c:v', 'libvpx-vp9', '-ss', '1.0', '-i', str(MEDIA / meta(cut['media'])['file']), '-frames:v', '1',
+                                '-vf', 'alphaextract', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], capture_output=True).stdout
+            on = [a[y * 480 + x] for y in range(116, 145) for x in range(186, 215)]
+            off = [a[y * 480 + x] for y in list(range(0, 90)) + list(range(170, 270)) for x in range(0, 480, 7)]
+            assert min(on) > 200 and max(off) < 30, ('cutout alpha', min(on), max(off))
+            print(f'cutout ok: alpha {min(on)}+ on the subject, {max(off)} or less around it')
+        if Path(AI_BIN / 'python').exists() and subprocess.run([str(AI_BIN / 'python'), '-I', '-c', 'import demucs'], capture_output=True).returncode == 0:
+            # isolate voice: speech over a loud 55 Hz hum + 220 Hz tone; the voice track must lose the music
+            subprocess.run(['say', '-o', str(HOME / 'talk.aiff'), 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.'], check=True)
+            gen('-i', str(HOME / 'talk.aiff'), '-f', 'lavfi', '-i', 'aevalsrc=0.3*sin(2*PI*55*t)+0.2*sin(2*PI*220*t):s=44100:d=6', '-filter_complex',
+                '[0]aresample=44100,apad[a];[a][1]amix=inputs=2:normalize=0:duration=shortest', '-c:a', 'aac', str(HOME / 'noisy.m4a'))
+            vo = isolate({}, imp('noisy.m4a')['id'], 'voice')
+
+            def tone_db(path, hz):  # level of one frequency against the speech band
+                raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(path), '-t', '5', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], capture_output=True).stdout
+                x = array('h'); x.frombytes(raw[:len(raw) // 2 * 2])
+                pw = lambda f: abs(sum(v * complex(math.cos(2 * math.pi * f * i / 8000), -math.sin(2 * math.pi * f * i / 8000)) for i, v in enumerate(x)))
+                return 20 * math.log10(pw(hz) / max(1.0, statistics.fmean(pw(f) for f in (500, 700, 900, 1100))))
+            drop = tone_db(HOME / 'noisy.m4a', 55) - tone_db(MEDIA / meta(vo['media'])['file'], 55)
+            assert drop > 20, ('isolate voice kept the hum', drop)
+            print(f'isolate voice ok: the 55 Hz hum dropped {drop:.0f} dB')
     shutil.rmtree(HOME)
     print('selftest OK')
 

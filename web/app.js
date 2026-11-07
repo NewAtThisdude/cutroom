@@ -513,7 +513,7 @@ function mediaPanel(c, lane) {
     audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise (export)', c.denoise)
       + `<h4>Volume envelope</h4>${c.vkf?.length ? `<p class="muted">${c.vkf.length} volume points, on top of the volume above</p>` : lane === 'audio' ? '<p class="hint">Auto duck lowers this clip wherever another clip has speech.</p>' : ''}`
       + (lane === 'audio' ? '<div class="row"><span>Duck by</span><select id="duckDepth"><option value="0.5">−6 dB</option><option value="0.25" selected>−12 dB</option><option value="0.125">−18 dB</option><option value="0.0625">−24 dB</option></select></div>' : '')
-      + `<div class="actions">${lane === 'audio' ? '<button data-act="duck">Auto duck under speech</button>' : ''}${c.vkf?.length ? '<button data-act="vkfclear">Clear envelope</button>' : ''}${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}</div>`;
+      + `<div class="actions">${lane === 'audio' ? '<button data-act="duck">Auto duck under speech</button>' : ''}${c.vkf?.length ? '<button data-act="vkfclear">Clear envelope</button>' : ''}${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac)">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button></div>`;
   }
   if (lane === 'audio') {
     audio += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
@@ -526,7 +526,7 @@ function mediaPanel(c, lane) {
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
@@ -1228,6 +1228,22 @@ function detachAudio(c) { // the clip's sound moves to the audio track at the sa
     S.sel = { lane: 'audio', id: a.id };
   });
 }
+async function isolateVoice(c, lane, keep = 'voice') { // Demucs on this Mac: the voice alone, or everything but the voice
+  try {
+    const j = await job('/api/isolate', { media: c.media, keep }, keep === 'voice' ? 'Isolating the voice' : 'Removing the voice');
+    await loadMedia();
+    change(() => {
+      if (lane === 'audio') { c.media = j.media; return; } // same length as the source, so the timing holds
+      packMain();
+      const a = { id: hex12(), media: j.media, start: c.start, in: c.in, out: c.out, speed: c.speed, volume: c.volume || 1, fadeIn: c.fadeIn, fadeOut: c.fadeOut, pitch: c.pitch,
+        ...(c.vkf ? { vkf: structuredClone(c.vkf) } : {}), fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, adj: { b: 1, c: 1, s: 1 } };
+      P.audio.push(a);
+      c.volume = 0;
+      S.sel = { lane: 'audio', id: a.id };
+    });
+    toast(keep === 'voice' ? 'Voice isolated: the clean voice is on the audio track and the clip is muted' : 'Voice removed: the music and ambience are on the audio track and the clip is muted');
+  } catch (e) { setStatus(e.message); }
+}
 async function remake(c, kind) { // reverse / stabilize render a new library item; the clip switches to it
   try {
     const j = await job(`/api/${kind}`, { media: c.media }, kind === 'reverse' ? 'Reversing' : 'Stabilizing');
@@ -1385,23 +1401,26 @@ function canvasToSrc(c, T) { // project-canvas point -> normalized source-frame 
   const g = geom(M.get(c.media), c, P.w, P.h, propsAt(c, T - c.start)), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
   return (cx, cy) => { let u = (cx - g.x) / g.w; if (c.flip) u = 1 - u; return [(cr.l || 0) + u * fx, (cr.t || 0) + ((cy - g.y) / g.h) * fy]; };
 }
-function startRemove(c, lane) { // CapCut's "Remove object": box it at any frame; it is tracked both ways and filled in through the clip
-  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast('Move the playhead to a frame of this clip where the object shows');
+function startRemove(c, lane, mode = 'remove') { // CapCut's "Remove object" / cutout: box it at any frame; it is followed both ways through the clip
+  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast(`Move the playhead to a frame of this clip where the ${mode === 'cutout' ? 'subject' : 'object'} shows`);
   if (S.playing) pause();
-  S.pick = { c, lane, remove: true };
-  toast('Drag a box around the object to remove (Esc cancels)');
+  S.pick = { c, lane, remove: true, mode };
+  toast(mode === 'cutout' ? 'Drag a box around what to keep (Esc cancels)' : 'Drag a box around the object to remove (Esc cancels)');
 }
-async function removeObject(c, lane, rect, T = S.t) { // rect in project canvas units; the clip switches to a cleaned copy of its range
+async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove') { // rect in project canvas units; the clip switches to the new copy of its range
   const toSrc = canvasToSrc(c, T), [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
   const box = { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) };
-  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box }, 'Removing the object');
+  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
   await loadMedia();
   const a = c.in, d = M.get(j.media).duration;
   change(() => { c.media = j.media; c.in = 0; c.out = Math.min(d, c.out - a); if (c.beats) c.beats = c.beats.map(b => b - a).filter(b => b >= 0 && b <= c.out); });
-  toast(`Removed it from ${j.frames} frames${j.lost ? ' (it got hard to follow part of the way; the last position was held)' : ''}`);
-  return brief(c, lane);
+  const how = { 'sam2+propainter': 'SAM 2 outline + ProPainter', 'sam2+aligned+propainter': 'SAM 2 outline + background from other frames + ProPainter',
+    'sam2+aligned': 'SAM 2 outline + background from other frames', propainter: 'ProPainter', 'aligned+propainter': 'background from other frames + ProPainter' }[j.engine] || 'background from other frames';
+  if (mode === 'cutout') toast(`Cut out over ${j.frames} frames (SAM 2): everything else is transparent now`);
+  else toast(`Removed it from ${j.frames} frames (${how})${j.lost && !j.engine.startsWith('sam2') ? '; it got hard to follow part of the way' : ''}`);
+  return { ...brief(c, lane), engine: j.engine };
 }
-function finishRemove(rect) { const { c, lane } = S.pick; S.pick = null; removeObject(c, lane, rect).catch(e => setStatus(e.message)); }
+function finishRemove(rect) { const { c, lane, mode } = S.pick; S.pick = null; removeObject(c, lane, rect, S.t, $('#rmQuality')?.value || 'best', mode).catch(e => setStatus(e.message)); }
 async function finishTrack(rect) { // rect in project canvas units
   const { c, lane, host } = S.pick, m = M.get(host.media), t0 = S.t;
   S.pick = null;
@@ -1988,9 +2007,11 @@ function wire() {
     else if (d.act === 'matte') removeBackground(c);
     else if (d.act === 'track') startTrack(c, S.sel.lane);
     else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
+    else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
     else if (d.mask) change(() => { if (d.mask === 'none') delete c.mask; else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
     else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
     else if (d.act === 'detach') detachAudio(c);
+    else if (d.act === 'isovoice' || d.act === 'novoice') isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music');
     else if (d.act === 'reverse' || d.act === 'stabilize') remake(c, d.act);
     else if (d.act === 'scenes') sceneSplit(c, S.sel.lane);
     else if (d.act === 'reframe') autoReframe(c);
@@ -2344,18 +2365,25 @@ const REMOTE = {
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { if (at !== undefined) S.t = at; return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
-    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, detect_beats, beat_sync, speed_ramp');
+      auto_duck: () => autoDuck(c, depth), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, isolate_voice, remove_voice, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
-  async remove_object({ id, box, t }) { // box = where it is on the canvas (snapshot), as fractions {x, y, w, h}
+  async remove_object({ id, box, t, quality = 'best' }) { // box = where it is on the canvas (snapshot), as fractions {x, y, w, h}
     const [c, L] = cfind(id);
     if (M.get(c.media)?.kind !== 'video') throw new Error('remove_object works on video clips');
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     if (T < c.start || T >= c.start + tdur(c, L)) throw new Error('t must be a time inside the clip');
-    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T);
+    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, quality === 'fast' ? 'fast' : 'best');
+  },
+  async cut_out_object({ id, box, t }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency
+    const [c, L] = cfind(id);
+    if (M.get(c.media)?.kind !== 'video') throw new Error('cut_out_object works on video clips');
+    if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
+    const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
+    return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, 'best', 'cutout');
   },
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },
