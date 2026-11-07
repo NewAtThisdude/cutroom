@@ -27,7 +27,9 @@ IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9'}, {'.mp4', '.mov', '.m4v', '.webm'}  # AV1 gets a proxy: WebKit shows paused AV1 frames empty
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
 XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', 'wipedown', 'slideleft', 'slideright', 'slideup', 'slidedown',
-          'circleopen', 'circleclose', 'zoomin'}  # the UI mirrors these per pixel
+          'circleopen', 'circleclose', 'zoomin', 'dissolve', 'pixelize', 'radial', 'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
+          'vertopen', 'horzopen', 'diagtl', 'diagbr', 'hlslice', 'vuslice', 'hblur', 'fadegrays', 'squeezeh', 'squeezev'}  # the UI mirrors these per pixel
+FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow'}  # video effects: the UI expands each one into these
 BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expressions; x = backdrop, y = clip, 0..255 (ffmpeg's own blend modes differ)
     'multiply': 'x*y/255', 'screen': 'x+y-x*y/255', 'darken': 'min(x,y)', 'lighten': 'max(x,y)',
     'overlay': 'if(lte(x,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
@@ -603,6 +605,194 @@ HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
 AI_LOCK = threading.Lock()  # one generation at a time: two image models at once would push the Mac into swap
 
 
+# ---------- sound effects: synthesized on this Mac, deterministic (no sample packs, nothing downloaded) ----------
+SR = 48000
+SFX = {  # id: (name, seconds)
+    'whoosh': ('Whoosh', 0.9), 'swish': ('Swish', 0.4), 'riser': ('Riser', 2.4), 'boom': ('Boom', 1.8), 'drop': ('Bass drop', 1.6),
+    'pop': ('Pop', 0.15), 'click': ('Click', 0.06), 'ding': ('Ding', 1.6), 'chime': ('Notification', 1.1), 'correct': ('Correct', 0.7),
+    'buzzer': ('Wrong buzzer', 0.75), 'shutter': ('Camera shutter', 0.4), 'typing': ('Typing', 2.2), 'heartbeat': ('Heartbeat', 1.4),
+    'glitch': ('Glitch', 0.7), 'coins': ('Cash register', 1.2), 'drumroll': ('Drum roll', 2.6), 'applause': ('Applause', 3.2), 'ticktock': ('Tick tock', 2.0)}
+
+
+def _bp(x, f0, f1, q=0.7, curve=None):
+    """State-variable band-pass whose centre sweeps from f0 to f1 Hz (exponentially, shaped by curve(u))."""
+    out, low, band, f, n = [], 0.0, 0.0, 0.0, max(1, len(x))
+    for i, v in enumerate(x):
+        if i % 16 == 0:
+            fc = f0 * (f1 / f0) ** (curve(i / n) if curve else i / n)
+            f = 2 * math.sin(math.pi * min(fc, SR / 8) / SR)
+        low += f * band
+        band += f * (v - low - q * band)
+        out.append(band)
+    return out
+
+
+def sfx_render(sid):
+    """Stereo float buffers for one sound, from its recipe."""
+    import random
+    rnd, dur = random.Random(sid), SFX[sid][1]
+    n = int(SR * dur)
+    L, R = [0.0] * n, [0.0] * n
+
+    def add(x, at=0.0, g=1.0, pan=0.0):  # equal-power pan, -1 left .. 1 right
+        o, gl, gr = int(at * SR), g * math.cos((pan + 1) * math.pi / 4), g * math.sin((pan + 1) * math.pi / 4)
+        for i, v in enumerate(x[:max(0, n - o)]):
+            L[o + i] += v * gl
+            R[o + i] += v * gr
+
+    noise = lambda sec: [rnd.uniform(-1, 1) for _ in range(int(SR * sec))]
+    env = lambda x, fn: [v * fn(i / SR) for i, v in enumerate(x)]
+
+    def osc(sec, freq, shape=math.sin):  # freq(t) in Hz, phase-accumulated so sweeps stay smooth
+        out, ph = [], 0.0
+        for i in range(int(SR * sec)):
+            ph += 2 * math.pi * freq(i / SR) / SR
+            out.append(shape(ph))
+        return out
+
+    def hit(sec, f0, q, k, tone=0.0, tf=0.0):  # a struck noise: band-passed burst with exponential decay, plus an optional body tone
+        x = env(_bp(noise(sec), f0, f0, q), lambda t: math.exp(-k * t))
+        if tone:
+            x = [v + tone * math.sin(2 * math.pi * tf * i / SR) * math.exp(-k * 0.8 * i / SR) for i, v in enumerate(x)]
+        return x
+
+    def bell(sec, fc, ratio=3.5, idx=2.2, k=2.2):  # FM bell
+        return [math.sin(2 * math.pi * fc * t + idx * math.exp(-3 * t) * math.sin(2 * math.pi * fc * ratio * t)) * math.exp(-k * t)
+                * min(1.0, t / 0.002) for t in (i / SR for i in range(int(SR * sec)))]
+
+    def note(sec, f, k):  # soft sine note with two harmonics
+        return [(math.sin(2 * math.pi * f * t) + 0.3 * math.sin(4 * math.pi * f * t) + 0.12 * math.sin(6 * math.pi * f * t)) * math.exp(-k * t)
+                * min(1.0, t / 0.003) for t in (i / SR for i in range(int(SR * sec)))]
+
+    if sid in ('whoosh', 'swish'):
+        f0, f1, q = (260, 2600, 0.8) if sid == 'whoosh' else (900, 6500, 0.6)
+        x = env(_bp(noise(dur), f0, f1, q, lambda u: math.sin(math.pi * u)), lambda t: math.sin(math.pi * min(1.0, t / dur)) ** 2)
+        for i, v in enumerate(x):  # moves left to right
+            th = i / n * math.pi / 2
+            L[i] += v * math.cos(th)
+            R[i] += v * math.sin(th)
+    elif sid == 'riser':
+        add(env(_bp(noise(dur), 300, 7000, 0.7, lambda u: u ** 1.6), lambda t: (t / dur) ** 2.2 * min(1.0, (dur - t) / 0.03)), pan=-0.3)
+        add(env(_bp(noise(dur), 320, 7400, 0.7, lambda u: u ** 1.6), lambda t: (t / dur) ** 2.2 * min(1.0, (dur - t) / 0.03)), pan=0.3)
+        add(env(osc(dur, lambda t: 120 * 10 ** (t / dur)), lambda t: 0.25 * (t / dur) ** 2 * min(1.0, (dur - t) / 0.03)))
+    elif sid == 'boom':
+        sub = env(osc(dur, lambda t: 38 + 50 * math.exp(-9 * t)), lambda t: math.exp(-2.6 * t) * min(1.0, t / 0.004))
+        add([math.tanh(1.6 * v) for v in sub])
+        lp, y = [], 0.0
+        for v in noise(0.4):
+            y += 0.11 * (v - y)
+            lp.append(y)
+        add(env(lp, lambda t: 2.2 * math.exp(-18 * t)))
+    elif sid == 'drop':
+        add([math.tanh(2 * v) * 0.8 for v in env(osc(dur, lambda t: 520 * (38 / 520) ** ((t / dur) ** 0.6)), lambda t: min(1.0, t / 0.01) * (1 - t / dur) ** 0.5)])
+    elif sid == 'pop':
+        add(env(osc(dur, lambda t: 1100 * math.exp(-28 * t) + 260), lambda t: math.exp(-35 * t) * min(1.0, t / 0.001)))
+        add(env(noise(0.003), lambda t: 0.3))
+    elif sid == 'click':
+        add(hit(dur, 3200, 0.5, 300, 0.4, 3200))
+    elif sid == 'ding':
+        add(bell(dur, 1567.98))
+        add(env(osc(dur, lambda t: 1567.98 * 2.76), lambda t: 0.25 * math.exp(-6 * t) * min(1.0, t / 0.002)))
+    elif sid in ('chime', 'correct'):
+        (f1, f2), gap, k = ((1046.5, 1568.0), 0.13, 4) if sid == 'chime' else ((1318.5, 1975.5), 0.11, 7)
+        add(note(dur, f1, k), pan=-0.15)
+        add(note(dur - gap, f2, k), gap, pan=0.15)
+    elif sid == 'buzzer':
+        sq = lambda ph: 1.0 if math.sin(ph) >= 0 else -1.0
+        x = [a + b for a, b in zip(osc(dur, lambda t: 146, sq), osc(dur, lambda t: 154, sq))]
+        lp, y = [], 0.0
+        for v in x:
+            y += 0.19 * (v - y)
+            lp.append(y)
+        add(env(lp, lambda t: 0.5 * min(1.0, t / 0.01, (dur - t) / 0.04)))
+    elif sid == 'shutter':
+        for at in (0.0, 0.11):
+            add(hit(0.2, 2500, 0.4, 120, 0.4, 180), at)
+    elif sid == 'typing':
+        t = 0.02
+        while t < dur - 0.1:
+            space = rnd.random() < 0.12
+            add(hit(0.06, 900 if space else rnd.uniform(1800, 3200), 0.5, 120 if space else 180), t, rnd.uniform(0.5, 1), rnd.uniform(-0.3, 0.3))
+            t += rnd.uniform(0.07, 0.18)
+    elif sid == 'heartbeat':
+        for at, g in ((0.0, 1.0), (0.28, 0.75)):
+            add(env(osc(0.3, lambda t: 45 + 25 * math.exp(-20 * t)), lambda t: math.exp(-14 * t) * min(1.0, t / 0.003)), at, g)
+    elif sid == 'glitch':
+        t = 0.0
+        while t < dur:
+            seg, kind = rnd.uniform(0.025, 0.07), rnd.choice(('square', 'crush', 'square', 'gap'))
+            if kind == 'square':
+                fr = rnd.uniform(80, 1600)
+                add(osc(seg, lambda _t: fr, lambda ph: 1.0 if math.sin(ph) >= 0 else -1.0), t, 0.45, rnd.uniform(-0.6, 0.6))
+            elif kind == 'crush':
+                hold, x = rnd.randint(8, 40), noise(seg)
+                add([x[i - i % hold] for i in range(len(x))], t, 0.6, rnd.uniform(-0.6, 0.6))
+            t += seg
+    elif sid == 'coins':
+        add(hit(0.15, 4200, 0.5, 60), 0.0, 0.8)
+        add(bell(dur - 0.08, 2093.0, 2.4, 1.6, 3.0), 0.08)
+        for _ in range(9):
+            add(bell(0.25, rnd.uniform(3000, 6000), 1.7, 1.0, 14), rnd.uniform(0.08, 0.5), 0.3, rnd.uniform(-0.7, 0.7))
+    elif sid == 'drumroll':
+        t, i = 0.0, 0
+        while t < 2.0:
+            add(hit(0.15, 1800, 0.5, 45, 0.3, 190), t, 0.4 + 0.6 * t / 2.0, 0.2 if i % 2 else -0.2)
+            t += 0.09 - 0.055 * t / 2.0
+            i += 1
+        hp, y, prev = [], 0.0, 0.0
+        for v in noise(dur - 2.0):
+            y = 0.9 * (y + v - prev)
+            prev = v
+            hp.append(y)
+        add(env(hp, lambda t: 0.8 * math.exp(-3.5 * t)), 2.0)
+    elif sid == 'applause':
+        t = 0.0
+        while t < dur - 0.05:
+            u = t / dur
+            add(hit(0.05, rnd.uniform(900, 2500), 0.6, 70), t, rnd.uniform(0.3, 1.0) * math.sin(math.pi * u) ** 0.6, rnd.uniform(-0.8, 0.8))
+            t += rnd.expovariate(60 * max(0.15, math.sin(math.pi * u) ** 0.6))
+        add(env(_bp(noise(dur), 1400, 1400, 1.2), lambda t: 0.12 * math.sin(math.pi * t / dur) ** 0.8))  # the crowd's wash
+    elif sid == 'ticktock':
+        for i, at in enumerate((0.0, 0.5, 1.0, 1.5)):
+            add(hit(0.08, 2600 if i % 2 == 0 else 1900, 0.4, 250, 0.3, 2600 if i % 2 == 0 else 1900), at)
+    return L, R
+
+
+def sfx_file(sid):
+    """The sound as a WAV in Movies/Cutroom/sfx, made on first use."""
+    import wave
+    if sid not in SFX:
+        raise ValueError('no such sound')
+    f = HOME / 'sfx' / f'{sid}.wav'
+    if not f.exists():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        L, R = sfx_render(sid)
+        g = 0.89 / max(1e-9, max(map(abs, L)), max(map(abs, R)))  # peak at -1 dBFS
+        pcm = array('h', (int(max(-1.0, min(1.0, v * g)) * 32767) for pair in zip(L, R) for v in pair))
+        tmp = f.with_suffix('.part')
+        with wave.open(str(tmp), 'wb') as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(pcm.tobytes())
+        tmp.replace(f)
+    return f
+
+
+def sfx_media(sid):
+    """The sound in the media library (imported once, then reused)."""
+    for j in MEDIA.glob('*.json'):
+        m = json.loads(j.read_text())
+        if m.get('sfx') == sid and (MEDIA / m['file']).exists():
+            return m
+    f = sfx_file(sid)
+    with open(f, 'rb') as fh:
+        m = import_file(f'{SFX[sid][0]}.wav', fh, f.stat().st_size)
+    m['sfx'] = sid
+    save_meta(m)
+    return m
+
+
 def ai_status():
     """Which on-device generators are installed (weights already on disk: a status call never starts a download)."""
     venv = (AI_BIN / 'python').exists()
@@ -1123,7 +1313,40 @@ def clean_plan(p):
         raise ValueError('text layer must be PNG')
     out['frames'] = [{'i': int(fnum(f['i'], 0, len(out['pngs']) - 1)), 'start': fnum(f['start'], 0, 1e6), 'end': fnum(f['end'], 0, 1e6)}
                      for f in t.get('frames', [])]
+    out['fx'] = [fx_op(f, out['w'], out['h']) for f in (p.get('fx') or [])[:300]]
     return out
+
+
+def fx_op(f, W, H):
+    """One video-effect step on frames [a, b) of the composite (the UI computes every value, per frame where it moves)."""
+    op = f.get('op')
+    if op not in FX_OPS:
+        raise ValueError(f'unknown effect step {op!r}')
+    a = int(fnum(f['a'], 0, 1e8))
+    k = {'op': op, 'a': a, 'b': int(fnum(f['b'], a + 1, 1e8))}
+    n = k['b'] - k['a']
+    per = lambda key, lo, hi: [fnum(v, lo, hi) for v in f[key]] if isinstance(f.get(key), list) else fnum(f.get(key, 0), lo, hi)
+    if op == 'matrix':
+        k['m'] = [fnum(v, -3, 3) for v in f['m']]
+        k['k'] = per('k', 0, 4) if f.get('k') is not None else 1.0  # brightness flicker: a factor per frame
+        if len(k['m']) != 9:
+            raise ValueError('matrix needs 9 values')
+    elif op == 'blur':
+        k['sigma'] = fnum(f['sigma'], 0.1, 500)
+    elif op == 'pixelize':
+        k['size'] = int(fnum(f['size'], 2, 1024))
+    elif op == 'rgbshift':
+        k['rh'], k['bh'] = per('rh', -255, 255), per('bh', -255, 255)
+    elif op == 'noise':
+        k['s'] = int(fnum(f['s'], 1, 100))
+    elif op == 'transform':  # zoom and offset of the whole frame, one value per frame
+        k['z'], k['x'], k['y'] = per('z', 1, 8), per('x', -W, W), per('y', -H, H)
+    elif op == 'glow':
+        k['sigma'], k['amt'] = fnum(f['sigma'], 0.1, 500), fnum(f['amt'], 0, 2)
+    for key in ('k', 'rh', 'bh', 'z', 'x', 'y'):
+        if isinstance(k.get(key), list) and len(k[key]) != n:
+            raise ValueError(f'{op}.{key} needs one value per frame ({n})')
+    return k
 
 
 def even(x):
@@ -1413,6 +1636,60 @@ def graph(p, td):
         dur = c['frames'] / F
         fg.append(audio(inp(c, dur), c, dur, c['start']) + f'[x{k}]')
         mix.append(f'[x{k}]')
+    def frame_cmds(f, tag, target, vals):  # per-frame values -> sendcmd lines, only where they change (like opacity())
+        lines, last = [], None
+        for i in range(f['b'] - f['a']):
+            v = vals(i)
+            if v != last:
+                lines.append(f"{max(0.0, (f['a'] + i - 0.5) / F):.6f} " + ', '.join(f'{target} {kk} {vv}' for kk, vv in v) + ';')
+                last = v
+        path = Path(td) / f'{tag}.cmd'
+        path.write_text('\n'.join(lines) + '\n')
+        return f"sendcmd=f='{path}',"
+
+    for j, f in enumerate(p.get('fx') or []):  # video effects, in order, on everything below the text layer
+        op, tag, nxt = f['op'], f'fx{j}', f'X{j}'
+        en = f"enable='between(n,{f['a']},{f['b'] - 1})'"  # frame numbers: exact, unlike times
+        if op in ('matrix', 'negate', 'blur', 'pixelize', 'rgbshift'):  # filters with timeline support: in place, on those frames only
+            pre = ''
+            if op == 'matrix':
+                names, m, kk = ('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb'), f['m'], f['k']
+                if isinstance(kk, list):
+                    pre = frame_cmds(f, tag, f'colorchannelmixer@{tag}', lambda i: tuple((nm, round(v * kk[i], 4)) for nm, v in zip(names, m)))
+                k0 = kk[0] if isinstance(kk, list) else kk
+                body = f'colorchannelmixer@{tag}=' + ':'.join(f'{nm}={v * k0:.4f}' for nm, v in zip(names, m)) + ':'
+            elif op == 'negate':
+                body = 'negate='
+            elif op == 'blur':
+                body = f"gblur=sigma={f['sigma']:.3f}:"
+            elif op == 'pixelize':
+                body = f"pixelize=w={f['size']}:h={f['size']}:"
+            else:
+                rh, bh = f['rh'], f['bh']
+                pick = lambda v, i: v[i] if isinstance(v, list) else v  # either one may move per frame
+                if isinstance(rh, list) or isinstance(bh, list):
+                    pre = frame_cmds(f, tag, f'rgbashift@{tag}', lambda i: (('rh', int(pick(rh, i))), ('bh', int(pick(bh, i)))))
+                    rh, bh = pick(rh, 0), pick(bh, 0)
+                body = f'rgbashift@{tag}=rh={int(rh)}:bh={int(bh)}:'
+            fg.append(f'[{cur[0]}]{pre}{body}{en}[{nxt}]')
+        else:  # a processed copy of the frame, shown over those frames
+            x, y, ev = '0', '0', ''
+            if op == 'noise':  # luma grain: noise on Y only
+                body = f"format=yuv444p,noise=c0s={f['s']}:c0f=t,format=gbrp"
+            elif op == 'mirror':
+                body = f'crop=iw/2:ih:0:0,split[{tag}l][{tag}r];[{tag}r]hflip[{tag}f];[{tag}l][{tag}f]hstack'
+            elif op == 'grid':
+                body = (f'scale={W // 2}:{H // 2},split=4[{tag}1][{tag}2][{tag}3][{tag}4];[{tag}1][{tag}2]hstack[{tag}t];'
+                        f'[{tag}3][{tag}4]hstack[{tag}u];[{tag}t][{tag}u]vstack')
+            elif op == 'glow':  # screen a blurred copy over the frame, by amt (the canvas's 'screen' at that alpha)
+                body = f"split[{tag}p][{tag}q];[{tag}q]gblur=sigma={f['sigma']:.3f}[{tag}g];[{tag}p][{tag}g]blend=all_expr='A+{f['amt']:.4f}*(B-A*B/255)'"
+            else:  # transform: the frame zoomed by z about its centre and moved by x, y (export pixels), per frame
+                vals = [f[q] if isinstance(f[q], list) else [f[q]] * (f['b'] - f['a']) for q in ('z', 'x', 'y')]
+                kf = [{'t': (f['a'] + i) / F, 'z': z, 'x': dx, 'y': dy} for i, (z, dx, dy) in enumerate(zip(*vals))]
+                body = f"scale=w='2*trunc({W}*({pw(kf, 'z')})/2)':h=-2:eval=frame"
+                x, y, ev = f"'({W}-overlay_w)/2+({pw(kf, 'x')})'", f"'({H}-overlay_h)/2+({pw(kf, 'y')})'", ':eval=frame'
+            fg.append(f'[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]{body}[{tag}e];[{tag}a][{tag}e]overlay=x={x}:y={y}{ev}:format=gbrp:{en}[{nxt}]')
+        cur[0] = nxt
     if p['frames']:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer
         files = []
         for j, b in enumerate(p['pngs']):
@@ -1501,7 +1778,7 @@ def export(job, p):
             steps = len(chunks) + 1
             for n, part in enumerate(chunks):  # long main tracks: render chunks to near-lossless intermediates first
                 frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
-                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'duration': frames / F, 'format': 'mp4'}  # chunks are always YUV video
+                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'fx': [], 'duration': frames / F, 'format': 'mp4'}  # chunks are always YUV video
                 f = Path(td) / f'chunk{n}.mkv'
                 run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps))
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
@@ -1637,6 +1914,10 @@ class App(BaseHTTPRequestHandler):
                     return self.file(wk_copy(mm))  # the app's preview: colour labels WebKit shows as decoded
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
+            if path == '/api/sfx':
+                return self.reply([{'id': k, 'name': v[0], 'dur': v[1]} for k, v in SFX.items()])
+            if m := re.fullmatch(r'/sfx/([a-z]+)\.wav', path):
+                return self.file(sfx_file(m[1]))
             if path == '/api/templates':
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png))', path):
@@ -1678,6 +1959,8 @@ class App(BaseHTTPRequestHandler):
                     if not out.exists():
                         raise RuntimeError('no frame rendered')
                     return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
+            if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
+                return self.reply(sfx_media(str(body.get('id', ''))))
             if u.path == '/api/remote/ack':  # the editor page got the command
                 REMOTE_SENT.pop(str(body.get('id')), None)
                 return self.reply({'ok': True})
@@ -1931,6 +2214,30 @@ def selftest():
         ok = {'a': r > 180 and b < 80, 'b': b > 180 and r < 80, 'white': min(r, g, b) > 200}[want]
         assert ok, (tr, at, want, (r, g, b))
     print('transitions ok: wipe up, slide right, circle close, dip to white')
+    for tr in sorted(XFADES - {'fade', 'wipeleft', 'wipeup', 'slideright', 'circleclose', 'fadewhite'}):  # every other type renders, and ends on b
+        out = render({**tplan, 'name': tr, 'duration': 3, 'main': [still_clip(R, {'type': tr, 'frames': 30}), still_clip(B)]}, 90)
+        assert pixel(out, 0.5, 135, 240)[0] > 180 and pixel(out, 2.5, 135, 240)[2] > 180, tr
+    print(f'transitions ok: {len(XFADES) - 6} more types render from a to b')
+    # video effects: steps on exact frame ranges of the composite; per-frame values through sendcmd / expressions
+    gen('-f', 'lavfi', '-i', 'color=red:s=320x320,drawbox=x=160:y=0:w=160:h=320:color=blue:t=fill', '-frames:v', '1', str(HOME / 'split.png'))
+    SP = imp('split.png')  # filled onto 270x480: red | blue at x = 135
+    fx = [{'op': 'negate', 'a': 10, 'b': 20}, {'op': 'matrix', 'a': 30, 'b': 40, 'm': [.213, .715, .072] * 3, 'k': [1.0] * 5 + [0.5] * 5},
+          {'op': 'rgbshift', 'a': 40, 'b': 50, 'rh': [20] * 5 + [0] * 5, 'bh': 0},
+          {'op': 'transform', 'a': 50, 'b': 60, 'z': [1.5] * 10, 'x': [40.0] * 10, 'y': 0}]
+    out = render({**tplan, 'name': 'effects', 'duration': 2, 'main': [still_clip(SP)], 'fx': fx}, 60)
+    at = lambda n, x=100: pixel(out, max(0.0, n - 0.25) / F, x, 240)  # input -ss gives the first frame at or after t
+    assert at(9)[0] > 200 and at(10)[0] < 50 and at(10)[2] > 200 and at(19)[2] > 200 and at(20)[0] > 200, ('negate on frames 10-19 only', at(9), at(10), at(19), at(20))
+    g1, g2 = at(32), at(37)
+    assert abs(g1[0] - g1[1]) < 8 and 40 < g1[0] < 70 and 18 < g2[0] < 40, ('matrix with a per-frame factor', g1, g2)
+    assert at(42, 145)[0] > 200 and at(42, 145)[2] > 200 and at(47, 145)[0] < 50, ('red moved 20 px right, then back', at(42, 145), at(47, 145))
+    assert at(55, 160)[0] > 200 and at(55, 190)[2] > 200, ('zoom 1.5 about the centre, moved 40 px right: the seam goes to x = 135 + 40', at(55, 160), at(55, 190))
+    for op in ({'op': 'blur', 'sigma': 4}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
+        out = render({**tplan, 'name': f"fx-{op['op']}", 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{**op, 'a': 0, 'b': 30}]}, 30)
+        if op['op'] == 'mirror':
+            assert pixel(out, 0.5, 260, 240)[0] > 200, 'mirror: the right edge shows the (red) left edge'
+        if op['op'] == 'grid':
+            assert pixel(out, 0.5, 20, 240)[0] > 200 and pixel(out, 0.5, 120, 240)[2] > 200 and pixel(out, 0.5, 155, 240)[0] > 200, 'split x4: red|blue twice per row'
+    print('effects ok: frame-exact ranges, per-frame values, and every step type renders')
     CHUNK = 24
     kplan = {'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': 'keyframes', 'audio': [],
              'main': [{'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I),  # zoom 0.5x -> 1x

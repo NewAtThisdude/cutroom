@@ -11,8 +11,9 @@ no watermark, and no cloud AI (CapCut's captions go to its servers; Cutroom's do
   editor in a Chrome app window instead.
 - Self-check after any engine change: `env -u PYTHONPATH python3 -I server.py --selftest` (about 3 min).
   It renders synthetic projects through both render paths and checks the results pixel by pixel:
-  transitions, keyframes (deep, eased and partially eased), opacity, blend modes, chroma key, masks, HDR,
-  colour tags, every export format, beats, voiceover, freeze frames, silence detection and caption timing.
+  all 31 transitions, video effects (frame-exact ranges, per-frame values), keyframes (deep, eased and partially eased),
+  opacity, blend modes, chroma key, masks, HDR, colour tags, every export format, beats, voiceover, freeze frames,
+  silence detection and caption timing.
 
 Requirements: Homebrew `ffmpeg` and `whisper-cpp`, and the Xcode command-line tools (`swiftc`) for the app
 and the Apple Vision helpers (built automatically on first use). Chrome is only needed for the
@@ -25,6 +26,7 @@ Data lives in `~/Movies/Cutroom/`:
 - `projects/`: one JSON per project
 - `exports/`
 - `cache/`: filmstrips, waveforms, proxies, transcripts, beats
+- `sfx/`: the synthesized sound effects (made on first use)
 - `models/`: Silero VAD
 - `trash/`: deleted projects and media, recoverable
 - `server.log`
@@ -33,28 +35,37 @@ Data lives in `~/Movies/Cutroom/`:
 
 The preview and the export share one geometry, colour and text pipeline. Rendering the same frame both ways
 and comparing pixels gave 0–2 levels of difference for transitions, clip animations, filters, masks and
-blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's engine).
+blend modes, about 2.6 levels for text, and 0.5–5 levels for the video effects, in Chrome and in WebKit (the app's engine).
+
+The window works like CapCut's: a library rail on the left (Media, Audio, Text, Stickers, Effects, Transitions,
+Filters, Captions, AI), each opening a gallery whose tiles show what they do (effects and transitions animate; with
+Reduce motion on they show a still and move when you point at them), the preview with its transport in the middle,
+the selected clip's settings on the right, and the timeline with a toolbar (split, delete, duplicate, freeze, reverse,
+mirror, rotate, remove pauses and fillers, fit) below.
 
 | | Feature | How |
 |---|---|---|
 | Edit | Magnetic main track, plus overlay, audio, text and caption tracks | Overlapping clips stack into rows. Drag to move or reorder; edge-drag to trim. Both snap to the playhead, clip edges, markers and beats. Keyframes, volume envelopes and word timings stay on their content when you trim, split, change speed, remove pauses, ramp or freeze |
-| | 14 transitions: dissolve, dip to black or white, wipe and slide in 4 directions, circle open and close, zoom | The clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel maths |
+| | 31 transitions in an animated gallery: dissolve, dip to black / white / grey, noise, pixelate, blur, zoom, wipe and soft wipe and slide in 4 directions, squeeze, circle open and close, clock, doors, split open, diagonals, slices, blinds. Click one to put it on the selected cut (or the one nearest the playhead), or on every cut | The clips overlap (`xfade` + `acrossfade`). The preview reimplements xfade's per-pixel maths from its source (weights, noise, block sampling, box blur), within 0.2–3.4 levels of the export |
+| | **30 video effects** on their own Effects track, with strength: shake, earthquake, beat zoom (follows detected beats), slow zoom, flash, strobe, blink, dreamy glow, VHS, old film, film grain, black & white, sepia, glitch, RGB split, pixelate, blur, invert, mirror, split ×4, snow, rain, sparkles, hearts, confetti, bubbles, cinema bars, camcorder, vignette, film strip | Each effect is pixel steps the export runs on everything under the text layer, on exact frame ranges (`enable='between(n,a,b)'`, per-frame values through `sendcmd` or expressions), and/or an overlay drawn into the text layer by the same canvas code as the preview. Grain is random in both, so it matches in strength, not pixel for pixel |
 | | Keyframes for scale, position, opacity and rotation, linear or eased per keyframe, with previous/next jumps | ffmpeg per-frame expressions built as a balanced tree (ffmpeg's parser stops at about 100 nesting levels), so tracking with hundreds of points exports fine. Cutting through an eased segment keeps the exact curve |
 | | Clip In/Out animations: fade, zoom in/out, slide in 4 directions, rotate, spin, each with its own length | Applied live in the preview and baked into per-frame keyframes for the export, on top of your own keyframes |
 | | Speed 0.1×–10× on a continuous slider, optional pitch change; speed ramps; reverse; freeze frame | Change pitch uses `asetrate` in the export and `preservesPitch=false` in the preview |
 | | Typed values | Click any slider's value to type an exact number |
 | Look | Canvas 9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9; fit, fill or blurred-background fill | One geometry function drives the preview and the export |
-| | Filters with strength; brightness, contrast, saturation, temperature, tint | One colour matrix shared by the preview and the export |
+| | 17 filters in a gallery that shows them on the frame at the playhead, with strength; brightness, contrast, saturation, temperature, tint | One colour matrix shared by the preview and the export. A filter tile applies to the selected clip, or to the whole main track |
 | | Crop, mirror, rotation, opacity on any clip, chroma key with a colour picker | The picker reads the clip's own graded pixel under the click. The key uses ffmpeg `colorkey`'s exact formula |
 | | Masks: circle, rectangle, linear, mirror; feather and invert | One canvas routine draws the preview and the export's mask PNG |
 | | Overlay blend modes (11) and bring forward / send backward | Canvas `globalCompositeOperation` in the preview; the export runs the same W3C formulas through `lut2` (ffmpeg's own `blend` modes differ) |
 | | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
-| Text | Text clips with presets and emoji stickers, 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding). One `drawText()` renders the preview and the export layer |
-| | In/out animations (pop, fade, slide) with adjustable length, and loops (bounce, pulse, wiggle) | |
+| Text | 15 text styles shown as tiles (title, neon, glow, gradient, retro, comic, marker, bubble, minimal...), 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding), gradient fill. One `drawText()` renders the preview and the export layer |
+| | In/out animations (pop, fade, slide, zoom, drop, typewriter) with adjustable length, and loops (bounce, pulse, wiggle) | |
+| | Stickers: about 190 emoji in 7 groups, plus AI stickers (describe it; drawn on this Mac and cut out) | Emoji are text clips, so they animate like text |
 | | Auto-captions with word-by-word highlight and pop, 4 styles, 18 languages plus auto-detect | whisper.cpp on-device, with DTW word timing and a Silero VAD filter. It asks before replacing captions on the timeline |
 | AI and audio | Remove background (people), motion tracking | Apple Vision segmentation (transparent VP9 WebM) and object tracking (keyframes that keep the clip's rotation) |
 | | Voiceover from the Mac's voices or the microphone | `say`; MediaRecorder while the timeline plays muted |
 | | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking |
+| | 19 sound effects (whoosh, swish, riser, boom, bass drop, pop, click, ding, notification, correct, wrong buzzer, camera shutter, typing, heartbeat, glitch, cash register, drum roll, applause, tick tock), each with a listen button | Synthesized on this Mac by `server.py` (band-passed noise sweeps, FM bells, pitch-swept sines), deterministic, no sample packs or downloads. Added once to the library, then reused |
 | | Volume in dB (mute to +20 dB), fades you can hear in the preview, auto-duck from −6 to −24 dB under speech on any track | The duck envelope multiplies the clip volume, so the Volume slider keeps working after auto-duck |
 | | Remove pauses, reduce noise, loudness −14 LUFS, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
@@ -78,8 +89,8 @@ blend modes, and about 2.6 levels for text, in Chrome and in WebKit (the app's e
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 35 tools cover projects, media import, clips (add, update any setting,
-split, delete, duplicate, move), text, transitions, captions, pause and filler removal, voiceovers, the smart tools,
+the preview frame as an image), and exports. The 37 tools cover projects, media import, clips (add, update any setting,
+split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image and voice generation, object removal (`remove_object`: Claude reads the
 object's position off a snapshot), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
 
@@ -170,6 +181,11 @@ once in the browser also guarantees the export matches the preview.
 - **Object removal:** OpenCV 5's `seamlessClone` overwrites the mask you pass it (the paste mask became a thin ring
   and the object stayed), so it gets a copy. Patch matching runs in BGR: in YUV it under-weights colour and pastes
   wrong-coloured chunks. Vision's tracking box drifts smaller, so the hole never shrinks below the box you drew.
+- **Video effects:** a step that only covers part of the edit uses the filter's timeline switch on frame numbers
+  (`enable='between(n,a,b)'`), not times: exact on every frame rate. Steps whose filters have no switch (mirror,
+  split, zoom/shake, glow, grain) process a copy and overlay it with that switch. `rgbashift` moves the red plane right
+  for a positive `rh`, and `pixelize` truncates its block averages; the preview does both the same way. Reading one
+  frame back with input `-ss t` gives the first frame at or after t, so the self-check reads frame n at (n - 0.25)/fps.
 - **Blend modes:** ffmpeg's `blend` filter disagrees with the W3C formulas that the canvas uses:
   soft-light is off by up to 31 levels, dodge and burn miss the edge cases, and "overlay" versus
   "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels.
@@ -224,6 +240,12 @@ once in the browser also guarantees the export matches the preview.
 - **Cut out object:** edges come from SAM 2's mask at up to 1024 px, smoothed when scaled up, so fine hair on 4K is
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
+- **Video effects:** 30, against CapCut's downloadable library of hundreds. In the app (WebKit) the blur and glow
+  previews are a close stand-in (down- and up-scaling; there is no `ctx.filter`), and grain is random, so the preview
+  and the export match in look, not pixel for pixel. Effect and transition tiles show stand-in footage (a drawn sunset
+  and night sea), not your clip; the filter tiles do show your frame.
+- **Sound effects** are synthesized, not recorded foley: punchy and clean for UI-style sounds (pop, click, ding,
+  whoosh, riser, boom), plainer for applause and typing than a sample library.
 - **Smart combine** judges a shot by sharpness and exposure and by what one frame of it shows; it doesn't hear speech or
   follow action, and the story order is the 9B model's call. Cuts move to the nearest beat. Transitions don't follow the
   camera's motion direction. Verified on synthetic clips (stills with camera moves), not yet on real phone footage.

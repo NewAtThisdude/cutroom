@@ -9,58 +9,119 @@
 </head>
 <body>
 <header class="top">
+  <div class="tleft">
   <div class="brand"><i><svg class="i" viewBox="0 0 24 24"><path d="M6 5v14M11 5v14M15 5l5 7-5 7"/></svg></i>Cutroom</div>
   <button id="btnProjects" class="ghost" title="Projects"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Projects</button>
   <button id="btnTemplates" class="ghost" title="Templates"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Templates</button>
-  <span class="spacer"></span>
+  </div>
   <input id="projName" class="name" spellcheck="false" aria-label="Project name">
-  <span class="spacer"></span>
+  <div class="tright">
   <span id="saveState" class="muted"></span>
   <button id="btnExport" class="primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Export</button>
+  </div>
 </header>
 
 <main class="work">
   <aside class="left">
-    <nav class="tabs">
-      <button data-tab="media" class="on">Media</button>
-      <button data-tab="text">Text &amp; voice</button>
-      <button data-tab="captions">Captions</button>
-      <button data-tab="ai">AI</button>
+    <nav class="rail" aria-label="Library">
+      <button data-tab="media" class="on" title="Media: your videos, photos and audio"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m10 9.5 4.5 2.5-4.5 2.5z"/></svg><span>Media</span></button>
+      <button data-tab="audio" title="Audio: sound effects, music, voiceover"><svg class="i" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg><span>Audio</span></button>
+      <button data-tab="text" title="Text styles"><svg class="i" viewBox="0 0 24 24"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span>Text</span></button>
+      <button data-tab="stickers" title="Stickers"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1.3 1.8 3.5 1.8 3.5-1.8 3.5-1.8M9 9.5h.01M15 9.5h.01"/></svg><span>Stickers</span></button>
+      <button data-tab="effects" title="Video effects"><svg class="i" viewBox="0 0 24 24"><path d="m14.5 3 1.4 3.6L19.5 8l-3.6 1.4L14.5 13l-1.4-3.6L9.5 8l3.6-1.4z"/><path d="M4 20l7-7"/></svg><span>Effects</span></button>
+      <button data-tab="transitions" title="Transitions"><svg class="i" viewBox="0 0 24 24"><path d="M3 5l8 7-8 7zM21 5l-8 7 8 7z"/></svg><span>Transitions</span></button>
+      <button data-tab="filters" title="Filters"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg><span>Filters</span></button>
+      <button data-tab="captions" title="Captions"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7 15h4M13 15h4M7 11h10"/></svg><span>Captions</span></button>
+      <button data-tab="ai" title="AI tools, on this Mac"><svg class="i" viewBox="0 0 24 24"><path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8z"/></svg><span>AI</span></button>
     </nav>
+    <div class="panes">
     <section id="tab-media" class="pane on">
       <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
-      <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
+      <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button></div>
       <div id="mediaList" class="media-list"></div>
+      <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
     </section>
-    <section id="tab-text" class="pane">
-      <h4>Text</h4>
-      <p class="hint">Adds a text clip at the playhead. Drag it on the preview to move it.</p>
-      <div id="textPresets" class="presets"></div>
-      <h4>Voiceover</h4>
-      <p class="hint">Text to speech with this Mac's voices. Better voices: System Settings → Accessibility → Spoken Content → System voice → Manage Voices.</p>
-      <textarea id="ttsText" rows="4" placeholder="Type the script…" spellcheck="true"></textarea>
-      <label class="row"><span>Voice</span><select id="ttsVoice"></select></label>
-      <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
-      <button id="btnTts" class="primary wide">Add voiceover at playhead</button>
-      <button id="btnRec" class="wide">Record voiceover (mic)</button>
-    </section>
-    <section id="tab-ai" class="pane">
-      <h4>Generate an image</h4>
-      <p class="hint">Runs on this Mac (Z-Image-Turbo). About 25-50 s; nothing is uploaded.</p>
-      <textarea id="aiPrompt" rows="4" placeholder="A neon sign that says OPEN on a rainy street at night, cinematic" spellcheck="true"></textarea>
-      <label class="row"><span>Shape</span><select id="aiShapeSel"><option value="canvas">Like the canvas</option><option value="1:1">Square</option><option value="16:9">Wide</option><option value="9:16">Tall</option><option value="4:5">Portrait</option></select></label>
-      <label class="row"><span>Quality</span><select id="aiSteps"><option value="4">Draft (faster)</option><option value="8" selected>Best</option></select></label>
-      <label class="row"><span>Put it on</span><select id="aiPut"><option value="overlay">Overlay at playhead</option><option value="main">Main track</option><option value="library">Library only</option></select></label>
-      <label class="row chk"><span>Sticker (cut out the subject)</span><input id="aiSticker" type="checkbox"></label>
-      <button id="btnAiImage" class="primary wide">Generate image</button>
-      <p id="aiStatus" class="muted"></p>
-      <h4>Natural voiceover</h4>
-      <p class="hint">On-device AI voices (Kokoro): 9 languages, faster than real time.</p>
-      <textarea id="aiText" rows="4" placeholder="Type the script…" spellcheck="true"></textarea>
+    <section id="tab-audio" class="pane">
+      <div class="phead"><b>Sound effects</b><span>made on this Mac · ▶ listen · + add</span></div>
+      <div id="sfxList" class="sfx"></div>
+      <h4>Your music and audio</h4>
+      <div id="audioList" class="sfx"></div>
+      <h4>AI voiceover</h4>
+      <p class="hint">Natural voices on this Mac (Kokoro), 9 languages.</p>
+      <textarea id="aiText" rows="3" placeholder="Type the script…" spellcheck="true"></textarea>
       <label class="row"><span>Voice</span><select id="aiVoice"></select></label>
       <label class="row"><span>Speed</span><select id="aiSpeed"><option value="0.9">Slower</option><option value="1" selected>Normal</option><option value="1.1">Faster</option><option value="1.25">Fast</option></select></label>
       <button id="btnAiVoice" class="primary wide">Add voiceover at playhead</button>
       <p id="aiVoiceStatus" class="muted"></p>
+      <h4>Mac voices</h4>
+      <textarea id="ttsText" rows="2" placeholder="Type the script…" spellcheck="true"></textarea>
+      <label class="row"><span>Voice</span><select id="ttsVoice"></select></label>
+      <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
+      <button id="btnTts" class="wide">Add voiceover at playhead</button>
+      <h4>Record</h4>
+      <button id="btnRec" class="wide">Record voiceover (mic)</button>
+    </section>
+    <section id="tab-text" class="pane">
+      <button id="btnAddText" class="primary wide first"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add text</button>
+      <div class="phead"><b>Styles</b><span>click to add at the playhead</span></div>
+      <div id="textPresets" class="ttiles"></div>
+      <p class="hint">Drag text on the preview to move it. Fonts, outline, shadow, background and in/out animations are on the right once it is selected.</p>
+    </section>
+    <section id="tab-stickers" class="pane">
+      <div id="stCats" class="chips"></div>
+      <div id="stGrid" class="emoji"></div>
+      <h4>AI sticker</h4>
+      <p class="hint">Describe anything: it is drawn on this Mac and cut out on a transparent background.</p>
+      <textarea id="stPrompt" rows="2" placeholder="A cartoon cat in sunglasses giving a thumbs up" spellcheck="true"></textarea>
+      <button id="btnStickerAI" class="primary wide">Generate sticker</button>
+      <p id="stStatus" class="muted"></p>
+    </section>
+    <section id="tab-effects" class="pane">
+      <div id="fxCats" class="chips"></div>
+      <div id="fxGrid" class="tiles"></div>
+      <p class="hint">An effect sits on the Effects track and changes everything under it for as long as it lasts. Drag its edges to make it longer.</p>
+    </section>
+    <section id="tab-transitions" class="pane">
+      <p id="trTarget" class="hint"></p>
+      <label class="row"><span>Duration</span><input id="trDur" type="range" min="0.1" max="2" step="0.05" value="0.5" style="--p:21%"><output>0.50s</output></label>
+      <div id="trGrid" class="tiles"></div>
+      <div class="actions"><button id="btnTrAll">Use on every cut</button><button id="btnTrNone">Remove from this cut</button></div>
+    </section>
+    <section id="tab-filters" class="pane">
+      <p id="lookTarget" class="hint"></p>
+      <label class="row"><span>Strength</span><input id="lookAmt" type="range" min="0" max="1" step="0.01" value="1" style="--p:100%"><output>100%</output></label>
+      <div id="lookGrid" class="tiles"></div>
+    </section>
+    <section id="tab-captions" class="pane">
+      <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>
+      <label class="row"><span>Language</span><select id="capLang">
+        <option value="auto">Auto-detect</option><option value="en">English</option><option value="hy">Armenian</option>
+        <option value="ru">Russian</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option><option value="uk">Ukrainian</option><option value="tr">Turkish</option><option value="ar">Arabic</option><option value="fa">Persian</option><option value="hi">Hindi</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option>
+      </select></label>
+      <label class="row"><span>Words per caption</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
+      <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
+      <h4>Style</h4>
+      <div id="capPresets" class="presets"></div>
+      <button id="btnCaptions" class="primary wide">Generate captions</button>
+      <p id="capStatus" class="muted"></p>
+      <h4>Translate</h4>
+      <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
+      <button id="btnTranslate" class="wide">Translate captions</button>
+      <p id="trStatus" class="muted"></p>
+    </section>
+    <section id="tab-ai" class="pane">
+      <div class="phead"><b>Smart tools</b><span>on the selected clip</span></div>
+      <div class="tools">
+        <button data-aitool="removeobj" title="Box an object on the preview; it is tracked and painted out of the whole clip">Remove object</button>
+        <button data-aitool="cutobj" title="Box a subject; the clip becomes just it, on transparency">Cut out object</button>
+        <button data-aitool="matte" title="Cut the person or subject out of the background">Remove background</button>
+        <button data-aitool="reframe" title="Keep the face centred for a vertical crop">Auto reframe</button>
+        <button data-aitool="stabilize">Stabilize</button>
+        <button data-aitool="scenes">Split at scenes</button>
+        <button data-aitool="isovoice" title="Keep only the voice">Isolate voice</button>
+        <button data-aitool="novoice" title="Keep the music and ambience">Remove voice</button>
+        <button data-aitool="captions">Auto captions</button>
+      </div>
       <h4>Smart combine</h4>
       <p class="hint">Tick your clips. Cutroom keeps the best-looking part of every scene, orders them (a story from what each shot shows, or as filmed), fits them to the length and the music's beats, and picks transitions from what changes between shots.</p>
       <div id="scList"></div>
@@ -86,31 +147,23 @@
       <h4>Hook title</h4>
       <button id="btnHooks" class="wide">Suggest hook titles</button>
       <div id="hookList"></div>
+      <h4>Generate an image</h4>
+      <p class="hint">Runs on this Mac (Z-Image-Turbo). About 25-50 s; nothing is uploaded.</p>
+      <textarea id="aiPrompt" rows="3" placeholder="A neon sign that says OPEN on a rainy street at night, cinematic" spellcheck="true"></textarea>
+      <label class="row"><span>Shape</span><select id="aiShapeSel"><option value="canvas">Like the canvas</option><option value="1:1">Square</option><option value="16:9">Wide</option><option value="9:16">Tall</option><option value="4:5">Portrait</option></select></label>
+      <label class="row"><span>Quality</span><select id="aiSteps"><option value="4">Draft (faster)</option><option value="8" selected>Best</option></select></label>
+      <label class="row"><span>Put it on</span><select id="aiPut"><option value="overlay">Overlay at playhead</option><option value="main">Main track</option><option value="library">Library only</option></select></label>
+      <label class="row chk"><span>Sticker (cut out the subject)</span><input id="aiSticker" type="checkbox"></label>
+      <button id="btnAiImage" class="primary wide">Generate image</button>
+      <p id="aiStatus" class="muted"></p>
     </section>
-    <section id="tab-captions" class="pane">
-      <p class="hint">Transcribed on this Mac with whisper.cpp. Nothing is uploaded.</p>
-      <label class="row"><span>Language</span><select id="capLang">
-        <option value="auto">Auto-detect</option><option value="en">English</option><option value="hy">Armenian</option>
-        <option value="ru">Russian</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option><option value="uk">Ukrainian</option><option value="tr">Turkish</option><option value="ar">Arabic</option><option value="fa">Persian</option><option value="hi">Hindi</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option>
-      </select></label>
-      <label class="row"><span>Words per caption</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
-      <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
-      <h4>Style</h4>
-      <div id="capPresets" class="presets"></div>
-      <button id="btnCaptions" class="primary wide">Generate captions</button>
-      <p id="capStatus" class="muted"></p>
-      <h4>Translate</h4>
-      <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
-      <button id="btnTranslate" class="wide">Translate captions</button>
-      <p id="trStatus" class="muted"></p>
-    </section>
+    </div>
   </aside>
 
   <section class="center">
     <div id="stage" class="stage"><canvas id="cv"></canvas></div>
     <div class="transport">
-      <span id="tc" class="tc">00:00:00</span>
-      <span class="spacer"></span>
+      <div class="tside"><span id="tc" class="tc">00:00:00</span></div>
       <div class="tbtns">
         <button id="btnStart" title="Go to start (Home)" aria-label="Go to start"><svg class="i" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8v16ZM5 19V5"/></svg></button>
         <button id="btnBack" title="Previous frame (←)" aria-label="Previous frame"><svg class="i" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
@@ -118,8 +171,7 @@
         <button id="btnFwd" title="Next frame (→)" aria-label="Next frame"><svg class="i" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
         <button id="btnEnd" title="Go to end (End)" aria-label="Go to end"><svg class="i" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8V4ZM19 5v14"/></svg></button>
       </div>
-      <span class="spacer"></span>
-      <span id="ratioLabel" class="muted"></span>
+      <div class="tside end"><span id="ratioLabel" class="muted"></span></div>
     </div>
   </section>
 
@@ -131,13 +183,20 @@
     <button id="btnUndo" title="Undo (⌘Z)" aria-label="Undo"><svg class="i" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
     <button id="btnRedo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg class="i" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
     <span class="sep"></span>
-    <button id="btnSplit" title="Split at playhead (S)"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Split</button>
-    <button id="btnDelete" title="Delete (⌫)"><svg class="i" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete</button>
+    <button id="btnSplit" title="Split at playhead (S)"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg><span class="lbl">Split</span></button>
+    <button id="btnDelete" title="Delete (⌫)"><svg class="i" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg><span class="lbl">Delete</span></button>
+    <button id="btnDup" title="Duplicate (⌘D)"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span class="lbl">Duplicate</span></button>
     <span class="sep"></span>
-    <button id="btnPauses" title="Cut silent gaps out of main-track clips"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg>Remove pauses</button>
+    <button id="btnFreeze" title="Freeze frame at the playhead"><svg class="i" viewBox="0 0 24 24"><path d="M12 2v20M4.9 7l14.2 10M4.9 17 19.1 7"/></svg><span class="lbl">Freeze</span></button>
+    <button id="btnReverse" title="Play the clip backwards"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="lbl">Reverse</span></button>
+    <button id="btnMirror" title="Mirror"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v18M8 7 3 17h5zM16 7l5 10h-5z"/></svg><span class="lbl">Mirror</span></button>
+    <button id="btnRotate" title="Rotate 90°"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span class="lbl">Rotate</span></button>
+    <span class="sep"></span>
+    <button id="btnPauses" title="Cut silent gaps out of main-track clips"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg><span class="lbl">Remove pauses</span></button>
     <select id="pauseLen" title="Shortest pause to remove"><option value="0.3">&gt; 0.3 s</option><option value="0.5" selected>&gt; 0.5 s</option><option value="1">&gt; 1 s</option></select>
-    <button id="btnFillers" title="Cut um / uh / er / hmm out of main-track clips (on-device transcript)"><svg class="i" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="m10 8 4 4m0-4-4 4"/></svg>Remove fillers</button>
+    <button id="btnFillers" title="Cut um / uh / er / hmm out of main-track clips (on-device transcript)"><svg class="i" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="m10 8 4 4m0-4-4 4"/></svg><span class="lbl">Remove fillers</span></button>
     <span class="spacer"></span>
+    <button id="btnFit" title="Fit the whole edit in view"><svg class="i" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg><span class="lbl">Fit</span></button>
     <label class="zoom"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg><input id="zoom" type="range" min="0" max="5.6" step="0.01" aria-label="Timeline zoom"></label>
   </div>
   <div class="tl-body">

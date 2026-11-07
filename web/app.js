@@ -23,6 +23,7 @@ async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
 }
 
 const LANES = [
+  { key: 'fx', label: 'Effects', h: 28 },
   { key: 'text', label: 'Text', h: 30 },
   { key: 'captions', label: 'Captions', h: 30 },
   { key: 'overlay', label: 'Overlay', h: 42 },
@@ -41,6 +42,14 @@ const TEXT_PRESETS = {
   Headline: { font: 'Bebas Neue', weight: 400, size: 150, color: '#ffd400', shadow: true },
   Typewriter: { font: 'American Typewriter', weight: 600, size: 60, box: true, boxColor: '#111111', boxAlpha: 0.85 },
   Sticker: { font: 'Montserrat', weight: 400, size: 230, anim: 'pop' }, // emoji render through the system emoji font
+  Neon: { font: 'Poppins', weight: 800, size: 96, color: '#ffffff', shadow: true, shc: '#ff2bd6', sha: 1, shb: 0.5, shx: 0, shy: 0 },
+  Glow: { font: 'Montserrat', weight: 800, size: 96, color: '#fff7c2', shadow: true, shc: '#ffb800', sha: 1, shb: 0.55, shx: 0, shy: 0 },
+  Gradient: { font: 'Montserrat', weight: 900, size: 118, color: '#ffe259', grad: '#ff5e7e', shadow: true },
+  Retro: { font: 'Bebas Neue', weight: 400, size: 150, color: '#ffd400', shadow: true, shc: '#e4002b', sha: 1, shb: 0, shx: 0.05, shy: 0.05 },
+  Comic: { font: 'Marker Felt', weight: 400, size: 104, color: '#ffffff', stroke: '#111111', strokeW: 6, shadow: true, shc: '#111111', sha: 1, shb: 0, shx: 0.04, shy: 0.05 },
+  Marker: { font: 'Montserrat', weight: 800, size: 62, color: '#111111', box: true, boxColor: '#ffd400', boxAlpha: 1, boxR: 0.06 },
+  Bubble: { font: 'Poppins', weight: 800, size: 64, color: '#ffffff', box: true, boxColor: '#ff3d7f', boxAlpha: 1, boxR: 1, boxPad: 0.55 },
+  Minimal: { font: 'Helvetica Neue', weight: 300, size: 64, ls: 0.22, upper: true },
 };
 const CAP_PRESETS = {
   Bold: { font: 'Montserrat', weight: 900, size: 78, color: '#ffffff', stroke: '#000000', strokeW: 7, hl: '#ffd400', upper: true, pop: true },
@@ -49,14 +58,17 @@ const CAP_PRESETS = {
   Neon: { font: 'Anton', weight: 400, size: 96, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#3dff8b', upper: true, pop: true },
 };
 const ICON = {
-  play: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>',
+  play: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4.5v15l12-7.5z" fill="currentColor"/></svg>',
   pause: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
 };
 
-const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['fadewhite', 'Dip to white'], ['wipeleft', 'Wipe left'], ['wiperight', 'Wipe right'], ['wipeup', 'Wipe up'],
-  ['wipedown', 'Wipe down'], ['slideleft', 'Slide left'], ['slideright', 'Slide right'], ['slideup', 'Slide up'], ['slidedown', 'Slide down'], ['circleopen', 'Circle open'], ['circleclose', 'Circle close'], ['zoomin', 'Zoom']];
-const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['type', 'Typewriter']];
-const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['type', 'Backspace']];
+const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['fadewhite', 'Dip to white'], ['fadegrays', 'Fade to grey'], ['dissolve', 'Noise'],
+  ['pixelize', 'Pixelate'], ['hblur', 'Blur'], ['zoomin', 'Zoom'], ['wipeleft', 'Wipe left'], ['wiperight', 'Wipe right'], ['wipeup', 'Wipe up'], ['wipedown', 'Wipe down'],
+  ['smoothleft', 'Soft wipe left'], ['smoothright', 'Soft wipe right'], ['smoothup', 'Soft wipe up'], ['smoothdown', 'Soft wipe down'], ['slideleft', 'Slide left'], ['slideright', 'Slide right'],
+  ['slideup', 'Slide up'], ['slidedown', 'Slide down'], ['squeezeh', 'Squeeze'], ['squeezev', 'Squeeze sideways'], ['circleopen', 'Circle open'], ['circleclose', 'Circle close'],
+  ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds']];
+const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter']];
+const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace']];
 const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.anim) === 'type' ? 1.2 : ANIM_T); // text in/out length; typing takes longer
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
@@ -83,6 +95,10 @@ const sat = s => [.213 + .787 * s, .715 - .715 * s, .072 - .072 * s, .213 - .213
 const LOOKS = { // 3x3 RGB matrices: the preview uses them as SVG feColorMatrix, the export as colorchannelmixer
   vivid: sat(1.45), mono: sat(0), sepia: [.393, .769, .189, .349, .686, .168, .272, .534, .131],
   warm: [1.1, .05, 0, 0, 1.02, 0, 0, -.04, .86], cool: [.88, 0, .04, 0, .98, .05, .04, .06, 1.12], teal: [1.12, .06, -.18, -.06, 1.02, .04, -.16, .12, 1.1],
+  film: [1.02, .1, -.04, .04, .96, .02, -.02, .08, .84], golden: [1.18, .1, -.06, .04, 1.04, -.04, -.1, -.04, .78], punch: [1.245, -.186, -.019, -.053, 1.071, -.018, -.051, -.172, 1.183],
+  rose: [1.1, .04, .06, 0, .94, .04, .04, 0, 1.02], dusk: [1.1, 0, .1, 0, .88, .08, .1, .05, 1], emerald: [.86, .08, 0, .02, 1.08, 0, 0, .1, .94],
+  arctic: [.85, .05, .1, .05, .95, .1, .1, .1, 1.15], night: [.7, .05, .1, .02, .8, .12, .04, .12, 1.1], retro: [.95, .15, 0, .1, .9, .05, .05, .15, .7],
+  silver: [.331, .608, .061, .181, .758, .061, .2, .62, .26],
 };
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
 const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -333,7 +349,7 @@ function renderTimeline() {
   r.style.setProperty('--minor', `${(step * pps) / 5}px`);
   let heads = '';
   for (const L of LANES) {
-    const R = ['overlay', 'audio', 'text'].includes(L.key) ? rows(L.key) : { row: new Map(), n: 1 }, el = $(`#lane-${L.key}`);
+    const R = ['overlay', 'audio', 'text', 'fx'].includes(L.key) ? rows(L.key) : { row: new Map(), n: 1 }, el = $(`#lane-${L.key}`);
     el.style.height = `${L.h * R.n}px`;
     const snd = L.key === 'main' || L.key === 'audio';
     heads += `<div style="height:${L.h * R.n}px">${L.label}<button class="lt${P.mute[L.key] ? ' on' : ''}" data-lt="${L.key}" title="${snd ? 'Mute' : 'Hide'} ${L.label}" aria-pressed="${!!P.mute[L.key]}">${snd ? 'M' : 'H'}</button></div>`;
@@ -359,7 +375,7 @@ function trHandles() {
 
 function clipHTML(lane, c, top = 0, h = 42) {
   const pps = S.pps, m = M.get(c.media), layers = []; // [image, size, position, repeat]
-  let label = c.text;
+  let label = c.fx ? FX[c.fx]?.n || c.fx : c.text;
   if (m) {
     label = m.name + (c.speed !== 1 ? ` · ${c.speed}×` : '');
     const full = (m.duration / c.speed) * pps, off = (-c.in / c.speed) * pps, wave = m.wave && (lane === 'audio' || lane === 'main');
@@ -384,13 +400,13 @@ function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrol
 
 function thumbStyle(m) {
   if (m.kind === 'image') return `background-image:url(/media/${m.id})`;
-  if (m.stripN) return `background-image:url(/cache/${m.id}.strip.jpg);background-size:${m.stripN * 100}% 100%;background-position:0 0`;
+  if (m.stripN) return `background-image:url(/cache/${m.id}.strip.jpg);background-size:auto 100%;background-position:0 0;background-repeat:repeat-x`; // frames at their own shape (portrait ones side by side)
   if (m.wave) return `background-image:url(/cache/${m.id}.wave.png);background-size:100% 100%`;
   return '';
 }
 function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
-  const items = [...M.values()].map(m => `<div class="mitem" draggable="true" data-media="${m.id}" title="Drag onto a track">
+  const items = [...M.values()].filter(m => G.mfilter === 'all' || m.kind === G.mfilter).map(m => `<div class="mitem" draggable="true" data-media="${m.id}" title="Drag onto a track">
       <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span></div>
       <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : ' · preparing'}</span></div>
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
@@ -415,7 +431,9 @@ const segs = (attr, label, v, opts) => `<div class="row"><span>${label}</span><d
 function renderInspector() {
   const c = selClip();
   pending = null;
-  $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
+  $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
+  syncToolbar();
+  if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
 }
 function trPanel(c) {
   const i = P.main.indexOf(c), next = P.main[i + 1], cur = c.tr?.type || 'none';
@@ -430,13 +448,16 @@ function kfRow(c, lane) {
   return `<h4>Keyframes</h4><div class="actions">${c.kf?.length ? '<button data-act="kfprev" title="Previous keyframe" aria-label="Previous keyframe">‹</button><button data-act="kfnext" title="Next keyframe" aria-label="Next keyframe">›</button>' : ''}${on ? `<button data-act="kfdel">Remove keyframe</button><button data-act="kfease">${eased ? 'Linear from here' : 'Ease from here'}</button>` : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>${c.kf?.length ? tick('c.ease', 'Ease all segments', c.ease) : ''}
     <p class="hint">${c.kf?.length ? 'Scale, position and opacity animate between the diamonds. Changing them at the playhead edits or adds a keyframe there.' : 'Add a keyframe, move the playhead, then change scale or position: zoom, pan, punch-in.'}</p>`;
 }
+const RATIO_NAMES = { '9:16': 'TikTok', '16:9': 'YouTube', '1:1': 'Square', '4:5': 'Instagram', '3:4': 'Portrait', '4:3': 'Classic', '21:9': 'Cinema' };
 function projectPanel() {
-  const ratio = Object.keys(RATIOS).find(r => RATIOS[r][0] === P.w && RATIOS[r][1] === P.h);
-  return `<h3>Project</h3><p class="muted">${P.w}×${P.h} · ${tc(total())}</p>
-    ${segs('ratio', 'Canvas', ratio, Object.keys(RATIOS).map(r => [r, r]))}
-    ${pick('p.fps', 'Frame rate', P.fps, [[24, '24'], [25, '25'], [30, '30'], [50, '50'], [60, '60']])}
+  const ratio = Object.keys(RATIOS).find(r => RATIOS[r][0] === P.w && RATIOS[r][1] === P.h), n = LANES.reduce((s, L) => s + P[L.key].length, 0);
+  const tile = r => { const [w, h] = RATIOS[r], q = 24 / Math.max(w, h); return `<button data-ratio="${r}" class="${r === ratio ? 'on' : ''}" title="${r} · ${RATIO_NAMES[r]}"><span class="ri"><i style="width:${Math.round(w * q)}px;height:${Math.round(h * q)}px"></i></span><b>${r}</b><span>${RATIO_NAMES[r]}</span></button>`; };
+  return `<h3>Project</h3>
+    <div class="pinfo"><div><b>${fmtDur(total())}</b><span>Length</span></div><div><b>${P.w}×${P.h}</b><span>Size</span></div><div><b>${n}</b><span>Clips</span></div></div>
+    <h4>Canvas</h4><div class="ratios">${Object.keys(RATIOS).map(tile).join('')}</div>
+    <h4>Frame rate</h4><div class="seg full">${[24, 25, 30, 50, 60].map(f => `<button data-fps="${f}" class="${f === P.fps ? 'on' : ''}">${f} fps</button>`).join('')}</div>
     ${colour('p.bg', 'Background', P.bg)}
-    <h4>Shortcuts</h4><p class="hint">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ one frame (⇧ one second) · Home/End · M marker · ⌘Z / ⇧⌘Z · ⌘+scroll zooms the timeline</p>`;
+    <h4>Shortcuts</h4><p class="hint" title="⇧←/→ one second · Home/End · ⇧⌘Z redo · ⌘+scroll zooms the timeline">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ frame · M marker · ⌘Z undo</p>`;
 }
 function tabbed(sections) { // inspector tabs; empty tabs are hidden and the open tab survives re-renders
   const live = sections.filter(x => x[1]), cur = live.some(x => x[0] === S.itab) ? S.itab : live[0][0];
@@ -640,7 +661,7 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
     ctx.drawImage(A, z - W, 0); ctx.drawImage(B, z, 0);
   } else if (type === 'circleopen') { // b = 1 - smoothstep(0,1, r/R + (P-.5)*3), a soft radial reveal
     ctx.drawImage(A, 0, 0);
-    const C = layer(2), cx = C.getContext('2d'), R = Math.hypot(W / 2, H / 2), q = (P1 - 0.5) * 3;
+    const C = scratch(W, H, 'trc'), cx = C.getContext('2d'), R = Math.hypot(W / 2, H / 2), q = (P1 - 0.5) * 3;
     cx.globalCompositeOperation = 'copy'; cx.drawImage(B, 0, 0);
     const g = cx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, R);
     for (let s = 0; s <= 16; s++) g.addColorStop(s / 16, `rgba(0,0,0,${1 - smoothstep(0, 1, s / 16 + q)})`);
@@ -680,13 +701,19 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
     ctx.drawImage(B, 0, -z); ctx.drawImage(A, 0, H - z);
   } else if (type === 'circleclose') { // b*ss + a*(1-ss), ss = smoothstep(0,1, r/R + (0.5-P)*3)
     ctx.drawImage(B, 0, 0);
-    const C = layer(2), cx = C.getContext('2d'), R = Math.hypot(W / 2, H / 2), q = (0.5 - P1) * 3;
+    const C = scratch(W, H, 'trc'), cx = C.getContext('2d'), R = Math.hypot(W / 2, H / 2), q = (0.5 - P1) * 3;
     cx.globalCompositeOperation = 'copy'; cx.drawImage(A, 0, 0);
     const g = cx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, R);
     for (let s = 0; s <= 16; s++) g.addColorStop(s / 16, `rgba(0,0,0,${1 - smoothstep(0, 1, s / 16 + q)})`);
     cx.globalCompositeOperation = 'destination-in'; cx.fillStyle = g; cx.fillRect(0, 0, W, H);
     cx.globalCompositeOperation = 'source-over';
     ctx.drawImage(C, 0, 0);
+  } else if (TR_MASK[type]) maskTr(ctx, A, B, TR_MASK[type], P1);
+  else if (['dissolve', 'pixelize', 'hblur', 'fadegrays'].includes(type)) pixelTr(ctx, A, B, type, P1);
+  else if (type === 'squeezeh' || type === 'squeezev') { // a squeezed into a band P wide through the middle, b around it
+    ctx.drawImage(B, 0, 0);
+    if (type === 'squeezeh' && H * P1 >= 1) ctx.drawImage(A, 0, (H - H * P1) / 2, W, H * P1);
+    if (type === 'squeezev' && W * P1 >= 1) ctx.drawImage(A, (W - W * P1) / 2, 0, W * P1, H);
   } else { // fade: a*P + b*(1-P)
     ctx.drawImage(A, 0, 0); ctx.globalAlpha = 1 - P1; ctx.drawImage(B, 0, 0);
   }
@@ -741,6 +768,7 @@ function paint() {
   }
   for (const v of pool.values()) if (!live.has(v) && !v.paused) v.pause();
   S.live = live;
+  fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
   if (S.pickRect) {
     const R = S.pickRect, d = devicePixelRatio || 1;
@@ -880,8 +908,517 @@ async function maskPNG(c, m) { // export: opaque greyscale (luma -> alpha via al
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(c.mask, W, H), 0, 0);
   return blobURL(await cv.convertToBlob({ type: 'image/png' }));
 }
+
+// ---------- video effects (the Effects track) ----------
+// px(): steps the export runs on the composite (same numbers here and in ffmpeg); layer(): drawn into the text layer, so it renders exactly as previewed.
+// rate: how often a layer changes: 'frame', n per second, 'edges' (animated only near its ends) or 0 (static).
+const rnd = (i, s = 0) => { const x = Math.sin(i * 127.1 + s * 311.7) * 43758.5453; return x - Math.floor(x); }; // deterministic noise: preview and export agree
+const ID3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const lerpM = (A, B, t) => A.map((v, i) => v + (B[i] - v) * t);
+const fxFrame = lt => Math.floor(lt * P.fps + 1e-6);
+const clock = s => `00:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const FX_CATS = [['all', 'All'], ['camera', 'Camera'], ['light', 'Light'], ['retro', 'Retro'], ['distort', 'Distort'], ['party', 'Party'], ['frame', 'Frame']];
+function beatTimes() { const out = []; for (const a of P.audio) for (const b of a.beats || []) if (b >= a.in && b <= a.out) out.push(a.start + (b - a.in) / a.speed); return out.sort((x, y) => x - y); }
+function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect beats), else 120 BPM from the effect's start
+  const t = f.start + lt, b = f.gallery ? [] : beatTimes().filter(x => x <= t + 1e-6 && x >= f.start - 0.6);
+  return b.length ? t - b.at(-1) : lt % 0.5;
+}
+const shake = (a, fx, fy) => (W, H, u, lt, f) => { const s = a * f.amt; return [{ op: 'transform', z: 1 + 2 * s + 0.01, x: W * s * wob(lt * fx), y: H * s * wob(lt * fy + 5) }]; };
+function particles(n, fn) { for (let i = 0; i < n; i++) fn(i); }
+const FX = {
+  shake: { n: 'Shake', cat: 'camera', d: 1.5, px: shake(0.035, 17, 14) },
+  quake: { n: 'Earthquake', cat: 'camera', d: 1.5, px: shake(0.07, 31, 27) },
+  pulse: { n: 'Beat zoom', cat: 'camera', d: 2, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.14 * f.amt * Math.exp(-sinceBeat(f, lt) / 0.12), x: 0, y: 0 }] },
+  zoomin: { n: 'Slow zoom', cat: 'camera', d: 3, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.2 * f.amt * clamp(lt / f.dur, 0, 1), x: 0, y: 0 }] },
+  flash: { n: 'Flash', cat: 'light', d: 0.6, rate: 'frame', layer: (x, W, H, u, lt, f) => { x.fillStyle = `rgba(255,255,255,${Math.min(1, f.amt) * (1 - Math.abs(2 * lt / f.dur - 1)) ** 1.5})`; x.fillRect(0, 0, W, H); } },
+  strobe: { n: 'Strobe', cat: 'light', d: 1.5, rate: 'frame', layer: (x, W, H, u, lt, f) => { if (fxFrame(lt) % 4 === 0) { x.fillStyle = `rgba(255,255,255,${0.85 * Math.min(1, f.amt)})`; x.fillRect(0, 0, W, H); } } },
+  blink: { n: 'Blink', cat: 'light', d: 1, rate: 'frame', layer: (x, W, H, u, lt, f) => { // eyelids close and open again
+    const c = Math.sin(Math.PI * clamp(lt / f.dur, 0, 1)) ** 2 * Math.min(1, f.amt), h = c * H * 0.56;
+    x.fillStyle = '#000';
+    if (c > 0.97) return x.fillRect(0, 0, W, H);
+    if (h < 0.5) return;
+    for (const [y0, s] of [[0, 1], [H, -1]]) { x.beginPath(); x.moveTo(0, y0); x.lineTo(W, y0); x.lineTo(W, y0 + s * h * 0.7); x.quadraticCurveTo(W / 2, y0 + s * h * 1.3, 0, y0 + s * h * 0.7); x.closePath(); x.fill(); }
+  } },
+  glow: { n: 'Dreamy glow', cat: 'light', d: 3, px: (W, H, u, lt, f) => [{ op: 'glow', sigma: 16 * u, amt: Math.min(1, 0.6 * f.amt) }] },
+  vhs: { n: 'VHS', cat: 'retro', d: 3, rate: 1,
+    px: (W, H, u, lt, f) => { const s = Math.max(1, Math.round(4 * u * f.amt)); return [{ op: 'rgbshift', rh: -s, bh: s }, { op: 'noise', s: Math.round(clamp(10 * f.amt, 1, 60)) }]; },
+    layer: (x, W, H, u, lt) => {
+      x.fillStyle = 'rgba(0,0,0,0.16)';
+      for (let y = 0; y < H; y += Math.max(2, 4 * u)) x.fillRect(0, y, W, Math.max(1, 1.5 * u));
+      x.font = `700 ${40 * u}px Menlo, monospace`; x.fillStyle = '#fff'; x.shadowColor = 'rgba(0,0,0,0.6)'; x.shadowBlur = 4 * u;
+      x.textBaseline = 'top'; x.fillText('PLAY ▶', 48 * u, 48 * u);
+      x.textBaseline = 'bottom'; x.fillText(`SP ${clock(Math.floor(lt))}`, 48 * u, H - 48 * u);
+    } },
+  oldfilm: { n: 'Old film', cat: 'retro', d: 3, rate: 'frame',
+    px: (W, H, u, lt, f) => [{ op: 'matrix', m: lerpM(ID3, LOOKS.sepia, Math.min(1, f.amt)), k: +(0.9 + 0.1 * rnd(fxFrame(lt), 7)).toFixed(3) }, { op: 'noise', s: Math.round(clamp(14 * f.amt, 1, 60)) }],
+    layer: (x, W, H, u, lt) => { // scratches and dust, new every frame
+      const g = fxFrame(lt);
+      x.strokeStyle = 'rgba(30,20,10,0.35)'; x.lineWidth = Math.max(1, 1.5 * u);
+      for (let i = 0; i < Math.floor(rnd(g, 1) * 3); i++) { const xx = rnd(g, 10 + i) * W; x.beginPath(); x.moveTo(xx, 0); x.lineTo(xx + (rnd(g, 20 + i) - 0.5) * 20 * u, H); x.stroke(); }
+      x.fillStyle = 'rgba(20,15,10,0.5)';
+      for (let i = 0; i < Math.floor(rnd(g, 2) * 7); i++) { x.beginPath(); x.arc(rnd(g, 30 + i) * W, rnd(g, 40 + i) * H, (1 + 3 * rnd(g, 50 + i)) * u, 0, 6.2832); x.fill(); }
+    } },
+  grain: { n: 'Film grain', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'noise', s: Math.round(clamp(16 * f.amt, 1, 80)) }] },
+  bw: { n: 'Black & white', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'matrix', m: sat(1 - Math.min(1, f.amt)) }] },
+  sepia: { n: 'Sepia', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'matrix', m: lerpM(ID3, LOOKS.sepia, Math.min(1, f.amt)) }] },
+  glitch: { n: 'Glitch', cat: 'distort', d: 1.5, px: (W, H, u, lt, f) => { const g = fxFrame(lt), s = Math.round(u * f.amt * (rnd(g, 2) > 0.7 ? 22 : 7) * (rnd(g, 1) * 2 - 1)); return [{ op: 'rgbshift', rh: s, bh: -s }]; } },
+  rgb: { n: 'RGB split', cat: 'distort', d: 2, px: (W, H, u, lt, f) => { const s = Math.max(1, Math.round(8 * u * f.amt)); return [{ op: 'rgbshift', rh: -s, bh: s }]; } },
+  pixelate: { n: 'Pixelate', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [{ op: 'pixelize', size: Math.max(2, Math.round(28 * u * f.amt)) }] },
+  blur: { n: 'Blur', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [{ op: 'blur', sigma: +Math.max(0.5, 12 * u * f.amt).toFixed(2) }] },
+  invert: { n: 'Invert', cat: 'distort', d: 1, px: () => [{ op: 'negate' }] },
+  mirror: { n: 'Mirror', cat: 'distort', d: 3, px: () => [{ op: 'mirror' }] },
+  split4: { n: 'Split ×4', cat: 'distort', d: 3, px: () => [{ op: 'grid' }] },
+  snow: { n: 'Snow', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    x.fillStyle = '#fff';
+    particles(Math.round(110 * f.amt), i => {
+      const v = 0.05 + 0.09 * rnd(i, 2), yy = ((rnd(i, 4) + lt * v) % 1.08) - 0.04, xx = rnd(i, 1) + 0.02 * Math.sin(lt * 1.3 + 6.28 * rnd(i, 5));
+      x.globalAlpha = 0.5 + 0.5 * rnd(i, 6); x.beginPath(); x.arc(xx * W, yy * H, (1.5 + 4.5 * rnd(i, 3)) * u, 0, 6.2832); x.fill();
+    });
+  } },
+  rain: { n: 'Rain', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    x.strokeStyle = 'rgba(200,220,255,0.45)'; x.lineWidth = 2 * u; x.lineCap = 'round'; x.beginPath();
+    particles(Math.round(90 * f.amt), i => {
+      const yy = ((rnd(i, 4) + lt * (1.1 + 0.6 * rnd(i, 2))) % 1.2) - 0.1, xx = rnd(i, 1) - yy * 0.12, L = (40 + 40 * rnd(i, 3)) * u;
+      x.moveTo(xx * W, yy * H); x.lineTo(xx * W - 0.25 * L, yy * H + L);
+    });
+    x.stroke();
+  } },
+  sparkle: { n: 'Sparkles', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    particles(Math.round(34 * f.amt), i => {
+      const s = Math.max(0, Math.sin(lt * (2 + 3 * rnd(i, 3)) + 6.28 * rnd(i, 4))) ** 3, r = (8 + 18 * rnd(i, 5)) * u * s;
+      if (s < 0.02) return;
+      x.save(); x.translate(rnd(i, 1) * W, rnd(i, 2) * H); x.rotate(rnd(i, 6) * 0.8); x.globalAlpha = s; x.fillStyle = '#fff'; x.shadowColor = '#ffe9a8'; x.shadowBlur = r * 1.2;
+      x.beginPath(); for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, rr = k % 2 ? r * 0.18 : r; x.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } x.closePath(); x.fill(); x.restore();
+    });
+  } },
+  hearts: { n: 'Hearts', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    const col = ['#ff3d7f', '#ff6b9d', '#e6004c', '#ff9ec4'];
+    particles(Math.round(16 * f.amt), i => {
+      const yy = 1.08 - ((rnd(i, 4) + lt * (0.12 + 0.12 * rnd(i, 2))) % 1.2), xx = rnd(i, 1) + 0.03 * Math.sin(lt * 2 + 6.28 * rnd(i, 5)), s = (18 + 26 * rnd(i, 3)) * u;
+      x.save(); x.translate(xx * W, yy * H); x.rotate((rnd(i, 6) - 0.5) * 0.6); x.globalAlpha = 0.85; x.fillStyle = col[i % 4];
+      x.beginPath(); x.moveTo(0, s * 0.35); x.bezierCurveTo(-s, -s * 0.35, -s * 0.45, -s * 1.05, 0, -s * 0.45); x.bezierCurveTo(s * 0.45, -s * 1.05, s, -s * 0.35, 0, s * 0.35); x.fill(); x.restore();
+    });
+  } },
+  confetti: { n: 'Confetti', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    const col = ['#ffd400', '#ff3d7f', '#3dd6ff', '#7cff6b', '#b49bff', '#ff8a3d'];
+    particles(Math.round(80 * f.amt), i => {
+      const yy = ((rnd(i, 4) + lt * (0.18 + 0.2 * rnd(i, 2))) % 1.15) - 0.07, xx = rnd(i, 1) + 0.04 * Math.sin(lt * 1.7 + 6.28 * rnd(i, 5));
+      x.save(); x.translate(xx * W, yy * H); x.rotate(lt * (2 + 4 * rnd(i, 6)) + 6.28 * rnd(i, 7)); x.scale(1, Math.cos(lt * (3 + 5 * rnd(i, 8)) + 6.28 * rnd(i, 9)));
+      x.fillStyle = col[i % col.length]; x.fillRect(-5 * u, -8 * u, 10 * u, 16 * u); x.restore();
+    });
+  } },
+  bubbles: { n: 'Bubbles', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
+    x.strokeStyle = '#fff'; x.fillStyle = '#fff'; x.lineWidth = 2 * u;
+    particles(Math.round(22 * f.amt), i => {
+      const yy = 1.1 - ((rnd(i, 4) + lt * (0.08 + 0.1 * rnd(i, 2))) % 1.25), xx = rnd(i, 1) + 0.025 * Math.sin(lt * 1.5 + 6.28 * rnd(i, 5)), r = (10 + 30 * rnd(i, 3)) * u;
+      x.globalAlpha = 0.55; x.beginPath(); x.arc(xx * W, yy * H, r, 0, 6.2832); x.stroke();
+      x.globalAlpha = 0.35; x.beginPath(); x.arc(xx * W - r * 0.35, yy * H - r * 0.35, r * 0.22, 0, 6.2832); x.fill();
+    });
+  } },
+  bars: { n: 'Cinema bars', cat: 'frame', d: 4, rate: 'edges', layer: (x, W, H, u, lt, f) => { // 2.39:1 letterbox, sliding in and out
+    const hb = Math.min(1.5, f.amt) * (W > H ? Math.max(H * 0.08, (H - W / 2.39) / 2) : H * 0.11), s = ss3(clamp(lt / 0.4, 0, 1)) * ss3(clamp((f.dur - lt) / 0.4, 0, 1));
+    x.fillStyle = '#000'; x.fillRect(0, 0, W, hb * s); x.fillRect(0, H - hb * s, W, hb * s);
+  } },
+  rec: { n: 'Camcorder', cat: 'frame', d: 4, rate: 2, layer: (x, W, H, u, lt) => { // the dot blinks and the clock ticks: two changes a second
+    const m = 40 * u, L = 70 * u, q = Math.floor(lt * 2) / 2;
+    x.strokeStyle = '#fff'; x.lineWidth = 4 * u; x.globalAlpha = 0.9; x.beginPath();
+    for (const [cx, cy, sx, sy] of [[m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1]]) { x.moveTo(cx, cy + sy * L); x.lineTo(cx, cy); x.lineTo(cx + sx * L, cy); }
+    x.stroke();
+    x.font = `600 ${34 * u}px Menlo, monospace`; x.textBaseline = 'middle'; x.fillStyle = '#fff';
+    if (q % 1 < 0.5) { x.fillStyle = '#ff2d2d'; x.beginPath(); x.arc(m + 34 * u, m + 46 * u, 11 * u, 0, 6.2832); x.fill(); x.fillStyle = '#fff'; }
+    x.fillText('REC', m + 54 * u, m + 46 * u);
+    x.strokeRect(W - m - 92 * u, m + 32 * u, 60 * u, 28 * u); x.fillRect(W - m - 30 * u, m + 40 * u, 5 * u, 12 * u);
+    for (let i = 0; i < 3; i++) x.fillRect(W - m - 86 * u + i * 19 * u, m + 37 * u, 15 * u, 18 * u);
+    x.textAlign = 'right'; x.fillText(clock(Math.floor(q)), W - m - 24 * u, H - m - 44 * u);
+  } },
+  vignette: { n: 'Vignette', cat: 'frame', d: 4, rate: 0, layer: (x, W, H, u, lt, f) => {
+    const g = x.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.hypot(W, H) / 2);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${Math.min(0.95, 0.75 * f.amt)})`);
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+  } },
+  film: { n: 'Film strip', cat: 'frame', d: 4, rate: 'frame', layer: (x, W, H, u, lt) => { // sprocket holes running past
+    const bw = 60 * u, hole = 26 * u, gap = 64 * u, off = (lt * 240 * u) % gap;
+    x.fillStyle = '#0b0b0b'; x.fillRect(0, 0, bw, H); x.fillRect(W - bw, 0, bw, H);
+    x.fillStyle = 'rgba(235,235,225,0.9)'; x.beginPath();
+    for (let y = -gap + off; y < H + gap; y += gap) { x.roundRect((bw - hole) / 2, y, hole, hole * 1.4, 5 * u); x.roundRect(W - bw + (bw - hole) / 2, y, hole, hole * 1.4, 5 * u); }
+    x.fill();
+  } },
+};
+const fxOn = (f, t) => t >= f.start && t < f.start + f.dur;
+function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the text layer (preview and export draw them the same way)
+  if (P.mute.fx) return;
+  const W = P.w * k, H = P.h * k, u = Math.min(W, H) / 1080;
+  for (const f of P.fx) if (fxOn(f, t) && FX[f.fx]?.layer) { ctx.save(); FX[f.fx].layer(ctx, W, H, u, t - f.start, f); ctx.restore(); }
+}
+function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (video and overlays)
+  if (P.mute.fx) return;
+  const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
+  for (const f of P.fx) if (fxOn(f, t) && FX[f.fx]?.px) runOps(ctx, W, H, FX[f.fx].px(W, H, u, t - f.start, f));
+}
+const scratchCv = new Map();
+function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
+  const key = `${tag}:${W}x${H}`;
+  let c = scratchCv.get(key);
+  if (!c) { c = document.createElement('canvas'); c.width = W; c.height = H; scratchCv.set(key, c); if (scratchCv.size > 64) scratchCv.delete(scratchCv.keys().next().value); }
+  return c;
+}
+function blurred(C, W, H, sigma) { // Gaussian blur of a canvas (ctx.filter where there is one; WebKit: down- and up-scaling, close to it)
+  const B = scratch(W, H, 'fxb'), b = B.getContext('2d');
+  b.globalCompositeOperation = 'copy';
+  if (CANVAS_FILTER) { b.filter = `blur(${sigma}px)`; b.drawImage(C, 0, 0); b.filter = 'none'; }
+  else {
+    const f = Math.max(1, sigma / 1.6), w = Math.max(1, Math.round(W / f)), h = Math.max(1, Math.round(H / f)), T = scratch(w, h, 'fxt'), tx = T.getContext('2d');
+    tx.globalCompositeOperation = 'copy'; tx.imageSmoothingQuality = 'high'; tx.drawImage(C, 0, 0, w, h);
+    b.imageSmoothingQuality = 'high'; b.drawImage(T, 0, 0, W, H);
+  }
+  b.globalCompositeOperation = 'source-over';
+  return B;
+}
+function matrixPass(x, W, H, m) { // a 3x3 colour matrix, like colorchannelmixer
+  const img = x.getImageData(0, 0, W, H), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    d[i] = m[0] * r + m[1] * g + m[2] * b; d[i + 1] = m[3] * r + m[4] * g + m[5] * b; d[i + 2] = m[6] * r + m[7] * g + m[8] * b;
+  }
+  x.putImageData(img, 0, 0);
+}
+function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same order, same numbers
+  for (const o of ops) {
+    if (o.op === 'negate') { x.save(); x.globalCompositeOperation = 'difference'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.restore(); continue; }
+    if (o.op === 'matrix') { matrixPass(x, W, H, o.m.map(v => v * (o.k ?? 1))); continue; }
+    if (['mirror', 'grid', 'transform', 'glow', 'blur'].includes(o.op)) {
+      const C = scratch(W, H, 'fxc'), c = C.getContext('2d');
+      c.globalCompositeOperation = 'copy'; c.drawImage(x.canvas, 0, 0); c.globalCompositeOperation = 'source-over';
+      x.save();
+      if (o.op === 'mirror') { const w2 = Math.floor(W / 2); x.translate(W, 0); x.scale(-1, 1); x.drawImage(C, 0, 0, w2, H, 0, 0, w2, H); } // right half = the left half, flipped
+      else if (o.op === 'grid') { const w2 = Math.floor(W / 2), h2 = Math.floor(H / 2); for (const [a, b] of [[0, 0], [w2, 0], [0, h2], [w2, h2]]) x.drawImage(C, a, b, w2, h2); }
+      else if (o.op === 'transform') { const sw = 2 * Math.trunc(W * o.z / 2), sh = sw * H / W; x.drawImage(C, (W - sw) / 2 + o.x, (H - sh) / 2 + o.y, sw, sh); }
+      else { const B = blurred(C, W, H, o.sigma); if (o.op === 'blur') x.globalCompositeOperation = 'copy'; else { x.globalCompositeOperation = 'screen'; x.globalAlpha = o.amt; } x.drawImage(B, 0, 0); }
+      x.restore();
+      continue;
+    }
+    const img = x.getImageData(0, 0, W, H), d = img.data;
+    if (o.op === 'rgbshift') { // red and blue planes moved sideways, edges smeared (rgbashift)
+      const s = new Uint8ClampedArray(d);
+      for (let y = 0; y < H; y++) for (let xx = 0, i = y * W * 4, r = y * W; xx < W; xx++, i += 4) { d[i] = s[(r + clamp(xx - o.rh, 0, W - 1)) * 4]; d[i + 2] = s[(r + clamp(xx - o.bh, 0, W - 1)) * 4 + 2]; }
+    } else if (o.op === 'pixelize') { // block averages from the top-left, like pixelize
+      const n = o.size;
+      for (let by = 0; by < H; by += n) for (let bx = 0; bx < W; bx += n) {
+        const bw = Math.min(n, W - bx), bh = Math.min(n, H - by), c = [0, 0, 0];
+        for (let y = by; y < by + bh; y++) for (let xx = bx, i = (y * W + bx) * 4; xx < bx + bw; xx++, i += 4) { c[0] += d[i]; c[1] += d[i + 1]; c[2] += d[i + 2]; }
+        const q = bw * bh, r = Math.floor(c[0] / q), g = Math.floor(c[1] / q), b = Math.floor(c[2] / q); // pixelize truncates
+        for (let y = by; y < by + bh; y++) for (let xx = bx, i = (y * W + bx) * 4; xx < bx + bw; xx++, i += 4) { d[i] = r; d[i + 1] = g; d[i + 2] = b; }
+      }
+    } else if (o.op === 'noise') { // grain on brightness (the export adds random noise to luma)
+      for (let i = 0; i < d.length; i += 4) { const v = (Math.random() * 2 - 1) * o.s; d[i] += v; d[i + 1] += v; d[i + 2] += v; }
+    }
+    x.putImageData(img, 0, 0);
+  }
+}
+function addEffect(type, start = S.t, dur, amt = 1) {
+  const d = FX[type];
+  if (!d) throw new Error(`effect must be one of ${Object.keys(FX).join(', ')}`);
+  let c;
+  change(() => { c = { id: hex12(), fx: type, start: snap(Math.max(0, start)), dur: Math.max(1 / P.fps, snap(dur ?? d.d)), amt: clamp(+amt || 1, 0.1, 2) }; P.fx.push(c); S.sel = { lane: 'fx', id: c.id }; });
+  return c;
+}
+function fxPlan(w, h) { // the effect steps for the export, sampled at every frame they cover (on the frame grid, as the preview shows them)
+  const out = [], u = Math.min(w, h) / 1080, nF = Math.round(total() * P.fps);
+  if (P.mute.fx) return out;
+  for (const f of P.fx) {
+    const d = FX[f.fx], a = Math.ceil(f.start * P.fps - 1e-6), b = Math.min(nF, Math.ceil((f.start + f.dur) * P.fps - 1e-6));
+    if (!d?.px || b <= a) continue;
+    const per = [];
+    for (let i = a; i < b; i++) per.push(d.px(w, h, u, i / P.fps - f.start, f));
+    per[0].forEach((o, j) => {
+      const step = { op: o.op, a, b };
+      for (const key of Object.keys(o)) if (key !== 'op') { const vals = per.map(s => s[j][key]), one = JSON.stringify(vals[0]); step[key] = vals.every(v => JSON.stringify(v) === one) ? vals[0] : vals; }
+      out.push(step);
+    });
+  }
+  return out;
+}
+function fxPanel(c) {
+  const d = FX[c.fx] || { n: c.fx };
+  return `<h3>${esc(d.n)}</h3><p class="muted">Effects track · ${tc(c.dur)} · changes everything under it (text stays on top)</p>
+    ${slider('c.amt', 'Strength', c.amt ?? 1, 0.1, 2, 0.01, '%')}${pick('c.fx', 'Effect', c.fx, Object.entries(FX).map(([k, v]) => [k, v.n]))}
+    <p class="hint">Drag its edges on the timeline to change how long it lasts. More effects are in the library on the left.</p>
+    <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>`;
+}
+
+const fract = a => a - Math.floor(a);
+const TR_MASK = { // xfade's per-pixel weight of the incoming clip (its mix(b, a, ss) puts ss on b); P is xfade's progress, 1 -> 0
+  radial: (x, y, W, H, P) => smoothstep(0, 1, Math.atan2(x - W / 2, y - H / 2) - (P - 0.5) * Math.PI * 2.5),
+  smoothleft: (x, y, W, H, P) => smoothstep(0, 1, 1 + x / W - P * 2),
+  smoothright: (x, y, W, H, P) => smoothstep(0, 1, 1 + (W - 1 - x) / W - P * 2),
+  smoothup: (x, y, W, H, P) => smoothstep(0, 1, 1 + y / H - P * 2),
+  smoothdown: (x, y, W, H, P) => smoothstep(0, 1, 1 + (H - 1 - y) / H - P * 2),
+  vertopen: (x, y, W, H, P) => smoothstep(0, 1, 2 - Math.abs((x - W / 2) / (W / 2)) - P * 2),
+  horzopen: (x, y, W, H, P) => smoothstep(0, 1, 2 - Math.abs((y - H / 2) / (H / 2)) - P * 2),
+  diagtl: (x, y, W, H, P) => smoothstep(0, 1, 1 + (x / W) * (y / H) - P * 2),
+  diagbr: (x, y, W, H, P) => smoothstep(0, 1, 1 + ((W - 1 - x) / W) * ((H - 1 - y) / H) - P * 2),
+  hlslice: (x, y, W, H, P) => (smoothstep(-0.5, 0, x / W - P * 1.5) <= fract(10 * x / W) ? 0 : 1),
+  vuslice: (x, y, W, H, P) => (smoothstep(-0.5, 0, y / H - P * 1.5) <= fract(10 * y / H) ? 0 : 1),
+};
+function maskTr(ctx, A, B, fn, P1) { // b drawn over a through the per-pixel weight
+  const W = A.width, H = A.height, M = scratch(W, H, 'trm'), mx = M.getContext('2d'), img = mx.createImageData(W, H), d = img.data;
+  for (let y = 0, i = 3; y < H; y++) for (let x = 0; x < W; x++, i += 4) d[i] = fn(x, y, W, H, P1) * 255;
+  mx.putImageData(img, 0, 0);
+  const C = scratch(W, H, 'trc'), cx = C.getContext('2d');
+  cx.globalCompositeOperation = 'copy'; cx.drawImage(B, 0, 0);
+  cx.globalCompositeOperation = 'destination-in'; cx.drawImage(M, 0, 0); cx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(A, 0, 0); ctx.drawImage(C, 0, 0);
+}
+const frandCache = new Map();
+function frandMap(W, H) { // xfade's frand(x, y): the noise behind 'dissolve'
+  const key = `${W}x${H}`;
+  if (!frandCache.has(key)) {
+    const r = new Float32Array(W * H);
+    for (let y = 0, j = 0; y < H; y++) for (let x = 0; x < W; x++, j++) r[j] = fract(Math.sin(x * 12.9898 + y * 78.233) * 43758.545);
+    if (frandCache.size > 4) frandCache.clear();
+    frandCache.set(key, r);
+  }
+  return frandCache.get(key);
+}
+function pixelTr(ctx, A, B, type, P1) { // the transitions that need every pixel of both frames (xfade's formulas; it truncates, so do we)
+  const W = A.width, H = A.height, a = A.getContext('2d').getImageData(0, 0, W, H).data, b = B.getContext('2d').getImageData(0, 0, W, H).data;
+  const out = ctx.createImageData(W, H), o = out.data;
+  o.fill(255);
+  if (type === 'dissolve') {
+    const R = frandMap(W, H);
+    for (let j = 0, i = 0; j < R.length; j++, i += 4) { const s = R[j] >= 1 - P1 ? a : b; o[i] = s[i]; o[i + 1] = s[i + 1]; o[i + 2] = s[i + 2]; }
+  } else if (type === 'pixelize') {
+    const dist = Math.ceil(Math.min(P1, 1 - P1) * 50) / 50, sq = 2 * dist * Math.min(W, H) / 20;
+    for (let y = 0, i = 0; y < H; y++) {
+      const sy = dist > 0 ? Math.trunc(Math.min((Math.floor(y / sq) + 0.5) * sq, H - 1)) : y;
+      for (let x = 0; x < W; x++, i += 4) {
+        const k = (sy * W + (dist > 0 ? Math.trunc(Math.min((Math.floor(x / sq) + 0.5) * sq, W - 1)) : x)) * 4;
+        for (let c = 0; c < 3; c++) o[i + c] = (a[k + c] * P1 + b[k + c] * (1 - P1)) | 0;
+      }
+    }
+  } else if (type === 'hblur') { // both frames box-blurred along rows, the box growing to half the width at the middle, cross-faded
+    const prog = P1 <= 0.5 ? P1 * 2 : (1 - P1) * 2, size = Math.trunc(1 + Math.trunc(W / 2) * prog);
+    for (let y = 0; y < H; y++) for (let c = 0; c < 3; c++) {
+      const r = y * W * 4 + c;
+      let s0 = 0, s1 = 0, cnt = size;
+      for (let x = 0; x < size; x++) { s0 += a[r + x * 4]; s1 += b[r + x * 4]; }
+      for (let x = 0; x < W; x++) {
+        o[r + x * 4] = ((s0 / cnt) * P1 + (s1 / cnt) * (1 - P1)) | 0;
+        if (x + size < W) { s0 += a[r + (x + size) * 4] - a[r + x * 4]; s1 += b[r + (x + size) * 4] - b[r + x * 4]; } else { s0 -= a[r + x * 4]; s1 -= b[r + x * 4]; cnt--; }
+      }
+    }
+  } else { // fadegrays: each side fades through its own grey version
+    const s1 = smoothstep(0.8, 1, P1), s2 = smoothstep(0.2, 1, P1);
+    for (let i = 0; i < o.length; i += 4) {
+      const ga = Math.trunc((a[i] + a[i + 1] + a[i + 2]) / 3), gb = Math.trunc((b[i] + b[i + 1] + b[i + 2]) / 3);
+      for (let c = 0; c < 3; c++) o[i + c] = ((a[i + c] * s1 + ga * (1 - s1)) * P1 + (gb * s2 + b[i + c] * (1 - s2)) * (1 - P1)) | 0;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+}
+
+// ---------- the library panel: galleries of effects, transitions, filters, text styles, stickers and sounds ----------
+const G = { tab: 'media', fxCat: 'all', stCat: 'Smileys', mfilter: 'all', hover: null, raf: 0, frame: 0, sfx: [], audio: null };
+const RM = matchMedia('(prefers-reduced-motion: reduce)');
+const EMOJI = {
+  Smileys: '😀😂🤣😊😍🥰😘😎🤩🥳😇🙂😉😜🤪🤔🙄😴🤤😭😡🤯😱🥶🤡👻💀👽🤖😺',
+  Hands: '👍👎👏🙌🙏💪✌️🤞👌🤙👋☝️👉👈👆👇✊👊🤝🫶✍️💅',
+  Hearts: '❤️🧡💛💚💙💜🖤🤍🤎💖💘💝💗💓💔❤️‍🔥❣️💯💋💌',
+  Party: '🔥✨⭐🌟⚡💥🎉🎊🎈🎁🏆🥇👑💎💰💸🚀🎯🎮🎤🎧📸🎬',
+  Nature: '🌸🌹🌻🌷🌈☀️🌙❄️🌊🍀🍁🌴🌵🐶🐱🦄🐝🦋🐼🦊🐸🐙',
+  Food: '🍕🍔🍟🌮🍣🍩🍪🍰🧁🍓🍉🍑🥑🌶️☕🍿🧋🍾🥂🍺',
+  Signs: '⬆️⬇️⬅️➡️↗️🔄✅❌⚠️❓❗💬💭🔔📍📌🎵🎶⏰💡🆕🆒🆓',
+};
+const graphemes = s => [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)].map(x => x.segment);
+const TILE_W = 264, TILE_H = 148; // tile canvases (drawn at 2x)
+const tileCv = () => `<canvas width="${TILE_W}" height="${TILE_H}"></canvas>`;
+const cap1 = s => s[0].toUpperCase() + s.slice(1);
+function sampleScene(W, H, v) { // the stand-in footage of effect and transition tiles: a sunset (0) and a night sea (1)
+  const c = scratch(W, H, `scene${v}`);
+  if (c._done) return c;
+  const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 0, H);
+  for (const [o, col] of v ? [[0, '#0c2a52'], [0.6, '#1b6b8f'], [1, '#0a1f2e']] : [[0, '#ff9a5a'], [0.55, '#ff5e7e'], [1, '#3a1d4f']]) g.addColorStop(o, col);
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+  x.fillStyle = v ? '#e8f4ff' : '#ffe4a3'; x.beginPath(); x.arc(W * (v ? 0.72 : 0.3), H * 0.36, H * 0.15, 0, 6.2832); x.fill();
+  for (const [col, pts] of [[v ? '#0d3b4f' : '#5a2346', [0.72, 0.25, 0.5, 0.45, 0.68, 0.7, 0.45, 1, 0.66]], [v ? '#06202c' : '#2a1030', [0.86, 0.2, 0.7, 0.55, 0.82, 0.85, 0.66, 1, 0.8]]]) {
+    x.fillStyle = col; x.beginPath(); x.moveTo(0, H); x.lineTo(0, H * pts[0]);
+    for (let i = 1; i < pts.length; i += 2) x.lineTo(W * pts[i], H * pts[i + 1]);
+    x.lineTo(W, H); x.closePath(); x.fill();
+  }
+  c._done = true;
+  return c;
+}
+function openTab(tab) {
+  G.tab = tab;
+  $$('.rail button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
+  $$('.pane').forEach(p => p.classList.toggle('on', p.id === `tab-${tab}`));
+  renderPane();
+}
+function renderPane() { // the open gallery, refreshed (cheap: called on tab change and edits)
+  const t = G.tab;
+  if (t === 'effects') renderEffects();
+  else if (t === 'transitions') renderTransitions();
+  else if (t === 'filters') renderFilters();
+  else if (t === 'stickers') renderStickers();
+  else if (t === 'audio') renderAudio();
+  else if (t === 'text') renderTextTiles();
+  if ((t === 'effects' || t === 'transitions') && !G.raf) G.raf = requestAnimationFrame(galleryLoop);
+}
+function renderEffects() {
+  $('#fxCats').innerHTML = FX_CATS.map(([k, n]) => `<button data-fxcat="${k}" class="${G.fxCat === k ? 'on' : ''}">${n}</button>`).join('');
+  $('#fxGrid').innerHTML = Object.entries(FX).filter(([, d]) => G.fxCat === 'all' || d.cat === G.fxCat)
+    .map(([k, d]) => `<button class="tile" data-fx="${k}" title="Add ${esc(d.n)} at the playhead">${tileCv()}<span>${esc(d.n)}</span></button>`).join('');
+  drawTiles(true);
+}
+function cutTarget() { // the cut transition tiles apply to: the selected cut, the selected clip's outgoing cut, else the cut nearest the playhead
+  packMain();
+  if (P.main.length < 2) return null;
+  const c = selClip();
+  if (S.sel?.lane === 'tr' && c) return c;
+  if (S.sel?.lane === 'main' && c && P.main.indexOf(c) < P.main.length - 1) return c;
+  let best = P.main[0], bd = Infinity;
+  P.main.slice(0, -1).forEach((x, i) => { const d = Math.abs(P.main[i + 1].start - S.t); if (d < bd) { bd = d; best = x; } });
+  return best;
+}
+const clipName = c => M.get(c?.media)?.name || 'clip';
+function renderTransitions() {
+  const c = cutTarget(), nx = c && P.main[P.main.indexOf(c) + 1];
+  $('#trTarget').textContent = c ? `On the cut ${clipName(c)} → ${clipName(nx)}${S.sel?.lane === 'tr' || S.sel?.lane === 'main' ? '' : ', nearest the playhead (click a ◆ to pick another)'}`
+    : 'Put two clips on the main track first: a transition goes on the cut between them.';
+  $('#trGrid').innerHTML = TRANSITIONS.filter(t => t[0] !== 'none').map(([k, n]) => `<button class="tile${c?.tr?.type === k ? ' on' : ''}" data-trset="${k}" title="${esc(n)}">${tileCv()}<span>${esc(n)}</span></button>`).join('');
+  $('#btnTrNone').disabled = !c?.tr;
+  drawTiles(true);
+}
+function applyTransition(type, all = false) {
+  const c = cutTarget(), d = +$('#trDur').value || 0.5;
+  if (!c) return toast('Put two clips on the main track first');
+  change(() => {
+    for (const x of all ? P.main.slice(0, -1) : [c]) { if (type === 'none') delete x.tr; else x.tr = { type, d }; }
+    if (!all) S.sel = { lane: 'tr', id: c.id };
+  });
+  G.lastTr = type;
+  toast(type === 'none' ? 'Transition removed' : `${TRANSITIONS.find(t => t[0] === type)[1]}${all ? ' on every cut' : ''}`);
+  renderPane();
+}
+function lookTargets() { const c = selClip(), m = c && M.get(c.media); return c && m && m.kind !== 'audio' && S.sel.lane !== 'tr' ? { sel: true, list: [c] } : { sel: false, list: P.main.filter(x => M.get(x.media)?.kind !== 'audio') }; }
+function frameThumb(W, H, clips) { // the frame at the playhead as rendered (no selection box, these clips without their filter), cropped to a tile
+  const C = scratch(W, H, 'thumb'), x = C.getContext('2d'), cv = $('#cv');
+  if (total() <= 0 || !cv.width) { x.drawImage(sampleScene(W, H, 0), 0, 0); return C; }
+  const sel = S.sel, saved = clips.map(c => c.look);
+  S.sel = null; clips.forEach(c => delete c.look);
+  try { paint(); } finally { S.sel = sel; clips.forEach((c, i) => { if (saved[i]) c.look = saved[i]; }); S.dirty = true; }
+  const s = Math.max(W / cv.width, H / cv.height);
+  x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
+  x.drawImage(cv, (W - cv.width * s) / 2, (H - cv.height * s) / 2, cv.width * s, cv.height * s);
+  return C;
+}
+function renderFilters() {
+  const tg = lookTargets(), cur = tg.list[0]?.look?.name || 'none';
+  $('#lookTarget').textContent = tg.sel ? 'Applies to the selected clip.' : tg.list.length ? 'No clip selected: applies to every clip on the main track.' : 'Add a clip first: filters change its colours.';
+  $('#lookGrid').innerHTML = ['none', ...Object.keys(LOOKS)].map(n => `<button class="tile${cur === n ? ' on' : ''}" data-lookset="${n}">${tileCv()}<span>${n === 'none' ? 'None' : cap1(n)}</span></button>`).join('');
+  const src = frameThumb(TILE_W, TILE_H, tg.list);
+  for (const b of $$('#lookGrid .tile')) { const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0); if (b.dataset.lookset !== 'none') matrixPass(x, TILE_W, TILE_H, LOOKS[b.dataset.lookset]); }
+}
+function applyLook(name) {
+  const tg = lookTargets(), amt = +$('#lookAmt').value;
+  if (!tg.list.length) return toast('Add a clip first');
+  change(() => { for (const c of tg.list) { if (name === 'none') delete c.look; else c.look = { name, amount: amt }; } });
+  toast(name === 'none' ? 'Filter removed' : `${cap1(name)} on ${tg.sel ? 'the selected clip' : `${tg.list.length} clip${tg.list.length > 1 ? 's' : ''}`}`);
+  renderPane();
+}
+function renderStickers() {
+  $('#stCats').innerHTML = Object.keys(EMOJI).map(k => `<button data-stcat="${k}" class="${G.stCat === k ? 'on' : ''}">${k}</button>`).join('');
+  $('#stGrid').innerHTML = graphemes(EMOJI[G.stCat]).map(e => `<button data-emoji="${e}" title="Add ${e} at the playhead">${e}</button>`).join('');
+}
+async function renderAudio() {
+  if (!G.sfx.length) G.sfx = await api('/api/sfx').catch(() => []);
+  $('#sfxList').innerHTML = G.sfx.map(s => `<div class="sfxrow"><button class="pl" data-sfxplay="${s.id}" title="Listen" aria-label="Listen to ${esc(s.name)}">${ICON.play}</button><b>${esc(s.name)}</b><span class="muted">${s.dur.toFixed(1)} s</span><button class="add" data-sfx="${s.id}" title="Add at the playhead" aria-label="Add ${esc(s.name)} at the playhead">+</button></div>`).join('');
+  const aud = [...M.values()].filter(m => m.kind === 'audio' && !m.sfx);
+  $('#audioList').innerHTML = aud.map(m => `<div class="sfxrow"><button class="pl" data-mplay="${m.id}" title="Listen" aria-label="Listen to ${esc(m.name)}">${ICON.play}</button><b title="${esc(m.name)}">${esc(m.name)}</b><span class="muted">${fmtDur(m.duration)}</span><button class="add" data-addaudio="${m.id}" title="Add at the playhead" aria-label="Add ${esc(m.name)} at the playhead">+</button></div>`).join('')
+    || '<p class="hint">Import music or drop audio files anywhere; it shows up here.</p>';
+}
+function listen(src, btn) { // one preview player for the whole panel; clicking again stops it
+  const a = G.audio ??= new Audio(), same = a.dataset.src === src && !a.paused;
+  a.pause(); $$('.sfxrow .pl.on').forEach(b => { b.classList.remove('on'); b.innerHTML = ICON.play; });
+  if (same) return;
+  a.dataset.src = src; a.src = src; a.currentTime = 0; a.play().catch(() => {});
+  btn.classList.add('on'); btn.innerHTML = ICON.pause;
+  a.onended = () => { btn.classList.remove('on'); btn.innerHTML = ICON.play; };
+}
+async function addSfx(id, at = S.t) {
+  const m = await api('/api/sfx/add', { id });
+  if (!M.has(m.id)) await loadMedia();
+  addMedia(m.id, 'audio', at);
+  toast(`${m.name.replace(/\.wav$/, '')} added at ${tc(at)}`);
+  return brief(...cfind(S.sel.id));
+}
+function textSwatch(n, s0) { // the style drawn with CSS: close to drawText, for the tile only
+  const s = { ...TEXT_BASE, ...s0 }, px = 22;
+  const css = [`font-family:'${s.font}'`, `font-weight:${s.weight}`, `color:${s.color}`, s.italic ? 'font-style:italic' : '', s.upper ? 'text-transform:uppercase' : '', s.ls ? `letter-spacing:${s.ls}em` : '',
+    s.strokeW ? `-webkit-text-stroke:${Math.min(3, s.strokeW / 3)}px ${s.stroke};paint-order:stroke fill` : '',
+    s.shadow && !s.grad ? `text-shadow:${s.shx * px}px ${s.shy * px}px ${s.shb * px}px ${hexA(s.shc || '#000000', s.sha ?? 0.55)}` : '',
+    s.box ? `background:${hexA(s.boxColor, s.boxAlpha)};padding:2px 10px;border-radius:${Math.round(s.boxR * 18)}px` : '',
+    s.grad ? `background:linear-gradient(${s.color},${s.grad});-webkit-background-clip:text;background-clip:text;color:transparent` : ''].filter(Boolean).join(';');
+  return `<span style="${css}">${n === 'Sticker' ? '🔥' : n}</span>`;
+}
+function renderTextTiles() { $('#textPresets').innerHTML = Object.entries(TEXT_PRESETS).map(([n, s]) => `<button data-addtext="${n}" title="Add ${n} text at the playhead">${textSwatch(n, s)}</button>`).join(''); }
+function drawTiles(force, now = performance.now()) { // animated tiles: only the ones in view; with reduced motion only the one under the pointer moves
+  const pane = $(`#tab-${G.tab}`), pr = pane?.getBoundingClientRect(), anim = !RM.matches;
+  if (!pr) return;
+  for (const b of $$('.tile[data-fx], .tile[data-trset]', pane)) {
+    const r = b.getBoundingClientRect();
+    if (r.bottom < pr.top || r.top > pr.bottom) continue;
+    const moving = anim || G.hover === b;
+    if (!force && !moving) continue;
+    const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }), tsec = moving ? now / 1000 : null;
+    x.save();
+    if (b.dataset.fx) {
+      const k = b.dataset.fx, d = FX[k], f = { fx: k, start: 0, dur: d.d, amt: 1, gallery: true }, u = TILE_H / 540;
+      const one = (lt, a) => { // the scene with the effect at lt, laid over the tile at alpha a
+        const T = scratch(TILE_W, TILE_H, 'tile1'), tx = T.getContext('2d', { willReadFrequently: true });
+        tx.drawImage(sampleScene(TILE_W, TILE_H, 0), 0, 0);
+        if (d.px) runOps(tx, TILE_W, TILE_H, d.px(TILE_W, TILE_H, u, lt, f));
+        if (d.layer) { tx.save(); d.layer(tx, TILE_W, TILE_H, u, lt, f); tx.restore(); }
+        x.globalAlpha = a; x.drawImage(T, 0, 0); x.globalAlpha = 1;
+      };
+      if (tsec !== null) one(tsec % d.d, 1);
+      else if (d.cat === 'camera') [0.04, 0.16, 0.4].forEach((s, i) => one(s * (k === 'zoomin' ? 7 : 1), i ? 0.45 : 1)); // a still of motion: three moments, onion-skinned
+      else one(d.d * 0.35, 1);
+    } else {
+      const ph = tsec === null ? (b.dataset.trset === 'zoomin' ? 0.62 : 0.95) : tsec % 2.2; // still frame: part way through (zoom: before it fills the tile)
+      transition(x, sampleScene(TILE_W, TILE_H, 0), sampleScene(TILE_W, TILE_H, 1), b.dataset.trset, clamp((ph - 0.4) / 1.4, 0, 1));
+    }
+    x.restore();
+  }
+}
+function galleryLoop(now) {
+  G.raf = 0;
+  if (G.tab !== 'effects' && G.tab !== 'transitions') return;
+  if (++G.frame % 2 === 0) drawTiles(false, now); // 30 fps is plenty for thumbnails
+  G.raf = requestAnimationFrame(galleryLoop);
+}
+function aiTool(name) { // the smart tools, from the AI panel: on the selected clip, else the main clip under the playhead
+  if (name === 'captions') { openTab('captions'); return autoCaptions(); }
+  let c = selClip(), lane = S.sel?.lane;
+  if (!c?.media || lane === 'tr') { packMain(); c = P.main.find(x => S.t >= x.start && S.t < x.start + tdur(x, 'main')) || P.main[0]; lane = 'main'; if (c) { S.sel = { lane, id: c.id }; renderAll(); } }
+  if (!c) return toast('Add a clip to the timeline first');
+  const kind = M.get(c.media)?.kind;
+  if (['removeobj', 'cutobj', 'reframe', 'stabilize', 'scenes'].includes(name) && kind !== 'video') return toast('That works on video clips: select one first');
+  if (['isovoice', 'novoice'].includes(name) && !M.get(c.media)?.hasAudio) return toast('That clip has no sound');
+  ({ removeobj: () => startRemove(c, lane), cutobj: () => startRemove(c, lane, 'cutout'), matte: () => removeBackground(c), reframe: () => autoReframe(c), stabilize: () => remake(c, 'stabilize'),
+    isovoice: () => isolateVoice(c, lane, 'voice'), novoice: () => isolateVoice(c, lane, 'music'), scenes: () => sceneSplit(c, lane) })[name]?.();
+}
+function syncToolbar() { // timeline toolbar buttons enabled for what is selected
+  const c = selClip(), lane = S.sel?.lane, m = c && M.get(c.media), vis = !!m && m.kind !== 'audio', vid = m?.kind === 'video';
+  $('#btnDup').disabled = !c || lane === 'tr'; $('#btnDelete').disabled = !c;
+  $('#btnFreeze').disabled = !vid; $('#btnReverse').disabled = !vid; $('#btnMirror').disabled = !vis; $('#btnRotate').disabled = !(vis || lane === 'text');
+}
+function rotate90(c) { const pr = propsAt(c, S.t - c.start); change(() => setProp(c, 'rot', ((Math.round(pr.rot) + 90 + 180) % 360 + 360) % 360 - 180)); }
+function fitTimeline() { const sc = $('#tlScroll'); setZoom((sc.clientWidth - 60) / Math.max(1, total())); sc.scrollLeft = 0; }
+
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? P.capStyle : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
+  drawFxLayers(ctx, t, k);
   for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of P[lane]) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
 }
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
@@ -922,14 +1459,17 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   const lx = ln => (st.align === 'left' ? x - BW / 2 : st.align === 'right' ? x + BW / 2 - ln.w : x - ln.w / 2); // line start for the alignment
   if (pr.rot) { ctx.translate(x, y); ctx.rotate((pr.rot * Math.PI) / 180); ctx.translate(-x, -y); }
   const av = st.anim && st.anim !== 'none' ? clamp(lt / animLen(st, false), 0, 1) : 1; // "in" animation progress
-  ctx.globalAlpha = pr.opacity * (st.anim === 'type' ? 1 : st.anim === 'pop' ? Math.min(1, av * 2) : av);
+  ctx.globalAlpha = pr.opacity * (st.anim === 'type' ? 1 : st.anim === 'pop' ? Math.min(1, av * 2) : st.anim === 'drop' ? Math.min(1, av * 3) : av);
   if (av < 1 && st.anim === 'pop') { const s = 0.6 + 0.4 * easeOutBack(av); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
   if (av < 1 && st.anim === 'slide') ctx.translate(0, (1 - av) ** 3 * lh * 0.8);
+  if (av < 1 && st.anim === 'zoom') { const s = 1.6 - 0.6 * (1 - (1 - av) ** 3); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
+  if (av < 1 && st.anim === 'drop') ctx.translate(0, -(1 - easeOutBack(av)) * lh * 1.6);
   const ao = st.out && st.out !== 'none' ? clamp((it.dur - lt) / animLen(st, true), 0, 1) : 1; // "out" animation, mirrored
   if (ao < 1) {
     if (st.out !== 'type') ctx.globalAlpha *= st.out === 'pop' ? Math.min(1, ao * 2) : ao;
     if (st.out === 'pop') { const s = 0.6 + 0.4 * ao; ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
     if (st.out === 'slide') ctx.translate(0, -((1 - ao) ** 2) * lh * 0.8);
+    if (st.out === 'zoom') { const s = 1 + 0.6 * (1 - ao) ** 2; ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
   }
   if (st.loop === 'bounce') ctx.translate(0, -Math.abs(Math.sin(lt * Math.PI * 2)) * size * 0.15);
   if (st.loop === 'pulse') { const s = 1 + 0.06 * Math.sin(lt * Math.PI * 4); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
@@ -940,6 +1480,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   if (st.anim === 'type' && av < 1) shown = Math.floor(av * all);
   if (st.out === 'type' && ao < 1) shown = Math.min(shown, Math.floor(ao * all));
   let left = shown;
+  let gradFill = null; // gradient text: top colour to bottom colour over the whole block
+  if (st.grad) { gradFill = ctx.createLinearGradient(0, top, 0, top + lines.length * lh); gradFill.addColorStop(0, st.color); gradFill.addColorStop(1, st.grad); }
   if (st.box) {
     ctx.fillStyle = hexA(st.boxColor, st.boxAlpha);
     for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) { ctx.beginPath(); ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18))); ctx.fill(); }
@@ -955,7 +1497,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       if (on && st.pop) { ctx.translate(wx + w.ww / 2, cy); ctx.scale(grow, grow); ctx.translate(-(wx + w.ww / 2), -cy); }
       if (st.shadow) { ctx.shadowColor = hexA(st.shc || '#000000', st.sha ?? 0.55); ctx.shadowBlur = size * (st.shb ?? 0.18); ctx.shadowOffsetX = size * (st.shx || 0); ctx.shadowOffsetY = size * (st.shy ?? 0.04); }
       if (st.strokeW > 0) { ctx.lineWidth = st.strokeW * u * 2; ctx.strokeStyle = st.stroke; put(true, vis, wx, cy); ctx.shadowColor = 'transparent'; }
-      ctx.fillStyle = on ? st.hl : st.color;
+      ctx.fillStyle = on ? st.hl : gradFill || st.color;
       put(false, vis, wx, cy);
       ctx.restore();
       cx += w.ww * grow + sp;
@@ -1353,7 +1895,7 @@ function useTemplate(id) {
   const p = structuredClone(t.project);
   p.id = hex12();
   p.name = `${t.name} ${new Date().toLocaleDateString()}`;
-  for (const L of LANES) for (const c of p[L.key]) {
+  for (const L of LANES) for (const c of p[L.key] || []) { // templates made before a lane existed don't have it
     if (typeof c.media !== 'string' || !c.media.startsWith('slot:')) continue;
     const m = M.get(pick[+c.media.slice(5)]);
     c.media = m.id;
@@ -1504,6 +2046,7 @@ async function loadMedia() {
   for (const m of list) M.set(m.id, m);
   renderMediaList();
   renderTimeline();
+  if (G.tab === 'audio') renderAudio();
   S.dirty = true;
   clearTimeout(loadMedia.t);
   if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
@@ -1552,9 +2095,9 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
     return o;
   };
-  const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => P[l].map(it => [l, it]));
+  const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => P[l].map(it => [l, it])), layerFx = P.mute.fx ? [] : P.fx.filter(f => FX[f.fx]?.layer);
   let text = null;
-  if (items.length) { // one PNG per interval in which the visible text doesn't change
+  if (items.length || layerFx.length) { // one PNG per interval in which the visible text (and effect overlays) don't change
     await Promise.all([...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.weight} 40px "${s.font}"`; }))].map(f => document.fonts.load(f)));
     const cuts = new Set([0, D]);
     for (const [l, it] of items) {
@@ -1564,6 +2107,11 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       const spans = [st.anim && st.anim !== 'none' ? [it.start, it.start + animLen(st, false)] : null, l !== 'captions' && it.kf?.length > 1 ? [it.start + it.kf[0].t, it.start + it.kf.at(-1).t] : null,
         st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null];
       for (const [a, b] of spans.filter(Boolean)) for (let t = a; t < Math.min(b, end); t += 1 / P.fps) cuts.add(t); // animated: one PNG per frame
+    }
+    for (const f of layerFx) { // effect overlays change every frame, n times a second, near their ends only, or never
+      const d = FX[f.fx], end = f.start + f.dur, step = d.rate === 'frame' || d.rate === 'edges' ? 1 / P.fps : d.rate ? 1 / d.rate : 0;
+      cuts.add(f.start); cuts.add(end);
+      if (step) for (let t = f.start; t < end; t += step) if (d.rate !== 'edges' || t - f.start < 0.45 || end - t < 0.45) cuts.add(t);
     }
     const nF = Math.round(D * P.fps), fs = new Set([0, nF]);
     for (const c of cuts) fs.add(Math.floor(c * P.fps)).add(Math.ceil(c * P.fps)); // the frames on either side of every change
@@ -1581,7 +2129,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     }
     text = { pngs, frames: spans };
   }
-  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
+  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(P.overlay.map(c => clip(c, 'overlay'))),
     audio: P.mute.audio ? [] : await Promise.all(P.audio.map(c => clip(c, 'audio'))) };
 }
@@ -1634,8 +2182,8 @@ async function runExport() {
 
 // ---------- projects ----------
 function migrate(p) {
-  const q = { fps: 30, bg: '#000000', main: [], overlay: [], audio: [], text: [], captions: [], markers: [], ...p,
-    mute: { main: false, overlay: false, audio: false, text: false, captions: false, ...(p.mute || {}) }, capStyle: { ...CAP_PRESETS.Bold, y: 0.72, ...(p.capStyle || {}) } };
+  const q = { fps: 30, bg: '#000000', main: [], overlay: [], audio: [], text: [], captions: [], fx: [], markers: [], ...p,
+    mute: { main: false, overlay: false, audio: false, text: false, captions: false, fx: false, ...(p.mute || {}) }, capStyle: { ...CAP_PRESETS.Bold, y: 0.72, ...(p.capStyle || {}) } };
   if ((q.v || 1) < 2) { // v2: volume envelopes are multipliers of the clip volume, so the Volume slider still works after auto-duck
     for (const L of ['main', 'overlay', 'audio']) for (const c of q[L]) if (c.vkf?.length) { const b = c.volume || 1; c.vkf = c.vkf.map(f => ({ ...f, v: f.v / b })); }
     q.v = 2;
@@ -1770,7 +2318,7 @@ function wire() {
   $('#lanes').innerHTML = LANES.map(L => `<div class="lane" id="lane-${L.key}" data-lane="${L.key}" style="height:${L.h}px"></div>`).join('');
   $('#btnPlay').innerHTML = ICON.play;
   $('#zoom').value = Math.log2(S.pps / 8);
-  $('#textPresets').innerHTML = Object.entries(TEXT_PRESETS).map(([n, s]) => `<button data-addtext="${n}" style="font-family:'${s.font}';font-weight:${s.weight};color:${s.color || '#fff'}">${n}</button>`).join('');
+  renderTextTiles();
   $('#capPresets').innerHTML = Object.entries(CAP_PRESETS).map(([n, s]) => `<button data-cap="${n}" style="font-family:'${s.font}';font-weight:${s.weight};color:${s.hl}">${n}</button>`).join('');
 
   $('#btnPlay').addEventListener('click', () => (S.playing ? pause() : play()));
@@ -1848,12 +2396,46 @@ function wire() {
     const b = e.target.closest('[data-cap]');
     if (b) { change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[b.dataset.cap], y: P.capStyle.y }; }); toast(`Caption style: ${b.dataset.cap}`); }
   });
-  $('.tabs').addEventListener('click', e => {
-    const b = e.target.closest('[data-tab]');
-    if (!b) return;
-    $$('.tabs button').forEach(x => x.classList.toggle('on', x === b));
-    $$('.pane').forEach(p => p.classList.toggle('on', p.id === `tab-${b.dataset.tab}`));
+  $('.rail').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) openTab(b.dataset.tab); });
+  const panes = $('.panes');
+  panes.addEventListener('click', e => { // gallery tiles and rows
+    const b = e.target.closest('button');
+    if (!b || b.disabled || !P) return;
+    const d = b.dataset;
+    if (d.fx) addEffect(d.fx);
+    else if (d.fxcat) { G.fxCat = d.fxcat; renderEffects(); }
+    else if (d.trset) applyTransition(d.trset);
+    else if (d.lookset) applyLook(d.lookset);
+    else if (d.stcat) { G.stCat = d.stcat; renderStickers(); }
+    else if (d.emoji) addText('Sticker', { text: d.emoji });
+    else if (d.sfx) addSfx(d.sfx).catch(err => toast(err.message));
+    else if (d.sfxplay) listen(`/sfx/${d.sfxplay}.wav`, b);
+    else if (d.mplay) listen(`/media/${d.mplay}`, b);
+    else if (d.addaudio) addMedia(d.addaudio, 'audio', S.t);
+    else if (d.aitool) aiTool(d.aitool);
+    else if (d.mfilter) { G.mfilter = d.mfilter; $$('#mediaFilter button').forEach(x => x.classList.toggle('on', x === b)); renderMediaList(); }
   });
+  panes.addEventListener('pointerover', e => { const t = e.target.closest('.tile'); if (t !== G.hover) { const was = G.hover; G.hover = t; if (RM.matches && was) drawTiles(true); } });
+  panes.addEventListener('pointerleave', () => { if (G.hover) { G.hover = null; if (RM.matches) drawTiles(true); } });
+  $$('.pane').forEach(p => p.addEventListener('scroll', () => { if (!G.scrollRaf) G.scrollRaf = requestAnimationFrame(() => { G.scrollRaf = 0; drawTiles(true); }); }, { passive: true }));
+  for (const [id, unit] of [['trDur', 's'], ['lookAmt', '%']]) $(`#${id}`).addEventListener('input', e => { fill(e.target); e.target.nextElementSibling.textContent = fmt(+e.target.value, unit); });
+  $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
+  $('#btnTrNone').addEventListener('click', () => applyTransition('none'));
+  $('#btnAddText').addEventListener('click', () => addText('Subtitle'));
+  $('#btnStickerAI').addEventListener('click', async () => {
+    const prompt = $('#stPrompt').value.trim(), b = $('#btnStickerAI');
+    if (!prompt) return toast('Describe the sticker first');
+    b.disabled = true; $('#stStatus').textContent = 'Drawing it on this Mac (30-60 s)…';
+    try { await aiImage({ prompt, shape: '1:1', sticker: true, steps: 8, put: 'overlay' }); $('#stStatus').textContent = 'Added on the overlay track at the playhead.'; }
+    catch (err) { $('#stStatus').textContent = err.message; }
+    finally { b.disabled = false; }
+  });
+  $('#btnDup').addEventListener('click', dup);
+  $('#btnFreeze').addEventListener('click', () => { const c = selClip(); if (c) freeze(c, S.sel.lane); });
+  $('#btnReverse').addEventListener('click', () => { const c = selClip(); if (c) remake(c, 'reverse'); });
+  $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
+  $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
+  $('#btnFit').addEventListener('click', fitTimeline);
 
   $('#mediaList').addEventListener('click', async e => {
     const b = e.target.closest('[data-add]'), rm = e.target.closest('[data-rm]');
@@ -1991,6 +2573,7 @@ function wire() {
       $$('#inspector .itabs button').forEach(x => x.classList.toggle('on', x === b));
       $$('#inspector .isec').forEach(x => x.classList.toggle('on', x.dataset.sec === d.itab));
     } else if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
+    else if (d.fps) { change(() => { P.fps = +d.fps; }); renderAll(); }
     else if (d.fit) change(() => { c.fit = d.fit; });
     else if (d.cappreset) change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[d.cappreset], y: P.capStyle.y }; });
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
@@ -2220,7 +2803,7 @@ async function loadAI() { // fill the AI tab from what is installed
   let s;
   try { s = await api('/api/ai/status'); } catch { return; }
   $('#aiVoice').innerHTML = s.voices.map(v => `<option value="${v}"${v === 'af_heart' ? ' selected' : ''}>${esc(aiVoiceName(v))}</option>`).join('');
-  $('#btnAiImage').disabled = !s.image; $('#btnAiVoice').disabled = !s.voice;
+  $('#btnAiImage').disabled = !s.image; $('#btnStickerAI').disabled = !s.image; $('#btnAiVoice').disabled = !s.voice;
   if (!s.image) $('#aiStatus').textContent = 'The image model is not installed (README: On-device AI).';
   if (!s.voice) $('#aiVoiceStatus').textContent = 'The voice model is not installed (README: On-device AI).';
   for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
@@ -2240,7 +2823,9 @@ function mediaBy(q) {
 const r3 = v => Math.round(v * 1000) / 1000;
 function brief(c, lane) { // compact clip description: what an assistant needs to refer to and reason about it
   const o = { id: c.id, lane, start: r3(c.start), dur: r3(tdur(c, lane)) };
-  if (c.media) { const m = M.get(c.media); Object.assign(o, { media: m?.name, kind: m?.kind, in: r3(c.in), out: r3(c.out) }); } else o.text = c.text;
+  if (c.media) { const m = M.get(c.media); Object.assign(o, { media: m?.name, kind: m?.kind, in: r3(c.in), out: r3(c.out) }); }
+  else if (c.fx) Object.assign(o, { fx: c.fx, effect: FX[c.fx]?.n, strength: c.amt });
+  else o.text = c.text;
   const def = { speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: lane === 'text' ? 0.5 : 0, y: lane === 'text' ? 0.42 : 0, rot: 0, opacity: 1, fadeIn: 0, fadeOut: 0 };
   for (const k of ['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch']) {
     const v = c[k];
@@ -2253,7 +2838,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   return o;
 }
 const EDITABLE = new Set(['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
-  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf']);
+  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete o[k];
@@ -2264,7 +2849,10 @@ function merge(o, patch) { // deep merge; null deletes
 async function waitFrame() { // the preview shows the frame at S.t: every element at its time, then painted
   paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
   const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && Math.abs(v.currentTime - (v._want ?? v.currentTime)) <= 0.5 / P.fps + 0.002);
-  for (let i = 0; i < 100 && ![...(S.live || [])].every(at); i++) { await sleep(40); paint(); } // re-paint re-issues a seek skipped mid-seek
+  for (let i = 0; i < 250 && ![...(S.live || [])].every(at); i++) { // re-paint re-issues a seek skipped mid-seek
+    if (i === 75) for (const v of S.live || []) if (v.getAttribute('src') && v.readyState < 2) v.load(); // a first load that stalled for 3 s: ask again
+    await sleep(40); paint();
+  }
   await sleep(40); // WebKit hands drawImage the new frame a moment after 'seeked'
   paint();
 }
@@ -2273,7 +2861,8 @@ const REMOTE = {
   async options() {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
-      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value) };
+      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
+      effects: Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
     packMain();
@@ -2316,6 +2905,7 @@ const REMOTE = {
   async update_clip({ id, set = {} }) {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
+    if (set.fx !== undefined && !FX[set.fx]) throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}`);
     change(() => { if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); } merge(c, set); });
     return brief(c, L);
   },
@@ -2386,6 +2976,13 @@ const REMOTE = {
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     return removeObject(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T, 'best', 'cutout');
+  },
+  async add_effect({ type, start = S.t, duration, strength = 1 }) { return brief(addEffect(type, start, duration, strength), 'fx'); },
+  async add_sound({ name, at = S.t }) {
+    if (!G.sfx.length) G.sfx = await api('/api/sfx');
+    const q = String(name || '').toLowerCase(), s = G.sfx.find(x => x.id === q || x.name.toLowerCase() === q) || G.sfx.find(x => x.name.toLowerCase().includes(q) || x.id.includes(q));
+    if (!s) throw new Error(`name must be one of ${G.sfx.map(x => x.name).join(', ')}`);
+    return addSfx(s.id, at);
   },
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
   async ai_voiceover(args) { if (!args.text) throw new Error('text is required'); return aiVoice(args); },

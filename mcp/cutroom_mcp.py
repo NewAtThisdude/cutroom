@@ -17,8 +17,9 @@ INSTRUCTIONS = """Cutroom is the user's own CapCut-style video editor, running i
 the open editor live: the user watches every change, and each change is one undo step (history undo).
 Typical flow: timeline (see tracks and clip ids) -> edit -> snapshot (look at the frame) -> export when asked.
 Times are seconds on the timeline; a clip's in/out are seconds in its source file. Tracks: main (magnetic,
-clips play back to back), overlay (picture-in-picture, free start), audio, text, captions.
-Call options for valid values (transitions, looks, animations, text and caption presets, fonts, voices, formats).
+clips play back to back), overlay (picture-in-picture, free start), audio, text, captions, fx (video effects: they change
+everything under them for their duration; text stays on top). Call options for valid values (transitions, looks, effects,
+sound effects, animations, text and caption presets, fonts, voices, formats).
 Exports land in ~/Movies/Cutroom/exports."""
 
 CLIP_PROPS = """Clip properties (objects merge, null deletes a key):
@@ -27,12 +28,13 @@ scale (1 = fitted size) | x, y: offset in canvas fractions, 0 = centred (text cl
 blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|color-burn|hard-light|soft-light|difference|exclusion
 fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (export)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
-look: {name: vivid|mono|sepia|warm|cool|teal, amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
+look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
 key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror, x, y -0.5..0.5, w, h, rot, feather, invert}
 anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd seconds; loop: none|kbin|kbout|drift|pulse|shake|sway|float; amt strength}
 text clips: text, style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
   align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, anim pop|fade|slide|type, out pop|fade|slide|type, loop bounce|pulse|wiggle, animT, outT}
-start, dur (overlay/audio/text) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease}] (replaces them)"""
+start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease}] (replaces them)
+effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)"""
 
 
 def http(path, body=None, timeout=30):
@@ -99,6 +101,14 @@ TOOLS = [
      S({'text': txt, 'preset': txt, 'start': num, 'duration': num, 'x': num, 'y': num, 'style': obj}, ['text']), 'add_text'),
     ('set_transition', 'Transition at the cut after main-track clip `after` (or every cut with all=true). type none removes it.',
      S({'after': txt, 'type': txt, 'duration': num, 'all': boo}, ['type']), 'set_transition'),
+    ('add_effect', 'Add a video effect on the effects track at `start` (default: playhead) for `duration` seconds; it changes everything under it, text stays on top. '
+                   'type: shake, quake, pulse (beat zoom: follows detected beats), zoomin, flash, strobe, blink, glow, vhs, oldfilm, grain, bw, sepia, glitch, rgb (RGB split), '
+                   'pixelate, blur, invert, mirror, split4, snow, rain, sparkle, hearts, confetti, bubbles, bars (cinema bars), rec (camcorder frame), vignette, film (film strip). '
+                   'strength 0.1-2 (1 = default). Change it later with update_clip (fx, amt, start, dur).',
+     S({'type': txt, 'start': num, 'duration': num, 'strength': num}, ['type']), 'add_effect'),
+    ('add_sound_effect', 'Add a sound effect (synthesized on this Mac) on the audio track at `at` (default: playhead): whoosh, swish, riser, boom, bass drop, pop, click, ding, '
+                         'notification, correct, wrong buzzer, camera shutter, typing, heartbeat, glitch, cash register, drum roll, applause, tick tock.',
+     S({'name': txt, 'at': num}, ['name']), 'add_sound'),
     ('auto_captions', 'Transcribe speech on this Mac (whisper.cpp) and lay word-timed captions on the captions track (replaces existing ones).',
      S({'lang': {**txt, 'description': 'auto or a 2-letter code'}, 'words': {'type': 'integer', 'description': 'words per caption (1-6)'}, 'style': {**txt, 'description': 'a caption preset'}, 'audio': {**boo, 'description': 'include the audio track'}}),
      'auto_captions'),
