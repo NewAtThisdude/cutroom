@@ -2,7 +2,8 @@
 # On-device AI for Cutroom: natural voices (Kokoro-82M), text-to-image (Z-Image-Turbo, kept as a 4-bit copy that fits
 # in RAM) and object removal (ai/remove.py: OpenCV). The image model downloads ~32 GB once; after the 4-bit copy is
 # saved (5.5 GB in ~/Movies/Cutroom/ai) the originals are deleted, so about 6 GB stays on disk in all.
-# The language-model features (shorts, caption translation, hook titles) use Ollama: brew install ollama; ollama pull qwen3.5:9b
+# The language-model features (shorts, caption translation, hook titles) use Ollama: brew install ollama; then
+# ollama pull qwen3.5:9b (16 GB of memory or more) or qwen3.5:4b (an 8 GB Mac). Cutroom picks the biggest that fits.
 set -eu
 cd "$(dirname "$0")"
 env -u PYTHONPATH uv venv --python 3.12 .venv
@@ -12,7 +13,10 @@ out=$(mktemp -d)
 env -u PYTHONPATH VIRTUAL_ENV="$PWD/.venv" PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -I -m mlx_audio.tts.generate \
   --model mlx-community/Kokoro-82M-bf16 --text "Cutroom voices are ready." --voice af_heart --lang_code a \
   --output_path "$out" --file_prefix check --audio_format wav --join_audio
-# image model: quantize once to 4-bit (loading the full model every time swaps a 36 GB Mac), then drop the originals
+# image model: quantize once to 4-bit (loading the full model every time swaps a 36 GB Mac), then drop the originals.
+# Skipped below 12 GB of memory: the 4-bit copy alone is 5.5 GB, and Cutroom refuses to run it there anyway.
+ram=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+if [ "$ram" -ge 12 ]; then
 env -u PYTHONPATH .venv/bin/mflux-save --model z-image-turbo --quantize 4 --path "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit"
 test -f "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit/mflux_model.json"
 env -u PYTHONPATH .venv/bin/python -I -c "
@@ -21,6 +25,7 @@ c = scan_cache_dir()
 revs = [r.commit_hash for repo in c.repos if repo.repo_id == 'Tongyi-MAI/Z-Image-Turbo' for r in repo.revisions]
 if revs:
     s = c.delete_revisions(*revs); print('freed', s.expected_freed_size_str); s.execute()"
+else echo "Skipping the image model: it needs 16 GB of memory (this Mac has $ram GB)."; fi
 # Best object removal and any-subject cutouts: SAM 2 (Meta, Apache-2.0) and ProPainter (S-Lab NTU licence: personal /
 # non-commercial use), from their official repos at pinned commits; weights from their own release servers, checked.
 mkdir -p vendor

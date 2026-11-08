@@ -2,6 +2,7 @@
 // If nothing answers on the port it starts ~/cutroom/server.py (again, if it ever dies), and on quit it stops only a server it started.
 // Build: app/build.sh -> ~/Applications/Cutroom.app
 import AppKit
+import UniformTypeIdentifiers
 import WebKit
 
 let env = ProcessInfo.processInfo.environment
@@ -42,6 +43,34 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     return a
 }
 
+let pageTypes: Set<String> = ["srt", "vtt", "cube"] // files the page reads itself (subtitles, LUTs), not library media
+
+/// Folders become the media files inside them (a camera card's DCIM folder), in name order; other files stay as they are.
+func expand(_ urls: [URL]) -> [URL] {
+    urls.flatMap { u -> [URL] in
+        guard (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return [u] }
+        let all = FileManager.default.enumerator(at: u, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])?.allObjects as? [URL] ?? []
+        return all.filter { f in UTType(filenameExtension: f.pathExtension).map { $0.conforms(to: .audiovisualContent) || $0.conforms(to: .image) } ?? false }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+}
+
+/// The editor's web view. Files dropped on it are imported by path (an APFS clone: instant, and no extra disk) instead of
+/// being uploaded through the page, which copied every byte (25 GB of 4K clips took 25 GB more). Subtitles and LUTs still
+/// go to the page.
+final class EditorView: WKWebView {
+    var onFiles: (([URL]) -> Void)?
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty, urls.allSatisfy({ !pageTypes.contains($0.pathExtension.lowercased()) }), let take = onFiles else {
+            return super.performDragOperation(sender)
+        }
+        evaluateJavaScript("document.body.classList.remove('dropping')")
+        take(urls)
+        return true
+    }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var web: WKWebView!
@@ -50,6 +79,7 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     var activity: NSObjectProtocol? // holds off App Nap while work runs (the page says when: jobs, MCP commands, playback)
     var pending: [URL] = [] // files opened with the app (Finder, Dock icon) before the editor is up
     var ready = false
+    var pickLibrary = false // the page's "Import media" button opened the next file panel (it says so just before)
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -59,7 +89,10 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
         cfg.mediaTypesRequiringUserActionForPlayback = [] // the preview plays <video>s from code
         cfg.preferences.inactiveSchedulingPolicy = .none // keep running behind other windows: Claude Code drives it (MCP), exports run
         cfg.userContentController.add(self, name: "busy") // at rest the app may nap like any other: it used to hold App Nap off for good
-        web = WKWebView(frame: .zero, configuration: cfg)
+        cfg.userContentController.add(self, name: "pick")
+        let view = EditorView(frame: .zero, configuration: cfg)
+        view.onFiles = { [weak self] urls in Task { _ = await self?.importPaths(urls, fallback: false) } }
+        web = view
         web.isInspectable = true
         web.uiDelegate = self
         web.navigationDelegate = self
@@ -79,6 +112,7 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "pick" { pickLibrary = true; return }
         guard message.name == "busy" else { return }
         if (message.body as? Bool) == true {
             if activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Cutroom is working") }
@@ -137,19 +171,33 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
         let urls = pending
         pending = []
         guard !urls.isEmpty else { return }
-        Task {
-            var n = 0
-            for u in urls {
-                var req = URLRequest(url: base.appendingPathComponent("api/import_path"), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 900)
-                req.httpMethod = "POST"
-                req.setValue("1", forHTTPHeaderField: "X-Cutroom") // the server's write guard
-                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                req.httpBody = try? JSONSerialization.data(withJSONObject: ["path": u.path])
-                if let (_, r) = try? await URLSession.shared.data(for: req), (r as? HTTPURLResponse)?.statusCode == 200 { n += 1 }
+        Task { _ = await importPaths(urls, fallback: false) }
+    }
+
+    /// Imports files by path (the server clones them). Returns the ones it couldn't: with fallback, the caller hands those
+    /// to the page to upload instead (a folder macOS hasn't let the server read yet, say).
+    func importPaths(_ urls: [URL], fallback: Bool) async -> [URL] {
+        var n = 0, failed: [URL] = [], why = ""
+        let files = expand(urls)
+        for u in files {
+            var req = URLRequest(url: base.appendingPathComponent("api/import_path"), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 900)
+            req.httpMethod = "POST"
+            req.setValue("1", forHTTPHeaderField: "X-Cutroom") // the server's write guard
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["path": u.path])
+            let res = try? await URLSession.shared.data(for: req)
+            if let (_, r) = res, (r as? HTTPURLResponse)?.statusCode == 200 { n += 1; continue }
+            if why.isEmpty, let (data, _) = res {
+                why = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? ""
             }
-            let msg = n == urls.count ? "Imported \(n) file\(n == 1 ? "" : "s")" : "Imported \(n) of \(urls.count) files"
-            _ = try? await web.evaluateJavaScript("loadMedia().then(() => toast('\(msg)'))")
+            failed.append(u)
         }
+        var msg = n == files.count ? "Imported \(n) file\(n == 1 ? "" : "s")" : fallback ? "Imported \(n) file\(n == 1 ? "" : "s"); uploading the rest"
+            : "Imported \(n) of \(files.count) files" + (why.isEmpty ? "" : ": \(why)")
+        if files.isEmpty { msg = "No media files there" }
+        let js = String(decoding: (try? JSONSerialization.data(withJSONObject: [msg])) ?? Data("[\"\"]".utf8), as: UTF8.self)
+        _ = try? await web.evaluateJavaScript("loadMedia().then(() => toast(\(js)[0]))")
+        return failed
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -256,10 +304,20 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping @MainActor ([URL]?) -> Void) {
+        let lib = pickLibrary // "Import media": media files are cloned by path, not uploaded (see EditorView)
+        pickLibrary = false
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-        panel.canChooseDirectories = parameters.allowsDirectories
-        panel.beginSheetModal(for: webView.window ?? window) { completionHandler($0 == .OK ? panel.urls : nil) }
+        panel.canChooseDirectories = parameters.allowsDirectories || lib
+        panel.beginSheetModal(for: webView.window ?? window) { r in
+            guard r == .OK, lib else { completionHandler(r == .OK ? panel.urls : nil); return }
+            let page = panel.urls.filter { pageTypes.contains($0.pathExtension.lowercased()) }
+            let mine = panel.urls.filter { !pageTypes.contains($0.pathExtension.lowercased()) }
+            Task {
+                let back = page + (mine.isEmpty ? [] : await self.importPaths(mine, fallback: true))
+                completionHandler(back.isEmpty ? nil : back)
+            }
+        }
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction,

@@ -120,7 +120,7 @@ const frames = c => Math.max(1, Math.round(len(c) * P.fps));
 const tdur = (c, lane) => (lane === 'main' ? frames(c) / P.fps : len(c)); // main clips snap to whole frames, like the export
 function trF(i) { // frames main clip i shares with i+1 in a transition (0 = hard cut); same clamp as server overlap()
   const c = P.main[i], n = P.main[i + 1];
-  return c?.tr && n ? clamp(Math.round(c.tr.d * P.fps), 1, Math.floor(Math.min(frames(c), frames(n)) / 2)) : 0;
+  return c?.tr && n ? clamp(Math.round((+c.tr.d || 0.5) * P.fps), 1, Math.floor(Math.min(frames(c), frames(n)) / 2)) : 0;
 }
 function packMain() { let f = 0; P.main.forEach((c, i) => { c.start = f / P.fps; f += frames(c) - trF(i); }); return f / P.fps; }
 function total() { packMain(); let t = 0; for (const L of LANES) for (const c of P[L.key]) t = Math.max(t, c.start + tdur(c, L.key)); return t; }
@@ -348,8 +348,13 @@ function renderTimeline() {
   const D = total(), pps = S.pps, sc = $('#tlScroll'), W = Math.max(sc.clientWidth, (D + 6) * pps);
   $('#tlInner').style.width = `${W}px`;
   const step = [0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find(s => s * pps >= 70) ?? 600;
+  // only what's in view, plus a screen either side (re-rendered on scroll): 1200 clips took 119 ms a rebuild, so every edit lagged
+  const vw = sc.clientWidth || 1500, wa = sc.scrollLeft - vw, wb = sc.scrollLeft + 2 * vw;
+  S.tlWin = [wa, wb];
+  const sel = new Set([...S.multi, S.sel && `${S.sel.lane}:${S.sel.id}`]);
+  const near = (L, c) => sel.has(`${L}:${c.id}`) || ((c.start + tdur(c, L)) * pps >= wa && c.start * pps <= wb);
   let ruler = '';
-  for (let i = 0; i * step * pps < W; i++) ruler += `<span style="left:${i * step * pps}px">${step < 1 ? (i * step).toFixed(1) : fmtDur(i * step)}</span>`;
+  for (let i = Math.max(0, Math.floor(wa / (step * pps))); i * step * pps < Math.min(W, wb); i++) ruler += `<span style="left:${i * step * pps}px">${step < 1 ? (i * step).toFixed(1) : fmtDur(i * step)}</span>`;
   ruler += P.markers.map(t => `<b class="mk" style="left:${t * pps}px" title="Marker ${tc(t)}"></b>`).join('');
   const r = $('#ruler');
   r.innerHTML = ruler;
@@ -364,7 +369,7 @@ function renderTimeline() {
       heads += `<div class="th" style="height:${L.h}px"><span title="${name}">${name}</span><span class="tb"><button class="lt${off ? ' on' : ''}" data-${multi ? 'tk' : 'lt'}="${multi ? `${L.key}:${r}` : L.key}" title="${snd ? 'Mute' : 'Hide'} ${name}" aria-pressed="${off}">${snd ? 'M' : 'H'}</button>`
         + `<button class="lt lk${T.lock ? ' on' : ''}" data-lk="${L.key}:${r}" title="Lock ${name}" aria-label="Lock ${name}" aria-pressed="${!!T.lock}">${lockSvg}</button></span></div>`;
     }
-    el.innerHTML = P[L.key].map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles() : '');
+    el.innerHTML = P[L.key].filter(c => near(L.key, c)).map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles(wa, wb) : '');
     if (multi) for (const [k, v] of Object.entries(P.tracks || {})) if (k.startsWith(`${L.key}:`) && (v.off || v.lock)) { const r = +k.split(':')[1]; if (r < R.n) el.insertAdjacentHTML('beforeend', `<div class="tshade${v.off ? ' off' : ''}${v.lock ? ' lock' : ''}" style="top:${r * L.h}px;height:${L.h}px"></div>`); }
     else if (P.tracks?.[`${L.key}:0`]?.lock) el.insertAdjacentHTML('beforeend', `<div class="tshade lock" style="top:0;height:${L.h}px"></div>`);
   }
@@ -398,8 +403,8 @@ function restackTracks(lane) { // the array follows the tracks, so a higher trac
   const R = rows(lane).row, idx = new Map(P[lane].map((c, i) => [c, i]));
   P[lane].sort((a, b) => (R.get(a.id) || 0) - (R.get(b.id) || 0) || idx.get(a) - idx.get(b));
 }
-function trHandles() {
-  return P.main.slice(0, -1).map((c, i) => `<button class="trh${c.tr ? ' on' : ''}${S.sel?.lane === 'tr' && S.sel.id === c.id ? ' sel' : ''}" data-tr-for="${c.id}" style="left:${(P.main[i + 1].start + trF(i) / P.fps / 2) * S.pps}px" title="Transition" aria-label="Transition"></button>`).join('');
+function trHandles(wa = -Infinity, wb = Infinity) {
+  return P.main.slice(0, -1).map((c, i) => P.main[i + 1].start * S.pps < wa || P.main[i + 1].start * S.pps > wb ? '' : `<button class="trh${c.tr ? ' on' : ''}${S.sel?.lane === 'tr' && S.sel.id === c.id ? ' sel' : ''}" data-tr-for="${c.id}" style="left:${(P.main[i + 1].start + trF(i) / P.fps / 2) * S.pps}px" title="Transition" aria-label="Transition"></button>`).join('');
 }
 
 function clipHTML(lane, c, top = 0, h = 42) {
@@ -446,7 +451,7 @@ function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
   const items = [...M.values()].filter(m => G.mfilter === 'all' || m.kind === G.mfilter).map(m => `<div class="mitem" draggable="true" data-media="${m.id}" title="Drag onto a track">
       <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span></div>
-      <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : ' · preparing'}</span></div>
+      <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : m.prep === -1 ? ' · waiting to prepare' : m.prep > 0 ? ` · preparing ${Math.round(m.prep * 100)} %` : ' · preparing'}</span></div>
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
@@ -798,7 +803,7 @@ function vidFor(key, m) {
     $('#mediaPool').append(v);
     pool.set(key, v);
   }
-  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr ? '' : WK_Q}`; }
+  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr && !m.proxy ? '' : WK_Q}`; }
   return v;
 }
 function imgFor(m) {
@@ -945,6 +950,7 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
 function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; media elements follow it
   gain(v, vol, au);
   if (v.preservesPitch === !!pitch) v.preservesPitch = !pitch; // "change pitch": speed shifts pitch, like the export's asetrate
+  if (S.playing && S.stuck && v !== S.lead) { if (!v.paused) v.pause(); return; }
   if (S.playing) {
     const pr = Math.min(16, rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
     if (v.playbackRate !== pr) v.playbackRate = pr;
@@ -959,7 +965,7 @@ function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; m
 function paint() {
   if (S.hold) return;
   const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, t = S.t, live = new Set();
-  hits = [];
+  hits = []; S.lead = null;
   packMain();
   ctx.fillStyle = P.bg;
   ctx.fillRect(0, 0, cv.width, cv.height);
@@ -976,7 +982,7 @@ function paint() {
     const g = tr && lane === 'main' ? (i === act[0] ? 1 - tr.p : tr.p) : 1; // audio crossfade, like acrossfade
     let el;
     if (m.kind === 'image') el = imgFor(m);
-    else { el = vidFor(key, m); live.add(el); sync(el, c.in + (t - c.start) * c.speed, c.speed, S.recMute || P.mute[lane] ? 0 : volAt(c, t - c.start) * fadeAt(c, t - c.start, tdur(c, lane)) * g, c.pitch, c.au); }
+    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) S.lead = el; sync(el, c.in + (t - c.start) * c.speed, c.speed, S.recMute || P.mute[lane] ? 0 : volAt(c, t - c.start) * fadeAt(c, t - c.start, tdur(c, lane)) * g, c.pitch, c.au); }
     if (lane === 'audio' || (lane === 'overlay' && P.mute.overlay)) continue;
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       const L = layer(i === act[0] ? 0 : 1), lx = L.getContext('2d');
@@ -2176,6 +2182,15 @@ function frame(now) {
   rafId = 0;
   if (!P) return;
   if (S.playing) {
+    // the clock waits while the main video stalls (starting, seeking, or WebKit re-buffering, which it does ~0.5 s into a fresh
+    // load while still reporting HAVE_ENOUGH_DATA): a clock that ran on left it behind, re-seeked it and stalled it again, every
+    // 0.7 s (a 1080p30 clip showed 18 of 30 frames/s). At most 1.5 s per stall, so a video that never moves can't stop playback.
+    const v = S.lead, dt = now - (S.last ?? now);
+    S.last = now;
+    if (v && v.currentTime !== S.vt) { S.vt = v.currentTime; S.vAt = now; }
+    const stuck = v && !v.ended && (v.paused || v.seeking || v.readyState < 3 || now - S.vAt > 80);
+    if (stuck && (S.held += dt) < 1500) S.wall0 += dt; else if (!stuck) S.held = 0;
+    S.stuck = stuck && S.held < 1500; // the other tracks wait too (sync), instead of running ahead and being seeked back
     S.t = Math.min(S.t0 + (now - S.wall0) / 1000, S.end);
     if (S.t >= S.end) pause();
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
@@ -2190,7 +2205,7 @@ function play() {
   if (S.t >= D - 1e-3) S.t = 0;
   audioOn();
   if (!S.playing) busy(1);
-  Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), dirty: true });
+  Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
 function pause() { if (S.playing) busy(-1); S.playing = false; S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
@@ -3351,6 +3366,7 @@ function wire() {
   });
   $('#projName').addEventListener('change', e => change(() => { P.name = e.target.value.trim() || 'Untitled'; }));
   $('#zoom').addEventListener('input', e => setZoom(8 * 2 ** +e.target.value));
+  $('#fileInput').addEventListener('click', () => window.webkit?.messageHandlers?.pick?.postMessage('library')); // the app clones picked media by path
   $('#fileInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
   $('#textPresets').addEventListener('click', e => { const b = e.target.closest('[data-addtext]'); if (b) addText(b.dataset.addtext); });
   $('#capPresets').addEventListener('click', e => {
@@ -3488,6 +3504,10 @@ function wire() {
     if (!isSel(lane, c.id)) { S.multi.clear(); S.sel = { lane, id: c.id }; renderTimeline(); renderInspector(); S.dirty = true; }
     openMenu(e.clientX, e.clientY, clipMenu(c, lane));
   });
+  $('#tlScroll').addEventListener('scroll', () => { // scrolled past what's rendered: render the new stretch (once per frame)
+    const sc = $('#tlScroll'), [a, b] = S.tlWin || [0, 0];
+    if ((sc.scrollLeft < a + 1 || sc.scrollLeft + sc.clientWidth > b - 1) && !S.tlRaf) S.tlRaf = requestAnimationFrame(() => { S.tlRaf = 0; renderTimeline(); });
+  }, { passive: true });
   $('#tlScroll').addEventListener('wheel', e => {
     const sc = $('#tlScroll');
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(S.pps * Math.exp(-e.deltaY * 0.003), e.clientX - sc.getBoundingClientRect().left); }

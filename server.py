@@ -22,7 +22,6 @@ MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports'
 WHISPER = os.environ.get('CUTROOM_WHISPER', 'whisper-cli')
 MODEL = os.environ.get('CUTROOM_MODEL', str(Path.home() / 'Library/Application Support/com.prakashjoshipax.VoiceInk/WhisperModels/ggml-large-v3-turbo-q5_0.bin'))
 VAD = os.environ.get('CUTROOM_VAD', str(HOME / 'models' / 'ggml-silero-v5.1.2.bin'))
-CHUNK = 24  # ponytail: main tracks with >24 clips pre-render in chunks so ffmpeg never opens more decoders than this
 IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9'}, {'.mp4', '.mov', '.m4v', '.webm'}  # AV1 gets a proxy: WebKit shows paused AV1 frames empty
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
@@ -42,6 +41,14 @@ NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Ce
 ID = re.compile(r'[a-f0-9]{12}')
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
 JOBS = {}
+# CUTROOM_CORES / CUTROOM_RAM_GB: test a smaller Mac's choices (decoder, models, how much at once) on this one
+CORES = int(os.environ.get('CUTROOM_CORES') or os.cpu_count() or 8)
+RAM_GB = float(os.environ.get('CUTROOM_RAM_GB') or int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True).stdout.strip() or 8 << 30) / 2 ** 30)
+BIG_MAC = CORES >= 12 and RAM_GB >= 24  # Pro/Max chips: CPU decoding is faster there; a base M1 (8 cores, 8 GB) leans on the media engine
+PREP = threading.BoundedSemaphore(2 if BIG_MAC else 1)  # imports prepared at once: each 4K proxy takes ~500 MB, four took 2.4 GB together
+# main clips per ffmpeg graph (longer main tracks pre-render in chunks): every open decoder runs ahead and holds frames, so
+# 40 cuts of 4K footage peaked at 4.5 GB with 24 to a graph. ponytail: by memory, not by each clip's resolution
+CHUNK = 24 if RAM_GB >= 24 else 12 if RAM_GB >= 16 else 6
 REMOTE_Q, REMOTE_WAIT, REMOTE_SEEN, REMOTE_SENT = queue.Queue(), {}, [0.0], {}  # commands from the Cutroom MCP server; the open editor page runs them
 
 
@@ -50,8 +57,9 @@ def remote_reoffer(m):  # sent but never acknowledged (the page reloaded mid-pol
         REMOTE_Q.put(m)
 
 
-def sh(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+def sh(cmd, low=False):
+    """low: background work (import proxies, filmstrips): nice'd, so the editor and its playback win the CPU."""
+    return subprocess.run(['nice', '-n', '10', *cmd] if low else cmd, capture_output=True, text=True, errors='replace')
 
 
 def meta(mid):
@@ -83,7 +91,7 @@ def probe(path):
         info['trans'] = v.get('pix_fmt', '') in ('rgba', 'bgra', 'argb', 'abgr', 'ya8', 'pal8', 'yuva420p') or v['codec_name'] == 'gif'
         info.update(w=w, h=h, codec=v['codec_name'], rot=int(float(rot)),
                     hdr=v.get('color_transfer') in ('arib-std-b67', 'smpte2084'),  # HLG / PQ (iPhone HDR is HLG)
-                    cs=v.get('color_space', ''),
+                    cs=v.get('color_space', ''), pix=v.get('pix_fmt', ''),
                     alpha=v['codec_name'] == 'vp9' and v.get('tags', {}).get('alpha_mode') == '1')
     return info
 
@@ -153,8 +161,10 @@ def wk_copy(m):
     if heavy(m) and not src.exists():  # its proxy is on the way (the page reloads when it's ready): no 4 GB re-labelled copy meanwhile
         return MEDIA / m['file']
     codec = 'h264' if src.exists() else m.get('codec')
+    if m.get('hdr') and not src.exists():  # WebKit's own HDR rendering until the tone-mapped proxy exists
+        return MEDIA / m['file']
     src = src if src.exists() else MEDIA / m['file']
-    if codec not in ('h264', 'hevc') or m.get('hdr'):
+    if codec not in ('h264', 'hevc'):
         return src
     out = CACHE / f"{m['id']}.wk.mov"
     with WK_LOCK:
@@ -168,10 +178,20 @@ def wk_copy(m):
     return out if out.exists() else src
 
 
+def hw_pix(m):
+    """Pixel formats the Mac's media engine plays: 8-bit 4:2:0, and 10-bit 4:2:0 for HEVC. Camera 4:2:2 (Sony XAVC S-I,
+    Canon, Panasonic 10-bit) either fails in WebKit (HEVC 4:2:2) or decodes on the CPU there (H.264 4:2:2): proxied."""
+    p = m.get('pix')
+    return not p or p in ('yuv420p', 'yuvj420p', 'nv12') or (m.get('codec') == 'hevc' and p in ('yuv420p10le', 'p010le'))
+
+
 def heavy(m):
-    """Camera footage past 1080p60 (a DJI 4K60 clip is 100 Mbit/s): previewed, and looked at by smart combine, through a
-    720p proxy (CapCut's proxy media). Exports always read the original. HDR keeps its own path (tone mapped)."""
-    return m.get('kind') == 'video' and not (m.get('hdr') or m.get('alpha') or m.get('trans')) and m.get('w', 0) * m.get('h', 0) * (m.get('fps') or 30) > 1920 * 1080 * 60
+    """Camera footage past 1080p60 (a DJI 4K60 clip is 100 Mbit/s), and all HDR: previewed, and looked at by smart combine,
+    through a 720p proxy (CapCut's proxy media). An HDR proxy is tone mapped by the export's own chain (hdr_decode), so the
+    preview shows the colours the export makes, not WebKit's own HDR rendering, and 4K60 10-bit isn't uploaded per frame.
+    Exports always read the original."""
+    return m.get('kind') == 'video' and not (m.get('alpha') or m.get('trans')) and (
+        m.get('hdr') or m.get('w', 0) * m.get('h', 0) * (m.get('fps') or 30) > 1920 * 1080 * 60)
 
 
 EXACT_LOCK = threading.Lock()
@@ -195,21 +215,61 @@ def exact_audio(m):
 
 
 def prepare(m):
-    """Timeline assets, like CapCut's material cache: preview proxy, filmstrip, waveform."""
+    """Timeline assets, like CapCut's material cache: preview proxy, filmstrip, waveform. One or two files at a time (PREP),
+    at low priority: a card's worth of 4K clips dropped in at once mustn't take the Mac's memory and every core."""
+    PREP_PCT[m['id']] = -1  # waiting for its turn
+    try:
+        with PREP:
+            PREP_PCT[m['id']] = 0
+            prepare_(m)
+    finally:
+        PREP_PCT.pop(m['id'], None)
+
+
+PREP_PCT = {}  # media id -> how far its preparation is (0-1; -1 = waiting), shown in the library while it's "preparing"
+
+
+def proxy(m, src, out, sw=False):
+    cmd = proxy_cmd(m, src, out, sw)
+    cmd[1:1] = ['-nostdin', '-progress', 'pipe:1', '-nostats']
+    try:
+        run_ffmpeg(['nice', '-n', '10', *cmd], max(m['duration'], 0.1), lambda f: PREP_PCT.__setitem__(m['id'], round(0.9 * f, 3)))
+        return True
+    except RuntimeError:
+        return False
+
+
+def proxy_cmd(m, src, out, sw=False):
+    """720p H.264 with a keyframe every second (quick seeks while editing). Decoding by the media engine (VideoToolbox)
+    took a tenth of the CPU of ffmpeg's decoder threads on a DJI 4K60 clip (0.6 cores vs 6.3, 2x the time on a 14-core M4
+    Max), so only big Macs decode H.264 in software. HDR goes through the export's tone mapping."""
+    dec, vf = hdr_decode(m)
+    if not dec and not sw and not (BIG_MAC and m.get('codec') == 'h264'):
+        dec = ['-hwaccel', 'videotoolbox', '-threads', '1']  # one thread: ffmpeg's frame threads would only hold frames
+    return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
+            '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
+
+
+def prepare_(m):
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
     if m['kind'] == 'video':
         if m.get('trans') and not m.get('alpha'):  # e.g. GIF: preview proxy keeps transparency (VP9 alpha WebM)
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)',format=yuva420p", '-c:v', 'libvpx-vp9', '-b:v', '0',
-                                 '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(CACHE / f'{mid}.proxy.webm')]).returncode
-        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m):  # e.g. ProRes, MKV, 4K60
-            # software decode: VideoToolbox decoded 4K60 H.264 at 88 fps here, ffmpeg's threads at 320
-            m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
-                                 '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(CACHE / f'{mid}.proxy.mp4')]).returncode
+                                 '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(CACHE / f'{mid}.proxy.webm')], low=True).returncode
+        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m):  # e.g. ProRes, MKV, 4K60
+            out = CACHE / f'{mid}.proxy.mp4'
+            m['proxy'] = proxy(m, src, out) or proxy(m, src, out, sw=True)
         n = max(4, min(60, round(d / 1.5)))
         px = CACHE / f'{mid}.proxy.mp4'
-        if not sh(['ffmpeg', '-v', 'error', '-y', '-hwaccel', 'videotoolbox', '-i', str(px) if px.exists() else src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
-                   '-frames:v', '1', '-q:v', '5', str(CACHE / f'{mid}.strip.jpg')]).returncode:
-            m['stripN'] = n
+        # past a minute, keyframes only: a 10-minute 1080p file's strip took 60 s decoding every frame, 4 s this way. Short
+        # files (or ones with too few keyframes for the strip: x264 puts one every 250 frames) decode every frame.
+        strip = CACHE / f'{mid}.strip.jpg'
+        for skip in ((['-skip_frame', 'nokey'],) if d > 60 else ()) + ([],):
+            strip.unlink(missing_ok=True)
+            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(px) if px.exists() else src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
+                       '-frames:v', '1', '-q:v', '5', str(strip)], low=True).returncode and strip.exists():
+                m['stripN'] = n
+                break
     if m['kind'] == 'video' and (m.get('alpha') or m.get('trans')):
         alpha_mov(m)
     if m['kind'] == 'audio':
@@ -217,7 +277,7 @@ def prepare(m):
     if m['hasAudio']:
         m['wave'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex',
                             'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x7ee0c3:scale=sqrt',
-                            '-frames:v', '1', str(CACHE / f'{mid}.wave.png')]).returncode
+                            '-frames:v', '1', str(CACHE / f'{mid}.wave.png')], low=True).returncode
     m['ready'] = True
     save_meta(m)
 
@@ -352,7 +412,7 @@ def hdr_decode(m):
     if not m.get('hdr') or m.get('alpha'):
         return [], ''
     tr = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-m.get('rot', 0) % 360, '')
-    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate'],
+    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'],
             f'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,{tr}')
 
 
@@ -1117,6 +1177,8 @@ def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
     model = HOME / 'ai' / 'z-image-turbo-4bit'
     if not (model / 'mflux_model.json').exists():
         raise RuntimeError('the on-device image model is not installed (README: On-device AI)')
+    if RAM_GB < 12:  # the 4-bit model alone is 5.5 GB: on 8 GB it swaps for minutes and stalls the whole Mac
+        raise RuntimeError(f'making images needs a Mac with 16 GB of memory (this one has {RAM_GB:.0f} GB)')
     w, h = (int(fnum(v, 256, 2048)) // 16 * 16 for v in (w, h))
     seed = int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 1000000
     full = prompt + (', isolated on a plain light grey background' if sticker else '')  # a plain backdrop lifts cleanly
@@ -1183,10 +1245,16 @@ def ollama_up():
     return False
 
 
+LLM_MAX_B = 4 if RAM_GB < 16 else 9 if RAM_GB < 48 else 99  # billions of parameters that fit beside the editor: 9B takes 6.6 GB
+LLM_HINT = 'ollama pull qwen3.5:4b' if RAM_GB < 16 else 'ollama pull qwen3.5:9b'
+
+
 def llm_model():
     names = [m['name'] for m in json.loads(urllib.request.urlopen(LLM_URL + '/api/tags', timeout=3).read()).get('models', [])]
     want = os.environ.get('CUTROOM_LLM')
-    pick = [n for n in names if n == want] or [n for n in names if n.startswith('qwen3.5')] or [n for n in names if n.startswith('qwen')] or names
+    size = lambda n: float(b[1]) if (b := re.search(r':(\d+(?:\.\d+)?)b', n)) else 0
+    fit = sorted((n for n in names if size(n) <= LLM_MAX_B), key=size, reverse=True)  # the biggest that fits this Mac's memory
+    pick = [n for n in names if n == want] or [n for n in fit if n.startswith('qwen3.5')] or [n for n in fit if n.startswith('qwen')] or fit
     return pick[0] if pick else None
 
 
@@ -1194,14 +1262,16 @@ def llm(system, user, ctx=8192, images=None):
     """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes).
     images: base64 JPEGs for a vision model (qwen3.5 sees)."""
     if not ollama_up():
-        raise RuntimeError('the local language model is not available (install Ollama and pull a model, e.g. qwen3.5:9b)')
+        raise RuntimeError(f'the local language model is not available (install Ollama, then {LLM_HINT})')
     model = llm_model()
     if not model:
-        raise RuntimeError('Ollama has no model yet: ollama pull qwen3.5:9b')
+        raise RuntimeError(f'Ollama has no model that fits this Mac\'s {RAM_GB:.0f} GB of memory: {LLM_HINT}')
     body = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.2, 'num_ctx': int(ctx)},
             'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user, **({'images': images} if images else {})}]}
     if 'qwen3' in model:
         body['think'] = False
+    if RAM_GB < 16:  # unload right after: Ollama keeps a model in memory for 5 minutes, and the next AI step needs that memory
+        body['keep_alive'] = 0
     with LLM_LOCK:
         r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/chat', data=json.dumps(body).encode(),
                                                                     headers={'Content-Type': 'application/json'}), timeout=900).read())
@@ -1520,7 +1590,10 @@ def scenes(mid, thr=0.3):
 # ---------- render engine: validated plan -> one ffmpeg filtergraph ----------
 
 def fnum(v, lo, hi):
-    x = float(v)
+    try:
+        x = float(v)
+    except (TypeError, ValueError):  # a missing number (None) reached the user as Python's "float() argument must be..."
+        raise ValueError(f'value {v!r} is not a number')
     if not lo <= x <= hi:  # also rejects NaN
         raise ValueError(f'value {v!r} outside [{lo}, {hi}]')
     return x
@@ -1549,7 +1622,7 @@ def clean_plan(p):
         k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
-                 flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')))
+                 flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')), heavy=heavy(m))
         au = c.get('au') if isinstance(c.get('au'), dict) else {}
         k['au'] = {'voice': au.get('voice') if au.get('voice') in VOICE_FX else 'none', 'semi': round(fnum(au.get('semi', 0), -12, 12)),
                    **{b: fnum(au.get(b, 0), -15, 15) for b in ('bass', 'mid', 'treb')}, 'pan': fnum(au.get('pan', 0), -1, 1)}
@@ -1833,8 +1906,11 @@ def graph(p, td):
         if c['kind'] == 'image':
             ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', c['path']])
         else:  # input seek: each clip decodes only its own range
-            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate'] if c.get('hdr')
-                   else ['-c:v', 'libvpx-vp9'] if c.get('alpha') else [])  # native vp9 decoder drops the alpha plane
+            # VideoToolbox inputs get ONE ffmpeg thread: the media engine decodes, and ffmpeg's default frame threads only held
+            # frames (a 4K60 input: 478 MB -> 137 MB, same speed). 4K on a smaller Mac decodes there too; the cores filter.
+            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'] if c.get('hdr')
+                   else ['-c:v', 'libvpx-vp9'] if c.get('alpha')  # native vp9 decoder drops the alpha plane
+                   else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c.get('heavy') and not BIG_MAC else [])
             ins.append([*dec, '-ss', f"{c['in']:.6f}", '-t', f"{c['out'] - c['in']:.6f}", '-i', c['path']])
         return len(ins) - 1
 
@@ -2331,7 +2407,8 @@ class App(BaseHTTPRequestHandler):
             if path == '/api/ping':
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
             if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
-                return self.reply(sorted((m for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file()), key=lambda m: -m.get('added', 0)))
+                return self.reply(sorted(({**m, 'prep': PREP_PCT[m['id']]} if m['id'] in PREP_PCT and not m.get('ready') else m
+                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file()), key=lambda m: -m.get('added', 0)))
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':
@@ -2345,7 +2422,7 @@ class App(BaseHTTPRequestHandler):
                 if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
                     if mov := alpha_mov(mm):  # made at import; older library items get it on first request
                         return self.file(mov)
-                if q.get('wk') and mm.get('kind') == 'video' and not (mm.get('alpha') or mm.get('trans') or mm.get('hdr')):
+                if q.get('wk') and mm.get('kind') == 'video' and not (mm.get('alpha') or mm.get('trans')):
                     return self.file(wk_copy(mm))  # the app's preview: colour labels WebKit shows as decoded
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
@@ -2942,6 +3019,21 @@ def selftest():
     print('selftest OK')
 
 
+def resume_prepare():
+    """Imports the app was quit in the middle of (they'd stay 'preparing' for good), and heavy footage that has no proxy
+    yet (HDR imported before HDR got one): finished in the background, one at a time like any import."""
+    for f in sorted(MEDIA.glob('*.json')):
+        try:
+            m = json.loads(f.read_text())
+        except ValueError:
+            continue
+        if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
+                not m.get('ready') or (heavy(m) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
+            m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
+            save_meta(m)
+            prepare(m)
+
+
 def main():
     if '--selftest' in sys.argv:
         return selftest()
@@ -2949,6 +3041,7 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
+    threading.Thread(target=resume_prepare, daemon=True).start()
     import signal
     signal.signal(signal.SIGTERM, lambda *_: (comfy_down(), os._exit(0)))  # the app quitting: the PC's ComfyUI goes too
     try:

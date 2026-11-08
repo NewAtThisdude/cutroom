@@ -214,7 +214,8 @@ def propainter(F, holes, p0, p1):
         for i in range(n):
             cv2.imwrite(str(vd / f'{i:05d}.png'), cv2.cvtColor(F[i], cv2.COLOR_YUV2BGR))
             cv2.imwrite(str(md / f'{i:05d}.png'), holes[i].astype(np.uint8) * 255)
-        for px, batch in ((720, 40), (512, 20)):
+        small = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') < 15 * 2 ** 30  # an 8 GB Mac starts where a 36 GB one falls back to
+        for px, batch in ((512, 20), (384, 12)) if small else ((720, 40), (512, 20)):
             k = min(1.0, px / max(sw, sh))
             pw, ph = max(8, int(sw * k) // 8 * 8), max(8, int(sh * k) // 8 * 8)
             proc = subprocess.Popen([sys.executable, '-E', '-s', str(PROPAINTER), '--video', str(vd), '--mask', str(md), '--output', str(Path(td) / 'out'),
@@ -228,7 +229,7 @@ def propainter(F, holes, p0, p1):
                     say(p0 + (p1 - p0) * int(hit[-1][0]) / max(1, int(hit[-1][1])))
             if not proc.wait():
                 break
-            if 'out of memory' not in tail or px == 512:
+            if 'out of memory' not in tail or batch == (12 if small else 20):
                 raise RuntimeError('ProPainter failed: ' + tail[-400:])
             print(f'ProPainter: out of GPU memory at {pw}x{ph}, again at 512 px', flush=True)
         filled = F.copy()

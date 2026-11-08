@@ -7,7 +7,7 @@ const [W, H] = [+(process.argv[2] || 1517), +(process.argv[3] || 904)], OUT = ne
 fs.mkdirSync(OUT, { recursive: true });
 const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 2 })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
-await page.goto('http://127.0.0.1:4610/', { waitUntil: 'load' });
+await page.goto((process.env.B || 'http://127.0.0.1:4610') + '/', { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const ev = (f, a) => page.evaluate(f, a);
 let problems = 0;

@@ -82,7 +82,8 @@ const check = async label => { // the state after one action
       if (c.media && !(c.out > c.in)) bad.push(`${L.key} clip ${c.id} in ${c.in} out ${c.out}`);
       if (c.start < -1e-6) bad.push(`${L.key} clip ${c.id} starts at ${c.start}`);
       if (c.media && !M.get(c.media)) bad.push(`${L.key} clip ${c.id} has missing media`);
-      if (!document.querySelector(`.clip[data-id="${c.id}"]`)) bad.push(`${L.key} clip ${c.id} not drawn on the timeline`);
+      const [wa, wb] = S.tlWin || [-Infinity, Infinity]; // the timeline draws what's in view, plus a screen either side
+      if ((c.start + d) * S.pps >= wa && c.start * S.pps <= wb && !document.querySelector(`.clip[data-id="${c.id}"]`)) bad.push(`${L.key} clip ${c.id} not drawn on the timeline`);
     }
     try { paint(); } catch (e) { bad.push(`paint: ${e.message}`); }
     const t = __toasts.splice(0);

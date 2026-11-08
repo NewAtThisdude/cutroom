@@ -31,6 +31,44 @@ Data lives in `~/Movies/Cutroom/`:
 - `trash/`: deleted projects and media, recoverable
 - `server.log`
 
+## Heavy footage and smaller Macs
+
+Cutroom adapts to the Mac it runs on (cores and memory, read at start; `CUTROOM_CORES` / `CUTROOM_RAM_GB` fake a smaller
+one for testing). `tests/perf_heavy.mjs` measures import, playback, seeking and a 1080p export on any files.
+
+- **Proxies** (CapCut's "proxy media"): 4K and anything past 1080p60, all HDR, ProRes, camera 4:2:2 and 10-bit H.264
+  (Sony XAVC S-I, Canon, Panasonic) get a 720p H.264 copy with a keyframe every second for the preview. Exports always
+  read the originals. An HDR proxy is tone-mapped by the export's own chain, so the preview shows the export's colours.
+  Proxies are decoded by the media engine (VideoToolbox) except for H.264 on 12+ core Macs, where the CPU is faster;
+  every import job runs at low priority (`nice`), one at a time on smaller Macs (two on big ones). The library shows
+  how far each file has got. An import interrupted by quitting is finished at the next start.
+- **Imports** from the app's Import button, drag and drop, Finder and the Dock are APFS clones (instant, no extra disk);
+  folders (a camera card's DCIM) bring in the media inside them. Filmstrips of files past a minute decode keyframes only.
+- **Exports** with many clips render in chunks sized to the memory: 6 main clips per ffmpeg graph on 8 GB, 12 on 16 GB,
+  24 above. Decoders run by the media engine get one ffmpeg thread (more only held frames). On smaller Macs, 4K inputs
+  decode on the media engine and the cores do the filtering.
+- **Playback** waits for the main video when WebKit stalls it, instead of running on and seeking it again (that loop
+  showed 15-18 of 30 frames a second on a plain 1080p clip); the other tracks wait with it. The timeline renders only
+  what's in view.
+- **On-device AI** picks the language model that fits (qwen3.5:4b below 16 GB, 9b above) and unloads it right after
+  on small Macs; image generation needs 12 GB or more (setup skips its download below that); ProPainter starts at
+  512 px in smaller batches below 16 GB.
+
+Measured on this M4 Max (14 cores, 36 GB) with synthetic camera files: a DJI-style 4K60 100 Mbit/s H.264 clip (30 s),
+an iPhone-style 4K60 10-bit HLG HEVC clip (30 s), 4K30 ProRes 422 HQ (10 s) and a 10-minute 1080p30 file. "Small-Mac
+settings" is this Mac running with an 8-core, 8 GB Mac's settings: same chip, so the speeds are this Mac's; the memory
+and CPU shares are what carry over.
+
+| | Before | After (this Mac) | After (small-Mac settings) |
+|---|---|---|---|
+| Import all four at once | 46.7 s, 2.4 GB peak in ffmpeg | 14.9 s, 0.75 GB | 35 s, 2.6 cores, 0.26 GB |
+| Play the 4K60 DJI clip | 24-37 of 60 frames/s | 57-60 of 60, 0.4 cores | 60 of 60, 0.45 cores |
+| Play the 4K60 HDR clip | 33 of 60, 1.6 cores | 51-60 of 60, 0.4 cores | 59 of 60, 0.45 cores |
+| Play the plain 1080p30 file | 15-18 of 30, 0.9 cores | 30 of 30, 0.45 cores | 30 of 30, 0.45 cores |
+| Export all four back to back (11 min) at 1080p30 | 59 s, 7.3 cores, 1.5 GB | 62 s, 6.6 cores, 1.3 GB | 71 s, 5.2 cores, 0.7 GB |
+| Export 40 cuts of 4K + a 4K overlay at 1080p | 4.5 GB peak | 4.5 GB, 28 s | 1.3 GB, 40 s |
+| Edit a 1,200-clip timeline (one change) | 116 ms | 6 ms | 6 ms |
+
 ## Features
 
 The preview and the export share one geometry, colour and text pipeline. Rendering the same frame both ways
