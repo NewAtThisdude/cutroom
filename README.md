@@ -183,6 +183,15 @@ once in the browser also guarantees the export matches the preview.
 - **WebKit** (the app) has no `ctx.filter` and drops VP9's alpha. Filters, the blur fill and mask
   feathering are done by hand there (`colorPass`, `featherAlpha`; the exported mask PNG is drawn the
   same way), and transparent clips get an HEVC-with-alpha preview copy (`/media/<id>?alpha=hevc`).
+  WebKit also draws a `<video>` with plain source-over whatever the blend mode is, so blended overlays go through
+  an offscreen canvas first; and on a frame's exact edge (5.3 - 5.0 = 0.2999…) it shows the frame before, so paused
+  seeks land 0.1 ms in.
+- **Untagged HD in the export** is relabelled BT.709 with `setparams`, followed by a bare `scale`: without it the RGB
+  conversions ffmpeg inserts later (looks, colour, keys) still read the frames as BT.601 and every look shifted hues.
+- **Rotation** fills with `black@0`, not `c=none`: "none" leaves an old frame in the corners, ghosts while it turns.
+- **Preview vs export, pictures:** `tests/video_parity.mjs` grabs 147 frames both ways (every look, colour setting,
+  blend, mask, transition, effect, text preset and clip animation): 0.2-3.1 levels apart on average. Blur, pixelate and the
+  blurred background are close approximations in WebKit (2.4-8.5); grain and noise match in their block averages.
 - **SAM 2 / ProPainter on the Mac:** ProPainter imports its own modules, so it runs with `-E -s`, not `-I`. SAM 2's
   progress bars can fill a pipe nobody reads, so they're off and the server reads one merged stream. The first run at
   a new size compiles GPU kernels (3x slower once). Picking the engine: when the camera holds still the copy from other
@@ -207,7 +216,8 @@ once in the browser also guarantees the export matches the preview.
   frame back with input `-ss t` gives the first frame at or after t, so the self-check reads frame n at (n - 0.25)/fps.
 - **Blend modes:** ffmpeg's `blend` filter disagrees with the W3C formulas that the canvas uses:
   soft-light is off by up to 31 levels, dodge and burn miss the edge cases, and "overlay" versus
-  "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels.
+  "hard-light" depends on input order. `lut2` with the W3C expressions matches within 0.5 levels, except colour
+  burn, which follows WebKit (a clip at 0 wins over a backdrop at 255).
 
 ## Files
 
@@ -269,7 +279,7 @@ once in the browser also guarantees the export matches the preview.
 - **Auto adjust** looks at one frame (the playhead's, or the clip's middle), so a clip whose lighting changes a lot
   gets a grade for that moment. Match colour copies brightness and colour balance, not a full look.
 - **Video effects:** 30, against CapCut's downloadable library of hundreds. In the app (WebKit) the blur and glow
-  previews are a close stand-in (down- and up-scaling; there is no `ctx.filter`), and grain is random, so the preview
+  previews are a close stand-in (box blurs at reduced size; there is no `ctx.filter`), and grain is random, so the preview
   and the export match in look, not pixel for pixel. Effect and transition tiles show stand-in footage (a drawn sunset
   and night sea), not your clip; the filter tiles do show your frame.
 - **Sound effects** are synthesized, not recorded foley: punchy and clean for UI-style sounds (pop, click, ding,

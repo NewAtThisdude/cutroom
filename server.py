@@ -36,7 +36,7 @@ BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expression
     'hard-light': 'if(lte(y,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
     'soft-light': 'if(lte(y,127.5),x-(255-2*y)*x*(255-x)/65025,x+(2*y-255)*(if(lte(x,63.75),((16*x/255-12)*x/255+4)*x/255,sqrt(x/255))*255-x)/255)',
     'color-dodge': 'if(eq(x,0),0,if(eq(y,255),255,min(255,x*255/(255-y))))',
-    'color-burn': 'if(eq(x,255),255,if(eq(y,0),0,255-min(255,(255-x)*255/y)))',
+    'color-burn': 'if(eq(y,0),0,255-min(255,(255-x)*255/y))',  # WebKit tests the clip's 0 before the backdrop's 255 (W3C the other way): match what the preview shows
     'difference': 'abs(x-y)', 'exclusion': 'x+y-2*x*y/255'}
 NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Good News', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox'}
 ID = re.compile(r'[a-f0-9]{12}')
@@ -1524,7 +1524,7 @@ def rotation(c):
     if all(abs(a) < 0.01 for a in angles):
         return ''
     a = f"({pw(kf, 'a')})*PI/180" if len(angles) > 1 else f'{next(iter(angles)) * math.pi / 180:.6f}'
-    return f",format=rgba,rotate=a='{a}':ow='hypot(iw,ih)':oh=ow:c=none"
+    return f",format=rgba,rotate=a='{a}':ow='hypot(iw,ih)':oh=ow:c=black@0"  # not c=none: that leaves old frames in the corners (ghosts while it turns)
 
 
 def look(c):
@@ -1657,7 +1657,9 @@ def graph(p, td):
         sp = 1 if c['kind'] == 'image' else c['speed']
         v = f'[{i}:v]'
         if c.get('untagged_hd'):  # what Chrome / QuickTime assume for untagged HD, and what the preview shows
-            v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,'
+            # the explicit scale makes the link take the new tags: without it, the RGB conversions ffmpeg inserts later
+            # (looks, colour, keys, rotation) still read the frames as BT.601 and shift every colour a look touches
+            v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,'
         if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709; rotation applied by hand since autorotate can't touch hw frames
             v += 'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')

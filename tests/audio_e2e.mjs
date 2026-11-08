@@ -5,6 +5,7 @@
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
+import fs from 'node:fs';
 const B = 'http://127.0.0.1:4610', SR = 48000, N = 3 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 // test signal: 100 Hz + 1 kHz + 8 kHz tones (right channel at half level), a click at 1.0 s
@@ -28,7 +29,7 @@ await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const ev = (f, a) => page.evaluate(f, a);
 await ev(() => loadMedia());
-const made = [];
+const made = [], stemIds = [];
 // export one audio clip with these settings, and render the same through the preview chain offline
 const both = async (au, vkf) => {
   const r = await ev(async ([id, au, vkf]) => {
@@ -123,9 +124,12 @@ if (mix) {
   const [sl] = pcm(`${os.homedir()}/Movies/Cutroom/exports/${ex.file}`), [ol] = pcm(`${os.homedir()}/Movies/Cutroom/media/${file}`);
   const s = snr(ol, sl, 0, Math.min(ol.length, sl.length) - 1);
   check('the four stems add back up to the original', s > 12, `${s.toFixed(1)} dB SNR`);
+  stemIds.push(...await ev(() => P.audio.map(c => c.media))); // trashed at the end (the cache re-splits when they're gone)
 }
 check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 for (const id of made) await fetch(`${B}/api/projects/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+{ const X = `${os.homedir()}/Movies/Cutroom/exports/`; for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash
+for (const id of stemIds) await fetch(`${B}/api/media/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await fetch(`${B}/api/media/${media.id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);
 await b.close();

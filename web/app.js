@@ -833,7 +833,7 @@ function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; m
   } else {
     if (!v.paused) v.pause();
     v._want = src; // waitFrame checks the element really got here
-    if (!v.seeking && Math.abs(v.currentTime - src) > 0.5 / P.fps) v.currentTime = src;
+    if (!v.seeking && Math.abs(v.currentTime - src) > 0.5 / P.fps) v.currentTime = src + 1e-4; // 5.3 - 5.0 = 0.29999…: on a frame's edge WebKit shows the one before (the export doesn't)
   }
 }
 function paint() {
@@ -902,7 +902,8 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   const draw = (x, y, w, h, fgr = true) => { // crop = source rect; mirror flips inside the rect; rotation spins about its centre
     ctx.save();
     if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
-    if (fgr && (c.key || c.mask || a.vig > 0 || (filt && !CANVAS_FILTER))) { // needs pixels: filter (by hand without ctx.filter) + mirror + key + mask offscreen
+    const blendVid = lane === 'overlay' && c.blend && c.blend !== 'normal' && el.tagName === 'VIDEO'; // WebKit draws a <video> as plain source-over, whatever the blend mode: blend from a canvas
+    if (fgr && (c.key || c.mask || a.vig > 0 || (filt && !CANVAS_FILTER) || blendVid)) { // needs pixels: filter (by hand without ctx.filter) + mirror + key + mask offscreen
       const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt);
       ctx.filter = 'none'; ctx.drawImage(oc, x, y, w, h); ctx.restore();
       return;
@@ -916,11 +917,12 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
     const mw = m.w * fx, mh = m.h * fy, s = Math.max(P.w / mw, P.h / mh) * 1.08, r = (P.w / 40) * k;
     const bx = ((P.w - mw * s) / 2) * k, by = ((P.h - mh * s) / 2) * k, bw = mw * s * k, bh = mh * s * k;
     if (CANVAS_FILTER) { ctx.filter = `${filt} blur(${r}px)`.trim(); draw(bx, by, bw, bh, false); }
-    else { // no ctx.filter: shrink and scale back up, a cheap stand-in for the blur (the export blurs for real)
-      const tw = Math.max(2, Math.round(bw / r)), th = Math.max(2, Math.round(bh / r)), tx = blurCv.getContext('2d', { willReadFrequently: true });
+    else { // no ctx.filter: the export's 3 box blurs, run at 1/(r/4) size (radius 4 there) and scaled back up
+      const q = Math.max(1, r / 4), tw = Math.max(2, Math.round(bw / q)), th = Math.max(2, Math.round(bh / q)), tx = blurCv.getContext('2d', { willReadFrequently: true });
       if (blurCv.width !== tw || blurCv.height !== th) { blurCv.width = tw; blurCv.height = th; }
       tx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, 0, 0, tw, th);
       if (filt) colorPass(tx, tw, th, c);
+      boxBlurRGB(tx, tw, th, Math.max(1, Math.round(r / q)));
       ctx.imageSmoothingQuality = 'high'; ctx.drawImage(blurCv, bx, by, bw, bh);
     }
   }
@@ -943,6 +945,23 @@ function colorPass(x, W, H, c) { // drawMedia's filter by hand (no ctx.filter in
     if (T) { R = T[Math.round(R)]; G = T[Math.round(G)]; B = T[Math.round(B)]; }
     if (L) { const R2 = L[0] * R + L[1] * G + L[2] * B, G2 = L[3] * R + L[4] * G + L[5] * B; B = L[6] * R + L[7] * G + L[8] * B; R = R2; G = G2; }
     d[i] = R; d[i + 1] = G; d[i + 2] = B; // Uint8ClampedArray clamps and rounds
+  }
+  x.putImageData(img, 0, 0);
+}
+function boxBlurRGB(x, W, H, r) { // ffmpeg boxblur=r:3 by hand: 3 running-sum box passes each way, edges clamped
+  const img = x.getImageData(0, 0, W, H), d = img.data, n = 2 * r + 1, a = new Float32Array(W * H), t = new Float32Array(W * H);
+  const box = (src, dst, len, step, lines, lineStep) => {
+    for (let l = 0; l < lines; l++) {
+      const o = l * lineStep, at = i => src[o + (i < 0 ? 0 : i >= len ? len - 1 : i) * step];
+      let sum = 0;
+      for (let i = -r; i <= r; i++) sum += at(i);
+      for (let i = 0; i < len; i++) { dst[o + i * step] = sum / n; sum += at(i + r + 1) - at(i - r); }
+    }
+  };
+  for (let ch = 0; ch < 3; ch++) {
+    for (let i = 0; i < a.length; i++) a[i] = d[i * 4 + ch];
+    for (let p = 0; p < 3; p++) { box(a, t, W, 1, H, W); box(t, a, H, W, W, 1); }
+    for (let i = 0; i < a.length; i++) d[i * 4 + ch] = a[i];
   }
   x.putImageData(img, 0, 0);
 }
