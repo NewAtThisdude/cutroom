@@ -38,6 +38,7 @@
     <div class="panes">
     <section id="tab-media" class="pane on">
       <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
+      <button id="btnMulticam" class="wide ghostline" title="Several recordings of the same moment, lined up by their sound">Multicam…</button>
       <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button></div>
       <div id="mediaList" class="media-list"></div>
       <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
@@ -169,6 +170,14 @@
       <h4>Hook title</h4>
       <button id="btnHooks" class="wide">Suggest hook titles</button>
       <div id="hookList"></div>
+      <h4>Animate a picture (AI video)</h4>
+      <p class="hint">The selected photo, or the selected video's frame at the playhead, comes to life for about 5 s. Made on your RTX 4090 PC (Wan 2.2), so this Mac stays cool; about 2 minutes, plus a minute the first time.</p>
+      <textarea id="aivPrompt" rows="2" placeholder="What happens: the camera slowly pushes in, she turns and smiles" spellcheck="true"></textarea>
+      <label class="row"><span>Shape</span><select id="aivShape"><option value="">Like the picture</option><option value="9:16">Tall</option><option value="16:9">Wide</option><option value="1:1">Square</option></select></label>
+      <label class="row"><span>Quality</span><select id="aivQ"><option value="fast">720p</option><option value="best">1440p (upscaled)</option></select></label>
+      <label class="row"><span>Put it on</span><select id="aivPut"><option value="main">Main track</option><option value="overlay">Overlay</option><option value="library">Library only</option></select></label>
+      <button id="btnAiVideo" class="primary wide">Make video</button>
+      <p id="aivStatus" class="muted"></p>
       <h4>Generate an image</h4>
       <p class="hint">Runs on this Mac (Z-Image-Turbo). About 25-50 s; nothing is uploaded.</p>
       <textarea id="aiPrompt" rows="3" placeholder="A neon sign that says OPEN on a rainy street at night, cinematic" spellcheck="true"></textarea>

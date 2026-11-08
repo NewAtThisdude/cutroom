@@ -445,12 +445,18 @@ def main(path):
     pp = best and PROPAINTER.exists() and (PROPAINTER.parent / 'weights' / 'ProPainter.pth').exists()
     filled, left, fit = classical(job, F, holes, rs[:n], (x0, y0, sx, sy), 0.35, 0.45 if pp else 0.85, synth=not pp)
     tag = 'sam2+' if masks is not None else ''
+    def span(hs):  # ProPainter only over the frames that have something to fill, plus flow context either side
+        on = np.flatnonzero(hs.reshape(len(hs), -1).any(1))
+        return (max(0, int(on[0]) - 12), min(len(hs), int(on[-1]) + 13)) if len(on) else (0, 0)
     if pp and fit < 0.9:  # moving camera or parallax: aligned copies show seams and ghosts, ProPainter's flow doesn't
         print(f'engine {tag}propainter fit={fit:.2f}', flush=True)
-        filled = propainter(F, holes, 0.45, 0.85)
+        a, b = span(holes)
+        filled = F.copy()
+        filled[a:b] = propainter(F[a:b], holes[a:b], 0.45, 0.85)
     elif pp and left.any():  # exact aligned fill where other frames show the background; ProPainter only for the rest
         print(f'engine {tag}aligned+propainter fit={fit:.2f}', flush=True)
-        filled = propainter(filled, left, 0.45, 0.85)
+        a, b = span(left)
+        filled[a:b] = propainter(filled[a:b], left[a:b], 0.45, 0.85)
     else:
         print(f'engine {tag}aligned fit={fit:.2f}', flush=True)
     say(0.85)
@@ -467,7 +473,7 @@ def main(path):
     del F
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a?',
-                            *labels(job['tags']), '-c:v', 'libx264', '-preset', 'fast', '-crf', '16', '-pix_fmt', 'yuv420p', *job['tags'],
+                            *labels(job['tags']), '-c:v', 'h264_videotoolbox', '-q:v', '68', '-pix_fmt', 'yuv420p', *job['tags'],  # Apple's hardware encoder (~47 dB): the CPU stays free
                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):
         fr = fr.copy()

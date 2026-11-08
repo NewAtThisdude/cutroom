@@ -330,6 +330,7 @@ function scheduleSave() {
   $('#saveState').textContent = 'Saving…';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
+    if (S.hold) return scheduleSave();
     try { await api(`/api/projects/${P.id}`, P, 'PUT'); $('#saveState').textContent = 'Saved'; }
     catch (e) { $('#saveState').textContent = 'Not saved'; toast(`Save failed: ${e.message}`); }
   }, 400);
@@ -480,7 +481,7 @@ function renderInspector() {
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
   else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) renderCapList();
-  if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p>`);
+  if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p><div class="actions"><button data-act="compound">Make compound clip</button></div>`);
 }
 function trPanel(c) {
   const i = P.main.indexOf(c), next = P.main[i + 1], cur = c.tr?.type || 'none';
@@ -570,6 +571,7 @@ function mediaPanel(c, lane) {
   const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(d)}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
   const fmax = Math.max(0.05, Math.min(3, d), c.fadeIn || 0, c.fadeOut || 0), amax = Math.max(0.2, Math.min(3, d));
   let basic = m.kind !== 'image' ? slider('c.speed', 'Speed', Math.log10(c.speed), -1, 2, 0.005, 'x', ' data-log') + (m.hasAudio ? tick('c.pitch', 'Change pitch with speed', c.pitch) : '') : '';
+  if (c.mc) basic = `<h4>Multicam</h4><div class="seg wrap mcangles">${c.mc.angles.map((A, i) => `<button data-mcangle="${i}" class="${i === c.mc.a ? 'on' : ''}" title="${esc(M.get(A.media)?.name || '')}">${i + 1} · ${esc(short(M.get(A.media)?.name || 'missing', 14))}</button>`).join('')}</div><p class="hint">Press 1–${c.mc.angles.length} while it plays to cut to that angle at that moment (the sound stays on one track).</p>` + basic;
   if (vis) {
     basic += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
     basic += `<h4>Transform</h4>${slider('c.scale', 'Scale', pr.scale, 0.1, 4, 0.01, '%')}${slider('c.x', 'Position X', pr.x, -1, 1, 0.005, '%')}${slider('c.y', 'Position Y', pr.y, -1, 1, 0.005, '%')}`
@@ -590,7 +592,10 @@ function mediaPanel(c, lane) {
       + `${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
       + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
       + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%')
-      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%');
+      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%');
+    look += `<h4>Beauty</h4>${slider('c.beauty.amt', 'Smooth skin', c.beauty?.amt || 0, 0, 1, 0.01, '%')}<p class="hint">Evens out skin texture (skin-coloured areas only); edges, eyes and hair stay sharp.</p>`;
+    if (m.alpha || m.trans) look += `<h4>Glow</h4>${segs('glowkind', 'Style', !c.glow ? 'none' : c.glow.neon ? 'neon' : 'glow', [['none', 'None'], ['glow', 'Glow'], ['neon', 'Neon']])}`
+      + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
     const [L, R] = c.flip ? ['r', 'l'] : ['l', 'r']; // with Mirror on, "Left" still means the left of what you see
     look += `<h4>Crop</h4>${slider(`c.crop.${L}`, 'Left', cr[L] || 0, 0, 0.45, 0.005, '%')}${slider(`c.crop.${R}`, 'Right', cr[R] || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
     look += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
@@ -630,10 +635,12 @@ function mediaPanel(c, lane) {
   if (vid && c.speed < 1) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
+  if (c.compound) acts.unshift('<button data-act="breakcompound" title="Put back the clips it was made of">Break apart</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
   let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
+  if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
   return head + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Color', vis ? colorPanel(c) : ''], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
@@ -685,6 +692,31 @@ async function importLutFile(f) { // a .cube from this Mac into Movies/Cutroom/l
   G.luts = await api('/api/luts');
   toast(`LUT "${L.name}" imported`);
   return L;
+}
+const BODY = [['blur', 'Blur background', 'Person sharp, background blurred'], ['mono', 'Mono background', 'Person in colour, background black and white'], ['dim', 'Dim background', 'Background darkened'],
+  ['glow', 'Glow', 'A soft white glow around the person'], ['neon', 'Neon outline', 'A bright neon line around the person']];
+async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person (Vision) cut out onto the track above, in sync; the background or the person treated
+  if (M.get(c.media)?.kind !== 'video') throw new Error('body effects work on video clips');
+  if (!BODY.some(b => b[0] === kind)) throw new Error(`kind must be one of ${BODY.map(b => b[0]).join(', ')}`);
+  try {
+    const j = await job('/api/matte', { media: c.media, t0: c.in, t1: c.out }, 'Finding the person');
+    await loadMedia();
+    let cut;
+    change(() => {
+      packMain();
+      cut = { ...structuredClone(c), id: hex12(), media: j.media, in: 0, out: c.out - c.in, start: c.start, volume: 0, body: kind };
+      for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'compound', 'mc', 'track']) delete cut[k];
+      if (cut.adj) delete cut.adj.blur;
+      if (lane === 'overlay') P.overlay.splice(P.overlay.indexOf(c) + 1, 0, cut); else P.overlay.push(cut);
+      if (kind === 'blur') c.adj = { ...c.adj, blur: 0.45 };
+      else if (kind === 'mono') c.adj = { ...c.adj, s: 0 };
+      else if (kind === 'dim') c.adj = { ...c.adj, b: 0.45 };
+      else cut.glow = kind === 'neon' ? { color: '#00e5ff', size: 0.35, neon: true } : { color: '#ffffff', size: 0.6 };
+      S.sel = { lane: 'overlay', id: cut.id };
+    });
+    toast(`${BODY.find(b => b[0] === kind)[1]}: the person is on the overlay track above`);
+    return cut;
+  } catch (e) { setStatus(e.message); throw e; }
 }
 function textPanel(c, lane) {
   const cap = lane === 'captions', st = textStyle(c, lane), r = cap ? 'cap' : 'c.style', pr = cap ? null : propsAt(c, S.t - c.start), ws = WEIGHTS[st.font] || [400, 700];
@@ -925,6 +957,7 @@ function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; m
   }
 }
 function paint() {
+  if (S.hold) return;
   const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, t = S.t, live = new Set();
   hits = [];
   packMain();
@@ -987,18 +1020,18 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length, sk = strengthAt(c, lt);
+  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0, sk = strengthAt(c, lt);
   const draw = (x, y, w, h, fgr = true) => { // crop = source rect; mirror flips inside the rect; rotation spins about its centre
     ctx.save();
     if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
     const blendVid = lane === 'overlay' && c.blend && c.blend !== 'normal' && el.tagName === 'VIDEO'; // WebKit draws a <video> as plain source-over, whatever the blend mode: blend from a canvas
     if (fgr && (c.key || c.mask || a.vig > 0 || graded || (filt && (!CANVAS_FILTER || gpu())) || blendVid)) { // needs pixels: colour + mirror + key + mask + vignette (one GPU pass; by hand without one)
       const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt, lt);
-      ctx.filter = 'none'; ctx.drawImage(oc, x, y, w, h); ctx.restore();
+      ctx.filter = 'none'; glowDraw(ctx, c, h, () => ctx.drawImage(oc, x, y, w, h)); ctx.restore();
       return;
     }
     if (c.flip) { ctx.translate(2 * x + w, 0); ctx.scale(-1, 1); }
-    ctx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, x, y, w, h);
+    glowDraw(ctx, c, fgr ? h : 0, () => ctx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, x, y, w, h));
     ctx.restore();
   };
   ctx.save();
@@ -1025,6 +1058,19 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
 }
 const blurCv = document.createElement('canvas');
+function glowDraw(ctx, c, h, draw) { // a cutout's glow: canvas shadow (a Gaussian of its alpha, sigma = shadowBlur / 2), like the export's gblur
+  if (!c.glow || !h) return draw();
+  ctx.shadowColor = c.glow.color; ctx.shadowBlur = 2 * c.glow.size * 0.04 * h; ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
+  for (let i = 0; i < (c.glow.neon ? 2 : 1); i++) draw(); // neon: the glow twice as strong
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+  if (c.glow.neon) draw(); // the person itself once more, on top of the doubled glow
+}
+function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small (radius 4 there) and scaled back: ffmpeg's blur at a fraction of the cost
+  const q = Math.max(1, r / 4), tw = Math.max(2, Math.round(W / q)), th = Math.max(2, Math.round(H / q)), t = scratch(tw, th, 'cblur'), tx = t.getContext('2d', { willReadFrequently: true });
+  tx.clearRect(0, 0, tw, th); tx.drawImage(x.canvas, 0, 0, tw, th);
+  boxBlurRGB(tx, tw, th, Math.max(1, Math.round(r / q)));
+  x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(t, 0, 0, W, H); x.restore();
+}
 function colorPass(x, W, H, c, mixK = 1) { // the GPU pass's colour on the CPU (no WebGL2): brightness, contrast, saturate, tone, look, grade LUT, strength
   const a = c.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, L = lookMatrix(c), T = toneLUT(c), GR = gradeLUT(c), q = v => (v < 0 ? 0 : v > 255 ? 255 : v), r8 = v => Math.round(q(v));
   const M = [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s];
@@ -1083,7 +1129,7 @@ function offscreen(el, c, src, w, h, filt, lt = 0) { // colour + mirror, then ch
   const x = keyCv.getContext('2d', { willReadFrequently: true });
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
   const sk = strengthAt(c, lt), mk = maskAt(c, lt), gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
-  if (gp) { x.filter = 'none'; x.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); return keyCv; }
+  if (gp) { x.filter = 'none'; x.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); if (c.adj?.blur > 0) blurInPlace(x, W, H, c.adj.blur * 0.03 * Math.min(W, H)); return keyCv; }
   x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
@@ -1771,6 +1817,8 @@ function clipMenu(c, lane) { // what a right-click on a clip offers
   if (vis) items.push(['Remove background', () => quiet(removeBackground(c))], ['Auto adjust colour', () => autoAdjust(c, lane).catch(() => {})]);
   if (lane === 'main' || lane === 'overlay') items.push(['Mirror', () => change(() => { c.flip = !c.flip; })], ['Rotate 90°', () => rotate90(c)], [`Move to ${lane === 'main' ? 'overlay' : 'main'} track`, () => moveLane(c, lane)]);
   if (lane === 'overlay') items.push(['Bring forward', () => restack(c, 1)], ['Send backward', () => restack(c, -1)]);
+  if (many) items.push('-', ['Make compound clip', () => makeCompound().catch(e => toast(e.message))]);
+  if (c.compound) items.push('-', ['Break apart', () => breakCompound(c)]);
   items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, '⌫']);
   return items;
 }
@@ -2159,6 +2207,103 @@ function addMedia(id, lane, t) {
     S.sel = { lane, id: c.id };
   });
 }
+// ---------- multicam: angles lined up by their sound, cut between while it plays (keys 1-6) ----------
+async function makeMulticam(list) {
+  const ms = [...new Set(list.map(q => mediaBy(q)))];
+  if (ms.length < 2 || ms.length > 6 || ms.some(m => m.kind !== 'video')) throw new Error('pick 2 to 6 videos for a multicam');
+  const { offsets, confidence } = await api('/api/sync', { media: ms.map(m => m.id) });
+  const angles = ms.map((m, i) => ({ media: m.id, off: offsets[i] }));
+  const lo = Math.max(0, ...angles.map(a => -a.off)), hi = Math.min(...angles.map((a, i) => ms[i].duration - a.off)); // master time every angle has
+  if (hi - lo < 1) throw new Error('the recordings barely overlap: nothing to cut between');
+  const g = hex12(), base = { speed: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
+  change(() => {
+    const start = packMain(), v = { ...base, id: hex12(), media: ms[0].id, start, in: lo, out: hi, volume: 0, mc: { g, angles, a: 0 } };
+    P.main.push(v);
+    P.audio.push({ ...base, id: hex12(), media: ms[0].id, start, in: lo, out: hi, volume: 1, mcAudio: g }); // one continuous sound: angle 1's
+    S.sel = { lane: 'main', id: v.id }; S.multi.clear();
+  });
+  toast(`Multicam: ${ms.length} angles synced by sound. Play it and press 1-${ms.length} to cut between them`);
+  return { angles: ms.map((m, i) => ({ angle: i + 1, media: m.name, offset: offsets[i], confidence: confidence[i] })), clip: brief(...cfind(S.sel.id)) };
+}
+function mcCut(j, at = S.t) { // from the playhead on, the multicam shows angle j (a split, unless the playhead is at the clip's start)
+  packMain();
+  const c = P.main.find(x => x.mc && at >= x.start - 1e-6 && at < x.start + tdur(x, 'main'));
+  if (!c) { toast('Put the playhead on a multicam clip'); return null; }
+  const A = c.mc.angles[j];
+  if (!A) { toast(`This multicam has ${c.mc.angles.length} angles`); return null; }
+  if (j === c.mc.a) return c;
+  const lt = at - c.start, m0 = c.in + lt * c.speed - c.mc.angles[c.mc.a].off, src = M.get(A.media), d = (c.out - c.in) - lt * c.speed;
+  if (!src || m0 + A.off < -1e-3 || m0 + A.off + d > src.duration + 1e-3) { toast(`Angle ${j + 1} has no footage there`); return null; }
+  let t;
+  change(() => {
+    t = lt > 1 / P.fps ? splitClip(c, 'main', snap(at)) : c;
+    const span = t.out - t.in, mm = t.in - t.mc.angles[t.mc.a].off;
+    Object.assign(t, { media: A.media, in: Math.max(0, mm + A.off), mc: { ...t.mc, a: j } });
+    t.out = t.in + span;
+    S.sel = { lane: 'main', id: t.id };
+  });
+  return t;
+}
+function openMulticam() {
+  const vids = [...M.values()].filter(m => m.kind === 'video' && m.hasAudio);
+  modal(`<h2>Multicam</h2><p class="hint">Tick the recordings of the same moment (2 to 6). They are lined up by their sound, so each needs its own; the first one ticked is angle 1 and gives the sound.</p>
+    <div class="mclist">${vids.map(m => `<label class="row chk"><span title="${esc(m.name)}">${esc(m.name)}</span><small>${fmtDur(m.duration)}</small><input type="checkbox" value="${m.id}"></label>`).join('') || '<p class="hint">Import videos with sound first.</p>'}</div>
+    <p id="mcStatus" class="muted"></p><div class="actions"><button data-close>Close</button><button id="mcGo" class="primary">Sync and add</button></div>`);
+  const order = [];
+  $('#modal .mclist').addEventListener('change', e => { const v = e.target.value; if (e.target.checked) order.push(v); else order.splice(order.indexOf(v), 1); });
+  $('#mcGo').addEventListener('click', async () => {
+    $('#mcGo').disabled = true; $('#mcStatus').textContent = 'Listening to the recordings…';
+    try { await makeMulticam(order); closeModal(); } catch (e) { $('#mcStatus').textContent = e.message; } finally { const b = $('#mcGo'); if (b) b.disabled = false; }
+  });
+}
+// ---------- compound clips: several clips rendered into one (one video to decode instead of many), and back apart ----------
+async function makeCompound(sel = selection()) {
+  const items = sel.filter(([, L]) => !['tr', 'captions'].includes(L)), mains = items.filter(([, L]) => L === 'main').map(([c]) => c);
+  if (items.length < 2) throw new Error('select two or more clips (⇧-click) to make a compound clip');
+  if (!mains.length) throw new Error('a compound clip needs a main-track clip in it: it becomes one main clip');
+  if (items.some(([c]) => c.media && !M.get(c.media))) throw new Error('a selected clip has missing media: relink it first');
+  packMain();
+  const idx = mains.map(c => P.main.indexOf(c)).sort((a, b) => a - b);
+  if (idx.at(-1) - idx[0] !== idx.length - 1) throw new Error('the main-track clips in it must be next to each other');
+  const t0 = P.main[idx[0]].start, inner = { main: idx.map(i => structuredClone(P.main[i])), overlay: [], audio: [], text: [], fx: [] };
+  for (const [c, L] of items) if (L !== 'main') inner[L].push({ ...structuredClone(c), start: c.start - t0 });
+  const lastTr = inner.main.at(-1).tr;
+  delete inner.main.at(-1).tr;
+  const P0 = P, name = `Compound ${new Date().toLocaleTimeString().replace(/:\d\d\s/, ' ')}`;
+  const sub = migrate({ ...structuredClone(P0), id: hex12(), name, ...inner, captions: [], markers: [], tracks: {}, mute: {} });
+  let plan;
+  S.hold = true; // the preview and autosave leave the borrowed project alone
+  try { P = sub; packMain(); plan = await buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); }
+  finally { P = P0; S.hold = false; S.dirty = true; }
+  Object.assign(plan, { library: true, rate: 2.5 });
+  const j = await job('/api/export', plan, 'Making the compound clip');
+  await loadMedia();
+  const m = M.get(j.media);
+  if (!m) throw new Error('the compound render did not reach the library');
+  change(() => {
+    const ids = new Set(items.map(([c]) => c.id));
+    for (const L of LANES) P[L.key] = P[L.key].filter(c => !ids.has(c.id));
+    const cc = { id: hex12(), media: m.id, start: t0, in: 0, out: m.duration, speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, compound: { ...inner, lastTr } };
+    if (lastTr) cc.tr = lastTr;
+    P.main.splice(idx[0], 0, cc);
+    S.sel = { lane: 'main', id: cc.id }; S.multi.clear();
+  });
+  toast(`${items.length} clips are one compound clip now (Break apart gets them back)`);
+  return brief(...cfind(S.sel.id));
+}
+function breakCompound(c) { // the clips it was made of, back where they were (edits made to the compound itself are dropped)
+  const k = c?.compound;
+  if (!k) throw new Error('that is not a compound clip');
+  change(() => {
+    packMain();
+    const i = P.main.indexOf(c), t0 = c.start, mains = k.main.map(x => ({ ...structuredClone(x), id: hex12() }));
+    if (c.tr) mains.at(-1).tr = c.tr; else delete mains.at(-1).tr;
+    P.main.splice(i, 1, ...mains);
+    for (const L of ['overlay', 'audio', 'text', 'fx']) for (const x of k[L] || []) P[L].push({ ...structuredClone(x), id: hex12(), start: x.start + t0 });
+    S.sel = { lane: 'main', id: mains[0].id }; S.multi.clear();
+  });
+  toast('Broken apart into its clips');
+}
 function addText(name, props = {}, style = {}) { // one undo step, whatever it starts with
   change(() => {
     const c = { id: hex12(), start: S.t, dur: 3, text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
@@ -2369,9 +2514,9 @@ function moveLane(c, lane) {
 }
 async function removeBackground(c) { // Apple Vision: person segmentation for video, subject lifting (any subject) for photos
   try {
-    const j = M.get(c.media)?.kind === 'image' ? await api('/api/lift', { media: c.media }) : await job('/api/matte', { media: c.media }, 'Removing background');
+    const img = M.get(c.media)?.kind === 'image', j = img ? await api('/api/lift', { media: c.media }) : await job('/api/matte', { media: c.media, t0: c.in, t1: c.out }, 'Removing background');
     await loadMedia();
-    change(() => { c.media = j.media; });
+    change(() => { if (!img) { c.out -= c.in; c.in = 0; } c.media = j.media; }); // the cutout covers just the part the clip uses
     toast('Background removed. Put it on the overlay track over B-roll.');
   } catch (e) { setStatus(e.message); throw e; }
 }
@@ -2834,6 +2979,10 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1 }; });
       if (c.mask && c.mkf?.length) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m);
       if (c.adj?.vig > 0) o.vig = await vigPNG(c, m);
+      const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
+      if (c.adj?.blur > 0) o.blur = Math.max(1, Math.min(Math.round(c.adj.blur * 0.03 * short0), Math.floor(short0 / 4) - 1));
+      if (c.beauty?.amt > 0) o.beauty = { amt: c.beauty.amt, sigma: 0.008 * short0 };
+      if (c.glow) o.glow = { color: c.glow.color, sigma: c.glow.size * 0.04 * ch, gain: c.glow.neon ? 2 : 1 };
       const gl3 = gradeLUT(c);
       if (gl3) o.grade = gradeB64(gl3);
       if (c.lkf?.length) o.lkf = c.lkf;
@@ -3134,6 +3283,13 @@ function wire() {
     catch (e) { $('#aiStatus').textContent = e.message; }
     finally { b.disabled = false; }
   });
+  $('#btnAiVideo').addEventListener('click', async () => {
+    const b = $('#btnAiVideo'), st = $('#aivStatus');
+    b.disabled = true; st.textContent = 'Starting the GPU PC (first time: about a minute)…';
+    try { const r = await aiVideo({ prompt: $('#aivPrompt').value.trim(), ratio: $('#aivShape').value || undefined, quality: $('#aivQ').value, put: $('#aivPut').value, say: x => { st.textContent = x; } }); st.textContent = `Done (seed ${r.seed}).`; }
+    catch (e) { st.textContent = e.message; }
+    finally { b.disabled = false; }
+  });
   $('#btnCombine').addEventListener('click', async () => {
     const b = $('#btnCombine'), media = [...document.querySelectorAll('#scList input:checked')].map(x => x.value);
     if (!media.length) return toast('Tick the videos to combine');
@@ -3251,6 +3407,7 @@ function wire() {
   $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
   $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
   $('#btnFit').addEventListener('click', fitTimeline);
+  $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
   $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) { SCOPE.kind = b.dataset.scope; for (const x of $('#scope').querySelectorAll('[data-scope]')) x.classList.toggle('on', x === b); S.dirty = true; } });
 
@@ -3562,6 +3719,11 @@ function wire() {
       const lt = S.t - c.start, ts = (c.mkf || []).map(f => f.t), t = d.act === 'mkfprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
       if (t !== undefined) seekTo(c.start + t);
     }
+    else if (d.mcangle) mcCut(+d.mcangle);
+    else if (d.body) quiet(bodyEffect(c, S.sel.lane, d.body));
+    else if (d.glowkind) change(() => { if (d.glowkind === 'none') delete c.glow; else c.glow = { color: c.glow?.color || (d.glowkind === 'neon' ? '#00e5ff' : '#ffffff'), size: c.glow?.size ?? 0.5, ...(d.glowkind === 'neon' ? { neon: true } : {}) }; });
+    else if (d.act === 'compound') makeCompound().catch(err => toast(err.message));
+    else if (d.act === 'breakcompound') breakCompound(c);
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
     else if (d.act === 'autoadj') autoAdjust(c, S.sel.lane).catch(() => {});
@@ -3602,6 +3764,7 @@ function wire() {
     else if (mod && e.code === 'KeyX') { e.preventDefault(); copySel(true); }
     else if (mod && e.code === 'KeyV') { e.preventDefault(); if (e.altKey) pasteLook(); else paste(); }
     else if (mod && e.code === 'KeyA') { e.preventDefault(); selectAll(); }
+    else if (!mod && /^Digit[1-6]$/.test(e.code) && P.main.some(c => c.mc)) { e.preventDefault(); mcCut(+e.code.slice(5) - 1); }
     else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
     else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
     else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
@@ -3642,6 +3805,23 @@ async function aiImage({ prompt, shape = 'canvas', sticker = false, steps = 8, s
     return { media: jb.media, seed: jb.seed, clip: brief(c, L) };
   }
   return { media: jb.media, seed: jb.seed };
+}
+async function aiVideo({ prompt = '', image, clip, ratio, quality = 'fast', put = 'main', at = S.t, seed, say }) { // a picture brought to life on the RTX 4090 PC (Wan 2.2), ~5 s
+  let img = image ? mediaBy(image) : null;
+  if (!img) {
+    packMain();
+    const c = clip ? cfind(clip)[0] : (S.sel && S.sel.lane !== 'tr' && selClip()?.media ? selClip() : P.main.find(x => S.t >= x.start && S.t < x.start + tdur(x, 'main')));
+    const m = c && M.get(c.media);
+    if (!m || m.kind === 'audio') throw new Error('select a photo or a video clip to animate (its frame at the playhead is the start)');
+    if (m.kind === 'image') img = m;
+    else { const lt = clamp(S.t - c.start, 0, len(c)), st = await api('/api/still', { media: m.id, t: c.in + lt * c.speed }); await loadMedia(); img = M.get(st.id); }
+  }
+  if (img?.kind !== 'image') throw new Error('start from a picture');
+  const r = ratio || (img.w > img.h * 1.2 ? '16:9' : img.h > img.w * 1.2 ? '9:16' : '1:1');
+  const j = await job('/api/ai/video', { image: img.id, prompt, ratio: r, quality, seed }, 'Animating it on the GPU PC', say);
+  await loadMedia();
+  if (put === 'main' || put === 'overlay') { addMedia(j.media, put, at); return { media: j.media, seed: j.seed, clip: brief(...cfind(S.sel.id)) }; }
+  return { media: j.media, seed: j.seed };
 }
 async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
   const jb = await job('/api/ai/voice', { text, voice, speed }, 'Generating voice');
@@ -3822,16 +4002,19 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
     const v = c[k];
     if (v !== undefined && v !== def[k] && v !== false && v !== 'normal') o[k] = typeof v === 'number' ? r3(v) : v;
   }
-  for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr', 'grade']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
+  for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr', 'grade', 'beauty', 'glow']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
+  if (c.body) o.body = c.body;
   if (c.lkf?.length) o.strengthPoints = c.lkf.length;
   if (c.mask) o.mask = c.mask.type;
   if (c.mkf?.length) o.maskKeyframes = c.mkf.length;
+  if (c.mc) o.multicam = { angle: c.mc.a + 1, angles: c.mc.angles.length };
+  if (c.compound) o.compound = Object.values(c.compound).filter(Array.isArray).reduce((n, a) => n + a.length, 0);
   if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   return o;
 }
-const EDITABLE = new Set(['mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+const EDITABLE = new Set(['beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -3988,8 +4171,8 @@ const REMOTE = {
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
-    if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
+      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
@@ -4057,6 +4240,11 @@ const REMOTE = {
   async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
   async relink_media({ missing, media }) { const to = mediaBy(media).id; if (!LANES.some(L => P[L.key].some(c => c.media === missing))) throw new Error(`no clip uses media ${missing}`); return { relinked: relink(missing, to) }; },
   async import_lut({ cube, name }) { if (!cube) throw new Error('cube (the .cube file\'s text) is required'); parseCube(cube); const L = await api('/api/luts', { name: name || 'LUT', text: cube }); G.luts = await api('/api/luts'); return L; },
+  async multicam({ media }) { if (!Array.isArray(media)) throw new Error('media: 2 to 6 videos (ids or names), the first gives the sound'); return makeMulticam(media); },
+  async multicam_cut({ angle, at }) { const c = mcCut(Math.round(angle) - 1, at ?? S.t); if (!c) throw new Error(remoteLog?.at(-1) || 'no cut made'); return brief(c, 'main'); },
+  async generate_video(args) { return aiVideo({ ...args, say: undefined }); },
+  async compound_clip({ ids }) { if (!Array.isArray(ids) || ids.length < 2) throw new Error('ids: two or more clip ids'); const sel = ids.map(id => cfind(id)); S.sel = { lane: sel[0][1], id: sel[0][0].id }; S.multi = new Set(sel.slice(1).map(([c, L]) => selKey(L, c.id))); return makeCompound(sel); },
+  async break_compound({ id }) { breakCompound(cfind(id)[0]); return (await REMOTE.timeline()).tracks.main; },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
   async snapshot({ t, max = 720, preview = false }) {

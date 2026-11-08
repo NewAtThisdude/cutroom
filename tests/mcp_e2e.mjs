@@ -40,23 +40,28 @@ const b = await webkit.launch(), page = await (await b.newContext({ viewport: { 
 const errs = [];
 page.on('pageerror', e => errs.push(e.message));
 page.on('dialog', d => d.accept());
-await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); }); // the real app keeps the MCP commands
+const isNext = u => u.pathname === '/api/remote/next', hold = async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); };
+await page.route(isNext, hold); // the real app keeps the MCP commands
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const ev = (f, a) => page.evaluate(f, a);
 await ev(() => loadMedia());
 await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), [TALK.id, PIC.id], { timeout: 90000 });
 const CMD = { add_sound_effect: 'add_sound', generate_image: 'ai_image' }, remoteNames = await ev(() => Object.keys(REMOTE));
+const VIA_PATH = ['import_media', 'import_subtitles', 'import_lut']; // the MCP server reads the file and passes its contents
 const unmapped = tools.filter(t => t.name !== 'import_media' && !remoteNames.includes(CMD[t.name] || t.name)).map(t => t.name);
 check(`all ${tools.length} MCP tools map onto an editor command`, !unmapped.length, unmapped.join(', '));
 const sigs = await ev(() => Object.fromEntries(Object.entries(REMOTE).map(([k, f]) => [k, String(f).slice(0, String(f).indexOf(')') + 1)])));
-const stray = tools.flatMap(t => Object.keys(t.inputSchema.properties).filter(p => { const sig = sigs[CMD[t.name] || t.name]; return sig && !/\(args\)/.test(sig) && !new RegExp(`\\b${p}\\b`).test(sig); }).map(p => `${t.name}.${p}`));
+const stray = tools.filter(t => !VIA_PATH.includes(t.name)).flatMap(t => Object.keys(t.inputSchema.properties).filter(p => { const sig = sigs[CMD[t.name] || t.name]; return sig && !/\(args\)/.test(sig) && !new RegExp(`\\b${p}\\b`).test(sig); }).map(p => `${t.name}.${p}`));
 check('every tool argument is one its command reads', !stray.length, stray.join(', '));
+await page.unroute(isNext, hold); // for these read-only calls this page is the editor (the MCP server would open the app otherwise)
+await page.waitForTimeout(16000);
 for (const t of ['status', 'options', 'timeline', 'media', 'projects']) {
   const r = await rpc('tools/call', { name: t, arguments: {} });
   check(`MCP ${t} answers through the server and the open editor`, r.result && !r.result.isError && r.result.content[0].text.length > 2, r.result?.content?.[0]?.text?.slice(0, 120));
 }
 mcp.kill();
+await page.route(isNext, hold);
 
 // one command as the remote loop runs it
 const call = (cmd, args = {}) => ev(async ([cmd, args]) => {
@@ -79,7 +84,7 @@ const tl = async () => (await call('timeline')).result;
 const near = (a, b, tol = 0.05) => Math.abs(a - b) <= tol;
 
 // ---------- project ----------
-await T('options lists every choice', 'options', {}, o => o.transitions.length > 20 && o.looks.length > 10 && Object.keys(o.effects).length > 20 && o.exportFormats.length === 7);
+await T('options lists every choice', 'options', {}, o => o.transitions.length > 20 && o.looks.length > 10 && Object.keys(o.effects).length > 20 && o.exportFormats.length === 8);
 await T('new_project 16:9 with a name', 'new_project', { ratio: '16:9', name: 'MCP e2e (scratch)' }, () => ev(() => P.name === 'MCP e2e (scratch)' && P.w === 1920 && P.h === 1080));
 await fails('new_project with a bad ratio', 'new_project', { ratio: '7:3' }, /ratio must be one of/);
 await T('set_project name, fps, background, caption style', 'set_project', { set: { name: 'MCP e2e (scratch)', fps: 25, bg: '#102030', capStyle: { size: 70 } } }, () => ev(() => P.fps === 25 && P.bg === '#102030' && P.capStyle.size === 70));
@@ -212,6 +217,8 @@ await fails('preview_object without a box', 'preview_object', { id: fox.id }, /b
 await T('remove_object, fast', 'remove_object', { id: fox.id, box: { x: 0.3, y: 0.3, w: 0.4, h: 0.5 }, t: 1, quality: 'fast' }, async () => (await tl()).tracks.main[0].media !== 'fox-walk.mp4' || 'still the original clip');
 await call('history', { action: 'undo' });
 await T('cut_out_object', 'cut_out_object', { id: fox.id, box: { x: 0.3, y: 0.3, w: 0.4, h: 0.5 }, t: 1 }, async () => (await tl()).tracks.main[0].media !== 'fox-walk.mp4' || 'still the original clip');
+
+await T('generate_video on the 4090 PC from the fox frame', 'generate_video', { clip: fox.id, prompt: 'slow camera push in, natural motion', ratio: '16:9', put: 'overlay', at: 0 }, async r => { const m = (await get('/api/media')).find(x => x.id === r.media); return (m && m.kind === 'video' && m.duration > 4 && m.w === 1280 && r.clip?.lane === 'overlay') || JSON.stringify(m); });
 
 // ---------- whole-project tools ----------
 await T('smart_combine three videos, 15 s, cinematic', 'smart_combine', { media: ['cafe-and-dinner', 'mountain-hike', 'beach-and-city'], length: 15, style: 'cinematic', ratio: '16:9', music: 'music.m4a' }, r => (r.shots >= 3 && r.duration > 10 && r.duration < 20) || JSON.stringify(r));

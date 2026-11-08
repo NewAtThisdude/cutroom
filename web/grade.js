@@ -156,12 +156,24 @@ precision highp float; precision highp sampler3D;
 in vec2 uv; out vec4 o;
 uniform sampler2D src, tone, mask; uniform sampler3D lut;
 uniform vec4 crop; uniform bool flip, useTone, useLook, useLut, useKey, useMask, useColour;
-uniform float bri, con, lutN, mixK, sim, blnd, vig; uniform mat3 sat, look; uniform vec3 keyC; uniform vec2 size;
+uniform float bri, con, lutN, mixK, sim, blnd, vig, beauty, bSig; uniform mat3 sat, look; uniform vec3 keyC; uniform vec2 size, texel;
 vec3 r8(vec3 c) { return clamp(floor(c + 0.5), 0.0, 255.0); }
 float tn(float v) { return texelFetch(tone, ivec2(int(floor(v + 0.5)), 0), 0).r * 255.0; }
 void main() {
   vec2 p = uv; if (flip) p.x = 1.0 - p.x;
-  vec4 s = texture(src, mix(crop.xy, crop.zw, p));
+  vec2 P0 = mix(crop.xy, crop.zw, p);
+  vec4 s = texture(src, P0);
+  if (beauty > 0.0) { // smooth skin: a luma bilateral (sigmaR 0.1), mixed in where the colour is skin's, like the export's bilateral + chromakey
+    const vec3 Y = vec3(0.299, 0.587, 0.114);
+    float y0 = dot(s.rgb, Y), ws = 0.0, ys = 0.0;
+    for (int j = -3; j <= 3; j++) for (int i = -3; i <= 3; i++) {
+      float y = dot(texture(src, P0 + vec2(float(i), float(j)) * bSig * 0.7 * texel).rgb, Y);
+      float w = exp(-float(i * i + j * j) / 9.0 - (y - y0) * (y - y0) / 0.02); ws += w; ys += w * y;
+    }
+    float u = -0.168736 * s.r - 0.331264 * s.g + 0.5 * s.b, v = 0.5 * s.r - 0.418688 * s.g - 0.081312 * s.b;
+    float du = u - (-0.0721), dv = v - 0.1043, dd = sqrt((du * du + dv * dv) / 2.0), kA = clamp((dd - 0.10) / 0.12, 0.0, 1.0);
+    s.rgb = clamp(s.rgb + (ys / ws - y0) * beauty * (1.0 - kA), 0.0, 1.0);
+  }
   vec3 c0 = r8(s.rgb * 255.0), c = c0;
   if (useColour) {
     c = clamp(c * bri, 0.0, 255.0); c = clamp((c - 127.5) * con + 127.5, 0.0, 255.0); c = clamp(sat * c, 0.0, 255.0);
@@ -183,7 +195,7 @@ void main() {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const n of ['src', 'tone', 'mask', 'lut', 'crop', 'flip', 'useTone', 'useLook', 'useLut', 'useKey', 'useMask', 'useColour', 'bri', 'con', 'lutN', 'mixK', 'sim', 'blnd', 'vig', 'sat', 'look', 'keyC', 'size']) U[n] = gl.getUniformLocation(pg, n);
+    for (const n of ['src', 'tone', 'mask', 'lut', 'crop', 'flip', 'useTone', 'useLook', 'useLut', 'useKey', 'useMask', 'useColour', 'bri', 'con', 'lutN', 'mixK', 'sim', 'blnd', 'vig', 'beauty', 'bSig', 'texel', 'sat', 'look', 'keyC', 'size']) U[n] = gl.getUniformLocation(pg, n);
     gl.uniform1i(U.src, 0); gl.uniform1i(U.tone, 1); gl.uniform1i(U.lut, 2); gl.uniform1i(U.mask, 3);
     const t2 = (unit, filter) => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
     const lutT = gl.createTexture();
@@ -226,6 +238,8 @@ function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, colour
   gl.uniform1i(U.useMask, mk ? 1 : 0);
   if (mk) { const mc = maskCanvas(mk, W, H); if (GPU.maskKey !== mc) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GPU.maskT); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mc); GPU.maskKey = mc; } }
   gl.uniform1f(U.vig, opt.noVig ? 0 : a.vig || 0); gl.uniform2f(U.size, W, H);
+  const bt = c.beauty?.amt || 0; // bilateral sigma: 0.8 % of the clip's short side, in source pixels as the export
+  gl.uniform1f(U.beauty, bt); gl.uniform1f(U.bSig, 0.008 * Math.min(src[2], src[3])); gl.uniform2f(U.texel, 1 / vw, 1 / vh);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return [cv, cv.height - H];
 }

@@ -61,6 +61,8 @@ def meta(mid):
 
 
 def save_meta(m):
+    if m.get('file') and not (MEDIA / m['file']).exists():  # removed from the library while it was being prepared: don't bring back an empty entry
+        return
     (MEDIA / f"{m['id']}.json").write_text(json.dumps(m))
 
 
@@ -487,6 +489,22 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     return {'media': res['id'], 'frames': n, 'lost': lost, 'engine': engine}
 
 
+def sync_media(ids):
+    """Multicam: offsets that line the recordings up by their sound (ai/sync.py, numpy in the AI venv). offset k =
+    time in k - time in the first, for the same moment."""
+    ms = [meta(i) for i in ids]
+    if not 2 <= len(ms) <= 6:
+        raise ValueError('pick 2 to 6 recordings')
+    if any(not m.get('hasAudio') for m in ms):
+        raise ValueError('every angle needs its own sound to be synced: ' + ', '.join(m['name'] for m in ms if not m.get('hasAudio')))
+    if not (AI_BIN / 'python').exists():
+        raise ValueError('syncing needs the on-device AI tools (ai/setup.sh)')
+    r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'sync.py'), *[str(MEDIA / m['file']) for m in ms]], capture_output=True, text=True, env=AI_ENV, timeout=600)
+    if r.returncode:
+        raise RuntimeError((r.stderr or 'sync failed').strip().splitlines()[-1])
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
 def mask_preview(mid, t, box, points=None):
     """The exact outline (SAM 2) of what a box covers on one frame: the user checks it before Best removal runs."""
     m = meta(mid)
@@ -565,13 +583,21 @@ def isolate(st, mid, keep='voice'):
     return {'media': res['id']}
 
 
-def matte(st, mid):
+def matte(st, mid, t0=None, t1=None):
     """Remove the background (Vision person segmentation) -> VP9+alpha WebM, a new library item.
-    WebM/VP9 alpha plays transparent in Chrome and is ~30x smaller than the ProRes 4444 the tool writes."""
+    WebM/VP9 alpha plays transparent in Chrome and is ~30x smaller than the ProRes 4444 the tool writes.
+    With t0/t1 only that range (the part a clip uses) is processed, and the cutout starts at t0."""
     m = meta(mid)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        pro, out = Path(td) / 'cut.mov', Path(td) / 'cut.webm'
-        proc = subprocess.Popen([build_tool('matte'), str(MEDIA / m['file']), str(pro), 'balanced'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pro, out, src = Path(td) / 'cut.mov', Path(td) / 'cut.webm', MEDIA / m['file']
+        if t0 is not None and t1 is not None and (t0 > 0.05 or t1 < m['duration'] - 0.05):  # cut the range first (Apple's encoder, near lossless)
+            rng = Path(td) / 'range.mov'
+            r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', '-c:v', 'h264_videotoolbox', '-q:v', '80',
+                    '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', str(rng)])
+            if r.returncode:
+                raise RuntimeError('cutting the range failed: ' + r.stderr[-300:])
+            src = rng
+        proc = subprocess.Popen([build_tool('matte'), str(src), str(pro), 'balanced'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for line in proc.stdout:
             if line.startswith('progress '):
                 st['progress'] = 0.9 * float(line.split()[1])
@@ -582,7 +608,7 @@ def matte(st, mid):
                               '-of', 'json', str(MEDIA / m['file'])]).stdout or '{}').get('streams', [{}])[0]
         # the matte is tagged bt709 even for untagged sources; relabel it like the source or ffmpeg shifts the person's colours
         relabel = f"setparams=colorspace={tags.get('color_space', 'unknown')}:color_primaries={tags.get('color_primaries', 'unknown')}:color_trc={tags.get('color_transfer', 'unknown')}"
-        r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(pro), '-i', str(MEDIA / m['file']), '-map', '0:v', '-map', '1:a?', '-vf', f'{relabel},{MATTE_VF}',
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(pro), '-i', str(src), '-map', '0:v', '-map', '1:a?', '-vf', f'{relabel},{MATTE_VF}',
                 '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
                 '-c:a', 'libopus', '-b:a', '128k', str(out)])
         if r.returncode:
@@ -603,7 +629,7 @@ def reverse(st, mid):
         for i in range(n):
             f = Path(td) / f'r{i:04d}.mkv'
             r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{i * 2:.3f}', '-t', '2', '-i', str(MEDIA / m['file']),
-                    *(['-vf', 'reverse', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '14'] if video else ['-vn']),
+                    *(['-vf', 'reverse', '-c:v', 'h264_videotoolbox', '-q:v', '70'] if video else ['-vn']),
                     *(['-af', 'areverse', '-c:a', 'pcm_s16le'] if m['hasAudio'] else ['-an']), str(f)])
             if r.returncode:
                 raise RuntimeError('reverse failed: ' + r.stderr[-300:])
@@ -629,7 +655,7 @@ def stabilize(st, mid):
         out = Path(td) / 'stab.mp4'
         vf = f"deshake=rx=48:ry=48:edge=mirror,crop=trunc(iw*0.92/2)*2:trunc(ih*0.92/2)*2,scale={even(m['w'])}:{even(m['h'])}"
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-i', str(MEDIA / m['file']),
-                    '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-c:a', 'copy', '-movflags', '+faststart', str(out)],
+                    '-vf', vf, '-c:v', 'h264_videotoolbox', '-q:v', '68', '-c:a', 'copy', '-movflags', '+faststart', str(out)],
                    m['duration'], lambda x: st.update(progress=0.95 * x))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (stabilized).mp4", fh, out.stat().st_size, background=False)
@@ -664,7 +690,7 @@ def slowmo(st, mid, t0, t1, factor):
         out = Path(td) / 'smooth.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-ss', f'{t0:.4f}', '-t', f'{t1 - t0:.4f}',
                     '-i', str(MEDIA / m['file']), '-vf', f'minterpolate=fps={fps:g}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(out)],
+                    '-c:v', 'h264_videotoolbox', '-q:v', '68', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(out)],
                    t1 - t0, lambda x: st.update(progress=0.95 * x))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (smooth {factor}x).mp4", fh, out.stat().st_size, background=False)
@@ -938,6 +964,149 @@ def ai_voice(st, text, voice='af_heart', speed=1.0):
         with open(f, 'rb') as fh:
             m = import_file(f'AI voice - {text[:40]}.wav', fh, f.stat().st_size, background=False)
     return {'media': m['id']}
+
+
+# ---------- AI video: image to video on the RTX 4090 PC (ComfyUI + Wan 2.2 14B, Lightning 4 steps), through an SSH tunnel ----------
+GPU_HOST = os.environ.get('CUTROOM_GPU_HOST', 'win4090')  # ~/.ssh/config alias; ComfyUI listens on that PC's 127.0.0.1:8188 only
+COMFY = {'proc': None, 'port': int(os.environ.get('CUTROOM_COMFY_PORT', '18188')), 'log': [], 'lock': threading.Lock()}
+COMFY_DIR = r'B:\AI\ComfyUI_windows_portable'
+VIDEO_NEG = ('blurry, low quality, distorted, deformed, warped face, melting, extra limbs, extra fingers, flicker, jitter, morphing, '
+             'watermark, text, subtitles, static frame')
+
+
+def comfy(path, body=None, timeout=60, raw=False):
+    url = f"http://127.0.0.1:{COMFY['port']}{path}"
+    req = urllib.request.Request(url, data=body if isinstance(body, bytes) or body is None else json.dumps(body).encode(),
+                                 headers={} if isinstance(body, bytes) or body is None else {'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read() if raw else json.loads(r.read() or b'{}')
+
+
+def comfy_up(st):
+    """ComfyUI reachable through the tunnel: started on the PC (foreground in this ssh session) if it isn't running.
+    The tunnel and that ComfyUI end with Cutroom's server, which frees the PC's GPU."""
+    with COMFY['lock']:
+        try:
+            comfy('/system_stats', timeout=3)
+            return
+        except OSError:
+            pass
+        p = COMFY['proc']
+        if not p or p.poll() is not None:
+            launch = f'cd /d {COMFY_DIR} && python_embeded\\python.exe -s ComfyUI\\main.py --port 8188 --disable-auto-launch'
+            p = COMFY['proc'] = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes',
+                                                  '-L', f"{COMFY['port']}:127.0.0.1:8188", GPU_HOST, f'cmd /c "{launch}"'],
+                                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            COMFY['log'] = []
+            threading.Thread(target=lambda: [COMFY['log'].append(x) for x in p.stdout], daemon=True).start()  # drained, or the pipe fills and ComfyUI stalls
+        for i in range(240):  # first start: ComfyUI loads its nodes (~1 min)
+            st['progress'] = min(0.1, i / 2400)
+            try:
+                comfy('/system_stats', timeout=3)
+                return
+            except OSError:
+                if p.poll() is not None:
+                    raise RuntimeError(f'the GPU PC ({GPU_HOST}) did not start ComfyUI: ' + ''.join(COMFY['log'][-6:]).strip()[-300:])
+                time.sleep(1)
+        raise RuntimeError('ComfyUI on the GPU PC did not answer in 4 minutes')
+
+
+def comfy_down():
+    """Stop the ComfyUI this server started on the PC (its unique --disable-auto-launch flag: never another ComfyUI or
+    the PC's other Python services) and the tunnel: the GPU's memory is free again. Closing ssh alone leaves it running."""
+    p, COMFY['proc'] = COMFY['proc'], None
+    if not p:
+        return
+    ps = ("$ProgressPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and "
+          "$_.CommandLine -like '*main.py --port 8188 --disable-auto-launch*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    try:
+        subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', GPU_HOST, 'powershell -NoProfile -EncodedCommand ' + base64.b64encode(ps.encode('utf-16-le')).decode()],
+                       capture_output=True, timeout=40)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if p.poll() is None:
+        p.terminate()
+
+
+def comfy_idle():  # 10 minutes after the last AI video, the PC gets its GPU back
+    t = COMFY.get('idle')
+    if t:
+        t.cancel()
+    COMFY['idle'] = threading.Timer(600, comfy_down)
+    COMFY['idle'].daemon = True
+    COMFY['idle'].start()
+
+
+def ai_video(st, image, prompt, ratio='9:16', quality='fast', seed=None):
+    try:
+        return ai_video_(st, image, prompt, ratio, quality, seed)
+    finally:
+        comfy_idle()
+
+
+def ai_video_(st, image, prompt, ratio='9:16', quality='fast', seed=None):
+    """Image to video on the 4090 PC: Wan 2.2 14B fp8 + the Lightning LoRA (4 steps), 81 frames at 16 fps (~5 s), 720p
+    (best: x2 RealESRGAN). The picture is a library image, or a video's frame (pass its still). -> a library item."""
+    m = meta(image)
+    if m['kind'] != 'image':
+        raise ValueError('start from a picture (a photo, a generated image, or a video frame made with Freeze frame)')
+    prompt = ' '.join(str(prompt).split())[:1500] or 'gentle natural motion, cinematic'
+    w, h = (720, 1280) if ratio == '9:16' else (1280, 720) if ratio == '16:9' else (960, 960)
+    seed = int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 2 ** 31
+    comfy_up(st)
+    name = f'cutroom_{uuid.uuid4().hex[:8]}'
+    boundary = uuid.uuid4().hex
+    data = (MEDIA / m['file']).read_bytes()
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{name}{Path(m["file"]).suffix}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode() + data + \
+        f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{COMFY['port']}/upload/image", data=body, headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        up = json.loads(r.read())
+    wf = {
+        '1': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', 'weight_dtype': 'default'}},
+        '2': {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': ['1', 0], 'lora_name': 'wan22_lightning\\high_noise.safetensors', 'strength_model': 1.0}},
+        '3': {'class_type': 'ModelSamplingSD3', 'inputs': {'model': ['2', 0], 'shift': 5.0}},
+        '4': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors', 'weight_dtype': 'default'}},
+        '5': {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': ['4', 0], 'lora_name': 'wan22_lightning\\low_noise.safetensors', 'strength_model': 1.0}},
+        '6': {'class_type': 'ModelSamplingSD3', 'inputs': {'model': ['5', 0], 'shift': 5.0}},
+        '7': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', 'type': 'wan'}},
+        '8': {'class_type': 'CLIPTextEncode', 'inputs': {'text': prompt, 'clip': ['7', 0]}},
+        '9': {'class_type': 'CLIPTextEncode', 'inputs': {'text': VIDEO_NEG, 'clip': ['7', 0]}},
+        '10': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'wan_2.1_vae.safetensors'}},
+        '11': {'class_type': 'LoadImage', 'inputs': {'image': up.get('name', name)}},
+        '12': {'class_type': 'WanImageToVideo', 'inputs': {'positive': ['8', 0], 'negative': ['9', 0], 'vae': ['10', 0], 'width': w, 'height': h, 'length': 81, 'batch_size': 1, 'start_image': ['11', 0]}},
+        '13': {'class_type': 'KSamplerAdvanced', 'inputs': {'model': ['3', 0], 'add_noise': 'enable', 'noise_seed': seed, 'steps': 4, 'cfg': 1.0, 'sampler_name': 'euler', 'scheduler': 'simple',
+                                                             'positive': ['12', 0], 'negative': ['12', 1], 'latent_image': ['12', 2], 'start_at_step': 0, 'end_at_step': 2, 'return_with_leftover_noise': 'enable'}},
+        '14': {'class_type': 'KSamplerAdvanced', 'inputs': {'model': ['6', 0], 'add_noise': 'disable', 'noise_seed': seed, 'steps': 4, 'cfg': 1.0, 'sampler_name': 'euler', 'scheduler': 'simple',
+                                                             'positive': ['12', 0], 'negative': ['12', 1], 'latent_image': ['13', 0], 'start_at_step': 2, 'end_at_step': 4, 'return_with_leftover_noise': 'disable'}},
+        '15': {'class_type': 'VAEDecode', 'inputs': {'samples': ['14', 0], 'vae': ['10', 0]}},
+    }
+    last = ['15', 0]
+    if quality == 'best':
+        wf['16'] = {'class_type': 'UpscaleModelLoader', 'inputs': {'model_name': 'RealESRGAN_x2plus.pth'}}
+        wf['17'] = {'class_type': 'ImageUpscaleWithModel', 'inputs': {'upscale_model': ['16', 0], 'image': ['15', 0]}}
+        last = ['17', 0]
+    wf['18'] = {'class_type': 'VHS_VideoCombine', 'inputs': {'images': last, 'frame_rate': 16, 'loop_count': 0, 'filename_prefix': name, 'format': 'video/h264-mp4', 'pingpong': False, 'save_output': True}}
+    pid = comfy('/prompt', {'prompt': wf, 'client_id': 'cutroom'})['prompt_id']
+    t0 = time.time()
+    while time.time() - t0 < 1800:
+        h_ = comfy(f'/history/{pid}')
+        if pid in h_:
+            outs = [g for o in h_[pid].get('outputs', {}).values() for g in o.get('gifs', []) + o.get('videos', [])]
+            if not outs:
+                err = h_[pid].get('status', {}).get('messages', [])
+                raise RuntimeError('the GPU PC made no video: ' + json.dumps(err)[-300:])
+            o = outs[0]
+            vid = comfy(f"/view?filename={urllib.parse.quote(o['filename'])}&subfolder={urllib.parse.quote(o.get('subfolder', ''))}&type={o.get('type', 'output')}", raw=True, timeout=300)
+            with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+                f = Path(td) / 'v.mp4'
+                f.write_bytes(vid)
+                with open(f, 'rb') as fh:
+                    cut = import_file(f"AI video - {prompt[:40]}.mp4", fh, f.stat().st_size, background=False)
+            return {'media': cut['id'], 'seed': seed}
+        st['progress'] = 0.1 + 0.85 * min(1, (time.time() - t0) / (240 if quality == 'best' else 150))
+        time.sleep(3)
+    raise RuntimeError('the GPU PC took over 30 minutes')
 
 
 def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
@@ -1363,7 +1532,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
-           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'library': bool(p.get('library')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -1411,6 +1580,11 @@ def clean_plan(p):
         if k['grade'] is not None and len(k['grade']) != 33 ** 3 * 3 * 2:
             raise ValueError('grade must be a 33-point 3D table')
         k['lkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 1)} for f in (c.get('lkf') or [])[:2000]] or None  # filter strength keyframes
+        k['blur'] = int(fnum(c.get('blur', 0), 0, 400)) or None  # px in the source
+        b = c.get('beauty') or {}
+        k['beauty'] = {'amt': fnum(b.get('amt', 0), 0, 1), 'sigma': fnum(b.get('sigma', 4), 0.1, 512)} if b.get('amt') else None
+        g = c.get('glow') or {}
+        k['glow'] = {'color': g['color'] if HEX.fullmatch(str(g.get('color', ''))) else '#ffffff', 'sigma': fnum(g.get('sigma', 8), 0.1, 512), 'gain': fnum(g.get('gain', 1), 0.1, 8)} if g.get('sigma') else None
         k['tone'] = [int(fnum(v, 0, 255)) for v in c['tone']] if c.get('tone') else None  # 256-entry curve made by the UI (exposure, highlights...)
         if k['tone'] is not None and len(k['tone']) != 256:
             raise ValueError('tone curve must have 256 entries')
@@ -1687,6 +1861,12 @@ def graph(p, td):
             v += f",format=gbrp,split[{tag}a][{tag}b];[{tag}b]{col[1:]},format=gbrp[{tag}g];[{tag}a][{tag}g]blend=all_expr='A+(B-A)*({pw(c['lkf'], 'v', 'T')})'"
         else:
             v += col
+        if c.get('beauty'):  # smooth skin: luma bilateral, mixed in where the colour is skin's (chromakey's distance), by strength
+            t, b = f'bt{next(AFX_N)}', c['beauty']
+            v += (f",format=yuv444p,split[{t}o][{t}b];[{t}b]bilateral=sigmaS={b['sigma']:.3f}:sigmaR=0.1[{t}s];"
+                  f"[{t}o]format=yuva444p,chromakey=color=0xC89682:similarity=0.10:blend=0.12,lut=a='255-(255-val)*{b['amt']:.4f}'[{t}k];[{t}s][{t}k]overlay=format=yuv444")
+        if c.get('blur'):  # the clip's own blur: boxblur, 3 passes (a Gaussian), radius in source pixels
+            v += f",boxblur=luma_radius={c['blur']}:luma_power=3:chroma_radius={c['blur']}:chroma_power=3"
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         return v
@@ -1732,6 +1912,13 @@ def graph(p, td):
         j = len(ins) - 1
         return v + (f',format=gbrap,split[{tag}c][{tag}r];[{j}:v]format=gbrap[{tag}g];[{tag}g][{tag}r]scale=w=rw:h=rh[{tag}gs];'  # scale2ref fails on gbrap
                     f'[{tag}c][{tag}gs]blend=c0_mode=multiply:c1_mode=multiply:c2_mode=multiply:c3_mode=normal')
+
+    def glowed(v, c):  # a cutout's glow / neon outline: its alpha blurred and coloured, under it (canvas shadowBlur in the preview)
+        if not c.get('glow'):
+            return v
+        t, g = f'gl{next(AFX_N)}', c['glow']
+        return v + (f",format=rgba,split=3[{t}c][{t}a][{t}f];[{t}f]drawbox=x=0:y=0:w=iw:h=ih:color={g['color'].replace('#', '0x')}:t=fill[{t}fc];"
+                    f"[{t}a]alphaextract,gblur=sigma={g['sigma']:.3f},lut=y='min(255,val*{g['gain']:.3f})'[{t}ga];[{t}fc][{t}ga]alphamerge[{t}g];[{t}g][{t}c]overlay=format=auto")
 
     def opacity(c, tag, n):
         kf = c.get('kf')
@@ -1856,7 +2043,7 @@ def graph(p, td):
         i = inp(c, dur)
         g, kf = c['geom'], c.get('kf')
         sc, ox, oy = place(c, f"(t-{c['start']:.6f})")
-        v = masked(vignetted(video(i, c, n), c, f'ov{k}', dur), c, f'o{k}', dur) + rotation(c) + ('' if kf else sc) + ',format=rgba' + opacity(c, f'oop{k}', n)
+        v = glowed(masked(vignetted(video(i, c, n), c, f'ov{k}', dur), c, f'o{k}', dur), c) + rotation(c) + ('' if kf else sc) + ',format=rgba' + opacity(c, f'oop{k}', n)
         if c['fadeIn']:
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}:alpha=1"
         if c['fadeOut']:
@@ -2026,10 +2213,16 @@ def export(job, p):
                              'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
-            out = unique(EXPORTS / f"{p['name']}{FORMATS[p.get('format', 'mp4')]}")
+            lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
+            out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}" if lib else unique(EXPORTS / f"{p['name']}{FORMATS[p.get('format', 'mp4')]}")
             run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps))
             if not out.exists() or not out.stat().st_size:
                 raise RuntimeError('ffmpeg finished without writing a file')
+            if lib:
+                stem = re.sub(r'[\\/:*?"<>|]', '', p['name'])[:80] or 'Compound'
+                m = import_file(stem + out.suffix, None, 0, background=False, src=out)
+                st.update(state='done', progress=1.0, media=m['id'])
+                return
         st.update(state='done', progress=1.0, file=out.name)
     except Exception as e:  # surfaced to the UI
         st.update(state='error', error=str(e))
@@ -2137,8 +2330,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
-            if path == '/api/media':
-                return self.reply(sorted((json.loads(f.read_text()) for f in MEDIA.glob('*.json')), key=lambda m: -m.get('added', 0)))
+            if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
+                return self.reply(sorted((m for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file()), key=lambda m: -m.get('added', 0)))
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':
@@ -2255,6 +2448,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(ai_music, body.get('prompt', ''), body.get('dur', 20), body.get('seed'))})
             if u.path == '/api/ai/voice':
                 return self.reply({'job': run_job(ai_voice, body.get('text', ''), body.get('voice', 'af_heart'), body.get('speed', 1))})
+            if u.path == '/api/ai/video':
+                return self.reply({'job': run_job(ai_video, str(body.get('image', '')), body.get('prompt', ''), body.get('ratio', '9:16'), body.get('quality', 'fast'), body.get('seed'))})
             if u.path == '/api/ai/image':
                 return self.reply({'job': run_job(ai_image, body.get('prompt', ''), body.get('w', 1024), body.get('h', 1024), body.get('seed'),
                                                   body.get('steps', 8), bool(body.get('sticker')))})
@@ -2280,6 +2475,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
                 return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'))})
+            if u.path == '/api/sync':
+                return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
                 return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
             if u.path == '/api/silences':
@@ -2290,7 +2487,7 @@ class App(BaseHTTPRequestHandler):
                 threading.Thread(target=export, args=(job, p), daemon=True).start()
                 return self.reply({'job': job})
             if u.path == '/api/matte':
-                return self.reply({'job': run_job(matte, body['media'])})
+                return self.reply({'job': run_job(matte, body['media'], *([fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6)] if body.get('t1') else []))})
             if u.path in ('/api/reverse', '/api/stabilize'):
                 return self.reply({'job': run_job(reverse if u.path == '/api/reverse' else stabilize, body['media'])})
             if u.path == '/api/faces':
@@ -2752,7 +2949,12 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
-    srv.serve_forever()
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: (comfy_down(), os._exit(0)))  # the app quitting: the PC's ComfyUI goes too
+    try:
+        srv.serve_forever()
+    finally:
+        comfy_down()
 
 
 if __name__ == '__main__':

@@ -124,6 +124,7 @@ TOOLS = [
     ('voiceover', "Text to speech with the Mac's voices, added on the audio track at `at` (default: playhead).", S({'text': txt, 'voice': txt, 'rate': num, 'at': num}, ['text']), 'voiceover'),
     ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
+                  'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
@@ -135,6 +136,10 @@ TOOLS = [
     ('generate_image', 'Generate an image ON THIS MAC (Z-Image-Turbo, about 25-50 s) and put it on the timeline. sticker=true cuts the subject out (transparent PNG). '
                        'shape canvas|1:1|16:9|9:16|4:5; steps 4 (draft) or 8 (best); put overlay|main|library; start/duration in seconds.',
      S({'prompt': txt, 'shape': txt, 'sticker': boo, 'steps': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'put': txt, 'start': num, 'duration': num}, ['prompt']), 'ai_image'),
+    ('generate_video', 'Animate a picture into a ~5 s video (Wan 2.2 image-to-video on the user\'s RTX 4090 PC over SSH, ~2 min; the Mac stays cool). '
+                       'image = a library picture (id or name); or clip = a clip id (a video clip gives its frame at the playhead); or nothing = the selected clip. '
+                       'prompt = what happens (motion, camera); ratio 9:16|16:9|1:1 (default: the picture\'s); quality fast (720p) | best (1440p); put main|overlay|library.',
+     S({'prompt': txt, 'image': txt, 'clip': txt, 'ratio': txt, 'quality': txt, 'put': txt, 'at': num, 'seed': {'type': 'integer'}}), 'generate_video'),
     ('generate_music', 'Make music ON THIS MAC (MusicGen, about as long as the music takes to play) from a description or a style '
                        '(Upbeat pop, Lo-fi, Cinematic, Hip hop, EDM, Acoustic, Corporate, Ambient, Funk, Trap) and put it on the audio track at `at`. '
                        'duration 4-60 s; add=false keeps it in the library only. smart_combine also takes music="ai" to make music to fit the edit.',
@@ -171,6 +176,12 @@ TOOLS = [
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
     ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
     ('relink_media', 'Point every clip that uses a missing media id (it left the library) at another library item (id or name).', S({'missing': txt, 'media': txt}, ['missing', 'media']), 'relink_media'),
+    ('multicam', 'Multicam: 2-6 recordings of the same moment (ids or names), lined up by their sound, as one main clip plus one continuous audio clip (the first one\'s sound). Then multicam_cut switches angles.',
+     S({'media': {'type': 'array', 'items': txt}}, ['media']), 'multicam'),
+    ('multicam_cut', 'Cut a multicam clip to angle (1-6) from time `at` (default: playhead) on: a split there, in sync.', S({'angle': {'type': 'integer'}, 'at': num}, ['angle']), 'multicam_cut'),
+    ('compound_clip', 'Make several clips (ids; at least one main-track clip, the main ones next to each other) into one compound clip: rendered once into the library, one video to play instead of many. break_compound undoes it.',
+     S({'ids': {'type': 'array', 'items': txt}}, ['ids']), 'compound_clip'),
+    ('break_compound', 'Put a compound clip\'s original clips back where they were.', S({'id': txt}, ['id']), 'break_compound'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
@@ -203,7 +214,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

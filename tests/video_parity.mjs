@@ -10,7 +10,7 @@ import os from 'node:os';
 const B = 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain)/; // 28: a scaled or turning clip's edges land a pixel apart
-const APPROX = /effect (blur|pixelate)|transition pixelize|blur bg/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
+const APPROX = /effect (blur|pixelate)|transition pixelize|blur bg|clip blur|beauty|glow/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-parity-`);
 const gen = (name, args) => { const f = `${tmp}/${name}`; execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, f]); return f; };
 const files = {
@@ -49,6 +49,9 @@ add('grade HSL', `main(A).grade = { hsl: { red: { h: 0.6, s: 0.4 }, green: { h: 
 add('grade LUT 50%', `lutLib.set('parity', parseCube('LUT_3D_SIZE 2\\n0 0 0.2\\n1 0 0\\n0 1 0\\n1 1 0\\n0 0.1 1\\n1 0 1\\n0 1 1\\n0.9 0.95 1')); gradeCache.clear(); main(A).grade = { lut: { id: 'parity', amount: 0.5 } }; T = 1.5`);
 add('grade + look + adjust', `Object.assign(main(A), { look: { name: 'teal', amount: 0.8 }, adj: { b: 1.1, c: 1.2, s: 0.8, ex: 0.3 }, grade: { gain: { x: 0.3, y: 0, l: 0.1 }, curves: { m: [[0, 0], [0.5, 0.6], [1, 1]] } } }); T = 1.5`);
 add('filter strength keyframes', `Object.assign(main(A), { look: { name: 'mono', amount: 1 }, grade: { hsl: { red: { h: 1 } } }, lkf: [{ t: 0, v: 0 }, { t: 3, v: 1 }] }); T = 1.0`);
+add('clip blur', `main(A).adj = { b: 1, c: 1, s: 1, blur: 0.4 }; T = 1.5`);
+add('beauty smooth skin', `main(A).beauty = { amt: 1 }; T = 1.5`);
+add('overlay glow', `main(B); Object.assign(ov(I), { fit: 'fit', scale: 0.5, glow: { color: '#00e5ff', size: 0.5 }, key: { color: '#ffffff', sim: 0.2, blend: 0.1 } }); T = 1`);
 add('crop', 'main(A).crop = { l: 0.1, r: 0.2, t: 0.1, b: 0.05 }; T = 1.5');
 add('flip', 'main(A).flip = true; T = 1.5');
 add('scale/move/rotate', 'Object.assign(main(A), { scale: 0.6, x: 0.2, y: -0.1, rot: 20 }); T = 1.5');

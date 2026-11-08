@@ -37,6 +37,7 @@ const drag = async (from, to) => { await page.mouse.move(from.x, from.y); await 
 const still = (t, max = 320) => ev(async ([t, max]) => { const r = await REMOTE.snapshot({ t, max }); const i = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(i.width, i.height), g = c.getContext('2d'); g.drawImage(i, 0, 0); return { w: i.width, h: i.height, px: [...g.getImageData(0, 0, i.width, i.height).data] }; }, [t, max]);
 const at = (img, fx, fy) => { const i = (Math.round(fy * (img.h - 1)) * img.w + Math.round(fx * (img.w - 1))) * 4; return img.px.slice(i, i + 3); };
 
+try { // the tidy below runs even if a section throws
 // ---------- tracks ----------
 if (run('tracks')) {
   await fresh('Tracks');
@@ -105,12 +106,13 @@ if (run('relink')) {
   const pid = await ev(async id => { addMedia(id, 'main'); addMedia(id, 'overlay', 1); await api(`/api/projects/${P.id}`, P, 'PUT'); return P.id; }, X.id);
   await fetch(`${B}/api/media/${X.id}/trash`, { method: 'POST', headers: H, body: '{}' });
   await ev(async pid => { await loadMedia(); await openProject(pid); }, pid);
-  check('a clip whose file left the library shows as missing on the timeline', await page.locator('.clip.missing').count() === 2);
+  await page.waitForFunction(() => document.querySelectorAll('.clip.missing').length === 2, null, { timeout: 8000 }).catch(() => {});
+  check('a clip whose file left the library shows as missing on the timeline', await page.locator('.clip.missing').count() === 2, JSON.stringify(await ev(([pid, id]) => ({ open: P.id === pid, clips: P.main.map(c => c.media), has: M.has(id), x: id }), [pid, X.id])));
   await page.locator('.clip.missing').first().click();
   check('its inspector offers restore / relink', await page.locator('#inspector [data-act="restore"]').count() === 1 && await page.locator('#inspector [data-relink]').count() === 1);
   await page.click('#inspector [data-act="restore"]');
-  await page.waitForFunction(id => M.get(id), X.id, { timeout: 5000 }).catch(() => {});
-  check('Restore from trash brings the file back and the clips play it', await page.locator('.clip.missing').count() === 0 && await ev(id => !!M.get(id), X.id));
+  await page.waitForFunction(id => M.get(id) && !document.querySelector('.clip.missing'), X.id, { timeout: 20000 }).catch(() => {});
+  check('Restore from trash brings the file back and the clips play it', await page.locator('.clip.missing').count() === 0 && await ev(id => !!M.get(id), X.id), await ev(() => ($('#clipStatus')?.textContent || '') + ' | ' + document.querySelectorAll('.clip.missing').length));
   await fetch(`${B}/api/media/${X.id}/trash`, { method: 'POST', headers: H, body: '{}' });
   await ev(async pid => { await loadMedia(); await openProject(pid); }, pid);
   await page.locator('.clip.missing').first().click();
@@ -175,6 +177,99 @@ if (run('grade')) {
   const bad = await ev(id => REMOTE.update_clip({ id, set: { grade: { hsl: { teal: { h: 1 } } } } }).then(() => 'ok', e => e.message), cid);
   check('a malformed grade is refused clearly', /^grade: /.test(bad), bad);
 }
+
+// ---------- compound clips ----------
+if (run('compound')) {
+  await fresh('Compound');
+  await ev(() => { addMedia(MD.V.id, 'main'); P.main[0].out = 2; addMedia(MD.V.id, 'main'); Object.assign(P.main[1], { in: 3, out: 5, tr: undefined }); P.main[0].tr = { type: 'dissolve', d: 0.5 }; addMedia(MD.V.id, 'main'); P.main[2].out = 1.5;
+    addMedia(MD.RED.id, 'overlay', 0.5); Object.assign(P.overlay[0], { fit: 'fit', scale: 0.3, x: 0.3 }); S.t = 1; addText('Title'); S.sel = null; renderAll(); });
+  const before = await still(1.2), sel = await ev(() => [['main', P.main[0].id], ['main', P.main[1].id], ['overlay', P.overlay[0].id], ['text', P.text[0].id]]);
+  await ev(sel => { S.sel = { lane: sel[0][0], id: sel[0][1] }; S.multi = new Set(sel.slice(1).map(([l, id]) => `${l}:${id}`)); renderAll(); }, sel);
+  await page.locator(`.clip[data-id="${sel[0][1]}"]`).click({ button: 'right' });
+  await page.locator('.ctxmenu button', { hasText: 'Make compound clip' }).click();
+  await page.waitForFunction(() => P.main.some(c => c.compound), null, { timeout: 60000 }).catch(() => {});
+  const r = await ev(() => ({ main: P.main.length, ov: P.overlay.length, text: P.text.length, cc: P.main.find(c => c.compound) && { dur: +len(P.main[0]).toFixed(2), n: P.main[0].compound.main.length, tr: P.main[0].tr?.type } }));
+  check('the right-click menu makes 2 main clips + an overlay + a title into one compound clip', r.main === 2 && r.ov === 0 && r.text === 0 && r.cc?.n === 2 && r.cc.dur > 3, JSON.stringify(r));
+  const after = await still(1.2);
+  let diff = 0; for (let i = 0; i < before.px.length; i += 4) diff += Math.abs(before.px[i] - after.px[i]) + Math.abs(before.px[i + 1] - after.px[i + 1]) + Math.abs(before.px[i + 2] - after.px[i + 2]);
+  diff /= before.px.length / 4 * 3;
+  check('the compound looks like what it was made of (export, mid-transition, with the overlay and title)', diff < 6, `mean diff ${diff.toFixed(2)} levels`);
+  await page.locator('.clip.main').first().click();
+  await page.click('#inspector [data-itab="Tools"]').catch(() => {});
+  await page.click('#inspector [data-act="breakcompound"]');
+  const back = await ev(() => ({ main: P.main.length, ov: P.overlay.length, text: P.text.length, tr: P.main[0].tr?.type, ovStart: P.overlay[0]?.start }));
+  check('Break apart puts the clips back (transition, overlay start, title)', back.main === 3 && back.ov === 1 && back.text === 1 && back.tr === 'dissolve' && Math.abs(back.ovStart - 0.5) < 1e-6, JSON.stringify(back));
+  const m = await ev(async () => { const ids = [P.main[1].id, P.main[2].id]; const r = await REMOTE.compound_clip({ ids }); const n = P.main.length; await REMOTE.break_compound({ id: r.id }); return [r.compound, n, P.main.length]; });
+  check('MCP compound_clip and break_compound', m[0] === 2 && m[1] === 2 && m[2] === 3, JSON.stringify(m));
+  const bad = await ev(() => REMOTE.compound_clip({ ids: [P.overlay[0].id, P.text[0].id] }).then(() => 'ok', e => e.message));
+  check('a compound without a main clip is refused clearly', /needs a main-track clip/.test(bad), bad);
+}
+
+// ---------- multicam ----------
+if (run('multicam')) {
+  await fresh('Multicam');
+  execFileSync('say', ['-o', `${tmp}/mc.aiff`, 'One. Two, three. This is the multicam test, with words to line up the cameras. Four, five, six. Done.']);
+  const cam = (name, colour, cut, delay) => gen(name, ['-f', 'lavfi', '-i', `color=c=${colour}:s=320x180:r=30:d=9`, '-i', `${tmp}/mc.aiff`, '-filter_complex', `[1:a]${cut ? `atrim=start=${cut},asetpts=PTS-STARTPTS` : `adelay=${delay}:all=1`},apad=whole_dur=9[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-t', '9']);
+  const A1 = await imp(cam('mc-red.mp4', 'red', 0, 1000)), A2 = await imp(cam('mc-green.mp4', 'lime', 0.8, 0)), A3 = await imp(cam('mc-blue.mp4', 'blue', 0, 2300)); // green started 1.8 s earlier in the speech, blue 1.3 s later
+  await ev(() => loadMedia());
+  await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), [A1.id, A2.id, A3.id], { timeout: 60000 });
+  await ev(() => openTab('media'));
+  await page.click('#btnMulticam');
+  for (const id of [A1.id, A2.id, A3.id]) await page.check(`#modal input[value="${id}"]`);
+  await page.click('#mcGo');
+  await page.waitForFunction(() => P.main.some(c => c.mc), null, { timeout: 60000 }).catch(() => {});
+  const mc = await ev(() => { const c = P.main.find(x => x.mc); return c && { offs: c.mc.angles.map(a => a.off), in: c.in, out: c.out, audio: P.audio.filter(a => a.mcAudio === c.mc.g).length }; });
+  check('Multicam… syncs the angles by sound (offsets within 15 ms)', mc && Math.abs(mc.offs[1] + 1.8) < 0.015 && Math.abs(mc.offs[2] - 1.3) < 0.015 && mc.audio === 1, JSON.stringify(mc));
+  await ev(() => { S.t = 2; renderAll(); document.activeElement?.blur(); });
+  await page.keyboard.press('2');
+  await ev(() => { S.t = 4; });
+  await page.keyboard.press('3');
+  const parts = await ev(() => P.main.map(c => [c.mc?.a, +c.start.toFixed(2), +c.in.toFixed(3)]));
+  check('keys 2 then 3 cut to those angles at the playhead, in sync', parts.length === 3 && parts[1][0] === 1 && parts[2][0] === 2 && Math.abs(parts[1][2] - (parts[0][2] + 2 - 1.8)) < 0.01 && Math.abs(parts[2][2] - (parts[0][2] + 4 + 1.3)) < 0.01, JSON.stringify(parts));
+  const colours = [];
+  for (const t of [1, 3, 5]) colours.push(at(await still(t), 0.5, 0.5));
+  check('the export shows red, then green, then blue', colours[0][0] > 200 && colours[1][1] > 200 && colours[2][2] > 200 && colours[0][1] < 60 && colours[1][0] < 60 && colours[2][0] < 60, JSON.stringify(colours));
+  const m = await ev(async () => { await REMOTE.multicam_cut({ angle: 1, at: 5 }); return P.main.map(c => c.mc?.a); });
+  check('MCP multicam_cut', JSON.stringify(m) === '[0,1,2,0]', JSON.stringify(m));
+  const bad = await ev(() => REMOTE.multicam({ media: [MD.V.id] }).then(() => 'ok', e => e.message));
+  check('a one-angle multicam is refused clearly', /2 to 6 videos/.test(bad), bad);
+}
+
+// ---------- beauty, blur, glow, body effects ----------
+if (run('beauty')) {
+  await fresh('Beauty');
+  const SK = await imp(gen('feat-skin.mp4', ['-f', 'lavfi', '-i', 'color=c=0xC89682:s=640x360:r=30:d=3', '-f', 'lavfi', '-i', 'color=c=0x2850C8:s=640x360:r=30:d=3', '-filter_complex', '[0:v][1:v]hstack,noise=alls=40:allf=t,scale=640:360', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '12']));
+  await ev(() => loadMedia());
+  await page.waitForFunction(id => M.get(id)?.ready, SK.id, { timeout: 30000 });
+  await ev(id => { addMedia(id, 'main'); S.t = 1; S.sel = { lane: 'main', id: P.main[0].id }; S.itab = 'Look'; renderAll(); }, SK.id);
+  const vari = (img, x0, x1) => { let n = 0, s = 0, s2 = 0; for (let y = Math.round(img.h * 0.2); y < img.h * 0.8; y++) for (let x = Math.round(img.w * x0); x < img.w * x1; x++) { const i = (y * img.w + x) * 4, v = img.px[i + 1]; n++; s += v; s2 += v * v; } return s2 / n - (s / n) ** 2; };
+  const pvImg = () => ev(async () => { await waitFrame(); const cv = $('#cv'), x = document.createElement('canvas').getContext('2d'); x.canvas.width = 320; x.canvas.height = 180; x.drawImage(cv, 0, 0, 320, 180); return { w: 320, h: 180, px: [...x.getImageData(0, 0, 320, 180).data] }; });
+  const e0 = await still(1, 640), p0 = await pvImg();
+  await page.locator('#inspector input[data-k="c.beauty.amt"]').evaluate(e => { e.value = 1; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); });
+  const e1 = await still(1, 640), p1 = await pvImg();
+  const r = [vari(e1, 0.05, 0.45) / vari(e0, 0.05, 0.45), vari(e1, 0.55, 0.95) / vari(e0, 0.55, 0.95), vari(p1, 0.05, 0.45) / vari(p0, 0.05, 0.45), vari(p1, 0.55, 0.95) / vari(p0, 0.55, 0.95)];
+  check('Smooth skin evens out the skin-coloured half and leaves the blue half (export and preview)', r[0] < 0.6 && r[1] > 0.85 && r[2] < 0.6 && r[3] > 0.85, r.map(v => v.toFixed(2)).join(' '));
+  await ev(() => change(() => { delete P.main[0].beauty; }));
+  await page.locator('#inspector input[data-k="c.adj.blur"]').evaluate(e => { e.value = 0.5; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); });
+  const e2 = await still(1, 640), p2 = await pvImg();
+  check('the clip Blur slider blurs it (export and preview)', vari(e2, 0.05, 0.45) / vari(e0, 0.05, 0.45) < 0.2 && vari(p2, 0.05, 0.45) / vari(p0, 0.05, 0.45) < 0.2, [vari(e2, 0.05, 0.45) / vari(e0, 0.05, 0.45), vari(p2, 0.05, 0.45) / vari(p0, 0.05, 0.45)].map(v => v.toFixed(3)).join(' '));
+  const CUT = await imp(gen('feat-cut.png', ['-f', 'lavfi', '-i', 'color=c=white@0.0:s=400x400,format=rgba,drawbox=x=150:y=100:w=100:h=200:color=red@1:t=fill', '-frames:v', '1']));
+  await ev(() => loadMedia());
+  await ev(id => { change(() => { delete P.main[0].adj.blur; }); addMedia(id, 'overlay', 0); Object.assign(P.overlay[0], { fit: 'fit' }); S.sel = { lane: 'overlay', id: P.overlay[0].id }; S.itab = 'Look'; renderAll(); }, CUT.id);
+  await page.click('#inspector [data-glowkind="neon"]');
+  const g = await still(1, 640), pg = await pvImg(), halo = img => at(img, 0.5 + 60 / 640, 0.5)[2];
+  check('Neon on a cutout: a cyan halo around it, export and preview', await ev(() => P.overlay[0].glow?.neon) && halo(g) > 150 && halo(pg) > 150, `${halo(g)} ${halo(pg)}`);
+  const tm = (await get('/api/media')).find(m => m.name === 'talk-with-music.mp4');
+  if (tm) {
+    await ev(id => { setProject(newProject('16:9')); P.name = 'Body (scratch)'; addMedia(id, 'main'); Object.assign(P.main[0], { in: 2, out: 4 }); renderAll(); }, tm.id);
+    const r2 = await ev(async () => { try { const cut = await bodyEffect(P.main[0], 'main', 'blur'); return { ok: true, ov: P.overlay.length, dur: +len(cut).toFixed(2), alpha: !!(M.get(cut.media)?.alpha || M.get(cut.media)?.trans), blur: P.main[0].adj.blur, mdur: +M.get(cut.media).duration.toFixed(1) }; } catch (e) { return { ok: false, e: e.message }; } });
+    check('Blur background: the person cut out (only the 2 s used) on the track above, the main clip blurred', r2.ok && r2.ov === 1 && r2.alpha && r2.blur > 0 && Math.abs(r2.dur - 2) < 0.05 && r2.mdur <= 2.2, JSON.stringify(r2));
+    const ex = await ev(() => REMOTE.export({ format: 'mp4', resolution: '720p', name: 'feat-body' }).then(r => r.file, e => 'ERR ' + e.message));
+    check('...and it exports', !/^ERR/.test(ex), ex);
+  }
+}
+
+} catch (e) { check('the suite ran to the end', false, String(e.message).split('\n')[0]); }
 
 // ---------- tidy ----------
 check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
