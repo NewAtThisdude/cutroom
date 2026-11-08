@@ -1535,7 +1535,7 @@ function aiTool(name) { // the smart tools, from the AI panel: on the selected c
   const kind = M.get(c.media)?.kind;
   if (['removeobj', 'cutobj', 'reframe', 'stabilize', 'scenes'].includes(name) && kind !== 'video') return toast('That works on video clips: select one first');
   if (['isovoice', 'novoice'].includes(name) && !M.get(c.media)?.hasAudio) return toast('That clip has no sound');
-  ({ removeobj: () => startRemove(c, lane), cutobj: () => startRemove(c, lane, 'cutout'), matte: () => removeBackground(c), reframe: () => autoReframe(c), stabilize: () => remake(c, 'stabilize'),
+  return ({ removeobj: () => startRemove(c, lane), cutobj: () => startRemove(c, lane, 'cutout'), matte: () => removeBackground(c), reframe: () => autoReframe(c), stabilize: () => remake(c, 'stabilize'),
     isovoice: () => isolateVoice(c, lane, 'voice'), novoice: () => isolateVoice(c, lane, 'music'), scenes: () => sceneSplit(c, lane) })[name]?.();
 }
 function syncToolbar() { // timeline toolbar buttons enabled for what is selected
@@ -1639,10 +1639,10 @@ function clipMenu(c, lane) { // what a right-click on a clip offers
   const items = [['Split', split, 'S'], ['Duplicate', dup, '⌘D'], ['Copy', () => copySel(), '⌘C'], ['Cut', () => copySel(true), '⌘X'], ['Paste', () => paste(), '⌘V', !clipboard],
     ['Paste look', pasteLook, '⌥⌘V', !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), 'Q'], ['Trim end to playhead', () => trimTo('right'), 'W']];
   if (vid || vis) items.push('-');
-  if (vid) items.push(['Freeze frame', () => freeze(c, lane)], ['Reverse', () => remake(c, 'reverse')]);
+  if (vid) items.push(['Freeze frame', () => quiet(freeze(c, lane))], ['Reverse', () => quiet(remake(c, 'reverse'))]);
   if (vid && lane !== 'audio' && m.hasAudio && c.volume > 0) items.push(['Detach audio', () => detachAudio(c)]);
   if (vid) items.push(['Remove object…', () => startRemove(c, lane)], ['Cut out object…', () => startRemove(c, lane, 'cutout')]);
-  if (vis) items.push(['Remove background', () => removeBackground(c)], ['Auto adjust colour', () => autoAdjust(c, lane).catch(() => {})]);
+  if (vis) items.push(['Remove background', () => quiet(removeBackground(c))], ['Auto adjust colour', () => autoAdjust(c, lane).catch(() => {})]);
   if (lane === 'main' || lane === 'overlay') items.push(['Mirror', () => change(() => { c.flip = !c.flip; })], ['Rotate 90°', () => rotate90(c)], [`Move to ${lane === 'main' ? 'overlay' : 'main'} track`, () => moveLane(c, lane)]);
   if (lane === 'overlay') items.push(['Bring forward', () => restack(c, 1)], ['Send backward', () => restack(c, -1)]);
   items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, '⌫']);
@@ -1784,7 +1784,7 @@ async function applyCut(rm, what) { // ripple cut of the main track, then captio
   return cut;
 }
 async function resyncCaptions() { // captions made from speech follow a cut of the main track
-  if (P.captions.some(c => c.words?.length)) { await autoCaptions(true); toast('Captions moved with the cut'); }
+  if (P.captions.some(c => c.words?.length)) { await autoCaptions(true).catch(() => {}); toast('Captions moved with the cut'); }
 }
 function cutScript() {
   const ws = SC.words, sel = SC.sel;
@@ -2129,7 +2129,7 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
     change(() => { P.main = next; });
     toast(`Removed ${hit} filler word${hit === 1 ? '' : 's'} (${(before - packMain()).toFixed(1)} s)`);
     await resyncCaptions();
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(e.message); throw e; }
   finally { btn.disabled = false; }
 }
 async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect, then split main clips around the gaps
@@ -2146,7 +2146,7 @@ async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect
     change(() => { P.main = next; });
     toast(`Removed ${(before - packMain()).toFixed(1)} s of pauses`);
     await resyncCaptions();
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(e.message); throw e; }
   finally { btn.disabled = false; }
 }
 
@@ -2177,7 +2177,7 @@ function kfOp(c, lane, op) {
 async function detectBeats(c) {
   setStatus('Detecting beats…');
   try { const r = await api('/api/beats', { media: c.media }); change(() => { c.beats = r.beats; c.bpm = r.bpm; }); }
-  catch (e) { setStatus(e.message); }
+  catch (e) { setStatus(e.message); throw e; }
 }
 function beatSync(c, every) { // every main clip ends on a beat mark (CapCut's beat sync)
   const marks = c.beats.filter(b => b >= c.in && b <= c.out).map(b => c.start + (b - c.in) / c.speed).filter((_, i) => i % every === 0);
@@ -2203,7 +2203,7 @@ async function sceneSplit(c, lane) { // CapCut's scene detection: cut the clip a
     if (!cuts.length) return setStatus('No scene changes inside this clip');
     change(() => { for (const t of cuts) splitClip(c, lane, t); }); // last cut first: c stays the first part
     setStatus(`Split into ${cuts.length + 1} scenes`);
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 async function freeze(c, lane) {
   const lt = S.t - c.start;
@@ -2228,7 +2228,7 @@ async function freeze(c, lane) {
       }
       S.sel = { lane, id: fr.id };
     });
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 function moveLane(c, lane) {
   const to = lane === 'main' ? 'overlay' : 'main';
@@ -2247,7 +2247,7 @@ async function removeBackground(c) { // Apple Vision: person segmentation for vi
     await loadMedia();
     change(() => { c.media = j.media; });
     toast('Background removed. Put it on the overlay track over B-roll.');
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 function ramp(c, lane, name) { // speed curve baked into 8 editable parts (inner cuts are hard cuts)
   const curve = RAMPS[name], n = curve.length, step = (c.out - c.in) / n;
@@ -2306,7 +2306,7 @@ async function isolateVoice(c, lane, keep = 'voice') { // Demucs on this Mac: th
       S.sel = { lane: 'audio', id: a.id };
     });
     toast(keep === 'voice' ? 'Voice isolated: the clean voice is on the audio track and the clip is muted' : 'Voice removed: the music and ambience are on the audio track and the clip is muted');
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 async function remake(c, kind) { // reverse / stabilize render a new library item; the clip switches to it
   try {
@@ -2318,7 +2318,7 @@ async function remake(c, kind) { // reverse / stabilize render a new library ite
       c.media = j.media;
     });
     toast(kind === 'reverse' ? 'Reversed' : 'Stabilized');
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
   const m = M.get(c.media);
@@ -2339,7 +2339,7 @@ async function autoReframe(c) { // keep the largest face centred (CapCut's auto 
       c.ease = true;
     });
     toast(`Reframed from ${j.points.length} face samples`);
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 async function autoDuck(c, depth = 0.25) { // music dips (default 12 dB) wherever another clip has sound (speech), with short ramps
   const src = [...P.main, ...P.overlay, ...P.audio].filter(x => x !== c && M.get(x.media)?.hasAudio && x.volume > 0);
@@ -2365,7 +2365,7 @@ async function autoDuck(c, depth = 0.25) { // music dips (default 12 dB) whereve
     }
     change(() => { c.vkf = pts.sort((p, q) => p.t - q.t).filter((p, i, arr) => i === 0 || p.t > arr[i - 1].t + 1e-3); });
     toast(`Music ducks ${Math.round(-20 * Math.log10(depth))} dB under ${merged.length} speech passage${merged.length === 1 ? '' : 's'}`);
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 async function smoothSlowmo(c) { // interpolated frames for slow clips (rendered copy of just this range)
   const factor = clamp(Math.round(1 / c.speed), 2, 8);
@@ -2374,7 +2374,7 @@ async function smoothSlowmo(c) { // interpolated frames for slow clips (rendered
     await loadMedia();
     change(() => { const d = c.out - c.in; c.media = j.media; c.in = 0; c.out = Math.min(d, M.get(j.media).duration); });
     toast(`Smooth slow-mo: ${factor}× frames`);
-  } catch (e) { setStatus(e.message); }
+  } catch (e) { setStatus(e.message); throw e; }
 }
 function toggleMarker() {
   const i = P.markers.findIndex(t => Math.abs(t - S.t) < 0.5 / P.fps);
@@ -2619,7 +2619,7 @@ async function autoCaptions(force) { // words come back in source time; map them
     }
     change(() => { P.captions = caps; S.sel = null; });
     status.textContent = caps.length ? `${caps.length} captions from ${all.length} words. Click one to edit it.` : 'No speech found.';
-  } catch (e) { status.textContent = e.message; }
+  } catch (e) { status.textContent = e.message; throw e; }
   finally { btn.disabled = false; }
 }
 
@@ -2823,6 +2823,7 @@ async function addVoiceover() { // CapCut's text-to-speech with the Mac's own vo
 
 // ---------- small UI ----------
 let remoteLog = null; // toasts and statuses shown while a remote (MCP) command runs go back to the caller
+const quiet = p => { p?.catch?.(() => {}); }; // a button's async tool: its error is already shown next to the clip
 function toast(msg) { if (remoteLog) remoteLog.push(String(msg)); const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, 3500); }
 function modal(html) { const m = $('#modal'); m.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">${html}</div>`; m.hidden = false; $('button, input', m)?.focus(); }
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
@@ -2938,9 +2939,9 @@ function wire() {
   $('#btnRedo').addEventListener('click', () => restore(redo, undo));
   $('#btnSplit').addEventListener('click', split);
   $('#btnDelete').addEventListener('click', del);
-  $('#btnPauses').addEventListener('click', () => removePauses());
-  $('#btnFillers').addEventListener('click', removeFillers);
-  $('#btnCaptions').addEventListener('click', () => autoCaptions());
+  $('#btnPauses').addEventListener('click', () => quiet(removePauses()));
+  $('#btnFillers').addEventListener('click', () => quiet(removeFillers()));
+  $('#btnCaptions').addEventListener('click', () => quiet(autoCaptions()));
   $('#btnExport').addEventListener('click', openExport);
   $('#btnProjects').addEventListener('click', openProjects);
   $('#btnTts').addEventListener('click', addVoiceover);
@@ -3020,7 +3021,7 @@ function wire() {
     else if (d.sfxplay) listen(`/sfx/${d.sfxplay}.wav`, b);
     else if (d.mplay) listen(`/media/${d.mplay}`, b);
     else if (d.addaudio) addMedia(d.addaudio, 'audio', S.t);
-    else if (d.aitool) aiTool(d.aitool);
+    else if (d.aitool) quiet((async () => aiTool(d.aitool))());
     else if (d.mfilter) { G.mfilter = d.mfilter; $$('#mediaFilter button').forEach(x => x.classList.toggle('on', x === b)); renderMediaList(); }
   });
   panes.addEventListener('pointerover', e => { const t = e.target.closest('.tile'); if (t !== G.hover) { const was = G.hover; G.hover = t; if (was) drawTiles(true); if (t && !G.raf) G.raf = requestAnimationFrame(galleryLoop); } });
@@ -3049,8 +3050,8 @@ function wire() {
     finally { b.disabled = false; }
   });
   $('#btnDup').addEventListener('click', dup);
-  $('#btnFreeze').addEventListener('click', () => { const c = selClip(); if (c) freeze(c, S.sel.lane); });
-  $('#btnReverse').addEventListener('click', () => { const c = selClip(); if (c) remake(c, 'reverse'); });
+  $('#btnFreeze').addEventListener('click', () => { const c = selClip(); if (c) quiet(freeze(c, S.sel.lane)); });
+  $('#btnReverse').addEventListener('click', () => { const c = selClip(); if (c) quiet(remake(c, 'reverse')); });
   $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
   $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
   $('#btnFit').addEventListener('click', fitTimeline);
@@ -3229,8 +3230,8 @@ function wire() {
   addEventListener('pointerup', () => { SC.drag = false; });
   $('#btnScriptCut').addEventListener('click', () => cutScript());
   $('#btnScriptLoad').addEventListener('click', () => renderScript());
-  $('#btnScriptFill').addEventListener('click', removeFillers);
-  $('#btnScriptPause').addEventListener('click', () => removePauses(0.5));
+  $('#btnScriptFill').addEventListener('click', () => quiet(removeFillers()));
+  $('#btnScriptPause').addEventListener('click', () => quiet(removePauses(0.5)));
   $('#capList').addEventListener('change', e => {
     const inp = e.target.closest('[data-capid]'), c = inp && P.captions.find(x => x.id === inp.dataset.capid);
     if (c && inp.value.trim() !== c.text) change(() => { c.text = inp.value.trim(); retext(c); });
@@ -3283,23 +3284,23 @@ function wire() {
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
     else if (d.look) change(() => { if (d.look === 'none') delete c.look; else c.look = { name: d.look, amount: c.look?.amount ?? 1 }; });
     else if (['kfadd', 'kfdel', 'kfclear'].includes(d.act)) kfOp(c, S.sel.lane, d.act.slice(2));
-    else if (d.act === 'beats') detectBeats(c);
+    else if (d.act === 'beats') quiet(detectBeats(c));
     else if (d.act === 'beatsync') beatSync(c, +$('#beatEvery').value);
-    else if (d.act === 'freeze') freeze(c, S.sel.lane);
+    else if (d.act === 'freeze') quiet(freeze(c, S.sel.lane));
     else if (d.act === 'movelane') moveLane(c, S.sel.lane);
-    else if (d.act === 'matte') removeBackground(c);
+    else if (d.act === 'matte') quiet(removeBackground(c));
     else if (d.act === 'track') startTrack(c, S.sel.lane);
     else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
     else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
     else if (d.mask) change(() => { if (d.mask === 'none') delete c.mask; else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
     else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
     else if (d.act === 'detach') detachAudio(c);
-    else if (d.act === 'isovoice' || d.act === 'novoice') isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music');
-    else if (d.act === 'reverse' || d.act === 'stabilize') remake(c, d.act);
-    else if (d.act === 'scenes') sceneSplit(c, S.sel.lane);
-    else if (d.act === 'reframe') autoReframe(c);
+    else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
+    else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
+    else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
+    else if (d.act === 'reframe') quiet(autoReframe(c));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
-    else if (d.act === 'duck') autoDuck(c, +($('#duckDepth')?.value || 0.25));
+    else if (d.act === 'duck') quiet(autoDuck(c, +($('#duckDepth')?.value || 0.25)));
     else if (d.align) change(() => { (S.sel.lane === 'captions' ? P.capStyle : (c.style ??= {})).align = d.align; });
     else if (d.act === 'keypick') { S.keyPick = c.id; $('#cv').style.cursor = 'crosshair'; toast('Click the colour to remove on the preview (Esc cancels)'); }
     else if (d.act === 'fwd' || d.act === 'back') restack(c, d.act === 'fwd' ? 1 : -1);
@@ -3309,20 +3310,20 @@ function wire() {
     }
     else if (d.act === 'vkfclear') change(() => { delete c.vkf; });
     else if (d.act === 'soundreset') { change(() => { delete c.au; }); renderInspector(); }
-    else if (d.act === 'stems') splitStems(c, S.sel.lane);
+    else if (d.act === 'stems') quiet(splitStems(c, S.sel.lane));
     else if (d.act === 'vkprev' || d.act === 'vknext') {
       const lt = S.t - c.start, ts = (c.vkf || []).map(f => f.t), t = d.act === 'vkprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
       if (t !== undefined) { seekTo(c.start + t); renderInspector(); }
     }
     else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
-    else if (d.act === 'slowmo') smoothSlowmo(c);
+    else if (d.act === 'slowmo') quiet(smoothSlowmo(c));
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
     else if (d.act === 'autoadj') autoAdjust(c, S.sel.lane).catch(() => {});
     else if (d.act === 'matchcol') autoAdjust(c, S.sel.lane, $('#matchRef').value).catch(() => {});
   });
 
-  $('#modal').addEventListener('click', async e => {
+  const modalClick = async e => {
     if (e.target.id === 'modal') { if (!S.exporting) closeModal(); return; }
     const b = e.target.closest('button');
     if (!b) return;
@@ -3339,7 +3340,8 @@ function wire() {
     else if (d.deltpl) { if (confirm('Delete this template? It moves to Movies/Cutroom/trash.')) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
     else if (d.reveal) api('/api/reveal', { file: d.reveal }).catch(err => toast(err.message));
     else if (d.play) open(`/exports/${encodeURIComponent(d.play)}`, '_blank', 'noopener');
-  });
+  };
+  $('#modal').addEventListener('click', e => { modalClick(e).catch(err => toast(err.message)); });
 
   addEventListener('keydown', e => {
     if (!P) return;
@@ -3431,13 +3433,13 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
   say('Framing the shots…');
   for (const c of P.main) { // other shapes fill the canvas; faces stay in frame
     const m = M.get(c.media);
-    if (Math.abs(m.w / m.h - P.w / P.h) > 0.15) { change(() => { c.fit = 'fill'; }); if (reframe) await autoReframe(c); }
+    if (Math.abs(m.w / m.h - P.w / P.h) > 0.15) { change(() => { c.fit = 'fill'; }); if (reframe) await autoReframe(c).catch(() => {}); }
   }
   if (mus) {
     packMain();
     addMedia(mus.id, 'audio', 0);
     const a = P.audio.at(-1);
-    await detectBeats(a);
+    await detectBeats(a).catch(() => {});
     if (a.beats?.length) change(() => { // each cut moves to the nearest beat, never past its shot's own scene
       const marks = a.beats.map(b => a.start + (b - a.in) / a.speed);
       P.main.slice(0, -1).forEach((x, i) => {
@@ -3451,7 +3453,7 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
     });
     const end = packMain(); // the edit's length (total() would count the music itself)
     change(() => { a.out = Math.min(mus.duration, a.in + end); a.fadeOut = Math.min(2, end / 4); });
-    if (sound && P.main.some(c => M.get(c.media)?.hasAudio)) await autoDuck(a);
+    if (sound && P.main.some(c => M.get(c.media)?.hasAudio)) await autoDuck(a).catch(() => {});
   }
   if (title && plan.title) {
     S.t = 0; addText('Title', { text: plan.title, dur: Math.min(3, total()) }, { anim: 'fade' });
@@ -3477,8 +3479,8 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
     addMedia(m.id, 'main');
     const c = P.main[0];
     change(() => { Object.assign(c, { in: h.start, out: h.end, fit: 'fill' }); });
-    if (reframe) await autoReframe(c);
-    if (captions) await autoCaptions(true);
+    if (reframe) await autoReframe(c).catch(() => {});
+    if (captions) await autoCaptions(true).catch(() => {});
     if (title && h.title) {
       S.t = 0; addText('Title', { text: h.title, dur: Math.min(3, len(c)), y: 0.16 }, { anim: 'pop' });
     }
@@ -3651,7 +3653,23 @@ const REMOTE = {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
     if (set.fx !== undefined && !FX[set.fx]) throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}`);
-    change(() => { if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); } merge(c, set); });
+    const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
+    if (nan.length) throw new Error(`${nan.join(', ')} must be numbers`);
+    if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
+    if ((set.in ?? c.in) >= (set.out ?? c.out) && c.media) throw new Error('in must be before out');
+    if (set.dur !== undefined && !(set.dur > 0)) throw new Error('dur must be above 0');
+    for (const [k, need] of [['kf', ['t']], ['vkf', ['t', 'v']]]) { // keyframes and volume points arrive as written: check them before they reach the clip
+      if (set[k] === undefined || set[k] === null) continue;
+      if (!Array.isArray(set[k]) || set[k].some(f => !f || need.some(q => !Number.isFinite(f[q])) || Object.values(f).some(v => typeof v === 'number' && !Number.isFinite(v)))) throw new Error(`${k} must be a list of {${need.join(', ')}${k === 'kf' ? ', scale, x, y, opacity, rot' : ''}} with numbers`);
+    }
+    change(() => {
+      if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); }
+      merge(c, set);
+      if (set.kf) { const base = propsAt({ ...c, kf: null }, 0); c.kf = c.kf.map(f => ({ ...base, ...f })).sort((x, y) => x.t - y.t); } // a keyframe that names only scale keeps the clip's position, opacity and angle
+      if (set.vkf) c.vkf.sort((x, y) => x.t - y.t);
+      if (c.kf && !c.kf.length) delete c.kf;
+      if (c.vkf && !c.vkf.length) delete c.vkf;
+    });
     return brief(c, L);
   },
   async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
@@ -3701,7 +3719,7 @@ const REMOTE = {
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
-      freeze_frame: () => { if (at !== undefined) S.t = at; return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
+      freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
       auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
     if (!run) throw new Error('action must be one of remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();

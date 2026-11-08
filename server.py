@@ -2026,7 +2026,10 @@ class App(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(b)))
         self.send_header('Cache-Control', 'no-store')
         self.end_headers()
-        self.wfile.write(b)
+        try:
+            self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):  # the page went away mid-answer (a reload during a long poll): a remote command is re-offered
+            pass
 
     def file(self, path):
         size = path.stat().st_size
@@ -2127,8 +2130,10 @@ class App(BaseHTTPRequestHandler):
             if WEB in f.parents and f.is_file():
                 return self.file(f)
             self.reply({'error': 'not found'}, 404)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, ValueError, KeyError):
             self.reply({'error': 'not found'}, 404)
+        except Exception as e:  # an answer, not a dropped connection and a traceback in the log
+            self.reply({'error': str(e)}, 500)
 
     def do_POST(self):
         if not self.allowed(True):

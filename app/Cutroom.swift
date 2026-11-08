@@ -1,5 +1,5 @@
 // Cutroom.app: a native window (AppKit + WKWebView) around Cutroom's local server.
-// If nothing answers on the port it starts ~/cutroom/server.py, and on quit it stops only a server it started.
+// If nothing answers on the port it starts ~/cutroom/server.py (again, if it ever dies), and on quit it stops only a server it started.
 // Build: app/build.sh -> ~/Applications/Cutroom.app
 import AppKit
 import WebKit
@@ -93,6 +93,7 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
             var ok = await ping()
             if !ok, let p = startServer() {
                 server = p
+                watch(p)
                 let deadline = Date().addingTimeInterval(8)
                 while !ok, p.isRunning, Date() < deadline {
                     try? await Task.sleep(nanoseconds: 200_000_000)
@@ -103,9 +104,21 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
         }
     }
 
+    func watch(_ p: Process) { // a server this app started comes straight back if it dies (a crash, or killed to load new code); the page carries on
+        p.terminationHandler = { [weak self] dead in
+            Task { @MainActor in
+                guard let self, self.server === dead else { return } // quitting, or given up on: server was cleared first
+                self.server = nil
+                if await ping() { return } // something else answers on the port now
+                if let n = startServer() { self.server = n; self.watch(n) }
+            }
+        }
+    }
+
     func failed() {
-        server?.terminate()
+        let s = server
         server = nil
+        s?.terminate()
         let log = String(decoding: (try? Data(contentsOf: logURL)) ?? Data(), as: UTF8.self)
         let a = alert("Cutroom's server isn't answering", ["Retry", "Quit"])
         a.informativeText = log.split(separator: "\n").suffix(12).joined(separator: "\n") + "\n\n" + logURL.path
@@ -141,6 +154,7 @@ func alert(_ text: String, _ buttons: [String]) -> NSAlert {
 
     func applicationWillTerminate(_ note: Notification) {
         guard let p = server, p.isRunning else { return }
+        server = nil // not restarted by watch()
         let kids = Process() // its ffmpeg / whisper children first: they would outlive the server otherwise
         kids.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         kids.arguments = ["-TERM", "-P", String(p.processIdentifier)]

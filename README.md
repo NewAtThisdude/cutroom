@@ -192,6 +192,15 @@ once in the browser also guarantees the export matches the preview.
 - **Preview vs export, pictures:** `tests/video_parity.mjs` grabs 147 frames both ways (every look, colour setting,
   blend, mask, transition, effect, text preset and clip animation): 0.2-3.1 levels apart on average. Blur, pixelate and the
   blurred background are close approximations in WebKit (2.4-8.5); grain and noise match in their block averages.
+- **Every control:** `tests/fuzz_ui.mjs` works every inspector control for each kind of clip (sliders at both ends,
+  every dropdown option), every gallery tile, context-menu item, shortcut, drag and window, and the Export window's own
+  render; after each one: no uncaught error, console error, failed request or leaked error toast, the project still sane,
+  the preview still paints, one undo puts it back exactly. Slow AI endpoints answer with a stub error there (their error
+  paths), about 2,000 actions in 40 min.
+- **Every MCP command:** `tests/mcp_e2e.mjs` runs each one as the remote loop does, with the real on-device models,
+  and checks the result in the project, the library and the files (ffprobe): 101 checks in about 6 min. Tools that fail
+  now say so: they used to show the error in the window and report success to the MCP caller.
+- **The app restarts its server** if it dies (a crash, or killed to load new `server.py` code); the page carries on.
 - **SAM 2 / ProPainter on the Mac:** ProPainter imports its own modules, so it runs with `-E -s`, not `-I`. SAM 2's
   progress bars can fill a pipe nobody reads, so they're off and the server reads one merged stream. The first run at
   a new size compiles GPU kernels (3x slower once). Picking the engine: when the camera holds still the copy from other
