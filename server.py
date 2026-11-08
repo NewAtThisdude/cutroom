@@ -1407,6 +1407,10 @@ def clean_plan(p):
         k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 10), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
             k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
+        k['grade'] = base64.b64decode(str(c['grade'])) if c.get('grade') else None  # the UI's grade (wheels, curves, HSL, LUT) as a 33^3 table, uint16
+        if k['grade'] is not None and len(k['grade']) != 33 ** 3 * 3 * 2:
+            raise ValueError('grade must be a 33-point 3D table')
+        k['lkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 1)} for f in (c.get('lkf') or [])[:2000]] or None  # filter strength keyframes
         k['tone'] = [int(fnum(v, 0, 255)) for v in c['tone']] if c.get('tone') else None  # 256-entry curve made by the UI (exposure, highlights...)
         if k['tone'] is not None and len(k['tone']) != 256:
             raise ValueError('tone curve must have 256 entries')
@@ -1414,6 +1418,13 @@ def clean_plan(p):
         if k['vig'] is not None and not k['vig'].startswith(b'\x89PNG'):
             raise ValueError('vignette must be PNG')
         k['mask'] = base64.b64decode(c['mask'].split(',')[-1]) if c.get('mask') else None
+        if c.get('maskSeq'):  # keyframed mask: PNGs + runs of frames that cover the clip
+            ms = c['maskSeq']
+            pngs = [base64.b64decode(str(x).split(',')[-1]) for x in (ms.get('pngs') or [])[:20000]]
+            spans = [{'i': int(fnum(q['i'], 0, len(pngs) - 1)), 'n': int(fnum(q['n'], 1, 1e8))} for q in (ms.get('spans') or [])[:200000]]
+            if not pngs or not spans or any(not x.startswith(b'\x89PNG') for x in pngs):
+                raise ValueError('maskSeq must be PNG frames with runs')
+            k['mask_seq'] = {'pngs': pngs, 'spans': spans}
         if k['mask'] is not None and not k['mask'].startswith(b'\x89PNG'):
             raise ValueError('mask must be PNG')
         if timed:
@@ -1670,7 +1681,12 @@ def graph(p, td):
                   f":x='iw*{cr['l']:.5f}':y='ih*{cr['t']:.5f}'")
         if c.get('flip'):
             v += ',hflip'
-        v += adjust(c) + tone(c) + look(c)
+        col = adjust(c) + tone(c) + look(c) + grade(c)
+        if col and c.get('lkf'):  # filter strength keyframes: the original and the graded picture mixed by the curve
+            tag = f'lk{next(AFX_N)}'
+            v += f",format=gbrp,split[{tag}a][{tag}b];[{tag}b]{col[1:]},format=gbrp[{tag}g];[{tag}a][{tag}g]blend=all_expr='A+(B-A)*({pw(c['lkf'], 'v', 'T')})'"
+        else:
+            v += col
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         return v
@@ -1688,6 +1704,17 @@ def graph(p, td):
         if delay:
             a += f',adelay={round(delay * 1000)}:all=1'
         return a
+
+    def grade(c):  # the UI's grade table as a .cube for lut3d (trilinear, like the preview's 3D texture)
+        if not c.get('grade'):
+            return ''
+        a = array('H')
+        a.frombytes(c['grade'])
+        if sys.byteorder != 'little':
+            a.byteswap()
+        f = Path(td) / f'grade{len(list(Path(td).glob("grade*.cube")))}.cube'
+        f.write_text('LUT_3D_SIZE 33\n' + ''.join(f'{a[i] / 65535:.6f} {a[i + 1] / 65535:.6f} {a[i + 2] / 65535:.6f}\n' for i in range(0, len(a), 3)))
+        return f",format=rgb24,lut3d=file='{f}':interp=trilinear"
 
     def tone(c):  # the UI's curve as a 1D LUT (exact at 8-bit inputs, like the preview's feComponentTransfer table)
         if not c.get('tone'):
@@ -1722,18 +1749,33 @@ def graph(p, td):
         return f',format=rgba,colorchannelmixer=aa={op:.4f}' if op < 1 else ''
 
     def masked(v, c, tag, dur):  # mask = PNG drawn by the browser's maskCanvas(); its luma becomes alpha
-        if not c.get('mask'):
+        if not c.get('mask') and not c.get('mask_seq'):
             return v
-        f = Path(td) / f'mask_{tag}.png'
-        f.write_bytes(c['mask'])
-        ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
-        j = len(ins) - 1
+        if c.get('mask_seq'):  # keyframed: the browser's frames as runs, played by the concat demuxer, one per output frame
+            ms, lines = c['mask_seq'], ['ffconcat version 1.0']
+            for q, png in enumerate(ms['pngs']):
+                (Path(td) / f'mask_{tag}_{q}.png').write_bytes(png)
+            for sp in ms['spans']:
+                lines += [f"file 'mask_{tag}_{sp['i']}.png'", f"duration {sp['n'] / F:.6f}"]
+            lines.append(f"file 'mask_{tag}_{ms['spans'][-1]['i']}.png'")
+            lf = Path(td) / f'mask_{tag}.ffconcat'
+            lf.write_text('\n'.join(lines) + '\n')
+            ins.append(['-f', 'concat', '-safe', '0', '-i', str(lf)])
+            msrc = f'[{len(ins) - 1}:v]fps={F:g},format=gray'
+        else:
+            f = Path(td) / f'mask_{tag}.png'
+            f.write_bytes(c['mask'])
+            ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
+            msrc = f'[{len(ins) - 1}:v]format=gray'
+        # the mask (made at most 1280 px, or 720 for keyframed ones) scaled to the clip with scale's reference input:
+        # scale2ref=w=main_w:h=main_h leaves it at its own size in ffmpeg 9, and alphamerge then fails on any clip
+        # whose cropped size isn't the PNG's (every source over 1280 px)
         if c.get('key'):  # key alpha x mask (alphamerge alone would throw the key's alpha away)
-            return v + (f',format=rgba,split[{tag}c][{tag}k];[{tag}k]alphaextract[{tag}a];[{j}:v]format=gray[{tag}m];'
-                        f'[{tag}m][{tag}a]scale2ref=w=main_w:h=main_h[{tag}ms][{tag}as];[{tag}as][{tag}ms]blend=all_mode=multiply[{tag}am];'
+            return v + (f',format=rgba,split=3[{tag}c][{tag}k][{tag}r];[{tag}k]alphaextract[{tag}a];{msrc}[{tag}m];'
+                        f'[{tag}m][{tag}r]scale=w=rw:h=rh[{tag}ms];[{tag}a][{tag}ms]blend=all_mode=multiply[{tag}am];'
                         f'[{tag}c][{tag}am]alphamerge')
-        return v + (f',format=rgba[{tag}c];[{j}:v]format=gray[{tag}m];[{tag}m][{tag}c]scale2ref=w=main_w:h=main_h[{tag}ms][{tag}cs];'
-                    f'[{tag}cs][{tag}ms]alphamerge')
+        return v + (f',format=rgba,split[{tag}c][{tag}r];{msrc}[{tag}m];[{tag}m][{tag}r]scale=w=rw:h=rh[{tag}ms];'
+                    f'[{tag}c][{tag}ms]alphamerge')
 
     def place(c, var):
         """Foreground scale + position: (scale filters, x, y). One formula for static, keyframed and rotated clips:
@@ -1756,7 +1798,7 @@ def graph(p, td):
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
         v, kf, rot = video(i, c, n), c.get('kf'), rotation(c)
-        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('trans') or c.get('key') or c.get('mask') or c.get('vig') or c['opacity'] < 1:  # composite onto a base frame
+        if c['fit'] == 'blur' or kf or rot or c.get('alpha') or c.get('trans') or c.get('key') or c.get('mask') or c.get('mask_seq') or c.get('vig') or c['opacity'] < 1:  # composite onto a base frame
             if c['fit'] == 'blur':
                 v += (f',split=2[f{k}][b{k}];[b{k}]scale={even(W * 1.08)}:{even(H * 1.08)}:force_original_aspect_ratio=increase,crop={W}:{H},'  # 8% overscan, as the preview
                       f'boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]null')
@@ -2120,11 +2162,15 @@ class App(BaseHTTPRequestHandler):
                 return self.file(hall_ir())
             if m := re.fullmatch(r'/sfx/([a-z]+)\.wav', path):
                 return self.file(sfx_file(m[1]))
+            if path == '/api/luts':  # imported .cube LUTs
+                return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'luts').glob('*.json')), key=lambda x: x.get('name', '').lower()))
+            if m := re.fullmatch(r'/luts/([a-f0-9]{12})\.cube', path):
+                return self.file(HOME / 'luts' / f'{m[1]}.cube')
             if path == '/api/templates':
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png))', path):
                 return self.file(CACHE / m[1])
-            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|gif|mp3|wav|png))', path):
+            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|gif|mp3|wav|png|srt))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
             if WEB in f.parents and f.is_file():
@@ -2163,6 +2209,31 @@ class App(BaseHTTPRequestHandler):
                     if not out.exists():
                         raise RuntimeError('no frame rendered')
                     return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
+            if u.path == '/api/luts':  # import a .cube LUT (its text): kept in Movies/Cutroom/luts for every project
+                text, name = str(body.get('text', '')), str(body.get('name') or 'LUT')
+                if len(text) > 64 << 20 or not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):
+                    raise ValueError('not a .cube LUT (no LUT_3D_SIZE / LUT_1D_SIZE line)')
+                (HOME / 'luts').mkdir(parents=True, exist_ok=True)
+                lid = uuid.uuid4().hex[:12]
+                (HOME / 'luts' / f'{lid}.cube').write_text(text)
+                info = {'id': lid, 'name': re.sub(r'\.cube$', '', Path(name).name, flags=re.I)[:80] or 'LUT'}
+                (HOME / 'luts' / f'{lid}.json').write_text(json.dumps(info))
+                return self.reply(info)
+            if m := re.fullmatch(r'/api/luts/([a-f0-9]{12})/trash', u.path):  # reversible: to trash/luts
+                (HOME / 'trash' / 'luts').mkdir(parents=True, exist_ok=True)
+                for f in (HOME / 'luts' / f'{m[1]}.cube', HOME / 'luts' / f'{m[1]}.json'):
+                    if f.exists():
+                        shutil.move(str(f), str(unique(HOME / 'trash' / 'luts' / f.name)))
+                return self.reply({'ok': True})
+            if u.path == '/api/save_subs':  # subtitles (SRT text made by the editor) into the exports folder
+                text = str(body.get('text', ''))
+                if not text.strip() or len(text) > 20 << 20:
+                    raise ValueError('nothing to save')
+                stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(body.get('name') or 'subtitles')).strip(' .')[:120] or 'subtitles'
+                EXPORTS.mkdir(parents=True, exist_ok=True)
+                f = unique(EXPORTS / f'{stem}.srt')
+                f.write_text(text, encoding='utf-8')
+                return self.reply({'file': f.name})
             if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
                 return self.reply(sfx_media(str(body.get('id', ''))))
             if u.path == '/api/remote/ack':  # the editor page got the command
@@ -2241,6 +2312,18 @@ class App(BaseHTTPRequestHandler):
                     if f.exists():
                         shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
                 return self.reply({'ok': True})
+            if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/restore', u.path):  # undo a library removal: file + metadata back from trash/media
+                tr = HOME / 'trash' / 'media'
+                js = sorted(tr.glob(f'{m[1]}*.json'), key=lambda f: f.stat().st_mtime)
+                if not js or (MEDIA / f'{m[1]}.json').exists():
+                    raise ValueError('not in the trash' if not js else 'already in the library')
+                info = json.loads(js[-1].read_text())
+                src = next((f for f in sorted(tr.glob(f'{Path(info["file"]).stem}*{Path(info["file"]).suffix}'), key=lambda f: -f.stat().st_mtime) if f.suffix != '.json'), None)
+                if not src:
+                    raise ValueError('its file is not in the trash')
+                shutil.move(str(src), str(MEDIA / info['file']))
+                shutil.move(str(js[-1]), str(MEDIA / f'{m[1]}.json'))
+                return self.reply({'ok': True, 'id': m[1]})
             if u.path == '/api/slowmo':
                 return self.reply({'job': run_job(slowmo, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), int(fnum(body.get('factor', 4), 2, 8)))})
             if m := re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted

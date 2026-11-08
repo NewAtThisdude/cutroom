@@ -75,7 +75,7 @@ const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.a
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
-const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['gif', 'GIF'], ['mp3', 'Audio · MP3'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)']];
+const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['gif', 'GIF'], ['mp3', 'Audio · MP3'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'], ['srt', 'Subtitles · SRT (captions)']];
 const ANIM_T = 0.3; // default text in/out animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
@@ -355,25 +355,47 @@ function renderTimeline() {
   r.style.setProperty('--minor', `${(step * pps) / 5}px`);
   let heads = '';
   for (const L of LANES) {
-    const R = ['overlay', 'audio', 'text', 'fx'].includes(L.key) ? rows(L.key) : { row: new Map(), n: 1 }, el = $(`#lane-${L.key}`);
+    const multi = MULTI.includes(L.key), R0 = multi ? rows(L.key) : { row: new Map(), n: 1 }, R = { ...R0, n: R0.n + (S.dragLane === L.key ? 1 : 0) }, el = $(`#lane-${L.key}`); // dragging: an empty track to drop on
     el.style.height = `${L.h * R.n}px`;
-    const snd = L.key === 'main' || L.key === 'audio';
-    heads += `<div style="height:${L.h * R.n}px">${L.label}<button class="lt${P.mute[L.key] ? ' on' : ''}" data-lt="${L.key}" title="${snd ? 'Mute' : 'Hide'} ${L.label}" aria-pressed="${!!P.mute[L.key]}">${snd ? 'M' : 'H'}</button></div>`;
+    const snd = L.key === 'main' || L.key === 'audio', lockSvg = '<svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+    for (let r = 0; r < R.n; r++) {
+      const T = trk(L.key, r), off = multi ? !!T.off || !!P.mute[L.key] : !!P.mute[L.key], name = r ? `${L.label} ${r + 1}` : L.label;
+      heads += `<div class="th" style="height:${L.h}px"><span title="${name}">${name}</span><span class="tb"><button class="lt${off ? ' on' : ''}" data-${multi ? 'tk' : 'lt'}="${multi ? `${L.key}:${r}` : L.key}" title="${snd ? 'Mute' : 'Hide'} ${name}" aria-pressed="${off}">${snd ? 'M' : 'H'}</button>`
+        + `<button class="lt lk${T.lock ? ' on' : ''}" data-lk="${L.key}:${r}" title="Lock ${name}" aria-label="Lock ${name}" aria-pressed="${!!T.lock}">${lockSvg}</button></span></div>`;
+    }
     el.innerHTML = P[L.key].map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles() : '');
+    if (multi) for (const [k, v] of Object.entries(P.tracks || {})) if (k.startsWith(`${L.key}:`) && (v.off || v.lock)) { const r = +k.split(':')[1]; if (r < R.n) el.insertAdjacentHTML('beforeend', `<div class="tshade${v.off ? ' off' : ''}${v.lock ? ' lock' : ''}" style="top:${r * L.h}px;height:${L.h}px"></div>`); }
+    else if (P.tracks?.[`${L.key}:0`]?.lock) el.insertAdjacentHTML('beforeend', `<div class="tshade lock" style="top:0;height:${L.h}px"></div>`);
   }
   $('#heads').innerHTML = heads;
   placePlayhead();
 }
-function rows(lane) { // overlapping clips stack into rows; a later clip sits higher and also renders on top
+const MULTI = ['overlay', 'audio', 'text', 'fx']; // lanes with several tracks
+function rows(lane) { // each clip on its track (c.track: dragged up or down); one that would overlap another there goes a track further. Later in the array = drawn on top
   const placed = [], row = new Map();
   for (const c of P[lane]) {
     const s = c.start, e = s + tdur(c, lane);
-    let r = 0;
+    let r = c.track || 0;
     while (placed.some(p => p.r === r && p.s < e - 1e-6 && s < p.e - 1e-6)) r++;
     placed.push({ r, s, e });
     row.set(c.id, r);
   }
   return { row, n: Math.max(1, ...placed.map(p => p.r + 1)) };
+}
+const trk = (lane, r = 0) => P.tracks?.[`${lane}:${r}`] || {};
+function shown(lane) { // the lane's clips without those on hidden (muted) tracks: what the preview and the export play
+  if (!Object.entries(P.tracks || {}).some(([k, v]) => v.off && k.startsWith(`${lane}:`))) return P[lane];
+  const R = rows(lane).row;
+  return P[lane].filter(c => !trk(lane, R.get(c.id) || 0).off);
+}
+function locked(lane, c) { // a locked track: its clips can't be selected, moved or changed from the timeline or the preview
+  if (lane === 'tr') return false;
+  if (!Object.entries(P.tracks || {}).some(([k, v]) => v.lock && k.startsWith(`${lane}:`))) return false;
+  return !!trk(lane, MULTI.includes(lane) ? rows(lane).row.get(c.id) || 0 : 0).lock;
+}
+function restackTracks(lane) { // the array follows the tracks, so a higher track draws on top (stable within a track)
+  const R = rows(lane).row, idx = new Map(P[lane].map((c, i) => [c, i]));
+  P[lane].sort((a, b) => (R.get(a.id) || 0) - (R.get(b.id) || 0) || idx.get(a) - idx.get(b));
 }
 function trHandles() {
   return P.main.slice(0, -1).map((c, i) => `<button class="trh${c.tr ? ' on' : ''}${S.sel?.lane === 'tr' && S.sel.id === c.id ? ' sel' : ''}" data-tr-for="${c.id}" style="left:${(P.main[i + 1].start + trF(i) / P.fps / 2) * S.pps}px" title="Transition" aria-label="Transition"></button>`).join('');
@@ -381,7 +403,7 @@ function trHandles() {
 
 function clipHTML(lane, c, top = 0, h = 42) {
   const pps = S.pps, m = M.get(c.media), layers = []; // [image, size, position, repeat]
-  let label = c.fx ? FX[c.fx]?.n || c.fx : c.text;
+  let label = c.fx ? FX[c.fx]?.n || c.fx : c.media ? 'Missing media' : c.text;
   if (m) {
     label = m.name + (c.speed !== 1 ? ` · ${c.speed}×` : '');
     const full = (m.duration / c.speed) * pps, off = (-c.in / c.speed) * pps, wave = m.wave && (lane === 'audio' || lane === 'main');
@@ -401,7 +423,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
   })() : '';
   const marks = env + fades + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
-  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
+  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
 
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }
@@ -453,6 +475,7 @@ function renderInspector() {
   const c = selClip();
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
+  if (c?.media && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
@@ -537,8 +560,13 @@ function restack(c, dir) { // bring forward / send backward past the next overla
 }
 function mediaPanel(c, lane) {
   const m = M.get(c.media);
-  if (!m) return '<h3>Missing media</h3><div class="actions"><button data-act="delete">Delete</button></div>';
-  const d = tdur(c, lane), pr = propsAt(c, S.t - c.start), cr = c.crop || {}, vis = m.kind !== 'audio', vid = m.kind === 'video', mk = c.mask, A = c.anim || {}, a = c.adj || {};
+  if (!m) { // its file left the library: put it back from the trash, point it at another file, or at something in the library
+    const n = LANES.reduce((k, L) => k + P[L.key].filter(x => x.media === c.media).length, 0), lib = [...M.values()].filter(x => x.kind !== 'audio' || lane === 'audio');
+    return `<h3>Missing media</h3><p class="muted">The file for ${n > 1 ? `these ${n} clips` : 'this clip'} isn't in the library any more. Relinking fixes every clip that used it.</p>
+      <div class="actions"><button data-act="restore" class="primary">Restore from trash</button><label class="btn"><input type="file" data-relink hidden accept="video/*,audio/*,image/*,.heic,.mkv,.gif">Relink to a file…</label></div>
+      ${lib.length ? `<div class="row"><span>Or use</span><select id="relinkSel">${lib.map(x => `<option value="${x.id}">${esc(short(x.name))}</option>`).join('')}</select></div><div class="actions"><button data-act="relinklib">Use it</button><button data-act="delete">Delete</button></div>` : '<div class="actions"><button data-act="delete">Delete</button></div>'}<p id="clipStatus" class="muted"></p>`;
+  }
+  const d = tdur(c, lane), pr = propsAt(c, S.t - c.start), cr = c.crop || {}, vis = m.kind !== 'audio', vid = m.kind === 'video', mk = maskAt(c, clamp(S.t - c.start, 0, d)), A = c.anim || {}, a = c.adj || {};
   const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(d)}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
   const fmax = Math.max(0.05, Math.min(3, d), c.fadeIn || 0, c.fadeOut || 0), amax = Math.max(0.2, Math.min(3, d));
   let basic = m.kind !== 'image' ? slider('c.speed', 'Speed', Math.log10(c.speed), -1, 2, 0.005, 'x', ' data-log') + (m.hasAudio ? tick('c.pitch', 'Change pitch with speed', c.pitch) : '') : '';
@@ -569,7 +597,9 @@ function mediaPanel(c, lane) {
       + (mk ? slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
         + (['circle', 'rect'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
         + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
-        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert) : '');
+        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert)
+        + `<div class="actions">${c.mkf?.length ? '<button data-act="mkfprev" title="Previous mask keyframe" aria-label="Previous mask keyframe">‹</button><button data-act="mkfnext" title="Next mask keyframe" aria-label="Next mask keyframe">›</button>' : ''}<button data-act="mkfadd">${c.mkf?.length ? 'Mask keyframe here' : 'Animate the mask'}</button>${c.mkf?.length ? `<button data-act="mkfdel">Remove here</button><button data-act="mkfclear">Clear ${c.mkf.length}</button>` : ''}</div>`
+        + `<p class="hint">${c.mkf?.length ? 'The mask moves between its keyframes; changing it at the playhead edits or adds one there.' : 'Animate the mask to follow something: add a keyframe, move the playhead, move the mask.'}</p>` : '');
     look += `<h4>Chroma key</h4>${c.key ? `${colour('c.key.color', 'Key colour', c.key.color)}${slider('c.key.sim', 'Strength', c.key.sim, 0.01, 1, 0.01, '%')}${slider('c.key.blend', 'Softness', c.key.blend, 0, 0.5, 0.01, '%')}<div class="actions"><button data-act="keypick">Pick colour from preview</button><button data-act="keyoff">Turn off</button></div>`
       : '<div class="actions"><button data-act="keyon">Remove green screen</button></div>'}`;
   }
@@ -606,7 +636,55 @@ function mediaPanel(c, lane) {
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
-  return head + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
+  return head + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Color', vis ? colorPanel(c) : ''], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
+}
+const WHEELS = [['lift', 'Shadows'], ['gamma', 'Midtones'], ['gain', 'Highlights']], CURVE_CH = [['m', 'Luma'], ['r', 'Red'], ['g', 'Green'], ['b', 'Blue']];
+function colorPanel(c) { // colour wheels, curves, HSL, an imported LUT, and the strength of all colour over time
+  const g = c.grade || {}, ch = S.curveCh || 'm', band = S.hband || 'red', hb = g.hsl?.[band] || {}, lt = clamp(S.t - c.start, 0, len(c));
+  const luts = G.luts || [];
+  return `<h4>Colour wheels</h4><div class="wheels">${WHEELS.map(([k, n]) => `<div class="wheel"><canvas data-wheel="${k}" width="168" height="168" title="Drag to tint the ${n.toLowerCase()}; double-click resets"></canvas><span>${n}</span></div>`).join('')}</div>`
+    + WHEELS.map(([k, n]) => slider(`c.grade.${k}.l`, n, g[k]?.l || 0, -1, 1, 0.01, '%')).join('')
+    + `<h4>Curves</h4>${segs('curvech', 'Channel', ch, CURVE_CH)}<div class="curvebox"><svg id="curveSvg" viewBox="0 0 100 100" preserveAspectRatio="none" data-ch="${ch}"></svg></div><p class="hint">Drag a point; click the curve to add one; double-click a point to remove it.</p><div class="actions"><button data-act="curvereset">Reset ${CURVE_CH.find(x => x[0] === ch)[1].toLowerCase()} curve</button></div>`
+    + `<h4>HSL</h4><div class="hslbands">${HSL_BANDS.map(([k, , col]) => `<button data-hband="${k}" class="${k === band ? 'on' : ''}${g.hsl?.[k] && (g.hsl[k].h || g.hsl[k].s || g.hsl[k].l) ? ' set' : ''}" style="--c:${col}" title="${k[0].toUpperCase() + k.slice(1)}" aria-label="${k}"></button>`).join('')}</div>`
+    + slider(`c.grade.hsl.${band}.h`, 'Hue', hb.h || 0, -1, 1, 0.01, '%') + slider(`c.grade.hsl.${band}.s`, 'Saturation', hb.s || 0, -1, 1, 0.01, '%') + slider(`c.grade.hsl.${band}.l`, 'Lightness', hb.l || 0, -1, 1, 0.01, '%')
+    + `<h4>LUT</h4><div class="row"><span>LUT</span><select id="lutSel"><option value="">None</option>${luts.map(L => `<option value="${L.id}"${g.lut?.id === L.id ? ' selected' : ''}>${esc(short(L.name, 24))}</option>`).join('')}</select></div>`
+    + `<div class="actions"><label class="btn"><input type="file" data-lutin hidden accept=".cube">Import .cube…</label></div>${g.lut?.id ? slider('c.grade.lut.amount', 'Strength', g.lut.amount ?? 1, 0, 1, 0.01, '%') : ''}`
+    + `<h4>Strength over time</h4><p class="hint">${c.lkf?.length ? `${c.lkf.length} point${c.lkf.length > 1 ? 's' : ''}: filters, adjustments and grade fade by them. ` : 'Fade all of this clip\'s colour (filter, adjust, grade) in or out: set a level at the playhead, move, set another.'}</p>`
+    + slider('lk.here', 'Strength here', +strengthAt(c, lt).toFixed(2), 0, 1, 0.01, '%', ' id="lkHere"')
+    + `<div class="actions"><button data-act="lkprev" title="Previous strength point">◀ Point</button><button data-act="lknext" title="Next strength point">Point ▶</button>${c.lkf?.length ? '<button data-act="lkdel">Delete point</button><button data-act="lkclear">Clear all</button>' : ''}</div>`
+    + (gradeOn(g) || c.lkf?.length ? '<div class="actions"><button data-act="gradereset">Reset colour</button></div>' : '');
+}
+function strengthPoint(c, v) { // the strength curve at the playhead: a new point, or the one already there
+  const lt = clamp(S.t - c.start, 0, len(c)), near = f => Math.abs(f.t - lt) < 0.5 / P.fps;
+  c.lkf = [...(c.lkf || []).filter(f => !near(f)), { t: +lt.toFixed(4), v: +clamp(v, 0, 1).toFixed(3) }].sort((a, b) => a.t - b.t);
+}
+function drawWheels(c) { // hue rings with the clip's offset as a dot
+  for (const cv of document.querySelectorAll('#inspector canvas[data-wheel]')) {
+    const x = cv.getContext('2d'), W = cv.width, R = W / 2 - 6, k = cv.dataset.wheel, w = c.grade?.[k] || {};
+    x.clearRect(0, 0, W, W);
+    for (let a = 0; a < 360; a += 2) { x.beginPath(); x.moveTo(W / 2, W / 2); x.arc(W / 2, W / 2, R, (-(a + 2.5) * Math.PI) / 180, (-a * Math.PI) / 180); x.closePath(); x.fillStyle = `hsl(${a},70%,50%)`; x.fill(); }
+    const gr = x.createRadialGradient(W / 2, W / 2, 0, W / 2, W / 2, R); gr.addColorStop(0, 'rgba(40,40,46,1)'); gr.addColorStop(1, 'rgba(40,40,46,0)');
+    x.fillStyle = gr; x.beginPath(); x.arc(W / 2, W / 2, R, 0, 6.2832); x.fill();
+    x.strokeStyle = 'rgba(255,255,255,.25)'; x.lineWidth = 1.5; x.beginPath(); x.moveTo(W / 2 - 8, W / 2); x.lineTo(W / 2 + 8, W / 2); x.moveTo(W / 2, W / 2 - 8); x.lineTo(W / 2, W / 2 + 8); x.stroke();
+    const px = W / 2 + (w.x || 0) * R, py = W / 2 - (w.y || 0) * R;
+    x.fillStyle = '#fff'; x.strokeStyle = '#000'; x.lineWidth = 2; x.beginPath(); x.arc(px, py, 7, 0, 6.2832); x.fill(); x.stroke();
+  }
+}
+function drawCurve(c) {
+  const svg = $('#curveSvg');
+  if (!svg) return;
+  const ch = svg.dataset.ch, pts = c.grade?.curves?.[ch] || [[0, 0], [1, 1]], f = curveFn(pts) || (v => v), col = { m: '#fff', r: '#ff5c5c', g: '#4cd964', b: '#5b8cff' }[ch];
+  const path = Array.from({ length: 101 }, (_, i) => `${i ? 'L' : 'M'}${i},${(100 - f(i / 100) * 100).toFixed(2)}`).join('');
+  svg.innerHTML = '<path d="M25,0V100M50,0V100M75,0V100M0,25H100M0,50H100M0,75H100" class="grid"/><path d="M0,100L100,0" class="diag"/>'
+    + `<path d="${path}" class="crv" style="stroke:${col}"/>` + pts.map(([x, y], i) => `<circle cx="${x * 100}" cy="${100 - y * 100}" r="3.2" data-pt="${i}"/>`).join('');
+}
+async function importLutFile(f) { // a .cube from this Mac into Movies/Cutroom/luts (checked here first)
+  const text = await f.text();
+  parseCube(text);
+  const L = await api('/api/luts', { name: f.name, text });
+  G.luts = await api('/api/luts');
+  toast(`LUT "${L.name}" imported`);
+  return L;
 }
 function textPanel(c, lane) {
   const cap = lane === 'captions', st = textStyle(c, lane), r = cap ? 'cap' : 'c.style', pr = cap ? null : propsAt(c, S.t - c.start), ws = WEIGHTS[st.font] || [400, 700];
@@ -634,6 +712,7 @@ function textPanel(c, lane) {
 }
 function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" -> caption style ; "p.fps" -> project
   if (el.dataset.k === 'vk.here') { const c = selClip(); if (c) volPoint(c, +el.value); return; }
+  if (el.dataset.k === 'lk.here') { const c = selClip(); if (c) strengthPoint(c, +el.value); return; }
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
   let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : P;
   if (!o) return;
@@ -644,10 +723,19 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (el.dataset.k === 'c.speed' && o.speed && v !== o.speed) { const f = o.speed / v; o.kf?.forEach(x => { x.t *= f; }); o.vkf?.forEach(x => { x.t *= f; }); } // they stay on their frames
   if (el.dataset.k === 'c.ease') o.kf?.forEach(x => delete x.ease); // "ease all segments" really means all
   if (root === 'c' && !path.length && KF_PROPS.includes(last)) return setProp(o, last, v);
+  if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
   for (const q of path) o = o[q] ??= {};
   o[last] = v;
   if (last === 'font' && WEIGHTS[v]) { const w = o.weight ?? TEXT_BASE.weight, ws = WEIGHTS[v]; if (!ws.includes(w)) o.weight = ws.reduce((x, y) => (Math.abs(y - w) < Math.abs(x - w) ? y : x)); }
   if (el.dataset.k === 'c.text') retext(selClip());
+}
+function relink(from, to) { // every clip that played the missing `from` plays library item `to` instead (same in/out, kept inside it)
+  const m = M.get(to);
+  if (!m) throw new Error(`no media ${to} in the library`);
+  let n = 0;
+  change(() => { for (const L of LANES) for (const c of P[L.key]) if (c.media === from) { c.media = to; n++; if (m.kind === 'image') { c.in = 0; c.out = Math.max(c.out - c.in, 0.1); } else { c.out = Math.min(c.out, m.duration); c.in = Math.min(c.in, Math.max(0, c.out - 0.1)); } } });
+  toast(`Relinked ${n} clip${n === 1 ? '' : 's'} to ${m.name}`);
+  return n;
 }
 function retext(c) { // keep word timings when the word count still matches, otherwise it becomes plain text
   if (!c.words) return;
@@ -847,8 +935,8 @@ function paint() {
   const mi = act.length ? act[act.length - 1] : -1;
   const tr = act.length > 1 ? { type: P.main[act[0]].tr?.type || 'fade', p: clamp((t - P.main[act[1]].start) / (trF(act[0]) / P.fps), 0, 1) } : null;
   const layers = act.map(i => ['main', P.main[i], `m${i % 2}`, i]); // two elements alternate: next cut pre-seeked, transitions show both
-  for (const c of P.overlay) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
-  for (const c of P.audio) if (t >= c.start && t < c.start + len(c)) layers.push(['audio', c, `a${c.id}`]);
+  for (const c of shown('overlay')) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
+  for (const c of shown('audio')) if (t >= c.start && t < c.start + len(c)) layers.push(['audio', c, `a${c.id}`]);
   for (const [lane, c, key, i] of layers) {
     const m = M.get(c.media);
     if (!m) continue;
@@ -886,6 +974,7 @@ function paint() {
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
   }
   if (G.tab === 'script') scriptNow(t);
+  if (SCOPE.on) drawScope();
   $('#tc').textContent = `${tc(t)} / ${tc(S.playing ? S.end : total())}`;
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
@@ -898,13 +987,13 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const rad = ((pr.rot || 0) * Math.PI) / 180;
+  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length, sk = strengthAt(c, lt);
   const draw = (x, y, w, h, fgr = true) => { // crop = source rect; mirror flips inside the rect; rotation spins about its centre
     ctx.save();
     if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
     const blendVid = lane === 'overlay' && c.blend && c.blend !== 'normal' && el.tagName === 'VIDEO'; // WebKit draws a <video> as plain source-over, whatever the blend mode: blend from a canvas
-    if (fgr && (c.key || c.mask || a.vig > 0 || (filt && !CANVAS_FILTER) || blendVid)) { // needs pixels: filter (by hand without ctx.filter) + mirror + key + mask offscreen
-      const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt);
+    if (fgr && (c.key || c.mask || a.vig > 0 || graded || (filt && (!CANVAS_FILTER || gpu())) || blendVid)) { // needs pixels: colour + mirror + key + mask + vignette (one GPU pass; by hand without one)
+      const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt, lt);
       ctx.filter = 'none'; ctx.drawImage(oc, x, y, w, h); ctx.restore();
       return;
     }
@@ -916,17 +1005,18 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   if (lane === 'main' && c.fit === 'blur') {
     const mw = m.w * fx, mh = m.h * fy, s = Math.max(P.w / mw, P.h / mh) * 1.08, r = (P.w / 40) * k;
     const bx = ((P.w - mw * s) / 2) * k, by = ((P.h - mh * s) / 2) * k, bw = mw * s * k, bh = mh * s * k;
-    if (CANVAS_FILTER) { ctx.filter = `${filt} blur(${r}px)`.trim(); draw(bx, by, bw, bh, false); }
+    if (CANVAS_FILTER && !graded && !gpu()) { ctx.filter = `${filt} blur(${r}px)`.trim(); draw(bx, by, bw, bh, false); }
     else { // no ctx.filter: the export's 3 box blurs, run at 1/(r/4) size (radius 4 there) and scaled back up
       const q = Math.max(1, r / 4), tw = Math.max(2, Math.round(bw / q)), th = Math.max(2, Math.round(bh / q)), tx = blurCv.getContext('2d', { willReadFrequently: true });
       if (blurCv.width !== tw || blurCv.height !== th) { blurCv.width = tw; blurCv.height = th; }
-      tx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, 0, 0, tw, th);
-      if (filt) colorPass(tx, tw, th, c);
+      const gp = (filt || graded) && gpuPass(el, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], tw, th, { ...c, flip: false }, { k: sk, mask: null, noKey: true, noVig: true });
+      if (gp) { tx.clearRect(0, 0, tw, th); tx.drawImage(gp[0], 0, gp[1], tw, th, 0, 0, tw, th); }
+      else { tx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, 0, 0, tw, th); if (filt || graded) colorPass(tx, tw, th, c, sk); }
       boxBlurRGB(tx, tw, th, Math.max(1, Math.round(r / q)));
       ctx.imageSmoothingQuality = 'high'; ctx.drawImage(blurCv, bx, by, bw, bh);
     }
   }
-  ctx.filter = filt || 'none';
+  ctx.filter = gpu() || graded ? 'none' : filt || 'none'; // the GPU pass (or offscreen) has done the colour
   if (lane === 'overlay') { ctx.globalAlpha = pr.opacity * f; if (c.blend && c.blend !== 'normal') ctx.globalCompositeOperation = c.blend; }
   else if (pr.opacity < 1) ctx.globalAlpha = pr.opacity; // main clips fade over the canvas colour, as in the export
   draw(g.x * k, g.y * k, g.w * k, g.h * k);
@@ -935,15 +1025,20 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
 }
 const blurCv = document.createElement('canvas');
-function colorPass(x, W, H, c) { // drawMedia's filter by hand (no ctx.filter in WebKit): brightness, contrast, saturate, then the look matrix, in sRGB like CSS
-  const a = c.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, L = lookMatrix(c), T = toneLUT(c), q = v => (v < 0 ? 0 : v > 255 ? 255 : v);
+function colorPass(x, W, H, c, mixK = 1) { // the GPU pass's colour on the CPU (no WebGL2): brightness, contrast, saturate, tone, look, grade LUT, strength
+  const a = c.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, L = lookMatrix(c), T = toneLUT(c), GR = gradeLUT(c), q = v => (v < 0 ? 0 : v > 255 ? 255 : v), r8 = v => Math.round(q(v));
   const M = [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s];
-  const img = x.getImageData(0, 0, W, H), d = img.data;
+  const img = x.getImageData(0, 0, W, H), d = img.data, Gd = GR && { n: GN, d: GR.d };
   for (let i = 0; i < d.length; i += 4) {
     const r = q((q(d[i] * b) - 127.5) * k + 127.5), g = q((q(d[i + 1] * b) - 127.5) * k + 127.5), u = q((q(d[i + 2] * b) - 127.5) * k + 127.5);
     let R = q(M[0] * r + M[1] * g + M[2] * u), G = q(M[3] * r + M[4] * g + M[5] * u), B = q(M[6] * r + M[7] * g + M[8] * u);
     if (T) { R = T[Math.round(R)]; G = T[Math.round(G)]; B = T[Math.round(B)]; }
     if (L) { const R2 = L[0] * R + L[1] * G + L[2] * B, G2 = L[3] * R + L[4] * G + L[5] * B; B = L[6] * R + L[7] * G + L[8] * B; R = R2; G = G2; }
+    if (GR || mixK !== 1) {
+      R = r8(R); G = r8(G); B = r8(B);
+      if (Gd) { const o = sampleLUT(Gd, R / 255, G / 255, B / 255); R = r8(o[0] * 255); G = r8(o[1] * 255); B = r8(o[2] * 255); }
+      R = d[i] + (R - d[i]) * mixK; G = d[i + 1] + (G - d[i + 1]) * mixK; B = d[i + 2] + (B - d[i + 2]) * mixK;
+    }
     d[i] = R; d[i + 1] = G; d[i + 2] = B; // Uint8ClampedArray clamps and rounds
   }
   x.putImageData(img, 0, 0);
@@ -982,15 +1077,18 @@ function featherAlpha(x, W, H, sigma) { // maskCanvas's blur(sigma) by hand: 3 b
   x.putImageData(img, 0, 0);
 }
 const keyCv = document.createElement('canvas'), hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
-function offscreen(el, c, src, w, h, filt) { // filter + mirror, then chroma key (colorkey's formula) x mask, like the export
+function offscreen(el, c, src, w, h, filt, lt = 0) { // colour + mirror, then chroma key (colorkey's formula) x mask, vignette, like the export
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h));
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
-  x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H); x.filter = filt || 'none';
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
+  const sk = strengthAt(c, lt), mk = maskAt(c, lt), gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
+  if (gp) { x.filter = 'none'; x.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); return keyCv; }
+  x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
   x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none';
-  if (filt && !CANVAS_FILTER) colorPass(x, W, H, c);
+  if ((filt && !CANVAS_FILTER) || gradeOn(c.grade) || c.lkf?.length) colorPass(x, W, H, c, sk);
   if (c.key) { // alpha *= clip((dist - similarity) / blend)
     const img = x.getImageData(0, 0, W, H), d = img.data, [kr, kg, kb] = hexRgb(c.key.color), sim = c.key.sim, bl = c.key.blend;
     for (let i = 0; i < d.length; i += 4) {
@@ -999,13 +1097,30 @@ function offscreen(el, c, src, w, h, filt) { // filter + mirror, then chroma key
     }
     x.putImageData(img, 0, 0);
   }
-  if (c.mask) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(c.mask, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
+  if (mk) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(mk, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
   if (c.adj?.vig > 0) { // vignette: RGB x the multiplier map, alpha untouched (the export multiplies by the same map as a PNG)
     const img = x.getImageData(0, 0, W, H), d = img.data, mm = vigMap(c.adj.vig, W, H);
     for (let i = 0, j = 0; i < d.length; i += 4, j++) { d[i] *= mm[j]; d[i + 1] *= mm[j]; d[i + 2] *= mm[j]; }
     x.putImageData(img, 0, 0);
   }
   return keyCv;
+}
+const MKF = ['x', 'y', 'w', 'h', 'rot', 'feather'];
+function maskAt(c, lt) { // the mask at clip time lt: its keyframes (c.mkf) interpolated linearly, or the mask as set
+  const k = c.mkf, mk = c.mask;
+  if (!mk || !k?.length) return mk;
+  let a = k[0], b = k[0], u = 0;
+  if (lt >= k.at(-1).t) a = b = k.at(-1);
+  else if (lt > k[0].t) for (let i = 0; i + 1 < k.length; i++) if (lt < k[i + 1].t) { a = k[i]; b = k[i + 1]; u = (lt - a.t) / Math.max(1e-6, b.t - a.t); break; }
+  const o = { ...mk };
+  for (const p of MKF) o[p] = +((a[p] ?? mk[p]) + ((b[p] ?? mk[p]) - (a[p] ?? mk[p])) * u).toFixed(5);
+  return o;
+}
+function maskPoint(c) { // the mask keyframe under the playhead (added, from the mask there, if missing)
+  const lt = snap(clamp(S.t - c.start, 0, len(c)));
+  let f = c.mkf.find(x => Math.abs(x.t - lt) < 0.5 / P.fps);
+  if (!f) { const m = maskAt(c, lt); f = { t: +lt.toFixed(4), ...Object.fromEntries(MKF.map(p => [p, m[p]])) }; c.mkf.push(f); c.mkf.sort((a, b) => a.t - b.t); }
+  return f;
 }
 const maskCache = new Map();
 function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview and the exported mask PNG
@@ -1028,11 +1143,22 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
   maskCache.set(key, cv);
   return cv;
 }
-async function maskPNG(c, m) { // export: opaque greyscale (luma -> alpha via alphamerge) at the cropped source aspect
-  const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0)), s = Math.min(1, 1280 / Math.max(mw, mh));
+async function maskPNG(c, m, mk = c.mask, side = 1280) { // export: opaque greyscale (luma -> alpha via alphamerge) at the cropped source aspect
+  const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0)), s = Math.min(1, side / Math.max(mw, mh));
   const W = Math.round(mw * s), H = Math.round(mh * s), cv = new OffscreenCanvas(W, H), x = cv.getContext('2d');
-  x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(c.mask, W, H), 0, 0);
+  x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(mk, W, H), 0, 0);
   return blobURL(await cv.convertToBlob({ type: 'image/png' }));
+}
+async function maskSeq(c, m) { // keyframed mask: one PNG per frame where it changes (repeats reused), as runs of frames
+  const n = frames(c), pngs = [], seen = new Map(), spans = [];
+  for (let f = 0; f < n; f++) {
+    const mk = maskAt(c, f / P.fps), key = JSON.stringify(mk);
+    let i = seen.get(key);
+    if (i === undefined) { i = pngs.push(await maskPNG(c, m, mk, 720)) - 1; seen.set(key, i); }
+    const last = spans.at(-1);
+    if (last && last.i === i) last.n++; else spans.push({ i, n: 1 });
+  }
+  return { pngs, spans };
 }
 
 // ---------- video effects (the Effects track) ----------
@@ -1174,12 +1300,12 @@ const fxOn = (f, t) => t >= f.start && t < f.start + f.dur;
 function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the text layer (preview and export draw them the same way)
   if (P.mute.fx) return;
   const W = P.w * k, H = P.h * k, u = Math.min(W, H) / 1080;
-  for (const f of P.fx) if (fxOn(f, t) && FX[f.fx]?.layer) { ctx.save(); FX[f.fx].layer(ctx, W, H, u, t - f.start, f); ctx.restore(); }
+  for (const f of shown('fx')) if (fxOn(f, t) && FX[f.fx]?.layer) { ctx.save(); FX[f.fx].layer(ctx, W, H, u, t - f.start, f); ctx.restore(); }
 }
 function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (video and overlays)
   if (P.mute.fx) return;
   const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
-  for (const f of P.fx) if (fxOn(f, t) && FX[f.fx]?.px) runOps(ctx, W, H, FX[f.fx].px(W, H, u, t - f.start, f));
+  for (const f of shown('fx')) if (fxOn(f, t) && FX[f.fx]?.px) runOps(ctx, W, H, FX[f.fx].px(W, H, u, t - f.start, f));
 }
 const scratchCv = new Map();
 function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
@@ -1251,7 +1377,7 @@ function addEffect(type, start = S.t, dur, amt = 1) {
 function fxPlan(w, h) { // the effect steps for the export, sampled at every frame they cover (on the frame grid, as the preview shows them)
   const out = [], u = Math.min(w, h) / 1080, nF = Math.round(total() * P.fps);
   if (P.mute.fx) return out;
-  for (const f of P.fx) {
+  for (const f of shown('fx')) {
     const d = FX[f.fx], a = Math.ceil(f.start * P.fps - 1e-6), b = Math.min(nF, Math.ceil((f.start + f.dur) * P.fps - 1e-6));
     if (!d?.px || b <= a) continue;
     const per = [];
@@ -1559,7 +1685,7 @@ function selection() { // the selected clips as [clip, lane]: the primary one pl
 const isSel = (lane, id) => (S.sel?.lane === lane && S.sel.id === id) || S.multi.has(selKey(lane, id));
 function selectAll() { // ⌘A: every clip on every track
   S.multi.clear();
-  const all = LANES.flatMap(L => P[L.key].map(c => [L.key, c.id]));
+  const all = LANES.flatMap(L => P[L.key].filter(c => !locked(L.key, c)).map(c => [L.key, c.id]));
   if (!all.length) return;
   S.sel = { lane: all[0][0], id: all[0][1] };
   for (const [l, id] of all.slice(1)) S.multi.add(selKey(l, id));
@@ -1908,7 +2034,7 @@ function addTemplate(name) {
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? P.capStyle : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
   drawFxLayers(ctx, t, k);
-  for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of P[lane]) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
+  for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
 }
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
   const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
@@ -2639,7 +2765,39 @@ async function loadMedia() {
   clearTimeout(loadMedia.t);
   if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
 }
+// ---------- subtitles: SRT / WebVTT in and out ----------
+const srtTime = t => { const ms = Math.max(0, Math.round(t * 1000)), p2 = (v, n = 2) => String(v).padStart(n, '0'); return `${p2(Math.floor(ms / 3600000))}:${p2(Math.floor(ms / 60000) % 60)}:${p2(Math.floor(ms / 1000) % 60)},${p2(ms % 1000, 3)}`; };
+function toSRT() { // the captions (or, with none, the text clips) as SubRip
+  const src = (P.captions.length ? P.captions : P.text).filter(c => String(c.text || '').trim()).sort((a, b) => a.start - b.start);
+  if (!src.length) throw new Error('no captions or text to save as subtitles');
+  return src.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.start + c.dur)}\n${String(c.text).trim()}\n`).join('\n');
+}
+function parseSubs(txt) { // SubRip or WebVTT cues -> [{start, dur, text}]
+  const sec = x => { const m = x.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})$/); return m ? (+m[1] || 0) * 3600 + +m[2] * 60 + +m[3] + +m[4].padEnd(3, '0') / 1000 : NaN; };
+  const out = [];
+  for (const blk of String(txt).replace(/\r/g, '').split(/\n\s*\n/)) {
+    const lines = blk.split('\n'), i = lines.findIndex(l => l.includes('-->'));
+    if (i < 0) continue;
+    const [a, b] = lines[i].split('-->').map(x => sec(x.trim().split(/\s+/)[0]));
+    const text = lines.slice(i + 1).join('\n').replace(/<[^>]*>/g, '').replace(/\{\\[^}]*\}/g, '').trim();
+    if (Number.isFinite(a) && b > a && text) out.push({ start: a, dur: b - a, text });
+  }
+  return out.sort((x, y) => x.start - y.start);
+}
+function importSubs(txt, name = 'subtitles') { // onto the captions track (replacing it), words spread over each cue for the highlight
+  const cues = parseSubs(txt);
+  if (!cues.length) throw new Error(`no subtitles found in ${name}`);
+  change(() => {
+    P.captions = cues.map(c => { const ws = c.text.split(/\s+/).filter(Boolean); return { id: hex12(), start: c.start, dur: c.dur, text: ws.join(' '), words: ws.map((w, i) => ({ w, s: (i * c.dur) / ws.length, e: ((i + 1) * c.dur) / ws.length })) }; });
+    if (S.sel?.lane === 'captions') S.sel = null;
+  });
+  toast(`${cues.length} subtitles from ${name} on the captions track`);
+  return cues.length;
+}
+async function saveSRT(name) { const r = await api('/api/save_subs', { name: name || P.name, text: toSRT() }); return r.file; }
 function importFiles(files) {
+  for (const f of [...files].filter(x => /\.(srt|vtt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -2661,6 +2819,7 @@ function exportSizes() {
 }
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
+  await lutsReady([...P.main, ...P.overlay]); // imported LUTs in the grades are loaded
   const k = w / P.w, D = total();
   const clip = async (c, lane, i) => {
     const m = M.get(c.media);
@@ -2673,8 +2832,11 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       // keyframes as export-pixel width + top-left: those interpolate exactly like scale/x/y do (same easing)
       const bk = bakeKf(c, lane); // keyframes as export-pixel width + top-left (they interpolate like scale/x/y do), clip animations baked in
       if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1 }; });
-      if (c.mask) o.mask = await maskPNG(c, m);
+      if (c.mask && c.mkf?.length) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m);
       if (c.adj?.vig > 0) o.vig = await vigPNG(c, m);
+      const gl3 = gradeLUT(c);
+      if (gl3) o.grade = gradeB64(gl3);
+      if (c.lkf?.length) o.lkf = c.lkf;
       const tn = toneLUT(c);
       if (tn) o.tone = tn;
     }
@@ -2684,7 +2846,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
     return o;
   };
-  const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => P[l].map(it => [l, it])), layerFx = P.mute.fx ? [] : P.fx.filter(f => FX[f.fx]?.layer);
+  const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => shown(l).map(it => [l, it])), layerFx = P.mute.fx ? [] : shown('fx').filter(f => FX[f.fx]?.layer);
   let text = null;
   if (items.length || layerFx.length) { // one PNG per interval in which the visible text (and effect overlays) don't change
     await Promise.all([...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.weight} 40px "${s.font}"`; }))].map(f => document.fonts.load(f)));
@@ -2719,8 +2881,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     text = { pngs, frames: spans };
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
-    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(P.overlay.map(c => clip(c, 'overlay'))),
-    audio: P.mute.audio ? [] : await Promise.all(P.audio.map(c => clip(c, 'audio'))) };
+    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
+    audio: P.mute.audio ? [] : await Promise.all(shown('audio').map(c => clip(c, 'audio'))) };
 }
 function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
@@ -2736,11 +2898,11 @@ function openExport() {
     <div class="actions" id="exActions"><span id="exDone"></span><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = tc(total()), fps = +P.fps.toFixed(3);
-    $('#exRes').disabled = ['mp3', 'wav'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png'].includes(f);
+    $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f);
     $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
     $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
       prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, no sound, loops · ${d}`, mp3: `Audio only · MP3 · ${d}`,
-      wav: `Audio only · WAV, uncompressed · ${d}`, png: `One frame at ${tc(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
+      wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${tc(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
   };
   $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();
 }
@@ -2750,6 +2912,12 @@ async function runExport() {
   go.disabled = true; S.exporting = true; bar.hidden = false; $('[data-close]').disabled = true; $('#exDone').innerHTML = '';
   st.textContent = 'Rendering text layer…';
   try {
+    if ($('#exFmt').value === 'srt') {
+      const file = await saveSRT($('#exName').value.trim());
+      bar.firstElementChild.style.width = '100%'; st.innerHTML = `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`;
+      $('#exDone').innerHTML = `<button data-reveal="${esc(file)}">Show in Finder</button>`;
+      return;
+    }
     const plan = await buildPlan(w, h, $('#exQ').value, $('#exName').value.trim() || P.name, $('#exLoud').checked, $('#exFmt').value);
     plan.rate = +$('#exRate').value;
     const { job } = await api('/api/export', plan);
@@ -2772,7 +2940,7 @@ async function runExport() {
 // ---------- projects ----------
 function migrate(p) {
   const q = { fps: 30, bg: '#000000', main: [], overlay: [], audio: [], text: [], captions: [], fx: [], markers: [], ...p,
-    mute: { main: false, overlay: false, audio: false, text: false, captions: false, fx: false, ...(p.mute || {}) }, capStyle: { ...CAP_PRESETS.Bold, y: 0.72, ...(p.capStyle || {}) } };
+    tracks: { ...(p.tracks || {}) }, mute: { main: false, overlay: false, audio: false, text: false, captions: false, fx: false, ...(p.mute || {}) }, capStyle: { ...CAP_PRESETS.Bold, y: 0.72, ...(p.capStyle || {}) } };
   if ((q.v || 1) < 2) { // v2: volume envelopes are multipliers of the clip volume, so the Volume slider still works after auto-duck
     for (const L of ['main', 'overlay', 'audio']) for (const c of q[L]) if (c.vkf?.length) { const b = c.volume || 1; c.vkf = c.vkf.map(f => ({ ...f, v: f.v / b })); }
     q.v = 2;
@@ -2788,7 +2956,11 @@ function setProject(p) {
   store.set('cutroom.last', P.id);
   fitStage(); renderAll();
 }
-async function openProject(id) { setProject(await api(`/api/projects/${id}`)); }
+async function openProject(id) {
+  setProject(await api(`/api/projects/${id}`));
+  const gone = LANES.reduce((n, L) => n + P[L.key].filter(c => c.media && !M.get(c.media)).length, 0);
+  if (gone) toast(`${gone} clip${gone === 1 ? ' has' : 's have'} missing media (striped red): select one to restore or relink it`);
+}
 async function openProjects() {
   const list = await api('/api/projects').catch(() => []);
   modal(`<h2>Projects</h2><div class="newp">${Object.keys(RATIOS).map(r => `<button data-new="${r}">New ${r}</button>`).join('')}</div>
@@ -2853,16 +3025,17 @@ function scrub(e) {
   addEventListener('pointerup', up);
 }
 function drag(e, lane, c, el) {
-  const before = JSON.stringify(P), x0 = e.clientX, o = structuredClone(c), m = M.get(c.media);
+  const before = JSON.stringify(P), x0 = e.clientX, y0 = e.clientY, o = structuredClone(c), m = M.get(c.media);
   const group = lane !== 'main' && selection().length > 1 && isSel(lane, c.id) ? selection().filter(([x, l]) => x !== c && l !== 'main').map(([x]) => [x, x.start]) : [];
   const r = el.getBoundingClientRect(), edge = Math.min(8, r.width / 3);
   const mode = e.clientX - r.left < edge ? 'l' : r.right - e.clientX < edge ? 'r' : 'move';
   const minD = 1 / P.fps, sp = c.speed || 1, maxOut = m && m.kind !== 'image' ? m.duration : Infinity;
+  const vert = mode === 'move' && MULTI.includes(lane) && !group.length, LH = LANES.find(L => L.key === lane)?.h || 42, R0 = vert ? rows(lane).row : null; // up / down: another track
   let moved = false;
   if (S.playing) pause();
   const move = ev => {
     const dx = ev.clientX - x0, dt = dx / S.pps;
-    if (!moved && Math.abs(dx) < 3) return;
+    if (!moved && Math.abs(dx) < 3 && !(vert && Math.abs(ev.clientY - y0) >= 3)) return;
     moved = true;
     if (mode === 'move' && lane === 'main') { el.style.transform = `translateX(${dx}px)`; el.style.zIndex = 3; return; } // reorder on drop
     if (mode === 'r') {
@@ -2883,6 +3056,12 @@ function drag(e, lane, c, el) {
       const dd = Math.max(c.start - o.start, -Math.min(o.start, ...group.map(g => g[1]))); // the group keeps its spacing and stops at 0
       c.start = o.start + dd;
       for (const [x, s0] of group) x.start = s0 + dd;
+      if (vert) {
+        if (!S.dragLane) for (const x of P[lane]) if (x !== c) { const r = R0.get(x.id) || 0; if (r) x.track = r; else delete x.track; } // the others keep their tracks
+        S.dragLane = lane;
+        const top = $(`#lane-${lane}`).getBoundingClientRect().top, n = rows(lane).n, r = clamp(Math.floor((ev.clientY - top) / LH), 0, n);
+        if (r !== (rows(lane).row.get(c.id) || 0)) { if (r) c.track = r; else delete c.track; }
+      }
     }
     S.dirty = true;
     renderTimeline();
@@ -2895,6 +3074,7 @@ function drag(e, lane, c, el) {
       rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, c);
       P.main = rest;
     }
+    if (S.dragLane) { S.dragLane = null; restackTracks(lane); }
     if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
     if (moved && JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } else renderTimeline();
   };
@@ -2980,6 +3160,8 @@ function wire() {
     finally { b.disabled = false; }
   });
   $('#hookList').addEventListener('click', e => { const b = e.target.closest('[data-hook]'); if (b) addHook(b.dataset.hook); });
+  $('#subsIn').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
+  $('#btnSubsOut').addEventListener('click', async () => { try { const f = await saveSRT(); toast(`Saved ${f} in Movies/Cutroom/exports`); } catch (e) { toast(e.message); } });
   $('#btnTranslate').addEventListener('click', async () => {
     const b = $('#btnTranslate');
     b.disabled = true; $('#trStatus').textContent = 'Translating on this Mac…';
@@ -2996,7 +3178,21 @@ function wire() {
     finally { b.disabled = false; }
   });
   $('#btnTemplates').addEventListener('click', openTemplates);
-  $('#heads').addEventListener('click', e => { const b = e.target.closest('[data-lt]'); if (b) change(() => { P.mute[b.dataset.lt] = !P.mute[b.dataset.lt]; }); });
+  $('#heads').addEventListener('click', e => {
+    const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
+    if (!b) return;
+    const d = b.dataset, key = d.tk || d.lk;
+    change(() => {
+      if (d.lt) P.mute[d.lt] = !P.mute[d.lt];
+      else {
+        const lane = key.split(':')[0], T = { ...(P.tracks[key] || {}) };
+        if (d.tk && P.mute[lane]) P.mute[lane] = false; // an old whole-lane mute gives way to the track toggles
+        else if (d.tk) T.off = !T.off; else T.lock = !T.lock;
+        if (T.off || T.lock) P.tracks[key] = T; else delete P.tracks[key];
+        if (d.lk && T.lock && S.sel && S.sel.lane !== 'tr' && selClip() && locked(S.sel.lane, selClip())) { S.sel = null; S.multi.clear(); }
+      }
+    });
+  });
   $('#projName').addEventListener('change', e => change(() => { P.name = e.target.value.trim() || 'Untitled'; }));
   $('#zoom').addEventListener('input', e => setZoom(8 * 2 ** +e.target.value));
   $('#fileInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
@@ -3055,6 +3251,8 @@ function wire() {
   $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
   $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
   $('#btnFit').addEventListener('click', fitTimeline);
+  $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
+  $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) { SCOPE.kind = b.dataset.scope; for (const x of $('#scope').querySelectorAll('[data-scope]')) x.classList.toggle('on', x === b); S.dirty = true; } });
 
   $('#mediaList').addEventListener('click', async e => {
     const b = e.target.closest('[data-add]'), rm = e.target.closest('[data-rm]');
@@ -3098,6 +3296,7 @@ function wire() {
     if (!el) return scrub(e);
     const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
     if (!c) return;
+    if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
     if (e.shiftKey || e.metaKey) { // ⇧ / ⌘-click: add the clip to the selection, or take it out
       const k = selKey(lane, c.id);
       if (isSel(lane, c.id) && selection().length > 1) {
@@ -3128,6 +3327,7 @@ function wire() {
     }
     const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
     if (!c) return;
+    if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
     if (!isSel(lane, c.id)) { S.multi.clear(); S.sel = { lane, id: c.id }; renderTimeline(); renderInspector(); S.dirty = true; }
     openMenu(e.clientX, e.clientY, clipMenu(c, lane));
   });
@@ -3172,7 +3372,7 @@ function wire() {
     if (S.maskPreview) return refinePreview(x / (cv.width / P.w), y / (cv.width / P.w), !e.altKey); // clicks shape the outline
     const hs = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(h => h.id === S.sel.id), hk = hs && handleAt(hs, x, y);
     if (hk) return handleDrag(e, hs, hk, cv);
-    const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+    const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1 && !locked(h.lane, P[h.lane].find(q => q.id === h.id) || {}));
     if (!hit) { if (S.sel) { S.sel = null; renderAll(); S.dirty = true; } return; }
     if (S.sel?.id !== hit.id) { S.sel = { lane: hit.lane, id: hit.id }; renderAll(); S.dirty = true; }
     const c = selClip();
@@ -3240,6 +3440,29 @@ function wire() {
   $('#tplList').addEventListener('click', e => { const b = e.target.closest('[data-tpl]'); if (b) addTemplate(b.dataset.tpl); });
 
   const insp = $('#inspector');
+  insp.addEventListener('pointerdown', e => { // colour wheels and the curve editor: one undo step per drag
+    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), c = selClip();
+    if (!c || (!wcv && !svg)) return;
+    e.preventDefault();
+    const before = JSON.stringify(P), el = wcv || svg, r = el.getBoundingClientRect();
+    const pos = ev => [clamp((ev.clientX - r.left) / r.width, 0, 1), clamp((ev.clientY - r.top) / r.height, 0, 1)];
+    let set;
+    if (wcv) {
+      const k = wcv.dataset.wheel;
+      set = ev => { const [u, v] = pos(ev), R = (wcv.width / 2 - 6) / wcv.width; let x = (u - 0.5) / R, y = (0.5 - v) / R; const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; } c.grade ??= {}; c.grade[k] = { ...c.grade[k], x: +x.toFixed(3), y: +y.toFixed(3) }; drawWheels(c); };
+    } else {
+      const ch = svg.dataset.ch, pts = (c.grade?.curves?.[ch] || [[0, 0], [1, 1]]).map(q => [...q]), [u, v] = pos(e), d = q => Math.hypot(q[0] - u, 1 - q[1] - v);
+      let i = pts.findIndex(q => d(q) < 0.06);
+      if (e.detail === 2 && i > 0 && i < pts.length - 1) { change(() => { pts.splice(i, 1); c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts }; }); return; }
+      if (i < 0) { const nu = +u.toFixed(3); pts.push([nu, +(1 - v).toFixed(3)]); pts.sort((a, b) => a[0] - b[0]); i = pts.findIndex(q => q[0] === nu); }
+      const lo = i ? pts[i - 1][0] + 0.01 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.01 : 1, ends = i === 0 || i === pts.length - 1;
+      set = ev => { const [x, y] = pos(ev); pts[i] = [ends ? pts[i][0] : +clamp(x, lo, hi).toFixed(3), +(1 - y).toFixed(3)]; c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts.map(q => [...q]) }; drawCurve(c); };
+    }
+    set(e); S.dirty = true;
+    const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  });
+  insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
   insp.addEventListener('input', e => {
     if (!e.target.dataset.k) return;
     pending ??= JSON.stringify(P); // one undo step per gesture, committed on 'change'
@@ -3252,6 +3475,9 @@ function wire() {
     renderTimeline();
   });
   insp.addEventListener('change', e => {
+    if (e.target.id === 'lutSel') { const c = selClip(), id = e.target.value; change(() => { c.grade ??= {}; if (id) c.grade.lut = { id, amount: c.grade.lut?.amount ?? 1 }; else delete c.grade.lut; }); if (id) loadLut(id); return; }
+    if ('lutin' in e.target.dataset && e.target.files[0]) { const c = selClip(); importLutFile(e.target.files[0]).then(L => change(() => { c.grade ??= {}; c.grade.lut = { id: L.id, amount: 1 }; })).catch(err => setStatus(err.message)); return; }
+    if ('relink' in e.target.dataset && e.target.files[0]) { const c = selClip(), f = e.target.files[0]; setStatus(`Importing ${f.name}…`); uploadOne(f).then(m => relink(c.media, m.id)).catch(err => setStatus(err.message)); return; }
     if (!e.target.dataset.k) return;
     if (pending) { undo.push(pending); redo = []; pending = null; }
     renderTimeline();
@@ -3278,7 +3504,7 @@ function wire() {
     else if (d.act === 'delete') del();
     else if (d.voice) setVoice(c, d.voice);
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.blend; delete c.vkf; delete c.anim; delete c.pitch; delete c.au; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.anim; delete c.pitch; delete c.au; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
@@ -3292,7 +3518,7 @@ function wire() {
     else if (d.act === 'track') startTrack(c, S.sel.lane);
     else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
     else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
-    else if (d.mask) change(() => { if (d.mask === 'none') delete c.mask; else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
+    else if (d.mask) change(() => { if (d.mask === 'none') { delete c.mask; delete c.mkf; } else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
     else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
     else if (d.act === 'detach') detachAudio(c);
     else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
@@ -3317,6 +3543,25 @@ function wire() {
     }
     else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
     else if (d.act === 'slowmo') quiet(smoothSlowmo(c));
+    else if (d.act === 'restore') api(`/api/media/${c.media}/restore`, {}).then(loadMedia).then(() => { if (!M.get(c.media)) throw new Error('not in the trash'); touched(); toast('Restored from the trash'); }).catch(err => setStatus(`Couldn't restore it: ${err.message}. Relink it to the file instead.`));
+    else if (d.act === 'relinklib') relink(c.media, $('#relinkSel').value);
+    else if (d.curvech) { S.curveCh = d.curvech; renderInspector(); }
+    else if (d.hband) { S.hband = d.hband; renderInspector(); }
+    else if (d.act === 'curvereset') change(() => { if (c.grade?.curves) delete c.grade.curves[S.curveCh || 'm']; });
+    else if (d.act === 'gradereset') change(() => { delete c.grade; delete c.lkf; });
+    else if (d.act === 'lkclear') change(() => { delete c.lkf; });
+    else if (d.act === 'lkdel') change(() => { const lt = S.t - c.start; c.lkf = (c.lkf || []).filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.lkf.length) delete c.lkf; });
+    else if (d.act === 'lkprev' || d.act === 'lknext') {
+      const lt = S.t - c.start, ts = (c.lkf || []).map(f => f.t), t = d.act === 'lkprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
+      if (t !== undefined) { seekTo(c.start + t); renderInspector(); }
+    }
+    else if (d.act === 'mkfadd') change(() => { c.mkf ??= []; maskPoint(c); });
+    else if (d.act === 'mkfdel') change(() => { const lt = S.t - c.start; c.mkf = c.mkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.mkf.length) delete c.mkf; });
+    else if (d.act === 'mkfclear') change(() => { Object.assign(c.mask, maskAt(c, clamp(S.t - c.start, 0, len(c)))); delete c.mkf; });
+    else if (d.act === 'mkfprev' || d.act === 'mkfnext') {
+      const lt = S.t - c.start, ts = (c.mkf || []).map(f => f.t), t = d.act === 'mkfprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
+      if (t !== undefined) seekTo(c.start + t);
+    }
     else if (d.act === 'keyon') change(() => { c.key = { color: '#00ff00', sim: 0.3, blend: 0.1 }; });
     else if (d.act === 'keyoff') change(() => { delete c.key; });
     else if (d.act === 'autoadj') autoAdjust(c, S.sel.lane).catch(() => {});
@@ -3577,13 +3822,16 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
     const v = c[k];
     if (v !== undefined && v !== def[k] && v !== false && v !== 'normal') o[k] = typeof v === 'number' ? r3(v) : v;
   }
-  for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
+  for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr', 'grade']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
+  if (c.lkf?.length) o.strengthPoints = c.lkf.length;
   if (c.mask) o.mask = c.mask.type;
+  if (c.mkf?.length) o.maskKeyframes = c.mkf.length;
+  if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   return o;
 }
-const EDITABLE = new Set(['au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+const EDITABLE = new Set(['mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -3608,7 +3856,7 @@ const REMOTE = {
   async options() {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
-      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
+      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
       effects: Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
@@ -3658,7 +3906,16 @@ const REMOTE = {
     if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
     if ((set.in ?? c.in) >= (set.out ?? c.out) && c.media) throw new Error('in must be before out');
     if (set.dur !== undefined && !(set.dur > 0)) throw new Error('dur must be above 0');
-    for (const [k, need] of [['kf', ['t']], ['vkf', ['t', 'v']]]) { // keyframes and volume points arrive as written: check them before they reach the clip
+    if (set.grade !== undefined && set.grade !== null) {
+      const g = set.grade, bad = typeof g !== 'object' || Object.keys(g).some(k => !['lift', 'gamma', 'gain', 'curves', 'hsl', 'lut'].includes(k))
+        || ['lift', 'gamma', 'gain'].some(k => g[k] && Object.values(g[k]).some(v => typeof v !== 'number' || !(v >= -1 && v <= 1)))
+        || (g.curves && Object.entries(g.curves).some(([k, p]) => !['m', 'r', 'g', 'b'].includes(k) || (p !== null && (!Array.isArray(p) || p.some(q => !Array.isArray(q) || q.length !== 2 || q.some(v => !(v >= 0 && v <= 1)))))))
+        || (g.hsl && Object.entries(g.hsl).some(([k, b]) => !HSL_BANDS.some(x => x[0] === k) || (b && Object.values(b).some(v => typeof v !== 'number' || !(v >= -1 && v <= 1)))))
+        || (g.lut && g.lut !== null && !(G.luts || []).some(L => L.id === g.lut.id));
+      if (bad) throw new Error(`grade: {lift|gamma|gain: {x, y, l} -1..1, curves: {m|r|g|b: [[x, y] 0..1, ...]}, hsl: {${HSL_BANDS.map(x => x[0]).join('|')}: {h, s, l} -1..1}, lut: {id (from options().luts), amount 0..1}}`);
+      if (g.lut?.id) await loadLut(g.lut.id);
+    }
+    for (const [k, need] of [['kf', ['t']], ['vkf', ['t', 'v']], ['lkf', ['t', 'v']], ['mkf', ['t']]]) { // keyframes and volume points arrive as written: check them before they reach the clip
       if (set[k] === undefined || set[k] === null) continue;
       if (!Array.isArray(set[k]) || set[k].some(f => !f || need.some(q => !Number.isFinite(f[q])) || Object.values(f).some(v => typeof v === 'number' && !Number.isFinite(v)))) throw new Error(`${k} must be a list of {${need.join(', ')}${k === 'kf' ? ', scale, x, y, opacity, rot' : ''}} with numbers`);
     }
@@ -3667,10 +3924,21 @@ const REMOTE = {
       merge(c, set);
       if (set.kf) { const base = propsAt({ ...c, kf: null }, 0); c.kf = c.kf.map(f => ({ ...base, ...f })).sort((x, y) => x.t - y.t); } // a keyframe that names only scale keeps the clip's position, opacity and angle
       if (set.vkf) c.vkf.sort((x, y) => x.t - y.t);
+      if (set.lkf) { c.lkf = c.lkf.map(f => ({ t: f.t, v: clamp(f.v, 0, 1) })).sort((x, y) => x.t - y.t); if (!c.lkf.length) delete c.lkf; }
+      if (c.grade && !gradeOn(c.grade)) delete c.grade;
+      if (set.mkf) { if (!c.mask) throw new Error('set a mask first (mask: {type, ...})'); c.mkf = c.mkf.map(f => ({ ...Object.fromEntries(MKF.map(q => [q, c.mask[q]])), ...f })).sort((x, y) => x.t - y.t); if (!c.mkf.length) delete c.mkf; }
+      if (!c.mask) delete c.mkf;
+      if (set.track !== undefined) { if (!MULTI.includes(L)) throw new Error('only overlay, audio, text and effect clips have tracks'); if (set.track) c.track = Math.max(0, Math.round(set.track)); else delete c.track; restackTracks(L); }
       if (c.kf && !c.kf.length) delete c.kf;
       if (c.vkf && !c.vkf.length) delete c.vkf;
     });
     return brief(c, L);
+  },
+  async set_track({ lane, track = 0, hidden, locked: lk }) { // hide (mute) or lock one track of a lane
+    if (!LANES.some(L => L.key === lane)) throw new Error(`lane must be one of ${LANES.map(L => L.key).join(', ')}`);
+    const key = `${lane}:${MULTI.includes(lane) ? Math.max(0, Math.round(track)) : 0}`;
+    change(() => { const T = { ...(P.tracks[key] || {}) }; if (hidden !== undefined) T.off = !!hidden; if (lk !== undefined) T.lock = !!lk; if (T.off || T.lock) P.tracks[key] = T; else delete P.tracks[key]; });
+    return { tracks: P.tracks };
   },
   async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
   async split_clip({ id, at }) {
@@ -3786,6 +4054,9 @@ const REMOTE = {
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
   async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
+  async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
+  async relink_media({ missing, media }) { const to = mediaBy(media).id; if (!LANES.some(L => P[L.key].some(c => c.media === missing))) throw new Error(`no clip uses media ${missing}`); return { relinked: relink(missing, to) }; },
+  async import_lut({ cube, name }) { if (!cube) throw new Error('cube (the .cube file\'s text) is required'); parseCube(cube); const L = await api('/api/luts', { name: name || 'LUT', text: cube }); G.luts = await api('/api/luts'); return L; },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
   async snapshot({ t, max = 720, preview = false }) {
@@ -3809,6 +4080,7 @@ const REMOTE = {
     if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
     if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
     if (at !== undefined) S.t = +at;
+    if (format === 'srt') { const file = await saveSRT(name); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
     S.exporting = true;
     try {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, !!loudness, format);
@@ -3846,6 +4118,7 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
   wire();
   try {
     await loadMedia();
+    G.luts = await api('/api/luts').catch(() => []);
     const list = await api('/api/projects'), last = store.get('cutroom.last');
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);

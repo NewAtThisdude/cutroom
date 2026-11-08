@@ -23,12 +23,12 @@ body {
 }
 svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 button, input, select, textarea { font: inherit; color: inherit; }
-button {
+button, label.btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; cursor: pointer; white-space: nowrap;
   transition: background .12s, border-color .12s, color .12s;
 }
-button:hover { background: var(--hover); border-color: var(--line2); }
+button:hover, label.btn:hover { background: var(--hover); border-color: var(--line2); }
 button:active { transform: translateY(.5px); }
 button.primary { background: var(--grad); border-color: transparent; color: #fff; font-weight: 650; box-shadow: 0 8px 22px -10px rgba(192, 38, 211, .8); }
 button.primary:hover { filter: brightness(1.08); }
@@ -234,7 +234,14 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .tl-body { flex: 1; display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: start; min-height: 0; overflow-y: auto; }
 .heads { border-right: 1px solid var(--line); padding-top: 26px; background: var(--panel); position: sticky; left: 0; }
 .heads div { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 0 12px; color: var(--muted); font-size: 11.5px; font-weight: 600; border-bottom: 1px solid var(--line); }
-.lt { padding: 0; width: 20px; height: 20px; font-size: 10px; font-weight: 700; line-height: 1; color: var(--faint); background: transparent; }
+.heads div.th { padding: 0 4px 0 10px; gap: 4px; }
+.heads .th > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heads .tb { display: flex; gap: 2px; flex: none; }
+.lt { padding: 0; width: 18px; height: 18px; font-size: 10px; font-weight: 700; line-height: 1; color: var(--faint); background: transparent; display: grid; place-items: center; }
+.lt .i { width: 11px; height: 11px; }
+.tshade { position: absolute; left: 0; right: 0; pointer-events: none; z-index: 1; }
+.tshade.off { background: repeating-linear-gradient(135deg, rgba(0,0,0,.45) 0 6px, rgba(0,0,0,.3) 6px 12px); }
+.tshade.lock { box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); background-color: rgba(10,12,18,.25); }
 .lt.on { background: var(--hot); border-color: var(--hot); color: #fff; }
 .tl-scroll { overflow-x: auto; overflow-y: hidden; position: relative; }
 .tl-inner { position: relative; min-height: 100%; }
@@ -310,3 +317,25 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .clip svg.env circle { fill: #ffd166; vector-effect: non-scaling-stroke; }
 .seg.wrap.voices { flex-wrap: wrap; }
 .seg.wrap.voices button { flex: 1 0 22%; }
+
+.clip.missing { background: repeating-linear-gradient(135deg, #5b1a24 0 8px, #40121a 8px 16px) !important; }
+
+/* colour grading */
+.wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 6px 0 4px; }
+.wheel { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+.wheel canvas { width: 100%; max-width: 84px; aspect-ratio: 1; cursor: crosshair; touch-action: none; }
+.curvebox { margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; background: #0d0f15; aspect-ratio: 1; }
+#curveSvg { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#curveSvg .grid { stroke: rgba(255,255,255,.07); stroke-width: .4; fill: none; }
+#curveSvg .diag { stroke: rgba(255,255,255,.12); stroke-width: .4; stroke-dasharray: 2 2; fill: none; }
+#curveSvg .crv { stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+#curveSvg circle { fill: #fff; stroke: #000; stroke-width: .6; }
+.hslbands { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 5px; margin: 6px 0; }
+.hslbands button { padding: 0; height: 22px; border-radius: 50%; aspect-ratio: 1; width: 100%; max-width: 24px; justify-self: center; background: var(--c); border: 2px solid transparent; }
+.hslbands button.on { border-color: #fff; }
+.hslbands button.set { box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
+.scope { position: absolute; left: 12px; bottom: 12px; z-index: 4; background: rgba(11,13,18,.92); border: 1px solid var(--line); border-radius: 10px; padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.scope[hidden] { display: none; }
+.scope .seg button { padding: 3px 8px; font-size: 11px; }
+.scope canvas { width: 256px; height: 150px; border-radius: 6px; }
+#btnScope.on { color: var(--text); background: var(--raised); }

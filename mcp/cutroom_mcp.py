@@ -35,8 +35,11 @@ key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|r
 anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd seconds; loop: none|kbin|kbout|drift|pulse|shake|sway|float; amt strength}
 text clips: text, style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
   align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, anim pop|fade|slide|type, out pop|fade|slide|type, loop bounce|pulse|wiggle, animT, outT}
-start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease}] (replaces them)
-effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)"""
+track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease}] (replaces them)
+effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)
+grade (colour grading, video/photo clips): {lift|gamma|gain: {x, y: colour wheel offset -1..1 (x = towards red, y = towards green-yellow), l: level -1..1},
+  curves: {m|r|g|b: [[x, y], ...] points 0..1 (m = luma)}, hsl: {red|orange|yellow|green|aqua|blue|purple|magenta: {h, s, l} -1..1},
+  lut: {id (import_lut / options().luts), amount 0..1}} | lkf: [{t, v 0..1}] strength of all the clip's colour (filter, adjust, grade) over time"""
 
 
 def http(path, body=None, timeout=30):
@@ -95,6 +98,8 @@ TOOLS = [
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
     ('update_clip', 'Change any clip setting. ' + CLIP_PROPS, S({'id': txt, 'set': obj}, ['id', 'set']), 'update_clip'),
     ('split_clip', 'Split a clip at a timeline time (seconds). Keyframes, volume envelopes and animations follow their halves.', S({'id': txt, 'at': num}, ['id', 'at']), 'split_clip'),
+    ('set_track', 'Hide (mute, for audio) or lock one track. lane main|overlay|audio|text|captions|fx; track = 0, 1, 2... (overlay, audio, text and fx have several, see timeline track numbers).',
+     S({'lane': txt, 'track': {'type': 'integer'}, 'hidden': boo, 'locked': boo}, ['lane']), 'set_track'),
     ('delete_clip', 'Delete a clip (main-track clips close the gap).', S({'id': txt}, ['id']), 'delete_clip'),
     ('duplicate_clip', 'Duplicate a clip (placed right after it).', S({'id': txt}, ['id']), 'duplicate_clip'),
     ('move_clip', 'Move a clip: main-track order (index), start time (other tracks), or between the main and overlay tracks (lane).',
@@ -163,12 +168,15 @@ TOOLS = [
      S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
     ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working.', S({'to': txt}, ['to']), 'translate_captions'),
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
+    ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
+    ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
+    ('relink_media', 'Point every clip that uses a missing media id (it left the library) at another library item (id or name).', S({'missing': txt, 'media': txt}, ['missing', 'media']), 'relink_media'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
-    ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png (png = still at `at`); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5. '
+    ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png|srt (png = still at `at`; srt = the captions, or the text clips, as a subtitle file); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5. '
                'show=true opens the result in the Mac\'s player when it is done.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'name': txt, 'loudness': boo, 'at': num, 'show': boo}), 'export'),
 ]
@@ -187,6 +195,14 @@ def call_tool(name, args):
         if args.get('add_to'):
             out['clip'] = remote('add_clip', {'media': m['id'], 'lane': args['add_to'], **({'start': args['start']} if 'start' in args else {})})['result']
         return [{'type': 'text', 'text': json.dumps(out)}]
+    if name == 'import_lut':
+        path = os.path.expanduser(args['path'])
+        with open(path, encoding='utf-8-sig', errors='replace') as f:
+            args = {'cube': f.read(), 'name': os.path.basename(path)}
+    if name == 'import_subtitles':
+        path = os.path.expanduser(args['path'])
+        with open(path, encoding='utf-8-sig', errors='replace') as f:
+            args = {'srt': f.read(), 'name': os.path.basename(path)}
     long = name in ('export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []

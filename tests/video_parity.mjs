@@ -16,6 +16,7 @@ const gen = (name, args) => { const f = `${tmp}/${name}`; execFileSync('ffmpeg',
 const files = {
   A: gen('parity-a.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '15']),
   B: gen('parity-b.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=6,hue=h=140,negate', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '15']),
+  F: gen('parity-f.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=30:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '15']),
   I: gen('parity-i.png', ['-f', 'lavfi', '-i', 'testsrc=s=640x480:d=1', '-frames:v', '1']),
 };
 const ids = {};
@@ -42,6 +43,12 @@ for (const l of opt.looks) add(`look ${l}`, `main(A).look = { name: '${l}', amou
 add('look at 50%', `main(A).look = { name: 'teal', amount: 0.5 }; T = 1.5`);
 for (const [k, a] of Object.entries({ 'b/c/s': { b: 1.25, c: 1.3, s: 0.4 }, 'temp/tint': { b: 1, c: 1, s: 1, temp: 0.6, tint: -0.4 }, 'exposure/hi/sh': { b: 1, c: 1, s: 1, ex: 0.8, hi: -0.6, sh: 0.6 }, 'fade/vignette': { b: 1, c: 1, s: 1, fade: 0.5, vig: 0.8 } }))
   add(`adjust ${k}`, `main(A).adj = ${JSON.stringify(a)}; T = 1.5`);
+add('grade wheels', `main(A).grade = { lift: { x: 0.3, y: -0.2, l: 0.2 }, gamma: { x: -0.4, y: 0.3, l: 0.3 }, gain: { x: 0.2, y: 0.5, l: -0.2 } }; T = 1.5`);
+add('grade curves', `main(A).grade = { curves: { m: [[0, 0.1], [0.3, 0.2], [0.7, 0.85], [1, 0.95]], r: [[0, 0], [0.5, 0.62], [1, 1]], b: [[0, 0.05], [0.5, 0.4], [1, 1]] } }; T = 1.5`);
+add('grade HSL', `main(A).grade = { hsl: { red: { h: 0.6, s: 0.4 }, green: { h: -0.5, s: -0.8, l: 0.3 }, blue: { h: 0.3, l: -0.5 }, yellow: { s: 0.9 } } }; T = 1.5`);
+add('grade LUT 50%', `lutLib.set('parity', parseCube('LUT_3D_SIZE 2\\n0 0 0.2\\n1 0 0\\n0 1 0\\n1 1 0\\n0 0.1 1\\n1 0 1\\n0 1 1\\n0.9 0.95 1')); gradeCache.clear(); main(A).grade = { lut: { id: 'parity', amount: 0.5 } }; T = 1.5`);
+add('grade + look + adjust', `Object.assign(main(A), { look: { name: 'teal', amount: 0.8 }, adj: { b: 1.1, c: 1.2, s: 0.8, ex: 0.3 }, grade: { gain: { x: 0.3, y: 0, l: 0.1 }, curves: { m: [[0, 0], [0.5, 0.6], [1, 1]] } } }); T = 1.5`);
+add('filter strength keyframes', `Object.assign(main(A), { look: { name: 'mono', amount: 1 }, grade: { hsl: { red: { h: 1 } } }, lkf: [{ t: 0, v: 0 }, { t: 3, v: 1 }] }); T = 1.0`);
 add('crop', 'main(A).crop = { l: 0.1, r: 0.2, t: 0.1, b: 0.05 }; T = 1.5');
 add('flip', 'main(A).flip = true; T = 1.5');
 add('scale/move/rotate', 'Object.assign(main(A), { scale: 0.6, x: 0.2, y: -0.1, rot: 20 }); T = 1.5');
@@ -56,6 +63,9 @@ add('overlay picture-in-picture', 'main(A); Object.assign(ov(B), { scale: 0.45, 
 add('overlay image', 'main(A); Object.assign(ov(I), { fit: "fit", scale: 0.5, x: -0.2 }); T = 1.5');
 for (const bl of opt.blends) add(`blend ${bl}`, `main(A); ov(B).blend = '${bl}'; T = 1.5`);
 for (const mk of opt.masks.filter(x => x !== 'none')) add(`mask ${mk}`, `main(B); ov(A).mask = { type: '${mk}', x: 0.1, y: -0.05, w: 0.5, h: 0.4, rot: 15, feather: 0.2, invert: false }; T = 1.5`);
+add('mask keyframed, half way', `main(B); const o = ov(A); o.mask = { type: 'circle', x: -0.3, y: 0, w: 0.4, h: 0.4, rot: 0, feather: 0.1, invert: false }; o.mkf = [{ t: 0, x: -0.3, y: 0, w: 0.4, h: 0.4, rot: 0, feather: 0.1 }, { t: 3, x: 0.3, y: -0.2, w: 0.6, h: 0.3, rot: 40, feather: 0.1 }]; T = 1.5`);
+add('mask on a 1080p clip', `main(B); ov(F).mask = { type: 'rect', x: 0.1, y: 0, w: 0.5, h: 0.5, rot: 10, feather: 0.05, invert: false }; T = 1.5`);
+add('mask + key on a 1080p clip', `main(B); Object.assign(ov(F), { key: { color: '#ffffff', sim: 0.25, blend: 0.1 }, mask: { type: 'circle', x: 0, y: 0, w: 0.7, h: 0.7, rot: 0, feather: 0.05, invert: false } }); T = 1.5`);
 add('mask inverted', `main(B); ov(A).mask = { type: 'circle', x: 0, y: 0, w: 0.5, h: 0.5, rot: 0, feather: 0, invert: true }; T = 1.5`);
 add('chroma key', `main(B); ov(A).key = { color: '#ffffff', sim: 0.25, blend: 0.1 }; T = 1.5`);
 for (const tr of opt.transitions) add(`transition ${tr}`, `main(A).tr = { type: '${tr}', d: 1 }; main(B); packMain(); T = P.main[1].start + 0.3`); // 30 %: at 50 % Zoom has zoomed into one pixel
@@ -66,7 +76,7 @@ for (const lp of opt.comboMotion.filter(x => x !== 'none')) add(`motion ${lp}`, 
 const SC = S0.filter(([n]) => !only || n.includes(only));
 
 const shoot = (code) => ev(async ([code, ids]) => {
-  const { A, B, I } = ids;
+  const { A, B, I, F } = ids;
   setProject(newProject('16:9')); P.name = 'Parity (scratch)'; S.sel = null; S.multi.clear();
   const ratio = r => { setProject(newProject(r)); P.name = 'Parity (scratch)'; };
   const main = id => { addMedia(id, 'main'); return P.main.at(-1); };

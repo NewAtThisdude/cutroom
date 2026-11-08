@@ -37,7 +37,7 @@
     </nav>
     <div class="panes">
     <section id="tab-media" class="pane on">
-      <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
+      <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
       <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button></div>
       <div id="mediaList" class="media-list"></div>
       <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
@@ -118,6 +118,8 @@
       <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
       <button id="btnTranslate" class="wide">Translate captions</button>
       <p id="trStatus" class="muted"></p>
+      <h4>Subtitle files</h4>
+      <div class="actions"><label class="btn"><input id="subsIn" type="file" accept=".srt,.vtt" hidden>Import SRT / VTT</label><button id="btnSubsOut">Export SRT</button></div>
       <h4>Edit captions</h4>
       <div id="capList" class="caplist"></div>
     </section>
@@ -182,6 +184,7 @@
 
   <section class="center">
     <div id="stage" class="stage"><canvas id="cv"></canvas>
+      <div id="scope" class="scope" hidden><div class="seg"><button data-scope="wave" class="on">Waveform</button><button data-scope="hist">Histogram</button><button data-scope="vec">Vector</button></div><canvas id="scopeCv" width="256" height="150"></canvas></div>
       <div id="confirmBar" class="confirm" role="dialog" aria-label="Confirm" hidden><div class="q"><span></span><small>Missed a part? Click it. ⌥-click leaves one out.</small></div><button data-smaller title="Take less (a part of it)">Smaller</button><button data-bigger title="Take more (all of it)">Bigger</button><button class="primary" data-ok>Remove it</button><button data-again>Draw again</button><button data-no>Cancel</button></div>
     </div>
     <div class="transport">
@@ -193,7 +196,7 @@
         <button id="btnFwd" title="Next frame (→)" aria-label="Next frame"><svg class="i" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
         <button id="btnEnd" title="Go to end (End)" aria-label="Go to end"><svg class="i" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8V4ZM19 5v14"/></svg></button>
       </div>
-      <div class="tside end"><span id="ratioLabel" class="muted"></span><button id="btnTheater" class="ghost sq" title="Theater view (F)" aria-label="Theater view"></button></div>
+      <div class="tside end"><span id="ratioLabel" class="muted"></span><button id="btnScope" class="ghost sq" title="Scopes: waveform, histogram, vectorscope" aria-label="Scopes" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6 16l3-5 3 3 3-6 3 4"/></svg></button><button id="btnTheater" class="ghost sq" title="Theater view (F)" aria-label="Theater view"></button></div>
     </div>
   </section>
 
@@ -237,6 +240,7 @@
 <div id="toast" class="toast" hidden></div>
 <div id="mediaPool" class="pool" aria-hidden="true"></div>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="looks"></defs></svg>
+<script src="grade.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
