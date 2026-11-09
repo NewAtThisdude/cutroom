@@ -9,10 +9,11 @@ import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
+const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
 const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
 const STUB = /\/api\/(matte|isolate|remove_object|mask_preview|ai\/|track$|faces|stabilize|reverse|slowmo|transcribe|transcript|fillers|lift|tts)/;
 const get = async p => (await fetch(B + p)).json();
-const EXP = `${os.homedir()}/Movies/Cutroom/exports`;
+const EXP = `${LIB}/exports`;
 const before = { p: new Set((await get('/api/projects')).map(x => x.id)), m: new Set((await get('/api/media')).map(x => x.id)), t: new Set((await get('/api/templates')).map(x => x.id)), e: new Set(fs.readdirSync(EXP)) };
 
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-fuzz-`);
@@ -278,8 +279,8 @@ await ev(() => { clearTimeout(saveTimer); });
 await b.close();
 const after = { p: await get('/api/projects'), m: await get('/api/media'), t: await get('/api/templates') };
 const made = { p: after.p.filter(x => !before.p.has(x.id)), m: after.m.filter(x => !before.m.has(x.id)), t: after.t.filter(x => !before.t.has(x.id)), e: fs.readdirSync(EXP).filter(f => !before.e.has(f)) };
-fs.mkdirSync(`${os.homedir()}/Movies/Cutroom/trash/exports`, { recursive: true });
-for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${os.homedir()}/Movies/Cutroom/trash/exports/${f}`);
+fs.mkdirSync(`${LIB}/trash/exports`, { recursive: true });
+for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${LIB}/trash/exports/${f}`);
 for (const p of made.p) await fetch(`${B}/api/projects/${p.id}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const m of made.m) await fetch(`${B}/api/media/${m.id}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const t of made.t) await fetch(`${B}/api/templates/${t.id}/trash`, { method: 'POST', headers: H, body: '{}' });

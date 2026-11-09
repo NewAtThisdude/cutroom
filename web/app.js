@@ -824,9 +824,21 @@ function audioOn() { // needs a user gesture; loads the pitch shifter and the ha
       actx.audioWorklet?.addModule('/pitch.js').then(() => { pitchReady = true; resound(); }).catch(() => {});
       fetch('/ir/hall.wav').then(r => r.arrayBuffer()).then(b => actx.decodeAudioData(b)).then(buf => { hallIR = buf; resound(); }).catch(() => {});
     }
-    actx.resume();
+    if (actx.state !== 'running') actx.resume().catch(() => {});
   } catch { actx = null; }
 }
+// Starting the audio device holds the video back 40-70 ms (first play 65-96 ms to a moving picture vs 2-28 ms with it
+// already running), and a running one costs ~0.05 cores doing nothing. So it wakes while you work (any key, click or
+// mouse move) and sleeps after audioNap ms with no input and nothing playing.
+let audioNap = 10000, napTimer = 0, wokeAt = 0;
+function audioAwake() {
+  const now = performance.now();
+  if (now - wokeAt < 500) return; // pointermove fires 60-120 times a second
+  wokeAt = now; audioNapLater();
+  if (actx?.state !== 'running') audioOn();
+}
+function audioNapLater() { clearTimeout(napTimer); napTimer = setTimeout(() => S.playing || actx?.suspend(), audioNap); }
+for (const e of ['pointerdown', 'pointermove', 'keydown', 'wheel']) addEventListener(e, audioAwake, { capture: true, passive: true });
 function resound() { for (const v of voices.values()) v.n.key = ''; S.dirty = true; } // re-apply every clip's sound settings
 const AU0 = { voice: 'none', semi: 0, bass: 0, mid: 0, treb: 0, pan: 0 };
 function soundChain(v, A = actx, src = A.createMediaElementSource(v)) { // per media element, the export's afx() in Web Audio: [pitch] > bass > mid > treble > [telephone band] > [robot] > dry + [echo | hall] > pan > volume
@@ -2316,9 +2328,7 @@ function play() {
   Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm();
-  // a running AudioContext keeps the audio device and WebKit's render thread awake: 0.056 vs 0.008 cores paused. play()'s audioOn resumes it
-  clearTimeout(S.aIdle); S.aIdle = setTimeout(() => S.playing || actx?.suspend(), 3000); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t) {
@@ -3240,7 +3250,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
   const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 172800 ? 'yesterday' : new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
   modal(`<div class="phead"><h2>Projects</h2><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div>
-    <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb"><img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()"><i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
+    <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb">${p.pic ? `<img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
       + `<span class="pacts"><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
     <div class="actions"><button data-close>Close</button></div>`, 'wide');
 }

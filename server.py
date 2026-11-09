@@ -2346,7 +2346,8 @@ def list_projects():
         span = lambda c: c.get('dur') or (c.get('out', 0) - c.get('in', 0)) / (c.get('speed') or 1)
         dur = max([sum(span(c) for c in j.get('main', []))] + [c.get('start', 0) + span(c) for k in ('overlay', 'audio', 'text', 'captions') for c in j.get(k, [])])
         out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, 'dur': round(dur, 2),
-                    'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions'))})
+                    'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions')),
+                    'pic': bool(j.get('main') or j.get('overlay'))})  # has a poster (else the card asks for one and gets a 404)
     return sorted(out, key=lambda p: -p['updated'])
 
 

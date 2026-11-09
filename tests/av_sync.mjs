@@ -42,11 +42,12 @@ const pid = await page.evaluate(async id => {
   return P.id;
 }, m.id);
 await page.waitForTimeout(1500);
-// play a moment and pause: 3 s later the audio context sleeps (no CPU while paused); the measured play below must wake it
+// play a moment and pause: with no input for audioNap (1 s here) the audio context sleeps (no CPU while paused); the measured play below must wake it
+await page.evaluate(() => { audioNap = 1000; });
 await page.keyboard.press('Space'); await page.waitForTimeout(1200); await page.keyboard.press('Space');
-await page.waitForTimeout(4000);
+await page.waitForTimeout(2500);
 const slept = await page.evaluate(() => { const s = actx.state; S.t = 0.5; S.dirty = true; BEEP.length = 0; FLASH.length = 0; return s; });
-console.log(`${slept === 'suspended' ? 'ok  ' : 'FAIL'} the audio context sleeps 3 s after a pause  [${slept}]`);
+console.log(`${slept === 'suspended' ? 'ok  ' : 'FAIL'} the audio context sleeps when nothing happens  [${slept}]`);
 await page.waitForTimeout(500);
 await page.keyboard.press('Space');
 await page.waitForTimeout(10500);

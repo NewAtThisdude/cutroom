@@ -20,6 +20,7 @@ const measure = async name => {
   console.log(`${name.padEnd(34)} ${tot.toFixed(3)} cores  (server ${srv.toFixed(3)}, page+WebKit ${(tot - srv).toFixed(3)})`);
   return tot;
 };
+if (process.env.PROJ) await page.evaluate(id => openProject(id), process.env.PROJ); // else the one that opens by itself
 await page.waitForTimeout(8000); // settle: thumbnails, fonts, first frame
 const out = { idle: await measure('idle, Media panel') };
 await page.click('.rail button[data-tab="effects"]');
