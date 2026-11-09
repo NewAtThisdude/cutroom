@@ -214,6 +214,36 @@ def exact_audio(m):
     return out
 
 
+PCM_LOCKS = {}  # one lock per output file: a play waiting for its own sound never waits behind another file's decode
+PCM_LOCKS_LOCK = threading.Lock()
+
+
+def pcm(m, tempo=1.0, a=0, b=0):
+    """The preview's sound: raw 16-bit 48 kHz stereo, decoded once from the start (sample-exact). The page reads byte
+    ranges of it into Web Audio buffers. A <video>'s own sound routed through Web Audio started ~0.3 s late in WebKit and
+    held the picture meanwhile: a stall at every cut. A clip that keeps its pitch at another speed gets the export's
+    atempo over just its source seconds [a, b] (whole seconds, cut by atrim on decoded samples, so exact): a whole-file
+    copy per speed made 3.5 GB from one 5-minute clip whose speed slider was swept. The 4 newest per file are kept."""
+    one = abs(tempo - 1) < 1e-6
+    out = CACHE / (f"{m['id']}.pcm" if one else f"{m['id']}.{tempo:g}.{a}-{b}.pcm")
+    with PCM_LOCKS_LOCK:
+        lock = PCM_LOCKS.setdefault(out.name, threading.Lock())
+    with lock:
+        if not out.exists():
+            src = exact_audio(m) if m.get('kind') == 'audio' else MEDIA / m['file']
+            tmp = out.with_suffix('.tmp')
+            trim = '' if one else f"atrim=start={a}{f':end={b}' if b > a else ''},asetpts=PTS-STARTPTS,"
+            if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}',
+                   '-ac', '2', '-f', 's16le', str(tmp)], low=True).returncode:
+                tmp.unlink(missing_ok=True)
+                return None
+            tmp.replace(out)
+            if not one:
+                for old in sorted(CACHE.glob(f"{m['id']}.*-*.pcm"), key=lambda f: f.stat().st_mtime)[:-4]:
+                    old.unlink(missing_ok=True)
+    return out
+
+
 def prepare(m):
     """Timeline assets, like CapCut's material cache: preview proxy, filmstrip, waveform. One or two files at a time (PREP),
     at low priority: a card's worth of 4K clips dropped in at once mustn't take the Mac's memory and every core."""
@@ -275,6 +305,7 @@ def prepare_(m):
     if m['kind'] == 'audio':
         exact_audio(m)  # made now, so the first export doesn't wait for it
     if m['hasAudio']:
+        pcm(m)  # the preview's sound, so the first play doesn't wait for it
         m['wave'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex',
                             'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x7ee0c3:scale=sqrt',
                             '-frames:v', '1', str(CACHE / f'{mid}.wave.png')], low=True).returncode
@@ -2311,9 +2342,34 @@ def list_projects():
             j = json.loads(f.read_text())
         except ValueError:
             continue
-        out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime,
+        span = lambda c: c.get('dur') or (c.get('out', 0) - c.get('in', 0)) / (c.get('speed') or 1)
+        dur = max([sum(span(c) for c in j.get('main', []))] + [c.get('start', 0) + span(c) for k in ('overlay', 'audio', 'text', 'captions') for c in j.get(k, [])])
+        out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, 'dur': round(dur, 2),
                     'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions'))})
     return sorted(out, key=lambda p: -p['updated'])
+
+
+def poster(pid):
+    """The projects screen's card picture: a frame a little into the first clip you'd see, 480 px wide, remade when the
+    project changes. None when nothing visual is in it yet."""
+    f = PROJ / f'{pid}.json'
+    out = CACHE / f'poster_{pid}.jpg'
+    if out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
+        return out
+    j = json.loads(f.read_text())
+    for c in j.get('main', []) + j.get('overlay', []):
+        try:
+            m = meta(c['media'])
+        except (OSError, ValueError, KeyError):
+            continue
+        if m.get('kind') not in ('video', 'image') or not (MEDIA / m['file']).is_file():
+            continue
+        prx = CACHE / f"{m['id']}.proxy.mp4"
+        src = prx if prx.exists() else MEDIA / m['file']
+        seek = [] if m['kind'] == 'image' else ['-ss', f"{c.get('in', 0) + min(1.0, (c.get('out', 0) - c.get('in', 0)) / 3):.3f}"]
+        if sh(['ffmpeg', '-v', 'error', '-y', *seek, '-i', str(src), '-frames:v', '1', '-vf', 'scale=480:-2', '-q:v', '4', str(out)], low=True).returncode == 0 and out.exists():
+            return out
+    return None
 
 
 # ---------- HTTP ----------
@@ -2415,10 +2471,20 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(voices())
             if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})', path):
                 return self.file(PROJ / f'{m[1]}.json')
+            if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/poster\.jpg', path)) and (PROJ / f'{m[1]}.json').exists():
+                if f := poster(m[1]):
+                    return self.file(f)
+                return self.reply({'error': 'nothing to show yet'}, 404)
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
                 return self.reply(JOBS.get(m[1], {'state': 'missing'}))
             if m := re.fullmatch(r'/media/([a-f0-9]{12})', path):
                 q, mm = parse_qs(urlparse(self.path).query), meta(m[1])
+                if q.get('pcm') and mm.get('hasAudio'):
+                    tempo = fnum(q['pcm'][0], 0.1, 100)
+                    a, b = (int(fnum(q.get(k, ['0'])[0], 0, 1e7)) for k in ('a', 'b'))
+                    if f := pcm(mm, tempo, a, b):
+                        return self.file(f)
+                    return self.reply({'error': 'no sound in this file'}, 404)
                 if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
                     if mov := alpha_mov(mm):  # made at import; older library items get it on first request
                         return self.file(mov)
@@ -2585,6 +2651,8 @@ class App(BaseHTTPRequestHandler):
                 for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
                         shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
+                for f in CACHE.glob(f'{m[1]}*.pcm'):  # the preview's sound is remade from the file if it's restored
+                    f.unlink(missing_ok=True)
                 return self.reply({'ok': True})
             if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/restore', u.path):  # undo a library removal: file + metadata back from trash/media
                 tr = HOME / 'trash' / 'media'
@@ -2709,6 +2777,13 @@ def selftest():
             ids[f] = import_file(f, fh, (HOME / f).stat().st_size, background=False)
     L, T, I, A = ids['land.mp4'], ids['tall.mp4'], ids['pic.png'], ids['music.m4a']
     assert (CACHE / f"{L['id']}.strip.jpg").exists() and L['wave'] and (L['w'], L['h']) == (640, 360), L
+    # the preview's sound: made at import, 48 kHz s16 stereo from the very start; a kept-pitch 2x copy is half as long
+    p1, p2, p3 = CACHE / f"{A['id']}.pcm", pcm(A, 2.0, 0, 10), pcm(A, 2.0, 2, 6)
+    n1, n2, n3 = (p.stat().st_size // 4 for p in (p1, p2, p3))
+    assert abs(n1 - 10 * 48000) < 2400 and abs(n2 - n1 / 2) < 2400 and abs(n3 - 2 * 48000) < 2400, (n1, n2, n3)
+    x = array('h', p1.read_bytes()[4 * 24000:4 * 24000 + 4800])  # 0.5 s in: the 220 Hz sine, same on both sides (little-endian, as on every Apple Silicon Mac)
+    assert max(x) > 2000 and x[0::2] == x[1::2], max(x)  # lavfi sine peaks at 1/8 (4096)
+    print(f'preview sound ok: {n1} frames, 2x kept-pitch {n2}, its 2-6 s range {n3}')
 
     def geom(m, fit='fit', scale=1.0, x=0.0, y=0.0):
         s = (max if fit == 'fill' else min)(W / m['w'], H / m['h']) * scale
@@ -3032,6 +3107,9 @@ def resume_prepare():
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
             save_meta(m)
             prepare(m)
+        elif m.get('ready') and m.get('hasAudio') and m.get('file') and (MEDIA / m['file']).is_file() and not (CACHE / f"{m['id']}.pcm").exists():
+            with PREP:  # library items from before the preview played its sound from PCM: made now, not on the first play
+                pcm(m)
 
 
 def main():

@@ -246,7 +246,7 @@ if (run('modals')) {
       if (d.open || d.dup || d.reveal || d.play || 'savetpl' in d || d.deltpl || d.trash || info.id === 'exGo') continue; // the user's own projects, Finder, players, a real export
       const base = `${name} › ${info.id || info.txt || JSON.stringify(d)}`;
       if (info.tag === 'SELECT') { for (const o of info.opts.slice(0, 8)) await act(`${base} = ${o}`, async () => { await ev(() => closeModal()); await page.click(open); await settle(); await page.locator(q).nth(i).selectOption(o); }); }
-      else await act(base, async () => { await el.click({ timeout: 3000 }); await settle(); if (d.new || d.usetpl) await ev(id => P.id === id || openProject(id), home); });
+      else await act(base, async () => { await el.click({ timeout: 3000 }); await settle(); if (d.new || 'newsel' in d || d.usetpl) await ev(id => P.id === id || openProject(id), home); });
     }
     await ev(() => closeModal());
     await ev(id => P.id === id || openProject(id), home);

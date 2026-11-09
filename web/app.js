@@ -317,7 +317,7 @@ function setProp(c, key, v) { // with keyframes, an edit lands on the keyframe u
   f[key] = v;
 }
 function change(fn) { undo.push(JSON.stringify(P)); if (undo.length > 200) undo.shift(); redo = []; fn(); touched(); }
-function touched() { S.dirty = true; scheduleSave(); renderAll(); }
+function touched() { S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 function restore(from, to) {
   if (!from.length) return;
   to.push(JSON.stringify(P));
@@ -356,22 +356,25 @@ function renderTimeline() {
   let ruler = '';
   for (let i = Math.max(0, Math.floor(wa / (step * pps))); i * step * pps < Math.min(W, wb); i++) ruler += `<span style="left:${i * step * pps}px">${step < 1 ? (i * step).toFixed(1) : fmtDur(i * step)}</span>`;
   ruler += P.markers.map(t => `<b class="mk" style="left:${t * pps}px" title="Marker ${tc(t)}"></b>`).join('');
-  const r = $('#ruler');
-  r.innerHTML = ruler;
-  r.style.setProperty('--minor', `${(step * pps) / 5}px`);
+  // minor ticks: an SVG pattern over the drawn window only. A repeating-linear-gradient of 1 px stripes the whole ruler wide
+  // was WebKit's most expensive paint (FillRectWithGradient took 88 % of the GPU process): frames of 0.6-1.5 s while zooming
+  const mi = (step * pps) / 5, x0 = Math.max(0, wa), x1 = Math.min(W, wb);
+  if (x1 > x0) ruler += `<svg class="ticks" style="left:${x0}px;width:${x1 - x0}px" aria-hidden="true"><pattern id="tk" patternUnits="userSpaceOnUse" width="${mi}" height="6" x="${-x0 % mi}"><rect width="1" height="6"/></pattern><rect width="100%" height="6" fill="url(#tk)"/></svg>`;
+  $('#ruler').innerHTML = ruler;
   let heads = '';
   for (const L of LANES) {
     const multi = MULTI.includes(L.key), R0 = multi ? rows(L.key) : { row: new Map(), n: 1 }, R = { ...R0, n: R0.n + (S.dragLane === L.key ? 1 : 0) }, el = $(`#lane-${L.key}`); // dragging: an empty track to drop on
-    el.style.height = `${L.h * R.n}px`;
+    const h = !P[L.key].length && S.dragLane !== L.key && L.key !== 'main' ? 24 : L.h; // an empty track stays a thin drop target: the room goes to the clips
+    el.style.height = `${h * R.n}px`;
     const snd = L.key === 'main' || L.key === 'audio', lockSvg = '<svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
     for (let r = 0; r < R.n; r++) {
       const T = trk(L.key, r), off = multi ? !!T.off || !!P.mute[L.key] : !!P.mute[L.key], name = r ? `${L.label} ${r + 1}` : L.label;
-      heads += `<div class="th" style="height:${L.h}px"><span title="${name}">${name}</span><span class="tb"><button class="lt${off ? ' on' : ''}" data-${multi ? 'tk' : 'lt'}="${multi ? `${L.key}:${r}` : L.key}" title="${snd ? 'Mute' : 'Hide'} ${name}" aria-pressed="${off}">${snd ? 'M' : 'H'}</button>`
+      heads += `<div class="th${h < L.h ? ' thin' : ''}" style="height:${h}px"><span title="${name}">${name}</span><span class="tb"><button class="lt${off ? ' on' : ''}" data-${multi ? 'tk' : 'lt'}="${multi ? `${L.key}:${r}` : L.key}" title="${snd ? 'Mute' : 'Hide'} ${name}" aria-pressed="${off}">${snd ? 'M' : 'H'}</button>`
         + `<button class="lt lk${T.lock ? ' on' : ''}" data-lk="${L.key}:${r}" title="Lock ${name}" aria-label="Lock ${name}" aria-pressed="${!!T.lock}">${lockSvg}</button></span></div>`;
     }
     el.innerHTML = P[L.key].filter(c => near(L.key, c)).map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles(wa, wb) : '');
-    if (multi) for (const [k, v] of Object.entries(P.tracks || {})) if (k.startsWith(`${L.key}:`) && (v.off || v.lock)) { const r = +k.split(':')[1]; if (r < R.n) el.insertAdjacentHTML('beforeend', `<div class="tshade${v.off ? ' off' : ''}${v.lock ? ' lock' : ''}" style="top:${r * L.h}px;height:${L.h}px"></div>`); }
-    else if (P.tracks?.[`${L.key}:0`]?.lock) el.insertAdjacentHTML('beforeend', `<div class="tshade lock" style="top:0;height:${L.h}px"></div>`);
+    if (multi) for (const [k, v] of Object.entries(P.tracks || {})) if (k.startsWith(`${L.key}:`) && (v.off || v.lock)) { const r = +k.split(':')[1]; if (r < R.n) el.insertAdjacentHTML('beforeend', `<div class="tshade${v.off ? ' off' : ''}${v.lock ? ' lock' : ''}" style="top:${r * h}px;height:${h}px"></div>`); }
+    else if (P.tracks?.[`${L.key}:0`]?.lock) el.insertAdjacentHTML('beforeend', `<div class="tshade lock" style="top:0;height:${h}px"></div>`);
   }
   $('#heads').innerHTML = heads;
   placePlayhead();
@@ -798,6 +801,7 @@ function vidFor(key, m) {
     v = document.createElement('video');
     v.preload = 'auto';
     v.playsInline = true;
+    v.muted = true; // the sound plays from Web Audio buffers (audioTick), not from the element
     v.addEventListener('seeked', () => { S.dirty = true; setTimeout(() => { S.dirty = true; }, 50); }); // WebKit hands drawImage the new frame a moment later
     v.addEventListener('loadeddata', () => { S.dirty = true; });
     $('#mediaPool').append(v);
@@ -823,7 +827,7 @@ function audioOn() { // needs a user gesture; loads the pitch shifter and the ha
     actx.resume();
   } catch { actx = null; }
 }
-function resound() { for (const v of pool.values()) if (v._n) v._n.key = ''; S.dirty = true; } // re-apply every element's sound settings
+function resound() { for (const v of voices.values()) v.n.key = ''; S.dirty = true; } // re-apply every clip's sound settings
 const AU0 = { voice: 'none', semi: 0, bass: 0, mid: 0, treb: 0, pan: 0 };
 function soundChain(v, A = actx, src = A.createMediaElementSource(v)) { // per media element, the export's afx() in Web Audio: [pitch] > bass > mid > treble > [telephone band] > [robot] > dry + [echo | hall] > pan > volume
   const bq = (type, f, q) => { const b = A.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
@@ -862,9 +866,91 @@ function setSound(n, au) { // a clip's sound settings onto its element's chain (
     n.ring.connect(n.conv);
   }
 }
-function gain(v, vol, au) { // Web Audio gain: the preview can play volumes above 100%, like the export
-  if (actx && v._g === undefined) { try { v._n = soundChain(v); v._g = v._n.out; } catch { v._g = null; } }
-  if (v._g) { v.volume = 1; v._g.gain.value = vol; setSound(v._n, au); } else v.volume = clamp(vol, 0, 1);
+// ---------- preview sound: Web Audio buffers of the server's PCM, scheduled on the audio clock ----------
+// Each element's sound used to go through Web Audio (volumes over 100 %, the voice effects). WebKit starts such a sound
+// ~0.3 s late and holds the element's picture meanwhile: Midnight Highway (2 s shots) stalled 280 ms at every cut, 49 of
+// 60 frames/s. Now videos play muted and each clip's sound is 4 s buffers of /media/<id>?pcm=<tempo> (48 kHz s16
+// stereo, the export's atempo when the pitch is kept), cut to the clip's range and started at exact audio-clock times.
+const PCM_S = 4, PCM_BYTES = PCM_S * 48000 * 4, pcmBufs = new Map(), voices = new Map(), pcmWait = [];
+let pcmBusy = 0;
+const pcmSlot = () => new Promise(go => { const run = () => { pcmBusy++; go(() => { pcmBusy--; pcmWait.shift()?.(); }); }; if (pcmBusy < 2) run(); else pcmWait.push(run); });
+const pcmSpan = (c, tempo) => (tempo === 1 ? [0, 0] : [Math.floor(c.in), Math.ceil(c.out)]); // a kept-pitch speed's PCM covers the clip's whole seconds
+function pcmChunk(id, tempo, k, [a, b] = [0, 0]) { // a promise with .buf once loaded (null: no sound there); the last 24 kept (~37 MB)
+  const key = `${id}|${tempo}|${a}-${b}|${k}`;
+  let p = pcmBufs.get(key);
+  if (p) { pcmBufs.delete(key); pcmBufs.set(key, p); return p; }
+  // two at a time: WebKit has 6 connections to the server, and a first play of a long file waits for its PCM to be made
+  // (seconds): unthrottled, those waits filled every connection and the projects list or a save queued behind them
+  p = pcmSlot().then(release => fetch(`/media/${id}?pcm=${tempo}${tempo === 1 ? '' : `&a=${a}&b=${b}`}`, { headers: { Range: `bytes=${k * PCM_BYTES}-${(k + 1) * PCM_BYTES - 1}` } })
+    .then(r => (r.status === 206 || r.status === 200 ? r.arrayBuffer() : null)).finally(release)).then(b => {
+      const n = b ? b.byteLength >> 2 : 0;
+      if (!n) return (p.buf = null);
+      const x = new Int16Array(b, 0, n * 2), buf = new AudioBuffer({ numberOfChannels: 2, length: n, sampleRate: 48000 }), L = buf.getChannelData(0), R = buf.getChannelData(1);
+      for (let i = 0; i < n; i++) { L[i] = x[2 * i] / 32768; R[i] = x[2 * i + 1] / 32768; }
+      return (p.buf = buf);
+    }).catch(() => (p.buf = null));
+  pcmBufs.set(key, p);
+  while (pcmBufs.size > 24) pcmBufs.delete(pcmBufs.keys().next().value);
+  return p;
+}
+function clipGain(c, lane, t) { // what paint used to give the element: volume points x fades x the transition's crossfade
+  if (S.recMute || P.mute[lane]) return 0;
+  const lt = t - c.start, d = tdur(c, lane);
+  let g = volAt(c, lt) * fadeAt(c, lt, d);
+  if (lane === 'main') { // like acrossfade: the outgoing clip falls as the incoming one rises
+    const i = P.main.indexOf(c), nx = P.main[i + 1], f0 = i > 0 ? trF(i - 1) : 0, f1 = nx ? trF(i) : 0;
+    if (f1 > 0 && t >= nx.start) g *= 1 - clamp((t - nx.start) / (f1 / P.fps), 0, 1);
+    if (f0 > 0) g *= clamp(lt / (f0 / P.fps), 0, 1);
+  }
+  return g;
+}
+function audioStop() { // stops what's scheduled; the chains stay for the next play
+  for (const v of voices.values()) { for (const n of v.srcs.values()) n?.stop(); v.srcs.clear(); }
+  S.aA0 = undefined;
+}
+function audioTick(wall) { // while playing: (re)anchor timeline to audio clock, schedule the next second of every sounding clip
+  if (!actx || actx.state !== 'running' || !S.playing || S.stuck) return audioStop(); // a held clock: the sound waits with the picture
+  // the audio-clock time whose sample leaves the speakers at the frame's wall time: so the sound of S.t is HEARD at S.t
+  // (scheduling on currentTime alone put it outputLatency late, 40-75 ms behind the picture)
+  const ts = actx.getOutputTimestamp(), out = ts.performanceTime ? ts.contextTime + (wall - ts.performanceTime) / 1000 : actx.currentTime, now = actx.currentTime;
+  if (S.aA0 === undefined || Math.abs(S.aT0 + (out - S.aA0) - S.t) > 0.04) { audioStop(); S.aA0 = out; S.aT0 = S.t; } // a hold, a seek or clock drift
+  const seen = new Set(), t1 = S.t + 1;
+  packMain();
+  for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
+    const m = M.get(c.media), d = tdur(c, lane);
+    if (!m?.hasAudio || !(c.volume > 0) || c.start >= t1 || c.start + d <= S.t) continue;
+    seen.add(c.id);
+    let v = voices.get(c.id);
+    if (!v) { v = { n: soundChain(null, actx, actx.createGain()), srcs: new Map() }; v.n.out.gain.value = clipGain(c, lane, Math.max(S.t, c.start)); voices.set(c.id, v); }
+    setSound(v.n, c.au);
+    if (S.t >= c.start) v.n.out.gain.setTargetAtTime(clipGain(c, lane, S.t), now, 0.012);
+    const tempo = c.pitch || Math.abs(c.speed - 1) < 1e-6 ? 1 : +c.speed.toFixed(4), pbr = c.speed / tempo;
+    const sp = pcmSpan(c, tempo), f = t => (c.in - sp[0] + (t - c.start) * c.speed) / tempo, tl = x => c.start + (x * tempo + sp[0] - c.in) / c.speed; // timeline <-> PCM seconds
+    const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d);
+    for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp); // fetched 3 s ahead
+    for (let k = Math.floor(f(a) / PCM_S); k * PCM_S < f(b); k++) {
+      if (v.srcs.has(k)) continue;
+      const p = pcmChunk(c.media, tempo, k, sp);
+      if (p.buf === undefined) continue; // loading: picked up by a later frame
+      if (!p.buf) { v.srcs.set(k, null); continue; }
+      let s0 = Math.max(tl(k * PCM_S), c.start, S.t), when = S.aA0 + (s0 - S.aT0);
+      const s1 = Math.min(tl(k * PCM_S + p.buf.duration), c.start + d);
+      if (when < now) { s0 += now - when; when = now; }
+      if (s1 - s0 < 1e-3) { v.srcs.set(k, null); continue; }
+      const n = actx.createBufferSource();
+      n.buffer = p.buf; n.playbackRate.value = pbr; n.connect(v.n.src);
+      n.start(when, f(s0) - k * PCM_S, (s1 - s0) * pbr);
+      v.srcs.set(k, n);
+    }
+  }
+  for (const [id, v] of voices) if (!seen.has(id)) { for (const n of v.srcs.values()) n?.stop(); v.n.osc?.stop(); v.n.out.disconnect(); voices.delete(id); }
+}
+function audioWarm() { // paused: the chunks at the playhead, so play starts with sound at once
+  for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
+    const m = M.get(c.media);
+    // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
+    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S));
+  }
 }
 const layerCv = [];
 function layer(n) {
@@ -947,17 +1033,17 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
   }
   ctx.restore();
 }
-function sync(v, src, rate, vol, pitch, au) { // the wall clock is the master; media elements follow it
-  gain(v, vol, au);
-  if (v.preservesPitch === !!pitch) v.preservesPitch = !pitch; // "change pitch": speed shifts pitch, like the export's asetrate
+function sync(v, src, rate) { // the wall clock is the master; media elements follow it
   if (S.playing && S.stuck && v !== S.lead) { if (!v.paused) v.pause(); return; }
   if (S.playing) {
-    const pr = Math.min(16, rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
-    if (v.playbackRate !== pr) v.playbackRate = pr;
-    if (v.paused) { if (Math.abs(v.currentTime - src) > 0.05) v.currentTime = src; v.play().catch(() => {}); }
-    else if (Math.abs(v.currentTime - src) > 0.3) v.currentTime = src;
+    const err = src - v.currentTime, pr = Math.min(16, rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
+    if (v.playbackRate !== pr) v.playbackRate = pr; // (no steering by rate: AVPlayer's clock jumps at every rate change)
+    if (v.paused) { if (Math.abs(err) > 0.05) v.currentTime = src; v._run = false; v._ct = v.currentTime; v.play().catch(() => {}); }
+    else if (Math.abs(err) > 0.3) v.currentTime = src;
+    else if (v.currentTime !== v._ct) { v._ct = v.currentTime; v._run = true; } // really moving (a prerolled next cut)
   } else {
     if (!v.paused) v.pause();
+    v._run = false;
     v._want = src; // waitFrame checks the element really got here
     if (!v.seeking && Math.abs(v.currentTime - src) > 0.5 / P.fps) v.currentTime = src + 1e-4; // 5.3 - 5.0 = 0.29999…: on a frame's edge WebKit shows the one before (the export doesn't)
   }
@@ -975,15 +1061,13 @@ function paint() {
   const tr = act.length > 1 ? { type: P.main[act[0]].tr?.type || 'fade', p: clamp((t - P.main[act[1]].start) / (trF(act[0]) / P.fps), 0, 1) } : null;
   const layers = act.map(i => ['main', P.main[i], `m${i % 2}`, i]); // two elements alternate: next cut pre-seeked, transitions show both
   for (const c of shown('overlay')) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
-  for (const c of shown('audio')) if (t >= c.start && t < c.start + len(c)) layers.push(['audio', c, `a${c.id}`]);
   for (const [lane, c, key, i] of layers) {
     const m = M.get(c.media);
     if (!m) continue;
-    const g = tr && lane === 'main' ? (i === act[0] ? 1 - tr.p : tr.p) : 1; // audio crossfade, like acrossfade
     let el;
     if (m.kind === 'image') el = imgFor(m);
-    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) S.lead = el; sync(el, c.in + (t - c.start) * c.speed, c.speed, S.recMute || P.mute[lane] ? 0 : volAt(c, t - c.start) * fadeAt(c, t - c.start, tdur(c, lane)) * g, c.pitch, c.au); }
-    if (lane === 'audio' || (lane === 'overlay' && P.mute.overlay)) continue;
+    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
+    if (lane === 'overlay' && P.mute.overlay) continue;
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       const L = layer(i === act[0] ? 0 : 1), lx = L.getContext('2d');
       lx.fillStyle = P.bg; lx.fillRect(0, 0, L.width, L.height);
@@ -993,8 +1077,19 @@ function paint() {
   }
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
-    const v = vidFor(`m${(mi + 1) % 2}`, nm);
-    if (!live.has(v)) { live.add(v); if (!v.paused) v.pause(); v._want = nx.in; if (!v.seeking && Math.abs(v.currentTime - nx.in) > 0.04) v.currentTime = nx.in; }
+    const v = vidFor(`m${(mi + 1) % 2}`, nm), lead = nx.start - t, PRE = 0.3;
+    if (!live.has(v)) {
+      live.add(v);
+      // playing: the next cut's element starts PRE early (unseen), so at the cut it's already running in step and the
+      // clock needn't wait for it to start (that wait was a gap in the sound at every cut)
+      if (S.playing && lead <= PRE && nx.in - lead * nx.speed >= 0) sync(v, nx.in - lead * nx.speed, nx.speed);
+      else {
+        const at = S.playing ? Math.max(0, nx.in - PRE * nx.speed) : nx.in;
+        if (!v.paused) v.pause();
+        v._want = at;
+        if (!v.seeking && Math.abs(v.currentTime - at) > 0.04) v.currentTime = at;
+      }
+    }
   }
   for (const v of pool.values()) if (!live.has(v) && !v.paused) v.pause();
   S.live = live;
@@ -1012,6 +1107,7 @@ function paint() {
     const h = byId.get(x.id);
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
   }
+  if (!S.playing) audioWarm();
   if (G.tab === 'script') scriptNow(t);
   if (SCOPE.on) drawScope();
   $('#tc').textContent = `${tc(t)} / ${tc(S.playing ? S.end : total())}`;
@@ -2185,16 +2281,28 @@ function frame(now) {
     // the clock waits while the main video stalls (starting, seeking, or WebKit re-buffering, which it does ~0.5 s into a fresh
     // load while still reporting HAVE_ENOUGH_DATA): a clock that ran on left it behind, re-seeked it and stalled it again, every
     // 0.7 s (a 1080p30 clip showed 18 of 30 frames/s). At most 1.5 s per stall, so a video that never moves can't stop playback.
-    const v = S.lead, dt = now - (S.last ?? now);
+    // A video that has started but not moved yet doesn't count: the clock picks up where the picture really is once it
+    // moves (and when it drifts 60 ms off), because the sound is scheduled from the clock: picture and sound start together.
+    const v = S.lead, dt = now - (S.last ?? now), was = S.stuck;
     S.last = now;
-    if (v && v.currentTime !== S.vt) { S.vt = v.currentTime; S.vAt = now; }
-    const stuck = v && !v.ended && (v.paused || v.seeking || v.readyState < 3 || now - S.vAt > 80);
+    if (v !== S.vEl) { S.vEl = v; S.vt = v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; }
+    const moved = v && v.currentTime !== S.vt;
+    if (moved) { S.vt = v.currentTime; S.vAt = now; }
+    const first = moved && !S.vMoved;
+    if (moved) S.vMoved = true;
+    const stuck = v && !v.ended && (!S.vMoved || v.paused || v.seeking || v.readyState < 3 || now - S.vAt > 80);
     if (stuck && (S.held += dt) < 1500) S.wall0 += dt; else if (!stuck) S.held = 0;
     S.stuck = stuck && S.held < 1500; // the other tracks wait too (sync), instead of running ahead and being seeked back
     S.t = Math.min(S.t0 + (now - S.wall0) / 1000, S.end);
+    const lc = S.leadClip;
+    if (moved && !S.stuck && lc && M.get(lc.media)?.kind !== 'image') {
+      const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
+      if ((first || was || Math.abs(tl - S.t) > 0.06) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= (tl - S.t) * 1000; S.t = Math.min(tl, S.end); }
+    }
     if (S.t >= S.end) pause();
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
     if (f !== S.shown || !S.playing) { S.shown = f; S.dirty = true; placePlayhead(); follow(); }
+    audioTick(now);
     kick();
   }
   if (S.dirty) { S.dirty = false; paint(); }
@@ -2205,10 +2313,10 @@ function play() {
   if (S.t >= D - 1e-3) S.t = 0;
   audioOn();
   if (!S.playing) busy(1);
-  Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), dirty: true });
+  Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { if (S.playing) busy(-1); S.playing = false; S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t) {
@@ -3125,11 +3233,14 @@ async function openProject(id) {
   const gone = LANES.reduce((n, L) => n + P[L.key].filter(c => c.media && !M.get(c.media)).length, 0);
   if (gone) toast(`${gone} clip${gone === 1 ? ' has' : 's have'} missing media (striped red): select one to restore or relink it`);
 }
-async function openProjects() {
+async function openProjects() { // CapCut's home: a card per project with a frame from it, newest first
   const list = await api('/api/projects').catch(() => []);
-  modal(`<h2>Projects</h2><div class="newp">${Object.keys(RATIOS).map(r => `<button data-new="${r}">New ${r}</button>`).join('')}</div>
-    <div class="plist">${list.map(p => `<div class="prow"><button class="pitem${p.id === P?.id ? ' on' : ''}" data-open="${p.id}"><b>${esc(p.name)}</b><span>${p.w}×${p.h} · ${p.clips} clips · ${new Date(p.updated * 1000).toLocaleString()}</span></button><button class="pdel" data-dup="${p.id}" aria-label="Duplicate ${esc(p.name)}">Duplicate</button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" aria-label="Delete ${esc(p.name)}">Delete</button></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
-    <div class="actions"><button data-close>Close</button></div>`);
+  const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 172800 ? 'yesterday' : new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
+  modal(`<div class="phead"><h2>Projects</h2><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div>
+    <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb"><img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()"><i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
+      + `<span class="pacts"><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
+    <div class="actions"><button data-close>Close</button></div>`, 'wide');
 }
 
 async function trashProject(id, name) { // reversible: the server moves it to Movies/Cutroom/trash
@@ -3161,7 +3272,7 @@ async function addVoiceover() { // CapCut's text-to-speech with the Mac's own vo
 let remoteLog = null; // toasts and statuses shown while a remote (MCP) command runs go back to the caller
 const quiet = p => { p?.catch?.(() => {}); }; // a button's async tool: its error is already shown next to the clip
 function toast(msg) { if (remoteLog) remoteLog.push(String(msg)); const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, 3500); }
-function modal(html) { const m = $('#modal'); m.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">${html}</div>`; m.hidden = false; $('button, input', m)?.focus(); }
+function modal(html, cls = '') { const m = $('#modal'); m.innerHTML = `<div class="dialog ${cls}" role="dialog" aria-modal="true">${html}</div>`; m.hidden = false; $('button, input', m)?.focus(); }
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
 // ---------- timeline interaction ----------
@@ -3757,6 +3868,7 @@ function wire() {
     const d = b.dataset;
     if ('close' in d) { if (!S.exporting) closeModal(); } // closing mid-render would lose the result
     else if (d.new) { setProject(newProject(d.new)); scheduleSave(); closeModal(); }
+    else if ('newsel' in d) { setProject(newProject($('#newRatio').value)); scheduleSave(); closeModal(); }
     else if (d.open) { await openProject(d.open).catch(err => toast(err.message)); closeModal(); }
     else if (b.id === 'exGo') runExport();
     else if (d.trash) trashProject(d.trash, d.name).catch(err => toast(err.message));

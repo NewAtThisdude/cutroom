@@ -50,6 +50,17 @@ one for testing). `tests/perf_heavy.mjs` measures import, playback, seeking and 
 - **Playback** waits for the main video when WebKit stalls it, instead of running on and seeking it again (that loop
   showed 15-18 of 30 frames a second on a plain 1080p clip); the other tracks wait with it. The timeline renders only
   what's in view.
+- **Sound in the preview** doesn't come from the video elements. Routed through Web Audio (needed for volumes over
+  100 % and the voice effects), a `<video>`'s sound starts ~0.3 s late in WebKit and holds the picture meanwhile: an
+  edit of 2 s shots stalled 280 ms at every cut (49 of 60 frames a second). Videos play muted; each clip's sound is
+  4 s Web Audio buffers of a 48 kHz PCM copy made at import (`/media/<id>?pcm=<tempo>`; a kept-pitch speed gets the
+  export's `atempo` copy), started on the audio clock at the moment it reaches the speakers. The clock picks up where
+  the picture really is when it starts or drifts, and the next cut's video starts 0.3 s early, unseen.
+  `tests/av_sync.mjs` checks a flash-and-beep clip across a jump cut and a 2x clip: within 45 ms, mostly under 15.
+- **Feel**: `tests/perf_feel.mjs` times input to picture on a real project (scrub, jump, play, select, sliders, drags,
+  undo, tabs, zoom). On the 16-shot 4K60 night-drive edit: 59 of 60 frames a second with no stall over 100 ms; every
+  interaction without a frame over 50 ms. The ruler's ticks were a CSS repeating gradient, which WebKit repaints
+  stripe by stripe: after playback, zooming the timeline froze for 0.6-1.5 s at a time. They're an SVG pattern now.
 - **On-device AI** picks the language model that fits (qwen3.5:4b below 16 GB, 9b above) and unloads it right after
   on small Macs; image generation needs 12 GB or more (setup skips its download below that); ProPainter starts at
   512 px in smaller batches below 16 GB.
