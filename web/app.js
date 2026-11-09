@@ -2316,7 +2316,9 @@ function play() {
   Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm();
+  // a running AudioContext keeps the audio device and WebKit's render thread awake: 0.056 vs 0.008 cores paused. play()'s audioOn resumes it
+  clearTimeout(S.aIdle); S.aIdle = setTimeout(() => S.playing || actx?.suspend(), 3000); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t) {

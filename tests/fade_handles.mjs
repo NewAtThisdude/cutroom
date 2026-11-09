@@ -4,6 +4,7 @@
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
+const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
 const B = 'http://127.0.0.1:4610', SR = 48000, N = 4 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 // a steady 440 Hz tone, 4 s, so the level over time is the fade curve
@@ -53,7 +54,7 @@ await page.keyboard.press('Meta+z'); await page.waitForTimeout(100);
 
 // the export carries the fades: 1 s linear fade in, 1.5 s fade out from 2.5 s
 const ex = await ev(() => REMOTE.export({ format: 'wav', name: `fade-e2e-${Date.now()}` }));
-const raw = execFileSync('ffmpeg', ['-v', 'error', '-i', `${os.homedir()}/Movies/Cutroom/exports/${ex.file}`, '-f', 'f32le', '-ac', '1', '-ar', `${SR}`, '-'], { maxBuffer: 1 << 28 });
+const raw = execFileSync('ffmpeg', ['-v', 'error', '-i', `${LIB}/exports/${ex.file}`, '-f', 'f32le', '-ac', '1', '-ar', `${SR}`, '-'], { maxBuffer: 1 << 28 });
 const x = new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4);
 const lvl = t => { let s = 0; const a = Math.round((t - 0.025) * SR), n = Math.round(0.05 * SR); for (let i = a; i < a + n; i++) s += x[i] * x[i]; return Math.sqrt(s / n); };
 const full = lvl(2.0); // the level between the fades = 1
@@ -62,7 +63,7 @@ const pts = [0.1, 0.5, 0.9, 1.5, 2.4, 3.0, 3.5, 3.9].map(t => [t, lvl(t) / full,
 check('exported level follows both fades', pts.every(([, g, w]) => Math.abs(g - w) < 0.06), pts.map(([t, g, w]) => `${t}s ${g.toFixed(2)}/${w.toFixed(2)}`).join(' '));
 check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
 
-execFileSync('mv', [`${os.homedir()}/Movies/Cutroom/exports/${ex.file}`, `${os.homedir()}/Movies/Cutroom/trash/exports/`]);
+execFileSync('mv', [`${LIB}/exports/${ex.file}`, `${LIB}/trash/exports/`]);
 for (const u of [`/api/projects/${pid}/trash`, `/api/media/${media.id}/trash`]) await fetch(B + u, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await b.close();
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);

@@ -3,14 +3,15 @@
 //   node perf_idle.mjs [--reduce]
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
+const PORT = process.env.PORT || '4610';
 const reduce = process.argv.includes('--reduce'), WIN = 20000;
-const pids = () => execFileSync('sh', ['-c', "pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:4610 -sTCP:LISTEN"]).toString().split(/\s+/).filter(Boolean);
+const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:${PORT} -sTCP:LISTEN`]).toString().split(/\s+/).filter(Boolean);
 const cpu = list => execFileSync('ps', ['-o', 'time=', '-p', list.join(',')]).toString().trim().split('\n')
   .reduce((s, t) => { const [m, sec] = t.trim().split(':'); return s + +m * 60 + +sec; }, 0);
-const server = () => execFileSync('sh', ['-c', 'lsof -t -nP -iTCP:4610 -sTCP:LISTEN']).toString().trim();
+const server = () => execFileSync('sh', ['-c', 'lsof -t -nP -iTCP:'+PORT+' -sTCP:LISTEN']).toString().trim();
 const b = await webkit.launch();
 const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduce ? 'reduce' : 'no-preference' })).newPage();
-await page.goto('http://127.0.0.1:4610/', { waitUntil: 'load' });
+await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const measure = async name => {
   const all = pids(), sv = server(), a = cpu(all), s0 = cpu([sv]);

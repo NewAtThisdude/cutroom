@@ -42,6 +42,12 @@ const pid = await page.evaluate(async id => {
   return P.id;
 }, m.id);
 await page.waitForTimeout(1500);
+// play a moment and pause: 3 s later the audio context sleeps (no CPU while paused); the measured play below must wake it
+await page.keyboard.press('Space'); await page.waitForTimeout(1200); await page.keyboard.press('Space');
+await page.waitForTimeout(4000);
+const slept = await page.evaluate(() => { const s = actx.state; S.t = 0.5; S.dirty = true; BEEP.length = 0; FLASH.length = 0; return s; });
+console.log(`${slept === 'suspended' ? 'ok  ' : 'FAIL'} the audio context sleeps 3 s after a pause  [${slept}]`);
+await page.waitForTimeout(500);
 await page.keyboard.press('Space');
 await page.waitForTimeout(10500);
 const r = await page.evaluate(() => { pause(); return { beep: BEEP, flash: FLASH }; });
@@ -52,4 +58,4 @@ const want = 11; // 1,2,3 | 4,5,6,7 | 8,8.5,9,9.5
 console.log(`${r.flash.length} flashes (want ${want}), ${r.beep.length} beeps; ${bad} out of sync`);
 await api(`/api/projects/${pid}/trash`, {}); await api(`/api/media/${m.id}/trash`, {});
 await b.close();
-process.exit(bad || r.flash.length !== want ? 1 : 0); // (a beep can start on a clip's very last sample: counted, not failed)
+process.exit(bad || r.flash.length !== want || slept !== 'suspended' ? 1 : 0); // (a beep can start on a clip's very last sample: counted, not failed)

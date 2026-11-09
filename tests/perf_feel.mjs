@@ -76,13 +76,13 @@ await ev(() => { PT.length = 0; window._k = performance.now(); });
 await page.keyboard.press('Space');
 await page.waitForTimeout(8000);
 const pl = await ev(() => {
-  const k = _k, first = PT.find(p => p[1] > 0.001); let uniq = 0, prev = -9; const gaps = []; let lastT = null;
-  for (const p of PT) if (Math.abs(p[2] - prev) > 1e-4) { uniq++; if (lastT !== null) gaps.push(p[0] - lastT); lastT = p[0]; prev = p[2]; }
+  const k = _k, first = PT.find(p => p[1] > 0.001); let uniq = 0, prev = -9; const gaps = []; let lastT = null, at = 0, w = 0;
+  for (const p of PT) if (Math.abs(p[2] - prev) > 1e-4) { uniq++; if (lastT !== null) { gaps.push(p[0] - lastT); if (p[0] - lastT > w) { w = p[0] - lastT; at = p[1]; } } lastT = p[0]; prev = p[2]; }
   const T = S.t; pause();
-  return { start: first ? first[0] - k : -1, fps: uniq / 8, stalls: gaps.filter(g => g > 100).length, worst: Math.max(0, ...gaps), cuts: P.main.filter(c => c.start > 0 && c.start < T).length, fpsP: P.fps };
+  return { start: first ? first[0] - k : -1, fps: uniq / 8, stalls: gaps.filter(g => g > 100).length, worst: Math.max(0, ...gaps), cuts: P.main.filter(c => c.start > 0 && c.start < T).length, fpsP: P.fps, at };
 });
 row('space -> picture moves', `${pl.start.toFixed(0)} ms`);
-row('playback', `${pl.fps.toFixed(1)} new frames/s of ${pl.fpsP}, ${pl.stalls} stalls >100 ms (worst ${pl.worst.toFixed(0)} ms) across ${pl.cuts} cuts`);
+row('playback', `${pl.fps.toFixed(1)} new frames/s of ${pl.fpsP}, ${pl.stalls} stalls >100 ms (worst ${pl.worst.toFixed(0)} ms at ${pl.at.toFixed(2)} s) across ${pl.cuts} cuts`);
 row('playback jank', await jank());
 
 // 4. click a clip -> selected with inspector

@@ -24,6 +24,7 @@ MODEL = os.environ.get('CUTROOM_MODEL', str(Path.home() / 'Library/Application S
 VAD = os.environ.get('CUTROOM_VAD', str(HOME / 'models' / 'ggml-silero-v5.1.2.bin'))
 IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9'}, {'.mp4', '.mov', '.m4v', '.webm'}  # AV1 gets a proxy: WebKit shows paused AV1 frames empty
+RANGE_CAP = 8 << 20
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
 XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', 'wipedown', 'slideleft', 'slideright', 'slideup', 'slidedown',
           'circleopen', 'circleclose', 'zoomin', 'dissolve', 'pixelize', 'radial', 'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
@@ -2404,7 +2405,9 @@ class App(BaseHTTPRequestHandler):
         rng = re.fullmatch(r'bytes=(\d*)-(\d*)', self.headers.get('Range', ''))
         if rng and (rng[1] or rng[2]):  # <video> seeking needs byte ranges
             start, end = (int(rng[1]), int(rng[2] or end)) if rng[1] else (max(0, size - int(rng[2])), end)
-            end = min(end, size - 1)
+            # at most RANGE_CAP per answer (a 206 may be shorter than asked; the player asks for the rest). WebKit asks for the
+            # whole rest of the file at every seek and drops it at the next: scrubbing streamed hundreds of MB it threw away
+            end = min(end, size - 1, start + RANGE_CAP - 1)
             if start > end:
                 self.send_response(416)
                 self.send_header('Content-Range', f'bytes */{size}')

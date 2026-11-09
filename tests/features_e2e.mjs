@@ -6,7 +6,8 @@ import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${os.homedir()}/Movies/Cutroom/exports`;
+const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
+const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${LIB}/exports`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
@@ -281,7 +282,7 @@ const made = { p: after.p.filter(x => !before.p.has(x.id)), m: after.m.filter(x 
 for (const p of made.p) await fetch(`${B}/api/projects/${p.id}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const m of made.m) await fetch(`${B}/api/media/${m.id}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const L of (await get('/api/luts')).filter(x => !before.l.has(x.id))) await fetch(`${B}/api/luts/${L.id}/trash`, { method: 'POST', headers: H, body: '{}' });
-fs.mkdirSync(`${os.homedir()}/Movies/Cutroom/trash/exports`, { recursive: true });
-for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${os.homedir()}/Movies/Cutroom/trash/exports/${f}`);
+fs.mkdirSync(`${LIB}/trash/exports`, { recursive: true });
+for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${LIB}/trash/exports/${f}`);
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed; trashed ${made.p.length} projects, ${made.m.length} media, ${made.e.length} exports`);
 process.exit(res.includes(false) ? 1 : 0);

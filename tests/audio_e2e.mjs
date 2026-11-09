@@ -5,6 +5,7 @@
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
+const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
 import fs from 'node:fs';
 const B = 'http://127.0.0.1:4610', SR = 48000, N = 3 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
@@ -50,7 +51,7 @@ const both = async (au, vkf) => {
   }, [media.id, au, vkf]);
   made.push(r.pid);
   const dec = s => { const u = Buffer.from(s, 'base64'); return new Float32Array(u.buffer, u.byteOffset, u.length / 4); };
-  return { ex: pcm(`${os.homedir()}/Movies/Cutroom/exports/${r.file}`), pv: [dec(r.l), dec(r.r)], file: r.file };
+  return { ex: pcm(`${LIB}/exports/${r.file}`), pv: [dec(r.l), dec(r.r)], file: r.file };
 };
 const plain = await both(null);
 check('a plain clip exports as it went in', snr(L, plain.ex[0]) > 40 && snr(R, plain.ex[1]) > 40, `${snr(L, plain.ex[0]).toFixed(1)} dB SNR`);
@@ -121,14 +122,14 @@ if (mix) {
   check('Split into stems: four clips in sync, the source muted', st.names.length === 4 && st.main === 0 && st.sync, `${st.names.map(n => n.replace(/.*\((.*)\).*/, '$1')).join(', ')} · ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   const ex = await ev(() => REMOTE.export({ format: 'wav', name: `audio-e2e-stems-${Date.now()}` }));
   const file = (await (await fetch(`${B}/api/media`)).json()).find(m => m.id === mix).file;
-  const [sl] = pcm(`${os.homedir()}/Movies/Cutroom/exports/${ex.file}`), [ol] = pcm(`${os.homedir()}/Movies/Cutroom/media/${file}`);
+  const [sl] = pcm(`${LIB}/exports/${ex.file}`), [ol] = pcm(`${LIB}/media/${file}`);
   const s = snr(ol, sl, 0, Math.min(ol.length, sl.length) - 1);
   check('the four stems add back up to the original', s > 12, `${s.toFixed(1)} dB SNR`);
   stemIds.push(...await ev(() => P.audio.map(c => c.media))); // trashed at the end (the cache re-splits when they're gone)
 }
 check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 for (const id of made) await fetch(`${B}/api/projects/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
-{ const X = `${os.homedir()}/Movies/Cutroom/exports/`; for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash
+{ const X = `${LIB}/exports/`; for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash
 for (const id of stemIds) await fetch(`${B}/api/media/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await fetch(`${B}/api/media/${media.id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);

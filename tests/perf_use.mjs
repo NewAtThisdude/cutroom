@@ -3,10 +3,11 @@
 //   node perf_use.mjs
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
-const pids = () => execFileSync('sh', ['-c', "pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:4610 -sTCP:LISTEN"]).toString().split(/\s+/).filter(Boolean);
+const PORT = process.env.PORT || '4610';
+const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:${PORT} -sTCP:LISTEN`]).toString().split(/\s+/).filter(Boolean);
 const cpu = l => execFileSync('ps', ['-o', 'time=', '-p', l.join(',')]).toString().trim().split('\n').reduce((s, t) => { const [m, x] = t.trim().split(':'); return s + +m * 60 + +x; }, 0);
 const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
-await page.goto('http://127.0.0.1:4610/', { waitUntil: 'load' });
+await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const ev = (f, a) => page.evaluate(f, a);
 const src = (await ev(() => api('/api/projects'))).find(p => /Midnight Highway/.test(p.name)) || (await ev(() => api('/api/projects')))[0];
@@ -27,5 +28,5 @@ await run('drag a clip (2 s)', async () => { await page.mouse.move(cb.x + cb.w /
 await run('zoom the timeline (40 steps)', async () => { for (let i = 0; i < 40; i++) { await page.$eval('#zoom', (e, v) => { e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }, 1 + (i % 20) * 0.2); await page.waitForTimeout(40); } });
 await run('idle after all that (3 s)', () => page.waitForTimeout(3000));
 console.log(await ev(() => { const n = 30; let t = performance.now(); for (let i = 0; i < n; i++) _wt(); const tl = (performance.now() - t) / n; S.sel = { lane: 'main', id: P.main[0].id }; t = performance.now(); for (let i = 0; i < n; i++) renderInspector(); const ins = (performance.now() - t) / n; return `one timeline rebuild ${tl.toFixed(1)} ms, one inspector rebuild ${ins.toFixed(1)} ms (${P.main.length} main clips)`; }));
-await fetch(`http://127.0.0.1:4610/api/projects/${pid}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+await fetch(`http://127.0.0.1:${PORT}/api/projects/${pid}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await b.close();
