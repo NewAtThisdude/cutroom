@@ -39,9 +39,10 @@
     <section id="tab-media" class="pane on">
       <label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label>
       <button id="btnMulticam" class="wide ghostline" title="Several recordings of the same moment, lined up by their sound">Multicam…</button>
-      <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button></div>
+      <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button><button data-mfilter="proj" title="Only what this project uses">Used</button></div>
+      <div class="mtools"><input id="mediaSearch" type="search" placeholder="Search the library" aria-label="Search the library"><select id="mediaSort" aria-label="Sort the library"><option value="new">Newest</option><option value="name">Name</option><option value="dur">Longest</option></select></div>
       <div id="mediaList" class="media-list"></div>
-      <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it.</p>
+      <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it. Hover a video to skim it; click it to mark a range (I, O).</p>
     </section>
     <section id="tab-audio" class="pane">
       <div class="phead"><b>Sound effects</b><span>▶ listen · + add</span></div>
@@ -194,6 +195,7 @@
   <section class="center">
     <div id="stage" class="stage"><canvas id="cv"></canvas>
       <div id="scope" class="scope" hidden><div class="seg"><button data-scope="wave" class="on">Waveform</button><button data-scope="hist">Histogram</button><button data-scope="vec">Vector</button></div><canvas id="scopeCv" width="256" height="150"></canvas></div>
+      <div id="srcBar" class="confirm srcbar" role="group" aria-label="Source viewer" hidden><div class="q"><span id="srcName"></span><small id="srcRange"></small></div><input id="srcPos" type="range" min="0" step="0.01" value="0" aria-label="Position in the source"><button data-src="i" title="Mark in (I)">In</button><button data-src="o" title="Mark out (O)">Out</button><button class="primary" data-src="add" title="Add the marked range at the playhead">Add</button><button data-src="close" title="Back to the timeline (Esc)" aria-label="Back to the timeline">×</button></div>
       <div id="confirmBar" class="confirm" role="dialog" aria-label="Confirm" hidden><div class="q"><span></span><small>Missed a part? Click it. ⌥-click leaves one out.</small></div><button data-smaller title="Take less (a part of it)">Smaller</button><button data-bigger title="Take more (all of it)">Bigger</button><button class="primary" data-ok>Remove it</button><button data-again>Draw again</button><button data-no>Cancel</button></div>
     </div>
     <div class="transport">

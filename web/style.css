@@ -166,6 +166,16 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .mitem .add { width: 24px; height: 24px; padding: 0; border-radius: 7px; font-size: 15px; line-height: 1; background: var(--grad); border: 0; color: #fff; }
 .mitem .rm { background: rgba(5, 6, 10, .75); color: var(--muted); }
 .mitem.up { opacity: .7; cursor: default; }
+.mitem.src { border-color: var(--accent); }
+.mitem .skim { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.mitem .srng { position: absolute; bottom: 0; height: 3px; min-width: 2px; background: var(--accent); pointer-events: none; z-index: 1; }
+#mediaFilter button { padding: 3px 8px; } /* five chips on one line */
+.mtools { display: flex; gap: 6px; margin: -4px 0 10px; }
+.mtools input { flex: 1; min-width: 0; }
+.mtools select { flex: none; }
+.media-list.rep { margin: 10px 0; }
+.media-list.rep .mitem { padding: 0; text-align: left; cursor: pointer; color: inherit; }
+.media-list.rep .mitem[hidden] { display: none; }
 
 /* inspector */
 .itabs { display: flex; gap: 2px; padding: 3px; margin: 12px 0 4px; background: #0a0c13; border: 1px solid var(--line); border-radius: 9px; }
@@ -322,6 +332,7 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .confirm span { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .confirm .q { display: flex; flex-direction: column; min-width: 0; margin-right: 4px; }
 .confirm small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srcbar input[type=range] { width: 200px; flex: none; }
 
 .clip svg.fade { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .clip svg.fade path { fill: rgba(0, 0, 0, .45); stroke: rgba(255, 255, 255, .7); stroke-width: 1; vector-effect: non-scaling-stroke; }
