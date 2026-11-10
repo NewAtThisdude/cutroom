@@ -5660,6 +5660,125 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
   }
 }
 
+// ---------- command bar (⌘K): plain language -> the MCP's commands, planned on this Mac (server pilot_plan), run here ----------
+async function pilotCtx() { // the project in brief for the planner: clip ids, cuts, other tracks and the valid option names
+  packMain();
+  const o = await REMOTE.options(), main = P.main.map(c => { const m = M.get(c.media); return { id: c.id, name: m?.name || '', kind: m?.kind || 'video', sound: !!m?.hasAudio && !c.mute, start: r3(c.start), end: r3(c.start + tdur(c, 'main')), speed: c.speed || 1 }; });
+  const label = (c, L) => L === 'text' ? `"${String(c.text || '').slice(0, 40)}"` : L === 'fx' ? c.fx : M.get(c.media)?.name || '';
+  return { project: { ratio: Object.keys(RATIOS).find(k => RATIOS[k][0] * P.h === RATIOS[k][1] * P.w) || `${P.w}x${P.h}`, w: P.w, h: P.h, fps: P.fps, duration: r3(total()), playhead: r3(S.t) },
+    main, cuts: main.slice(0, -1).map(m => m.end), selected: S.sel?.id || null, captions: P.captions.length, ids: LANES.flatMap(L => P[L.key].map(c => c.id)),
+    voices: { mac: $$('#ttsVoice option').map(x => x.value), ai: $$('#aiVoice option').map(x => x.value) },
+    tracks: Object.fromEntries(['overlay', 'audio', 'text', 'fx'].map(L => [L, P[L].map(c => ({ id: c.id, label: label(c, L), start: r3(c.start), end: r3(c.start + tdur(c, L)) }))])),
+    options: { captionPresets: o.captionPresets, textPresets: o.textPresets, transitions: Object.fromEntries(TRANSITIONS), looks: o.looks, effects: o.effects, sounds: o.sounds,
+      speedRamps: o.speedRamps, exportPresets: Object.keys(EX_PRESETS), formats: FORMATS.map(x => x[0]), ratios: o.ratios, clipAnimIn: Object.fromEntries(CLIP_ANIMS), clipLoops: Object.fromEntries(LOOP_ANIMS), fonts: FONTS } };
+}
+async function pilotRun(steps, say = () => {}) { // one step = one undo step; a step that fails is reported, the others still run
+  const done = [], failed = [];
+  for (const [i, s] of steps.entries()) {
+    say(i, 'run');
+    const before = JSON.stringify(P), u0 = undo.length, log0 = remoteLog;
+    remoteLog = [];
+    let err = null;
+    try { const fn = REMOTE[s.cmd]; if (!fn) throw new Error(`unknown command ${s.cmd}`); s.result = await fn(structuredClone(s.args)); }
+    catch (e) { err = e.message; }
+    finally { // whatever the step changed, also outside change() (a caption style), comes back with one ⌘Z
+      if (JSON.stringify(P) !== before) { undo.splice(u0, Infinity, before); redo = []; syncHistory(); }
+      s.log = remoteLog; remoteLog = log0;
+    }
+    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); continue; }
+    done.push(s); say(i, 'ok', s.log.at(-1));
+  }
+  return { done, failed };
+}
+function pilotOpen() {
+  if (!P || !$('#modal').hidden) return;
+  modal(`<h3>Ask Cutroom</h3><input id="pilotQ" type="text" autocomplete="off" spellcheck="true" placeholder="cut the silences · add captions in Bold · export for TikTok" aria-label="What should Cutroom do?">
+    <p class="hint">Planned by the local model on this Mac, then run step by step. Every step is one undo (⌘Z).</p>
+    <ol id="pilotSteps" class="pilot"></ol><p id="pilotMsg" class="muted" role="status"></p>
+    <div class="actions"><button data-close>Close</button><button id="pilotGo" class="primary">Plan</button></div>`, 'pilotd');
+  const q = $('#pilotQ'), go = $('#pilotGo'), st = { plan: null, text: '', busy: false };
+  q.value = store.get('cutroom.pilot') || ''; q.select();
+  const msg = t => { const m = $('#pilotMsg'); if (m) m.textContent = t; };
+  const show = (steps, cant) => {
+    const ol = $('#pilotSteps'); if (!ol) return;
+    ol.innerHTML = steps.map((s, i) => `<li data-i="${i}"><b>${esc(s.say)}</b><code>${esc(s.tool)} ${esc(JSON.stringify(s.args))}</code></li>`).join('')
+      + cant.map(c => `<li class="cant"><b>Can't: ${esc(c)}</b></li>`).join('');
+  };
+  const run = async () => {
+    if (st.busy) return;
+    const text = q.value.trim();
+    if (!text) return q.focus();
+    st.busy = true; go.disabled = true;
+    try {
+      if (!st.plan || st.text !== text) { // plan first; Enter again runs it
+        store.set('cutroom.pilot', text);
+        msg('Planning on this Mac…'); show([], []);
+        const t0 = performance.now(), plan = await api('/api/plan', { text, ctx: await pilotCtx() });
+        Object.assign(st, { plan, text });
+        show(plan.steps, plan.cant);
+        msg(plan.steps.length ? `${plan.steps.length} step${plan.steps.length > 1 ? 's' : ''}, planned in ${((performance.now() - t0) / 1000).toFixed(1)} s. Enter runs ${plan.steps.length > 1 ? 'them' : 'it'}.` : "Nothing I can do with Cutroom's tools for that.");
+        go.textContent = plan.steps.length ? 'Run' : 'Plan';
+        if (!plan.steps.length) st.plan = null;
+        return;
+      }
+      const plan = st.plan; st.plan = null;
+      const r = await pilotRun(plan.steps, (i, k, t) => { const li = $(`#pilotSteps li[data-i="${i}"]`); if (li) { li.className = k; if (t) li.title = t; } msg(k === 'run' ? `Step ${i + 1} of ${plan.steps.length}: ${plan.steps[i].say}…` : ''); });
+      const no = [...r.failed.map(s => `${s.say}: ${s.error}`), ...plan.cant];
+      msg(`${r.done.length} of ${plan.steps.length} done${r.done.length ? ' (⌘Z undoes each)' : ''}.${no.length ? ` Couldn't ${no.join('; ')}` : ''}`);
+      go.textContent = 'Plan';
+    } catch (e) { msg(e.message); }
+    finally { st.busy = false; if (go.isConnected) go.disabled = false; }
+  };
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+  q.addEventListener('input', () => { if (st.plan && q.value.trim() !== st.text) go.textContent = 'Plan'; });
+  go.addEventListener('click', run);
+}
+addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === 'KeyK') { e.preventDefault(); pilotOpen(); } }, true);
+$('#btnAsk')?.addEventListener('click', pilotOpen);
+
+// ---------- smart search (Media panel, Enter): by what is in the picture, what is said, how many people (server search) ----------
+async function smartSearch() {
+  const q = $('#mediaSearch').value.trim(), box = $('#mediaHits');
+  if (!q) { box.hidden = true; G.hits = null; return; }
+  box.hidden = false; box.innerHTML = '<p class="muted">Searching…</p>';
+  try {
+    const r = await api('/api/search', { q });
+    if ($('#mediaSearch').value.trim() === q) { G.hits = { q, ...r }; renderHits(); }
+    return r;
+  } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; throw e; }
+}
+function renderHits() {
+  const r = G.hits, box = $('#mediaHits');
+  if (!r) return;
+  const rows = r.results.filter(x => M.has(x.media)).slice(0, 12).map(x => `<button class="hit" data-hit="${x.media}" data-t="${x.t}" title="${esc(x.text)}"><i style="${thumbStyle(M.get(x.media))}"></i>
+    <span><b>${esc(x.name)}</b><small>${x.why === 'speech' ? `“${esc(x.text)}”` : esc(x.text)}</small></span><em>${x.kind === 'image' ? 'photo' : tc(x.t)}</em></button>`).join('');
+  box.innerHTML = (rows || '<p class="muted">Nothing inside the library matches.</p>')
+    + (r.unindexed ? `<button id="btnIndex" class="ghostline wide" title="The local vision model describes every scene; speech is transcribed. Cached.">Look inside ${r.unindexed} more item${r.unindexed > 1 ? 's' : ''}</button>` : '');
+}
+$('#mediaSearch')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); quiet(smartSearch()); } });
+$('#mediaSearch')?.addEventListener('input', () => { if (G.hits && $('#mediaSearch').value.trim() !== G.hits.q) { G.hits = null; $('#mediaHits').hidden = true; } });
+$('#mediaHits')?.addEventListener('click', async e => {
+  const h = e.target.closest('[data-hit]');
+  if (h) { const m = M.get(h.dataset.hit); if (m?.kind === 'video') openSource(m.id, +h.dataset.t); else $(`#mediaList .mitem[data-media="${m?.id}"]`)?.scrollIntoView({ block: 'nearest' }); return; }
+  if (e.target.id !== 'btnIndex') return;
+  const b = e.target; b.disabled = true;
+  try { await job('/api/index', {}, 'Looking inside', t => { b.textContent = t; }); await smartSearch(); }
+  catch (err) { b.textContent = err.message; }
+});
+Object.assign(REMOTE, {
+  async pilot({ text, run = true }) {
+    const plan = await api('/api/plan', { text: String(text || ''), ctx: await pilotCtx() });
+    if (!run) return plan;
+    const r = await pilotRun(plan.steps);
+    return { done: r.done.map(s => ({ tool: s.tool, args: s.args, say: s.say })), failed: r.failed.map(s => ({ tool: s.tool, args: s.args, error: s.error })), cant: plan.cant, planSecs: plan.secs };
+  },
+  async search_media({ q, index = false }) {
+    if (index) await job('/api/index', {}, 'Looking inside');
+    $('#mediaSearch').value = String(q || '');
+    return smartSearch();
+  },
+});
+
 (async function boot() {
   wire();
   try {

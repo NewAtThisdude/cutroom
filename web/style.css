@@ -419,3 +419,24 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #btnExport.busy { background: linear-gradient(90deg, rgba(255, 255, 255, .32) var(--pct), rgba(0, 0, 0, .25) var(--pct)), var(--grad); } /* an export running with its dialog closed */
 #btnLink.on { color: var(--accent2); border-color: rgba(139, 92, 246, .55); background: rgba(139, 92, 246, .14); }
 .clip canvas.cstrip { position: absolute; top: 0; pointer-events: none; } /* drawn by drawStrips for the part in view */
+/* command bar (⌘K) and smart search */
+#btnAsk kbd { font: 600 10px ui-monospace, monospace; color: var(--faint); border: 1px solid var(--line2); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
+.dialog.pilotd { width: min(640px, calc(100vw - 32px)); }
+.dialog.pilotd input { width: 100%; font-size: 15px; padding: 10px 12px; }
+.pilot { margin: 10px 0 4px; padding-left: 22px; display: grid; gap: 6px; }
+.pilot li { color: var(--muted); }
+.pilot li b { display: block; font-weight: 600; color: var(--text); }
+.pilot li code { display: block; font: 11px ui-monospace, monospace; color: var(--faint); overflow-wrap: anywhere; }
+.pilot li.run b::after { content: ' …'; }
+.pilot li.ok b::after { content: ' ✓'; color: #3ddc84; }
+.pilot li.fail b { color: #ff6b6b; }
+.pilot li.cant { list-style: none; margin-left: -22px; }
+.pilot li.cant b { color: #ffb347; font-weight: 500; }
+.hits { display: grid; gap: 4px; margin: -4px 0 10px; }
+.hits:not([hidden]) + .media-list > .hint { display: none; } /* "Nothing matches" is about names: the content results are above */
+.hits .hit { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; padding: 4px 6px; }
+.hits .hit i { height: 28px; border-radius: 4px; background: #000 center / cover no-repeat; }
+.hits .hit span { display: grid; min-width: 0; }
+.hits .hit b, .hits .hit small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hits .hit small { color: var(--muted); font-size: 11px; }
+.hits .hit em { font: 11px ui-monospace, monospace; color: var(--faint); font-style: normal; }

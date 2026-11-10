@@ -48,4 +48,11 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
+# Smart search in the Media panel: text embeddings (nomic-embed-text v1.5, Apache-2.0, 137M parameters, 274 MB) in Ollama;
+# Ollama checks the blob's sha256 itself. Pinned manifest digest: 0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f
+if command -v ollama > /dev/null; then
+  ollama pull nomic-embed-text:v1.5 > /dev/null
+  curl -s http://127.0.0.1:11434/api/tags | grep -q '"nomic-embed-text:v1.5".*0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f' \
+    || echo "warning: nomic-embed-text:v1.5 is not the pinned build (search still works, scores may differ)"
+fi
 echo "On-device AI ready."

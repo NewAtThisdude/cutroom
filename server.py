@@ -2140,6 +2140,338 @@ def scenes(mid, thr=0.3):
     return times
 
 
+# ---------- command bar (⌘K): plain language -> the MCP's own commands, planned by the local model ----------
+_MCP = []
+PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
+             'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'relink_media', 'compound_clip',
+             'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media'}  # need a box, a path or a picture to look at, or only read
+PILOT_ENUM = {('auto_captions', 'style'): 'captionPresets', ('add_text', 'preset'): 'textPresets', ('set_transition', 'type'): 'transitions', ('add_effect', 'type'): 'effects',
+              ('add_sound_effect', 'name'): 'sounds', ('export', 'preset'): 'exportPresets', ('export', 'format'): 'formats', ('clip_tool', 'ramp'): 'speedRamps',
+              ('auto_reframe', 'ratio'): 'ratios'}
+
+
+def mcp_tools():
+    """{name: (description, schema, editor command)} from mcp/cutroom_mcp.py: the command bar plans with the MCP's tools as they are."""
+    if not _MCP:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('cutroom_mcp', Path(__file__).resolve().parent / 'mcp' / 'cutroom_mcp.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MCP.append({n: (d, s, c) for n, d, s, c in mod.TOOLS if n not in PILOT_OFF and c})
+    return _MCP[0]
+
+
+def pilot_system():
+    lines = []
+    for n, (d, s, _) in mcp_tools().items():
+        args = ', '.join(f"{k}{'*' if k in s['required'] else ''} ({p.get('type', 'any')}{', ' + '|'.join(p['enum']) if p.get('enum') else ''})" for k, p in s['properties'].items())
+        lines.append(f'- {n}({args}): {d}')
+    return ('You plan edits in Cutroom, a video editor, from the user\'s instruction. Reply with JSON only:\n'
+            '{"steps": [{"tool": "<name>", "args": {...}, "each": "cut" or "clip" (optional), "say": "what the step does, 3-8 words"}], "cant": "the part you cannot do and why, else empty"}\n'
+            'Rules:\n- Use only the tools below and their arguments (* = required). Clip ids come from the project below: "the third clip" is main clip #3.\n'
+            '- "each" only when the user says every/each/all and the tool works on ONE time or clip: "cut" repeats the step at every cut between main clips '
+            '(fills at/start with the cut time); "clip" repeats it for every main clip (fills id). Tools that already work on the whole edit (remove_pauses, auto_captions, export) never get "each".\n'
+            '- One step per action; prefer the one tool made for it (remove_pauses for silences, auto_captions for captions, export with a preset for a platform).\n'
+            '- One clip\'s own settings (mute = volume 0, speed, filter/look, position, animation) are update_clip with set {...}; set_track is for a whole track. '
+            'A slow zoom through a whole clip is set {anim: {loop: "kbin"}} (Ken Burns; kbout zooms out). Reframing for another shape is auto_reframe (ratio), once per clip.\n'
+            '- Use option values exactly as listed (the user says the name in the app). Leave out arguments you do not need.\n'
+            '- If the instruction asks for something these tools cannot do, do not guess or substitute: leave it out of steps and explain it in "cant". If nothing fits, steps is [].\n'
+            'Examples (ids are made up):\n'
+            '"square format, reframed" -> {"steps": [{"tool": "auto_reframe", "args": {"ratio": "1:1"}, "each": "clip", "say": "Reframe every clip for 1:1"}], "cant": ""}\n'
+            '"ken burns on clip 2, then remove the ums" -> {"steps": [{"tool": "update_clip", "args": {"id": "b2", "set": {"anim": {"loop": "kbin"}}}, "say": "Slow zoom in on clip 2"}, '
+            '{"tool": "remove_fillers", "args": {}, "say": "Cut the filler words"}], "cant": ""}\n'
+            '"turn her into a cartoon" -> {"steps": [], "cant": "Cutroom has no tool that restyles a person as a cartoon"}\n'
+            'Tools:\n' + '\n'.join(lines))
+
+
+def pilot_context(c):
+    p, out = c.get('project') or {}, []
+    out.append(f"Project: {p.get('ratio', '?')} canvas {p.get('w')}x{p.get('h')}, {p.get('fps')} fps, {p.get('duration')} s long, playhead at {p.get('playhead')} s")
+    out.append('Main track (plays in this order):' if c.get('main') else 'Main track: empty')
+    for i, m in enumerate(c.get('main') or []):
+        out.append(f"  #{i + 1} id={m['id']} \"{m.get('name', '')}\" {m.get('kind', '')}{' with speech/sound' if m.get('sound') else ''}, {m.get('start')}-{m.get('end')} s"
+                   + (f", speed {m['speed']}" if m.get('speed', 1) != 1 else ''))
+    if c.get('cuts'):
+        out.append('Cuts between main clips at: ' + ', '.join(f'{t} s' for t in c['cuts']))
+    for k, v in (c.get('tracks') or {}).items():
+        out.append(f'{k}: ' + ('; '.join(f"id={x['id']} {x.get('label', '')} {x.get('start')}-{x.get('end')} s" for x in v[:20]) if v else 'empty'))
+    out.append(f"captions: {c.get('captions') or 0} on the captions track")
+    out.append(f"Selected clip: {c.get('selected') or 'none'}")
+    for k, v in (c.get('options') or {}).items():
+        out.append(f'{k} (name in the app -> value to use): ' + ', '.join(f'{lab} -> {x}' for x, lab in v.items()) if isinstance(v, dict) else f'{k}: ' + ', '.join(map(str, v)))
+    return '\n'.join(out)
+
+
+def pilot_check(ans, c, text=""):
+    """The model's plan -> steps the editor can run (arguments checked against the MCP schemas, option names made exact,
+    'each' expanded, clip numbers turned into ids) and what it can't do, in words. Nothing is guessed: a bad step becomes a 'can't'."""
+    tools, main, opts = mcp_tools(), c.get('main') or [], c.get('options') or {}
+    ids = {x['id'] for x in main} | set(c.get('ids') or [])
+    cant, out = [str(ans.get('cant') or '').strip()] if isinstance(ans, dict) else [], []
+    norm = lambda s: re.sub(r'[\s_\-]+', '', str(s).lower())
+
+    def canon(en, v, k):  # en: names, or {name: label} (a transition called by its label: Dissolve = fade)
+        names = {**{norm(re.sub(r'\s*\(.*', '', str(lab))): x for x, lab in en.items()}, **{norm(x): x for x in en}} if isinstance(en, dict) else {norm(x): x for x in en}
+        hit = names.get(norm(v))
+        if hit is None:
+            raise ValueError(f'{k} "{v}" is not one of {", ".join(map(str, list(en)[:40]))}')
+        return hit
+
+    def ref(v):  # a clip id, or #3 / 3 / clip 3 = the third main clip
+        v = str(v).strip()
+        if v in ids:
+            return v
+        n = re.fullmatch(r'(?:#|clip\s*|main\s*)?(\d+)', v, re.I)
+        if n and 1 <= int(n[1]) <= len(main):
+            return main[int(n[1]) - 1]['id']
+        raise ValueError(f'there is no clip {v}')
+
+    def coerce(p, v, k):
+        t = p.get('type')
+        if t in ('number', 'integer'):
+            x = float(v) if not isinstance(v, bool) else None
+            if x is None or not math.isfinite(x):
+                raise ValueError(f'{k} must be a number')
+            return int(round(x)) if t == 'integer' else x
+        if t == 'boolean':
+            return v if isinstance(v, bool) else str(v).lower() in ('true', '1', 'yes')
+        if t == 'string':
+            return str(v)
+        if (t == 'object' and not isinstance(v, dict)) or (t == 'array' and not isinstance(v, list)):
+            raise ValueError(f'{k} must be {"an object" if t == "object" else "a list"}')
+        return v
+
+    for st in (ans.get('steps') if isinstance(ans, dict) else None) or []:
+        if not isinstance(st, dict):
+            continue
+        name, say = str(st.get('tool') or ''), str(st.get('say') or '').strip()[:80]
+        if name in ('', 'say', 'none'):  # a note, not a step
+            continue
+        try:
+            if name not in tools:
+                raise ValueError(f'there is no tool "{name}" for that')
+            _, s, cmd = tools[name]
+            props = s['properties']
+            raw = dict(st.get('args')) if isinstance(st.get('args'), dict) else {}
+            if 'set' in props and not isinstance(raw.get('set'), dict) and (loose := {k: v for k, v in raw.items() if k not in props}):
+                raw = {**{k: v for k, v in raw.items() if k in props}, 'set': loose}  # update_clip {id, speed: 2} = {id, set: {speed: 2}}
+            raw.pop('show', None)  # an export never opens the Mac's player unasked
+            args = {}
+            for k, v in raw.items():
+                if k not in props or v is None:
+                    continue
+                v = coerce(props[k], v, k)
+                en = props[k].get('enum') or opts.get(PILOT_ENUM.get((name, k)) or '')
+                args[k] = canon(en, v, k) if en and isinstance(v, str) else v
+            vs = (c.get('voices') or {}).get({'voiceover': 'mac', 'ai_voiceover': 'ai'}.get(name, ''))
+            if 'voice' in args and isinstance(vs, list) and args['voice'] not in vs:
+                del args['voice']  # a voice of the other engine (Kokoro's af_heart for the Mac's say): the default voice instead
+            if name == 'voiceover' and args.get('rate', 185) < 80:
+                del args['rate']  # words a minute, not a multiplier
+            for k in ('id', 'after', 'ref'):
+                if k in args:
+                    args[k] = ref(args[k])
+            if 'ids' in args:
+                args['ids'] = [ref(x) for x in args['ids']]
+            if name in ('set_project', 'update_clip') and isinstance(args.get('set'), dict):  # the option names inside set {...}
+                sv = args['set']
+                if 'ratio' in sv and opts.get('ratios'):
+                    sv['ratio'] = canon(opts['ratios'], sv['ratio'], 'ratio')
+                if isinstance(sv.get('look'), dict) and sv['look'].get('name') and opts.get('looks'):
+                    sv['look']['name'] = canon(opts['looks'], sv['look']['name'], 'look')
+                for ak, ok in (('in', 'clipAnimIn'), ('out', 'clipAnimIn'), ('loop', 'clipLoops')):
+                    if isinstance(sv.get('anim'), dict) and isinstance(sv['anim'].get(ak), str) and opts.get(ok):
+                        sv['anim'][ak] = canon(opts[ok], sv['anim'][ak], f'anim {ak}')
+                if 'mute' in sv:  # there is no mute setting: muted = volume 0
+                    sv['volume'] = 0 if sv.pop('mute') else 1
+            each = str(st.get('each') or '').lower()
+            reps, each = [args], 'cut' if 'cut' in each else 'clip' if 'clip' in each or each in ('all', 'every', 'each') else None
+            if 'id' in s['required'] and 'id' not in args and not each:  # no clip named: every clip when the user said so, else the selected one
+                if re.search(r'\b(every|all|each)\b', text, re.I):
+                    each = 'clip'
+                elif c.get('selected') in ids:
+                    args['id'] = c['selected']
+            key = next((k for k in ('at', 'start', 'after') if k in props), None)
+            if each == 'cut' and key:  # a tool without a time or clip (remove_pauses) runs once: 'each' is ignored
+                if not (cuts := c.get('cuts') or []):
+                    raise ValueError('there are no cuts (one clip on the main track)')
+                reps = [{**args, key: main[i]['id'] if key == 'after' else round(t, 3)} for i, t in enumerate(cuts)]
+            elif each == 'clip' and 'id' in props:
+                reps = [{**args, 'id': x['id']} for x in main if x.get('kind') in ('video', 'image')]
+            for a in reps:
+                if miss := [k for k in s['required'] if k not in a]:
+                    raise ValueError(f'{name} needs {", ".join(miss)}')
+                out.append({'tool': name, 'cmd': cmd, 'args': a, 'say': say or name.replace('_', ' ')})
+        except (ValueError, TypeError) as e:
+            cant.append(f"{say or name.replace('_', ' ')}: {e}")
+    return out, [x for x in cant if x]
+
+
+def pilot_plan(text, ctx):
+    text = ' '.join(str(text).split())[:600]
+    if not text:
+        raise ValueError('say what to do')
+    t0 = time.time()
+    ans = llm(pilot_system(), pilot_context(ctx if isinstance(ctx, dict) else {}) + f'\n\nInstruction: {text}', ctx=16384)
+    steps, cant = pilot_check(ans, ctx if isinstance(ctx, dict) else {}, text)
+    return {'steps': steps, 'cant': cant, 'secs': round(time.time() - t0, 1)}
+
+
+# ---------- smart search: what is in each library item (the local vision model), what is said in it (whisper), and how many people ----------
+EMBED = 'nomic-embed-text:v1.5'  # Apache-2.0, 137M parameters, 274 MB in Ollama (ai/setup.sh pulls it)
+INDEX_V = 1
+STOP = set('a an the of in on at to and or with for from by is are was were be it its this that there here some any me my show find clip clips video videos where when who what scene shot footage'.split())
+
+
+def embed(texts, query=False):
+    """Text -> unit vectors (nomic-embed-text in Ollama, ~20 ms per query once loaded); None when it is not installed."""
+    if not texts or not ollama_up():
+        return None
+    body = {'model': EMBED, 'input': [('search_query: ' if query else 'search_document: ') + t[:2000] for t in texts], 'keep_alive': '10m'}
+    try:
+        r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/embed', data=json.dumps(body).encode(),
+                                                                     headers={'Content-Type': 'application/json'}), timeout=300).read())
+    except (OSError, ValueError):
+        return None
+    return [[round(x / (math.sqrt(sum(y * y for y in v)) or 1), 5) for x in v] for v in r.get('embeddings') or []] or None
+
+
+def index_media(st, mid, span=(0.0, 1.0)):
+    """What a library item shows and says, for search (cached cache/<id>.index.json): every scene (long takes in parts of up
+    to 8 s, at most 48 parts) described by the local vision model with its people and faces, and its speech in sentences."""
+    m, cache = meta(mid), CACHE / f'{mid}.index.json'
+    if cache.exists() and (d := json.loads(cache.read_text())).get('v') == INDEX_V and (d['vision'] or not ai_status()['llm']):
+        return d
+    parts, vision, look = [], True, m['kind'] in ('video', 'image')
+    if m['kind'] == 'video':
+        dur = m['duration']
+        cuts, step = [0.0, *[x for x in scenes(mid) if 0.3 < x < dur - 0.3], dur], max(8.0, dur / 48)
+        for a, b in zip(cuts, cuts[1:]):
+            k = max(1, math.ceil((b - a) / step))
+            parts += [{'a': round(a + (b - a) * i / k, 3), 'b': round(a + (b - a) * (i + 1) / k, 3)} for i in range(k)]
+        src = str(MEDIA / m['file'])
+        if heavy(m) and (px := CACHE / f'{mid}.proxy.mp4').exists():
+            src = str(px)
+        dec, vf = hdr_decode(m) if src == str(MEDIA / m['file']) else ([], '')
+    elif m['kind'] == 'image':
+        parts, src, dec, vf = [{'a': 0, 'b': 0}], str(MEDIA / m['file']), [], ''
+    for n, p in enumerate(parts):
+        p['t'] = round((p['a'] + p['b']) / 2, 3)
+        if look and vision:
+            try:
+                jpg = subprocess.run(['ffmpeg', '-v', 'error', *dec, *(['-ss', f"{p['t']:.3f}"] if m['kind'] == 'video' else []), '-i', src, '-frames:v', '1',
+                                      '-vf', f'{vf}scale=448:-2', '-q:v', '4', '-f', 'image2pipe', '-c:v', 'mjpeg', '-'], capture_output=True).stdout
+                d = llm('You describe video frames for a search index. Reply with JSON only.',
+                        'Describe this frame. Return {"desc": "one sentence", "things": ["every clear object, person and animal, with its colour, e.g. red car"], '
+                        '"people": number of people, "faces": number of faces you can see, "setting": "indoor|outdoor", "light": "day|night|dark|bright", '
+                        '"tags": ["5-10 words: place, action, mood, weather"]}', ctx=4096, images=[base64.b64encode(jpg).decode()])
+                p.update(desc=str(d.get('desc', ''))[:200], things=[str(x)[:40] for x in (d.get('things') or [])][:12] if isinstance(d.get('things'), list) else [],
+                         people=int(fnum(d.get('people') or 0, 0, 999)), faces=int(fnum(d.get('faces') or 0, 0, 999)),
+                         setting=str(d.get('setting', ''))[:20], light=str(d.get('light', ''))[:20], tags=[str(x)[:30] for x in (d.get('tags') or [])][:12] if isinstance(d.get('tags'), list) else [])
+            except (RuntimeError, OSError, ValueError, AttributeError):
+                vision = False  # no vision model: the index keeps the speech and is redone when the model is there
+        st['progress'] = span[0] + (span[1] - span[0]) * 0.8 * (n + 1) / len(parts)
+    speech = []
+    if m.get('hasAudio') and m['kind'] in ('video', 'audio') and m['duration'] >= 2 and not m.get('sfx'):
+        try:
+            speech = sentences(transcribe(mid, 'auto'))
+        except (RuntimeError, OSError, ValueError):
+            speech = []
+    texts = [ptext(p) for p in parts] + [s['text'] for s in speech]
+    vec = embed(texts) or []
+    for x, v in zip(parts + speech, vec):
+        x['v'] = v
+    d = {'v': INDEX_V, 'vision': vision, 'kind': m['kind'], 'parts': parts if vision else [], 'speech': speech}
+    cache.write_text(json.dumps(d))
+    st['progress'] = span[1]
+    return d
+
+
+def ptext(p):
+    return '. '.join(x for x in (p.get('desc', ''), ', '.join(p.get('things') or []), f"{p.get('setting', '')} {p.get('light', '')}".strip(),
+                                 ', '.join(p.get('tags') or []), {0: 'no people'}.get(p.get('people'), f"{p.get('people')} people")) if x)
+
+
+def index_many(st, mids):
+    done, errs = 0, []  # no ids: every item not indexed yet
+    mids = [x for x in dict.fromkeys(map(str, mids or [f.stem for f in MEDIA.glob('*.json') if not (CACHE / f'{f.stem}.index.json').exists()]))
+            if (MEDIA / f'{x}.json').exists()][:500]
+    for i, mid in enumerate(mids):
+        try:
+            index_media(st, mid, (i / len(mids), (i + 1) / len(mids)))
+            done += 1
+        except (RuntimeError, OSError, ValueError, KeyError) as e:
+            errs.append(f"{meta(mid).get('name', mid)}: {e}")
+    return {'indexed': done, 'errors': errs[:20]}
+
+
+WORD_NUM = {'no': 0, 'zero': 0, 'nobody': 0, 'one': 1, 'a': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6}
+
+
+def stem(w):
+    return re.sub(r'(ies|es|s|ing|ed)$', '', w) if len(w) > 4 else w
+
+
+def search(q, mids=None):
+    """Library items by what is in them (picture), what is said (speech) and how many people: one best moment per item,
+    best first. Scores: embedding similarity + shared words + the people count asked for."""
+    q = ' '.join(str(q).split())[:200]
+    ql = q.lower()
+    words = [stem(w) for w in re.findall(r"[\w']+", ql) if w not in STOP]
+    want = None  # how many people the query asks for: (low, high)
+    if n := re.search(r"\b(no|zero|one|a|two|three|four|five|six|\d+)\s+(?:people|persons?|men|women|guys|kids|faces?|man|woman|person)\b", ql):
+        k = WORD_NUM.get(n[1], int(n[1]) if n[1].isdigit() else 1)
+        want = (k, k)
+    elif re.search(r'\b(nobody|empty|no one|without people)\b', ql):
+        want = (0, 0)
+    elif re.search(r'\b(people|crowd|group|friends|family|couple)\b', ql):
+        want = (2, 999)
+    elif re.search(r'\b(person|someone|man|woman|guy|girl|boy|face|selfie|portrait)\b', ql):
+        want = (1, 999)
+    talk = bool(re.search(r'\b(talk|talking|speak|speaking|says?|said|saying|interview|conversation|podcast|chat)', ql))
+    qv = (embed([q], query=True) or [None])[0]
+    cos = lambda v: sum(a * b for a, b in zip(qv, v)) if qv and v else 0.0
+    have = lambda text: sum(1 for w in words if w and w in {stem(x) for x in re.findall(r"[\w']+", text.lower())}) / max(1, len(words))
+    out, unindexed = [], 0
+    for f in MEDIA.glob('*.json'):
+        mid = f.stem
+        if mids and mid not in mids:
+            continue
+        try:
+            m = json.loads(f.read_text())
+        except ValueError:
+            continue
+        if not m.get('file') or not (MEDIA / m['file']).exists():
+            continue
+        cache = CACHE / f'{mid}.index.json'
+        if not cache.exists():
+            unindexed += 1
+            continue
+        d = json.loads(cache.read_text())
+        best = None
+        for p in d.get('parts') or []:
+            s = cos(p.get('v')) + 0.3 * have(ptext(p))
+            if want:
+                s += 0.15 if want[0] <= max(p.get('people', 0), p.get('faces', 0)) <= want[1] else -0.15
+            if talk and any(x['s'] < p['b'] and x['e'] > p['a'] for x in d.get('speech') or []):
+                s += 0.12
+            if not best or s > best['score']:
+                best = {'score': s, 't': p['t'], 'a': p['a'], 'b': p['b'], 'why': 'picture', 'text': p.get('desc', '')}
+        for x in d.get('speech') or []:
+            s = 0.85 * cos(x.get('v')) + 0.35 * have(x['text']) + (0.5 if len(ql) > 3 and ql in x['text'].lower() else 0)
+            if talk:
+                s += 0.05
+            if not best or s > best['score']:
+                best = {'score': s, 't': x['s'], 'a': x['s'], 'b': x['e'], 'why': 'speech', 'text': x['text']}
+        if best:
+            if words and have(m.get('name', '')) == 1:
+                best['score'] += 0.2
+            out.append({'media': mid, 'name': m.get('name'), 'kind': m.get('kind'), **best, 'score': round(best['score'], 3)})
+    out.sort(key=lambda r: -r['score'])
+    top = out[0]['score'] if out else 0
+    return {'results': [r for r in out if r['score'] >= max(0.45, top - 0.25)][:30], 'unindexed': unindexed, 'semantic': qv is not None}
+
+
 # ---------- render engine: validated plan -> one ffmpeg filtergraph ----------
 
 def fnum(v, lo, hi):
@@ -3591,6 +3923,12 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(translate, body.get('texts') or [], body.get('to', ''))})
             if u.path == '/api/ai/hooks':
                 return self.reply({'job': run_job(hooks, body.get('ranges') or [], body.get('lang', 'auto'))})
+            if u.path == '/api/plan':  # the command bar: an instruction + the project in brief -> checked steps
+                return self.reply(pilot_plan(body.get('text', ''), body.get('ctx') or {}))
+            if u.path == '/api/index':  # smart search: describe these library items (job; cached per item)
+                return self.reply({'job': run_job(index_many, body.get('media') or [])})
+            if u.path == '/api/search':
+                return self.reply(search(body.get('q', ''), set(map(str, body['media'])) if body.get('media') else None))
             if u.path == '/api/transcript':  # timestamped sentences (the MCP transcript tool)
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
