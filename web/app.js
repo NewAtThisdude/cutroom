@@ -774,7 +774,7 @@ function mediaPanel(c, lane) {
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   if (c.compound) acts.unshift('<button data-act="breakcompound" title="Put back the clips it was made of">Break apart</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
     <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
@@ -2973,6 +2973,17 @@ async function remake(c, kind) { // reverse / stabilize render a new library ite
     toast(kind === 'reverse' ? 'Reversed' : 'Stabilized');
   } catch (e) { setStatus(e.message); throw e; }
 }
+async function denoiseVideo(c, strength = 'light') { // night grain: the clip switches to a cleaned copy of its range
+  try {
+    const m = M.get(c.media), fps = m?.fps || P.fps, pid = P.id, was = c.media, t0 = Math.floor(c.in * fps + 1e-6) / fps; // from the frame the preview shows at the in point
+    const j = await job('/api/denoise', { media: c.media, t0, t1: c.out, strength }, strength === 'strong' ? 'Reducing the noise (strong)' : 'Reducing the noise');
+    await loadMedia();
+    c = live(c, pid, was);
+    const d = M.get(j.media)?.duration ?? Infinity;
+    change(() => { c.in = clamp(c.in - t0, 0, d); c.out = clamp(c.out - t0, c.in + 1 / P.fps, d); c.media = j.media; });
+    toast('Noise reduced: the clip plays the cleaned copy (undo goes back)');
+  } catch (e) { setStatus(e.message); throw e; }
+}
 async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
   const m = M.get(c.media);
   try {
@@ -4134,6 +4145,7 @@ function wire() {
     else if (d.act === 'detach') detachAudio(c);
     else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
     else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
+    else if (d.act === 'denoise') quiet(denoiseVideo(c, $('#dnStrength')?.value));
     else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
     else if (d.act === 'reframe') quiet(autoReframe(c));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
