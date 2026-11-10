@@ -1751,7 +1751,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
-           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'library': bool(p.get('library')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -1795,6 +1795,9 @@ def clean_plan(p):
         k['blend'] = c.get('blend') if c.get('blend') in BLENDS else None
         k['trans'] = bool(m.get('trans'))
         k['untagged_hd'] = m['kind'] == 'video' and m.get('cs') in ('', 'unknown') and max(m.get('w', 0), m.get('h', 0)) >= 720 and not m.get('hdr')
+        # decodes as BT.709 frames tagged so. Not HDR: scale_vt converts to 709 but leaves the frames tagged bt2020nc, which the
+        # RGB path (and the preview's relabelled copy) read as such; the 4:2:0 path takes that same route for them
+        k['bt709'] = m['kind'] == 'video' and (m.get('cs') == 'bt709' or k['untagged_hd']) and not k['hdr']
         k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 10), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
             k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
@@ -2046,10 +2049,21 @@ def adjust(c):
     return f',format=rgb24,lutrgb=r={lut}:g={lut}:b={lut},colorchannelmixer={mix}'
 
 
+def yuv_ok(p):
+    """Nothing in the plan needs RGB: plain cuts, dissolves and fades on the main track only, into a 4:2:0 file. Those stay
+    in yuv420p from decode to encode, no base-frame overlay (1 min of 1080p60 from 4K: 245 -> 170 CPU-s, 46 dB vs the RGB path).
+    p['rgb'] (selftest only) forces the RGB path."""
+    return bool(p['main']) and not (p.get('rgb') or p['overlay'] or p['frames'] or p.get('fx')) and p.get('format', 'mp4') in ('mp4', 'hevc') and all(
+        c['fit'] != 'blur' and c['opacity'] >= 1 and c.get('tr') in (None, 'fade') and not adjust(c) and not rotation(c)
+        and not any(c.get(k) for k in ('kf', 'alpha', 'trans', 'key', 'mask', 'mask_seq', 'vig', 'look', 'tone', 'grade', 'lkf', 'beauty', 'blur'))
+        for c in p['main'])
+
+
 def graph(p, td):
     """Return (input args, filtergraph). Layer order matches the preview: bg, main, overlays, text."""
     W, H, F, D, BG = p['w'], p['h'], p['fps'], p['duration'], p['bg'].replace('#', '0x')
     ins, fg, mix = [], [], []
+    yuv = yuv_ok(p)
 
     def inp(c, dur):  # (see ss() for where a video input starts)
         if c['kind'] == 'image':
@@ -2059,7 +2073,8 @@ def graph(p, td):
             # frames (a 4K60 input: 478 MB -> 137 MB, same speed). 4K on a smaller Mac decodes there too; the cores filter.
             dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'] if c.get('hdr')
                    else ['-c:v', 'libvpx-vp9'] if c.get('alpha')  # native vp9 decoder drops the alpha plane
-                   else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c.get('heavy') and not BIG_MAC else [])
+                   else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c['kind'] == 'video' and (c.get('heavy') and not BIG_MAC or p.get('light'))  # Light export: the media engine decodes, the cores stay free
+                   else [])
             ins.append([*dec, '-ss', f"{ss(c):.6f}", '-t', f"{c['out'] - ss(c):.6f}", '-i', c['path']])
         return len(ins) - 1
 
@@ -2257,7 +2272,10 @@ def graph(p, td):
             v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}"
         if c['fadeOut']:
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}"
-        fg.append(v + f',format=gbrp,setsar=1,settb=AVTB[v{k}]')  # RGB like the canvas; xfade needs identical timebases on both inputs
+        # RGB like the canvas; xfade needs identical timebases on both inputs. The 4:2:0 path passes BT.709 video through as
+        # is; anything else (SD BT.601, pictures) goes through RGB as on the RGB path: swscale's direct 601->709 was 2 levels off
+        fg.append(v + (('' if c.get('bt709') else ',format=gbrp') + ',scale=out_color_matrix=bt709:out_range=tv,format=yuv420p' if yuv else ',format=gbrp')
+                  + f',setsar=1,settb=AVTB[v{k}]')
         fg.append(snd)
     if p['main']:  # cuts concatenate; transitions overlap the two clips (xfade + acrossfade), like CapCut
         cv, ca, n = 'v0', 'a0', p['main'][0]['frames']
@@ -2278,9 +2296,12 @@ def graph(p, td):
         fg.append(f'[{ca}]anull[am]')
         mix.append('[am]')
 
-    if not ao:
+    if not ao and not yuv:
         fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format=gbrp[L0]')
     cur = ['L0']
+    if yuv:  # no base frame to lay the main track on: past its end (sound runs on) the background is padded on
+        fg.append(f'[vm]tpad=stop_duration={D - n / F:.6f}:color={BG}[vp]' if D * F > n + 0.5 else '[vm]null[vp]')
+        cur[0] = 'vp'
 
     def over(src, x=0, y=0):
         nxt = f'L{len(fg)}'
@@ -2294,7 +2315,7 @@ def graph(p, td):
         cur[0] = f'{t}k'
         over(f'{t}l')
 
-    if p['main'] and not ao:
+    if p['main'] and not ao and not yuv:
         over('vm')
     for k, c in enumerate(p['overlay']):
         n = c['frames']
@@ -2558,7 +2579,7 @@ def export(job, p):
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
                              'frames': frames, 'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1},
                              'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']},
-                             'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
+                             'bt709': True, 'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
             lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
@@ -3104,9 +3125,9 @@ def selftest():
         with open(HOME / f, 'rb') as fh:
             return import_file(f, fh, (HOME / f).stat().st_size, background=False)
 
-    def render(plan, frames):
+    def render(plan, frames, **force):
         JOBS['t'] = {'state': 'running'}
-        export('t', clean_plan(plan))
+        export('t', {**clean_plan(plan), **force})
         assert JOBS['t']['state'] == 'done', JOBS['t']
         out = EXPORTS / JOBS['t']['file']
         got = int(json.loads(sh(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v', '-print_format', 'json', '-show_streams', str(out)]).stdout)['streams'][0]['nb_read_frames'])
@@ -3138,6 +3159,34 @@ def selftest():
         out = render({**tplan, 'name': tr, 'duration': 3, 'main': [still_clip(R, {'type': tr, 'frames': 30}), still_clip(B)]}, 90)
         assert pixel(out, 0.5, 135, 240)[0] > 180 and pixel(out, 2.5, 135, 240)[2] > 180, tr
     print(f'transitions ok: {len(XFADES) - 6} more types render from a to b')
+    # plain cuts stay 4:2:0 (yuv_ok): BT.709 and untagged HD video (passed through), untagged SD (BT.601), a letterboxed
+    # clip and an RGB picture, a dissolve, fades and a background past the main track give the RGB path's picture,
+    # BT.709-tagged; Light (VideoToolbox decode) the same again
+    gen('-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=1', '-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p', '-c:v', 'libx264',
+        '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', str(HOME / 'tagged709.mp4'))
+    gen('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=1', '-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p', '-c:v', 'libx264', str(HOME / 'untagged720.mp4'))
+    V7, U7 = imp('tagged709.mp4'), imp('untagged720.mp4')
+    yplan = {'w': W, 'h': H, 'fps': F, 'duration': 9, 'bg': '#204060', 'name': 'yuv', 'overlay': [],
+             'audio': [{'media': A['id'], 'start': 0, 'in': 0, 'out': 9, 'frames': 270}],
+             'main': [{'media': V7['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(V7)}, {'media': U7['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(U7)},
+                      {'media': L['id'], 'in': 1, 'out': 3, 'frames': 60, 'geom': geom(L), 'fadeIn': 0.3, 'tr': {'type': 'fade', 'frames': 15}},
+                      {'media': T['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(T, scale=0.8)},
+                      {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'fadeOut': 0.5}]}  # main ends at 7.5 s
+    yp = clean_plan(yplan)
+    assert [c['bt709'] for c in yp['main']] == [True, True, False, False, False], [c['bt709'] for c in yp['main']]
+    assert yuv_ok(yp) and not yuv_ok({**yp, 'rgb': True}) and not yuv_ok({**yp, 'main': [{**yp['main'][0], 'tr': 'wipeleft'}]}), 'plain cuts take the 4:2:0 path'
+    assert not yuv_ok({**yp, 'main': [{**yp['main'][0], 'adj': {'b': 1.1, 'c': 1, 's': 1}}]}) and not yuv_ok({**yp, 'format': 'prores'})
+    outs = {k: render({**yplan, 'name': f'yuv {k}'}, 270, **kw) for k, kw in (('rgb', {'rgb': True}), ('yuv', {}), ('light', {'light': True}))}
+    for k in ('yuv', 'light'):
+        ps = float(re.search(r'PSNR y:([\d.]+|inf)', sh(['ffmpeg', '-hide_banner', '-i', str(outs['rgb']), '-i', str(outs[k]), '-lavfi', 'psnr', '-f', 'null', '-']).stderr)[1])
+        tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_streams', '-of', 'json', str(outs[k])]).stdout)['streams'][0]
+        assert ps > 42 and (tags['pix_fmt'], tags['color_space'], tags['color_primaries'], tags['color_transfer']) == ('yuv420p', 'bt709', 'bt709', 'bt709'), (k, ps, tags)
+        for t, x, y in ((0.5, 135, 240), (0.5, 135, 20), (1.5, 135, 240), (3.0, 135, 240), (5.0, 135, 240), (5.0, 10, 240), (6.5, 135, 240), (8.5, 135, 240)):
+            # tagged 709, letterbox, untagged HD, untagged SD, tall, pillarbox, picture, past the end
+            a, b = pixel(outs['rgb'], t, x, y), pixel(outs[k], t, x, y)
+            assert max(abs(u - v) for u, v in zip(a, b)) <= 6, (k, t, x, y, a, b)
+        assert max(abs(u - v) for u, v in zip(pixel(outs[k], 8.5, 135, 240), (0x20, 0x40, 0x60))) <= 4, 'background past the main track'
+        print(f'4:2:0 path ok ({k}): luma {ps:.1f} dB vs the RGB path, BT.709 tags, background padded')
     # video effects: steps on exact frame ranges of the composite; per-frame values through sendcmd / expressions
     gen('-f', 'lavfi', '-i', 'color=red:s=320x320,drawbox=x=160:y=0:w=160:h=320:color=blue:t=fill', '-frames:v', '1', str(HOME / 'split.png'))
     SP = imp('split.png')  # filled onto 270x480: red | blue at x = 135

@@ -3447,13 +3447,14 @@ function openExport() {
     <label class="row"><span>Encoder</span><select id="exQ"><option value="fast">Fast (Apple hardware)</option><option value="best">Best quality (x264, slower)</option></select></label>
     <label class="row"><span>Bitrate</span><select id="exRate"><option value="1">Standard</option><option value="1.6">High</option><option value="2.5">Very high</option></select></label>
     <label class="row chk"><span>Loudness −14 LUFS</span><input id="exLoud" type="checkbox"></label>
+    <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <p class="muted" id="exHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = tc(total()), fps = +P.fps.toFixed(3);
-    $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f);
+    $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f); $('#exLight').disabled = ['mp3', 'wav', 'srt'].includes(f);
     $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
     $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
       prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
@@ -3486,7 +3487,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       return;
     }
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').checked, fmt);
-    plan.rate = +$('#exRate').value;
+    plan.rate = +$('#exRate').value; plan.light = $('#exLight').checked;
     const { job } = await api('/api/export', plan);
     S.exporting.job = job;
     for (;;) {
