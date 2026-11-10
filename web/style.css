@@ -80,6 +80,12 @@ h4 { margin: 13px 0 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .0
 .rail button:hover { color: var(--text); background: var(--raised); }
 .rail button.on { color: #fff; background: rgba(139, 92, 246, .18); }
 .rail button.on svg { color: var(--accent2); }
+/* short windows (a 13-inch MacBook): smaller tabs, then icons only (the title says the name), so all ten fit */
+@media (max-height: 880px) { .rail { gap: 1px; padding: 6px 4px; } .rail button { gap: 2px; padding: 4px 0 3px; font-size: 9.5px; } .rail button svg { width: 18px; height: 18px; } }
+@media (max-height: 780px) { .rail button { padding: 7px 0; } .rail button span { display: none; } }
+.rail.ft { -webkit-mask-image: linear-gradient(transparent, #000 22px); mask-image: linear-gradient(transparent, #000 22px); } /* more above / below */
+.rail.fb { -webkit-mask-image: linear-gradient(#000 calc(100% - 22px), transparent); mask-image: linear-gradient(#000 calc(100% - 22px), transparent); }
+.rail.ft.fb { -webkit-mask-image: linear-gradient(transparent, #000 22px, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(transparent, #000 22px, #000 calc(100% - 22px), transparent); }
 .panes { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .pane { display: none; padding: 12px; overflow: auto; flex: 1; min-height: 0; }
 .pane.on { display: block; }
@@ -267,7 +273,8 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .clip:hover .h, .clip.sel .h { background: rgba(255, 255, 255, .22); }
 .clip.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff, 0 0 0 4px rgba(139, 92, 246, .45); }
 .clip.sel .h { background: #fff; z-index: 4; } /* above the transition diamond and an overlapping neighbour: a drag on the edge trims it */
-.kfm { position: absolute; bottom: 3px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--accent2); border: 1px solid #10061f; pointer-events: none; }
+.kfm { position: absolute; bottom: 3px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--accent2); border: 1px solid #10061f; cursor: ew-resize; z-index: 2; } /* click: go to it; drag: move it */
+.dropline { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); border-radius: 1px; z-index: 5; pointer-events: none; transition: left .08s; } /* where a dragged main clip will land */
 .bm { position: absolute; top: 0; width: 1px; height: 7px; background: rgba(255, 255, 255, .75); pointer-events: none; }
 .mk { position: absolute; bottom: 0; width: 9px; height: 9px; margin-left: -4.5px; background: var(--ok); clip-path: polygon(50% 100%, 0 0, 100% 0); pointer-events: none; }
 .trh { position: absolute; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px; padding: 0; border-radius: 4px; transform: rotate(45deg); background: var(--panel2); border: 1px solid var(--line2); z-index: 3; }
