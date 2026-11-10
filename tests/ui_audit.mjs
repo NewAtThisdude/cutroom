@@ -84,7 +84,7 @@ for (const [btn, name] of [['#btnExport', 'export dialog'], ['#btnProjects', 'pr
   if (await page.$(btn)) { await page.click(btn); await page.waitForTimeout(500); await audit(name, '#modal'); await page.keyboard.press('Escape'); await page.waitForTimeout(200); }
 }
 if (errs.length) console.log('page errors:', errs.slice(0, 5));
-await fetch(`http://127.0.0.1:4610/api/projects/${pid}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+await fetch(`${process.env.B || "http://127.0.0.1:4610"}/api/projects/${pid}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 console.log(`\n${problems} problems, screenshots in ${OUT}`);
 await b.close();
 process.exit(Math.min(problems, 100));

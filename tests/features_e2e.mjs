@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
-const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${LIB}/exports`;
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${LIB}/exports`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();

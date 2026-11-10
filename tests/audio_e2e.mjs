@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
 import fs from 'node:fs';
-const B = 'http://127.0.0.1:4610', SR = 48000, N = 3 * SR, res = [];
+const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, N = 3 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 // test signal: 100 Hz + 1 kHz + 8 kHz tones (right channel at half level), a click at 1.0 s
 const L = new Float32Array(N), R = new Float32Array(N);

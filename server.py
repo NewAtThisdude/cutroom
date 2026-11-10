@@ -261,12 +261,17 @@ PREP_PCT = {}  # media id -> how far its preparation is (0-1; -1 = waiting), sho
 
 
 def proxy(m, src, out, sw=False):
-    cmd = proxy_cmd(m, src, out, sw)
+    # written aside and moved in when done: the player, strips and posters used the half-written file (a 4K clip showed
+    # black, 4-15 fps, for its whole 30-250 s build) where the original plays fine meanwhile
+    tmp = out.with_name(out.stem + '.tmp' + out.suffix)
+    cmd = proxy_cmd(m, src, tmp, sw)
     cmd[1:1] = ['-nostdin', '-progress', 'pipe:1', '-nostats']
     try:
         run_ffmpeg(['nice', '-n', '10', *cmd], max(m['duration'], 0.1), lambda f: PREP_PCT.__setitem__(m['id'], round(0.9 * f, 3)))
+        tmp.replace(out)
         return True
     except RuntimeError:
+        tmp.unlink(missing_ok=True)
         return False
 
 
@@ -285,8 +290,11 @@ def prepare_(m):
     src, mid, d = str(MEDIA / m['file']), m['id'], max(m['duration'], 0.1)
     if m['kind'] == 'video':
         if m.get('trans') and not m.get('alpha'):  # e.g. GIF: preview proxy keeps transparency (VP9 alpha WebM)
+            tmp = CACHE / f'{mid}.proxy.tmp.webm'
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)',format=yuva420p", '-c:v', 'libvpx-vp9', '-b:v', '0',
-                                 '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(CACHE / f'{mid}.proxy.webm')], low=True).returncode
+                                 '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(tmp)], low=True).returncode
+            if m['proxy']:
+                tmp.replace(CACHE / f'{mid}.proxy.webm')
         elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m):  # e.g. ProRes, MKV, 4K60
             out = CACHE / f'{mid}.proxy.mp4'
             m['proxy'] = proxy(m, src, out) or proxy(m, src, out, sw=True)
@@ -330,7 +338,7 @@ def transcribe(mid, lang='auto'):
         dtw = ['-nfa', '-dtw', preset[1].replace('-', '.') + (preset[2] or '')] if preset else []  # DTW needs flash-attn off
         r = sh([WHISPER, '-m', MODEL, '-f', str(wav), '-l', lang, '-ojf', '-of', str(base), '-np', *dtw])
         if r.returncode:
-            raise RuntimeError('whisper failed: ' + r.stderr[-300:])
+            raise RuntimeError(plain('Transcribing', r.stderr, r.returncode))
         # surrogateescape: non-Latin characters can be split across tokens; bytes are rejoined per word below
         segs = json.loads(base.with_suffix('.json').read_text(encoding='utf-8', errors='surrogateescape'))['transcription']
         speech = None  # Silero VAD runs separately: whisper's own --vad reports DTW times on the silence-stripped timeline
@@ -395,7 +403,7 @@ def tts(text, voice, rate):
         script.write_text(text)
         r = sh(['say', '-v', voice, '-r', str(int(fnum(rate, 90, 400))), '-o', str(out), '-f', str(script)])
         if r.returncode or not out.exists():
-            raise RuntimeError('say failed: ' + r.stderr[-200:])
+            raise RuntimeError(plain('Speaking', r.stderr, r.returncode))
         with open(out, 'rb') as fh:
             return import_file(f"Voiceover - {' '.join(text.split()[:5])}.aiff", fh, out.stat().st_size)
 
@@ -473,7 +481,7 @@ def build_tool(name):
     if not exe.exists() or exe.stat().st_mtime < src.stat().st_mtime:
         r = sh(['swiftc', '-O', str(src), '-o', str(exe)])
         if r.returncode:
-            raise RuntimeError(f'could not build {name}: ' + r.stderr[-300:])
+            raise RuntimeError(plain(f'Building the {name} tool', r.stderr, r.returncode))
     return str(exe)
 
 
@@ -687,7 +695,7 @@ def matte(st, mid, t0=None, t1=None):
             r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', '-c:v', 'h264_videotoolbox', '-q:v', '80',
                     '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', str(rng)])
             if r.returncode:
-                raise RuntimeError('cutting the range failed: ' + r.stderr[-300:])
+                raise RuntimeError(plain('Cutting the range', r.stderr, r.returncode))
             src = rng
         proc = subprocess.Popen([build_tool('matte'), str(src), str(pro), 'balanced'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for line in proc.stdout:
@@ -704,7 +712,7 @@ def matte(st, mid, t0=None, t1=None):
                 '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
                 '-c:a', 'libopus', '-b:a', '128k', str(out)])
         if r.returncode:
-            raise RuntimeError('encoding the cutout failed: ' + r.stderr[-300:])
+            raise RuntimeError(plain('Encoding the cutout', r.stderr, r.returncode))
         with open(out, 'rb') as fh:
             cut = import_file(f"{Path(m['name']).stem} (cutout).webm", fh, out.stat().st_size, background=False)
     return {'media': cut['id']}
@@ -724,7 +732,7 @@ def reverse(st, mid):
                     *(['-vf', 'reverse', '-c:v', 'h264_videotoolbox', '-q:v', '70'] if video else ['-vn']),
                     *(['-af', 'areverse', '-c:a', 'pcm_s16le'] if m['hasAudio'] else ['-an']), str(f)])
             if r.returncode:
-                raise RuntimeError('reverse failed: ' + r.stderr[-300:])
+                raise RuntimeError(plain('Reversing', r.stderr, r.returncode))
             parts.append(f)
             st['progress'] = 0.9 * (i + 1) / n
         (Path(td) / 'list.txt').write_text(''.join(f"file '{f}'\n" for f in reversed(parts)))
@@ -732,7 +740,7 @@ def reverse(st, mid):
         r = sh(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(Path(td) / 'list.txt'), *(['-c:v', 'copy'] if video else []),
                 *(['-c:a', 'aac', '-b:a', '192k'] if m['hasAudio'] else []), '-movflags', '+faststart', str(out)])
         if r.returncode:
-            raise RuntimeError('joining the reversed pieces failed: ' + r.stderr[-300:])
+            raise RuntimeError(plain('Joining the reversed pieces', r.stderr, r.returncode))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (reversed){out.suffix}", fh, out.stat().st_size, background=False)
     return {'media': new['id']}
@@ -1246,7 +1254,7 @@ def lift(mid):
         if r.returncode == 2:
             raise ValueError('no subject found in this image')
         if r.returncode or not out.exists():
-            raise RuntimeError('subject lifting failed: ' + r.stderr[-200:])
+            raise RuntimeError(plain('Lifting the subject', r.stderr, r.returncode))
         with open(out, 'rb') as fh:
             c = import_file(f"{Path(m['name']).stem} (cutout).png", fh, out.stat().st_size, background=False)
     return {'media': c['id']}
@@ -1650,6 +1658,9 @@ def clean_plan(p):
              'adj': {a: fnum((c.get('adj') or {}).get(a, 1), 0, 4) for a in 'bcs'}}
         if m['kind'] != 'image' and not 0 <= k['in'] < k['out']:
             raise ValueError('empty clip')
+        k['sfps'] = fnum(m.get('fps') or 0, 0, 1000)  # the source's frame rate: its frame grid (see ss())
+        if not Path(k['path']).is_file():  # said up front by name, not as ffmpeg's error halfway through the render
+            raise ValueError(f"{m.get('name') or 'A clip'} has lost its file (moved or deleted): relink it from the clip's panel")
         tr = c.get('tr') or {}
         k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
@@ -1934,7 +1945,7 @@ def graph(p, td):
     W, H, F, D, BG = p['w'], p['h'], p['fps'], p['duration'], p['bg'].replace('#', '0x')
     ins, fg, mix = [], [], []
 
-    def inp(c, dur):
+    def inp(c, dur):  # (see ss() for where a video input starts)
         if c['kind'] == 'image':
             ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', c['path']])
         else:  # input seek: each clip decodes only its own range
@@ -1943,8 +1954,13 @@ def graph(p, td):
             dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'] if c.get('hdr')
                    else ['-c:v', 'libvpx-vp9'] if c.get('alpha')  # native vp9 decoder drops the alpha plane
                    else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c.get('heavy') and not BIG_MAC else [])
-            ins.append([*dec, '-ss', f"{c['in']:.6f}", '-t', f"{c['out'] - c['in']:.6f}", '-i', c['path']])
+            ins.append([*dec, '-ss', f"{ss(c):.6f}", '-t', f"{c['out'] - ss(c):.6f}", '-i', c['path']])
         return len(ins) - 1
+
+    def ss(c):  # an in point between two source frames starts on the earlier one, the frame the preview shows there (from
+        # the in point itself, ffmpeg began one frame later: 14 of 15 cuts in a real edit); the sound still starts at the in point
+        f = c.get('sfps') or 0
+        return math.floor(c['in'] * f + 1e-6) / f if f and c['kind'] != 'image' else c['in']
 
     def video(i, c, n):  # tone-mapped, retimed, exactly n frames, cropped, flipped, adjusted, graded
         sp = 1 if c['kind'] == 'image' else c['speed']
@@ -1956,7 +1972,14 @@ def graph(p, td):
         if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709; rotation applied by hand since autorotate can't touch hw frames
             v += 'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
-        v += f"setpts=(PTS-STARTPTS)/{sp:.6f},fps={F:g},tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n}"
+        # round=up: each output frame shows the last source frame at or before its time, as the preview's <video> does
+        # (nearest put 59.94 fps footage in a 60 fps project one frame early for half of every 16.7 s)
+        # timed from the in point itself (decoding began on the frame before it, see ss()): that frame sits just before 0,
+        # and slot 0 shows it, as the preview does at the clip's start (also in slow motion, where timing from the earlier
+        # frame would show the next source frame a step early)
+        lead = c['in'] - ss(c)
+        pts = f'(PTS-STARTPTS-{lead:.6f}/TB)/{sp:.6f}' if lead > 1e-6 else f'(PTS-STARTPTS)/{sp:.6f}'
+        v += f"setpts={pts},fps={F:g}:round=up" + (',trim=start=0,setpts=PTS-STARTPTS' if lead > 1e-6 else '') + f",tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n}"
         cr = c.get('crop') or {}
         if any(cr.values()):
             v += (f",crop=w='trunc(iw*{1 - cr['l'] - cr['r']:.5f}/2)*2':h='trunc(ih*{1 - cr['t'] - cr['b']:.5f}/2)*2'"
@@ -1979,16 +2002,25 @@ def graph(p, td):
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         return v
 
-    def audio(i, c, dur, delay=0.0):
+    def audio(i, c, dur, delay=0.0, joins=(False, False)):
         live = c['hasAudio'] and c['kind'] != 'image' and (c['volume'] > 0 or c.get('vkf'))
-        vol = f"volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"  # envelope: ducking, fades
+        # envelope (ducking, volume points) evaluated every 64 samples: per 1024-sample frame it was a staircase of 4 dB steps
+        vol = f"asetnsamples=n=64:p=0,volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"
         tempo = f"aresample=48000,asetrate={48000 * c['speed']:.3f},aresample=48000" if c.get('pitch') and c['speed'] != 1 else atempo(c['speed'])
-        a = f"[{i}:a]asetpts=PTS-STARTPTS,{tempo}" + (',afftdn=nr=15:nf=-40:tn=1' if c.get('denoise') else '') + afx(c.get('au'), next(AFX_N)) + f',{vol}' if live else 'anullsrc=r=48000:cl=stereo'
+        lead = c['in'] - ss(c)
+        a = f"[{i}:a]" + (f'atrim=start={lead:.6f},' if lead > 1e-6 else '') + f"asetpts=PTS-STARTPTS,{tempo}" + (',afftdn=nr=15:nf=-40:tn=1' if c.get('denoise') else '') + afx(c.get('au'), next(AFX_N)) + f',{vol}' if live else 'anullsrc=r=48000:cl=stereo'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
+        # 3 ms in and out at a hard edge (a cut from one sample value to another, or to silence, clicks), as the preview
+        # does; not where the clip carries on from the same file (a split), which plays straight through
         if c['fadeIn']:
             a += f",afade=t=in:d={c['fadeIn']:.3f}"
+        elif live and not joins[0]:
+            a += ',afade=t=in:d=0.003:curve=hsin'
         if c['fadeOut']:
             a += f",afade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}"
+        elif live and not joins[1]:  # ending where the sound itself ends: a clip a part of a frame shorter than its frames was padded with silence after a hard stop
+            end = min(dur, (c['out'] - c['in']) / c['speed'])
+            a += f",afade=t=out:st={max(0, end - 0.003):.6f}:d=0.003:curve=hsin"
         if delay:
             a += f',adelay={round(delay * 1000)}:all=1'
         return a
@@ -2086,10 +2118,19 @@ def graph(p, td):
         sw, sh = max(2, even(Ew * g['w'] / mw)), max(2, even(Eh * g['w'] / mw))
         return f',scale={sw}:{sh}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
 
+    def joined(a, b):  # b carries on a's sound: same file, speed and level, from where a stops, with no transition between
+        return (all(a.get(x) == b.get(x) for x in ('path', 'speed', 'volume', 'au', 'pitch', 'denoise')) and not a.get('vkf') and not b.get('vkf')
+                and not overlap(a, b) and abs(a['in'] + a['frames'] / F * a['speed'] - b['in']) < 0.5 / F)
+
+    ao = p.get('format') in ('mp3', 'wav')  # sound only: no picture is built (a WAV of 30 s took 13 s and 139 CPU-s doing it)
     for k, c in enumerate(p['main']):  # magnetic main track -> one concat stream
         n = c['frames']
         dur = n / F
         i = inp(c, dur)
+        snd = audio(i, c, dur, joins=(k > 0 and joined(p['main'][k - 1], c), k + 1 < len(p['main']) and joined(c, p['main'][k + 1]))) + f'[a{k}]'
+        if ao:
+            fg.append(snd)
+            continue
         g = c['geom']
         x, y, w, h = even(g['x']), even(g['y']), max(2, even(g['w'])), max(2, even(g['h']))
         v, kf, rot = video(i, c, n), c.get('kf'), rotation(c)
@@ -2111,24 +2152,28 @@ def graph(p, td):
         if c['fadeOut']:
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}"
         fg.append(v + f',format=gbrp,setsar=1,settb=AVTB[v{k}]')  # RGB like the canvas; xfade needs identical timebases on both inputs
-        fg.append(audio(i, c, dur) + f'[a{k}]')
+        fg.append(snd)
     if p['main']:  # cuts concatenate; transitions overlap the two clips (xfade + acrossfade), like CapCut
         cv, ca, n = 'v0', 'a0', p['main'][0]['frames']
         for k in range(1, len(p['main'])):
             prev, c = p['main'][k - 1], p['main'][k]
             o = overlap(prev, c)
-            if o:
+            if ao:
+                fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]' if o else f'[{ca}][a{k}]concat=n=2:v=0:a=1[ma{k}]')
+            elif o:
                 fg.append(f"[{cv}][v{k}]xfade=transition={prev['tr']}:duration={o / F:.6f}:offset={(n - o) / F:.6f}[mv{k}]")
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]')
             else:
                 fg.append(f'[{cv}][{ca}][v{k}][a{k}]concat=n=2:v=1:a=1[mv{k}][ma{k}]')
             n += c['frames'] - o
             cv, ca = f'mv{k}', f'ma{k}'
-        fg.append(f'[{cv}]null[vm]')
+        if not ao:
+            fg.append(f'[{cv}]null[vm]')
         fg.append(f'[{ca}]anull[am]')
         mix.append('[am]')
 
-    fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format=gbrp[L0]')
+    if not ao:
+        fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format=gbrp[L0]')
     cur = ['L0']
 
     def over(src, x=0, y=0):
@@ -2143,12 +2188,20 @@ def graph(p, td):
         cur[0] = f'{t}k'
         over(f'{t}l')
 
-    if p['main']:
+    if p['main'] and not ao:
         over('vm')
     for k, c in enumerate(p['overlay']):
         n = c['frames']
         dur = n / F
+        sound = c['kind'] == 'video' and c['hasAudio'] and c['volume'] > 0
+        if ao and not sound:
+            continue
         i = inp(c, dur)
+        if sound:
+            fg.append(audio(i, c, dur, c['start']) + f'[oa{k}]')
+            mix.append(f'[oa{k}]')
+        if ao:
+            continue
         g, kf = c['geom'], c.get('kf')
         sc, ox, oy = place(c, f"(t-{c['start']:.6f})")
         v = glowed(masked(vignetted(video(i, c, n), c, f'ov{k}', dur), c, f'o{k}', dur), c) + rotation(c) + ('' if kf else sc) + ',format=rgba' + opacity(c, f'oop{k}', n)
@@ -2158,14 +2211,13 @@ def graph(p, td):
             v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}:alpha=1"
         if kf:  # size changes per frame: last step (see place())
             v += sc
-        fg.append(v + f",setpts=PTS+{c['start']:.6f}/TB[o{k}]")  # shifted to its timeline start
+        # shifted to its timeline start, on a whole output frame: the preview shows it from the first frame at or after its
+        # start; a start between frames (91/30 s written as 3.033333) put every frame one off
+        fg.append(v + f",setpts=PTS+round({math.ceil(c['start'] * F - 1e-6)}/({F:g}*TB))[o{k}]")
         if c.get('blend'):
             blended(f'o{k}', ox, oy, c['blend'])
         else:
             over(f'o{k}', ox, oy)
-        if c['kind'] == 'video' and c['hasAudio'] and c['volume'] > 0:
-            fg.append(audio(i, c, dur, c['start']) + f'[oa{k}]')
-            mix.append(f'[oa{k}]')
     for k, c in enumerate(p['audio']):
         dur = c['frames'] / F
         fg.append(audio(inp(c, dur), c, dur, c['start']) + f'[x{k}]')
@@ -2181,7 +2233,7 @@ def graph(p, td):
         path.write_text('\n'.join(lines) + '\n')
         return f"sendcmd=f='{path}',"
 
-    for j, f in enumerate(p.get('fx') or []):  # video effects, in order, on everything below the text layer
+    for j, f in enumerate([] if ao else p.get('fx') or []):  # video effects, in order, on everything below the text layer
         op, tag, nxt = f['op'], f'fx{j}', f'X{j}'
         en = f"enable='between(n,{f['a']},{f['b'] - 1})'"  # frame numbers: exact, unlike times
         if op in ('matrix', 'negate', 'blur', 'pixelize', 'rgbshift'):  # filters with timeline support: in place, on those frames only
@@ -2224,7 +2276,7 @@ def graph(p, td):
                 x, y, ev = f"'({W}-overlay_w)/2+({pw(kf, 'x')})'", f"'({H}-overlay_h)/2+({pw(kf, 'y')})'", ':eval=frame'
             fg.append(f'[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]{body}[{tag}e];[{tag}a][{tag}e]overlay=x={x}:y={y}{ev}:format=gbrp:{en}[{nxt}]')
         cur[0] = nxt
-    if p['frames']:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer
+    if p['frames'] and not ao:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer
         files = []
         for j, b in enumerate(p['pngs']):
             files.append(Path(td) / f't{j}.png')
@@ -2238,10 +2290,13 @@ def graph(p, td):
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
         over('tx')
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
-    loud = ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' if p.get('loud') else ''  # -14 LUFS, the reels/YouTube target
+    # -14 LUFS, the reels/YouTube target; otherwise a look-ahead limiter at -1 dBFS (it changes nothing below that): the
+    # sound effects at their default level, or music at +6 dB, clipped the file
+    loud = ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' if p.get('loud') else ',alimiter=limit=0.891:attack=1:release=50:level=false:latency=1'
     fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
-    fg.append(f'[{cur[0]}]format=rgb24[vout]' if p.get('format') in ('png', 'gif') else  # stills and GIFs stay RGB: no 4:2:0 round trip
-              f'[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
+    if not ao:
+        fg.append(f'[{cur[0]}]format=rgb24[vout]' if p.get('format') in ('png', 'gif') else  # stills and GIFs stay RGB: no 4:2:0 round trip
+                  f'[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
     return sum(ins, []), ';'.join(fg)
 
 
@@ -2259,9 +2314,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         vmap, amap, enc = ['-map', '[gout]'], [], ['-loop', '0']
     elif fmt == 'png':  # still frame at p['still']
         fg += ';[aout]anullsink'
-        amap, enc = [], ['-ss', f"{p['still']:.4f}", '-frames:v', '1', '-update', '1']
-    elif fmt in ('mp3', 'wav'):
-        fg += ';[vout]nullsink'
+        amap, enc = [], ['-ss', f"{p['still']:.6f}", '-frames:v', '1', '-update', '1']  # (ffmpeg takes the frame NEAREST to it: the frame's own time)
+    elif fmt in ('mp3', 'wav'):  # graph() built no picture
         vmap, enc = [], ['-c:a', 'libmp3lame', '-q:a', '2'] if fmt == 'mp3' else ['-c:a', 'pcm_s16le']
     elif fmt == 'prores':
         enc = ['-c:v', 'prores_ks', '-profile:v', '2', '-c:a', 'pcm_s16le']
@@ -2282,8 +2336,45 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
             + (['-movflags', '+faststart'] if fmt in ('mp4', 'hevc') and not intermediate else []) + [str(out)])
 
 
-def run_ffmpeg(cmd, dur, report):
+def plain(what, err, code=0):
+    """A tool's failure as one sentence for the UI: the cause in plain words and the clip by its name, no temp paths, hex
+    or filter names (it showed raw ffmpeg stderr cut mid-word). The raw text goes to the server log."""
+    print(f'{what} failed ({code}): {err[-1500:]}', file=sys.stderr, flush=True)
+
+    def name(x):
+        f = Path(x)
+        if f.parent == MEDIA and ID.fullmatch(f.stem):
+            try:
+                return meta(f.stem).get('name') or f.name
+            except (OSError, ValueError):
+                pass
+        return f.name
+    files = [name(x) for x in re.findall(r"(/[^\s:'\"]+\.\w{2,5})\b", err) if not x.startswith(('/private/', '/var/folders/', '/tmp/'))]
+    of, e = f' ({files[-1]})' if files else '', err.lower()
+    if 'no space left' in e:
+        why = 'the disk is full; free some space and try again'
+    elif code in (-9, -15, 137, 143) or 'received signal' in e:
+        why = 'it was stopped before it finished'
+    elif 'no such file' in e or 'does not exist' in e:
+        why = f'a file is missing{of}'
+    elif any(k in e for k in ('moov atom not found', 'invalid data found', 'error while decoding', 'corrupt', 'truncat', 'end of file')):
+        why = f'a file is damaged or incomplete{of}'
+    elif 'permission denied' in e or 'not permitted' in e:
+        why = f'macOS did not allow reading or writing a file{of}'
+    else:
+        last = next((x for x in reversed(err.strip().splitlines()) if x.strip()), '')
+        last = re.sub(r'\[[^\]]*@[^\]]*\]|0x[0-9a-fA-F]+', '', re.sub(r"(/[^\s:'\"]+)", lambda m_: name(m_[1]), last))
+        why = re.sub(r'\s+', ' ', last).strip(' :.!')[:160] or 'it stopped with an error'
+    return f'{what} failed: {why}.'
+
+
+PROCS = {}  # job id -> its running ffmpeg (Cancel kills it)
+
+
+def run_ffmpeg(cmd, dur, report, what='Rendering', job=None):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+    if job:
+        PROCS[job] = proc
     err = []
     t = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
     t.start()
@@ -2291,8 +2382,11 @@ def run_ffmpeg(cmd, dur, report):
         if line.startswith('out_time_us=') and line[12:].strip().isdigit():
             report(min(1.0, int(line[12:]) / 1e6 / dur))
     t.join()
+    PROCS.pop(job, None)
+    if job and JOBS.get(job, {}).get('cancel'):
+        raise RuntimeError('cancelled')
     if proc.wait():
-        raise RuntimeError(''.join(err)[-1500:].strip() or 'ffmpeg failed')
+        raise RuntimeError(plain(what, ''.join(err), proc.returncode))
 
 
 def unique(path):
@@ -2303,18 +2397,47 @@ def unique(path):
     return path
 
 
+def still_cut(p):
+    """A still frame needs only what is on screen then: a still at 178 s of a 90-clip project rendered all 90 clips first
+    (173 s). The plan starts at the main clip under the earliest thing still showing at that frame; everything shifts
+    back by that many whole frames (clip-relative timing - keyframes, fades, masks - is untouched)."""
+    F, main = p['fps'], p['main']
+    n = math.floor(p['still'] * F + 1e-6)  # the frame
+    if n >= math.floor(p['duration'] * F + 1e-6):  # past the end: left as it is (it fails: no such frame)
+        return p
+    st, f0 = [], 0
+    for k, c in enumerate(main):  # each main clip's first frame on the timeline
+        st.append(f0)
+        f0 += c['frames'] - (overlap(c, main[k + 1]) if k + 1 < len(main) else 0)
+    ovs = [c for c in p['overlay'] if (a := math.ceil(c['start'] * F - 1e-6)) <= n < a + c['frames']]
+    first = min([n] + [math.ceil(c['start'] * F - 1e-6) for c in ovs])
+    k0 = next((k for k, c in enumerate(main) if st[k] + c['frames'] > first), len(main))
+    keep = [c for k, c in enumerate(main) if k >= k0 and st[k] <= n]
+    n0 = st[k0] if keep else first
+    T0 = n0 / F
+    fx = [{**f, 'a': f['a'] - n0, 'b': f['b'] - n0} for f in p.get('fx') or [] if f['a'] <= n < f['b']]
+    spans = [{**fr, 'start': max(0.0, fr['start'] - T0), 'end': fr['end'] - T0} for fr in p.get('frames') or [] if fr['end'] > T0 + 1e-9]
+    still = (n - n0) / F
+    return {**p, 'main': keep, 'overlay': [{**c, 'start': c['start'] - T0} for c in ovs], 'audio': [], 'fx': fx, 'frames': spans if p.get('frames') else [],
+            'still': still, 'duration': still + 2 / F}
+
+
 def export(job, p):
     st = JOBS[job]
     try:
+        if p.get('format') == 'png' and not p.get('library'):
+            p = still_cut(p)
         with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
             F, main = p['fps'], p['main']
             chunks = [main[i:i + CHUNK] for i in range(0, len(main), CHUNK)] if len(main) > CHUNK else []
             steps = len(chunks) + 1
             for n, part in enumerate(chunks):  # long main tracks: render chunks to near-lossless intermediates first
+                if st.get('cancel'):
+                    raise RuntimeError('cancelled')
                 frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
                 sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'fx': [], 'duration': frames / F, 'format': 'mp4'}  # chunks are always YUV video
                 f = Path(td) / f'chunk{n}.mkv'
-                run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps))
+                run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps), 'The export', job)
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
                              'frames': frames, 'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1},
                              'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']},
@@ -2322,8 +2445,9 @@ def export(job, p):
             if chunks:
                 p = {**p, 'main': chunks}
             lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
-            out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}" if lib else unique(EXPORTS / f"{p['name']}{FORMATS[p.get('format', 'mp4')]}")
-            run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps))
+            # rendered aside and moved in when complete: a failed or stopped export left an unplayable file under its name
+            out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}"
+            run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps), 'The export', job)
             if not out.exists() or not out.stat().st_size:
                 raise RuntimeError('ffmpeg finished without writing a file')
             if lib:
@@ -2331,9 +2455,21 @@ def export(job, p):
                 m = import_file(stem + out.suffix, None, 0, background=False, src=out)
                 st.update(state='done', progress=1.0, media=m['id'])
                 return
-        st.update(state='done', progress=1.0, file=out.name)
-    except Exception as e:  # surfaced to the UI
-        st.update(state='error', error=str(e))
+            dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
+            shutil.move(out, dst)
+        st.update(state='done', progress=1.0, file=dst.name)
+    except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
+        if st.get('cancel'):
+            st.update(state='cancelled')
+        else:
+            st.update(state='error', error=str(e))
+
+
+def has_file(mid):  # a library item whose file is there (not trashed or moved)
+    try:
+        return (MEDIA / meta(mid)['file']).is_file()
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def list_projects():
@@ -2347,7 +2483,7 @@ def list_projects():
         dur = max([sum(span(c) for c in j.get('main', []))] + [c.get('start', 0) + span(c) for k in ('overlay', 'audio', 'text', 'captions') for c in j.get(k, [])])
         out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, 'dur': round(dur, 2),
                     'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions')),
-                    'pic': bool(j.get('main') or j.get('overlay'))})  # has a poster (else the card asks for one and gets a 404)
+                    'pic': (CACHE / f'poster_{f.stem}.jpg').exists() or any(has_file(c.get('media')) for c in j.get('main', []) + j.get('overlay', []))})  # it can have a poster (else the card asks and gets a 404)
     return sorted(out, key=lambda p: -p['updated'])
 
 
@@ -2542,7 +2678,7 @@ class App(BaseHTTPRequestHandler):
                 w = REMOTE_WAIT.pop(rid, {})
                 return self.reply(w.get('res') if done else {'ok': False, 'result': 'timed out waiting for the editor'})
             if u.path == '/api/still_frame':  # one frame from the export renderer, returned inline (the MCP snapshot tool)
-                p = clean_plan({**body, 'format': 'png'})
+                p = still_cut(clean_plan({**body, 'format': 'png'}))  # only what is on screen at that frame
                 with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
                     out = Path(td) / 'frame.png'
                     run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda _x: None)
@@ -2628,6 +2764,12 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
             if u.path == '/api/silences':
                 return self.reply({'silences': silences(body['media'], fnum(body.get('noise', -35), -90, 0), fnum(body.get('min', 0.5), 0.05, 30))})
+            if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})/cancel', u.path):  # an export: its ffmpeg killed at once (TERM left it running 45 s)
+                if m[1] in JOBS:
+                    JOBS[m[1]]['cancel'] = True
+                    if pr := PROCS.get(m[1]):
+                        pr.kill()
+                return self.reply({'ok': True})
             if u.path == '/api/export':
                 p, job = clean_plan(body), uuid.uuid4().hex[:12]
                 JOBS[job] = {'state': 'running', 'progress': 0.0}
@@ -2896,6 +3038,13 @@ def selftest():
     out = render({'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#000000', 'name': 'deep', 'audio': [], 'main': [],
                   'overlay': [{'media': R['id'], 'start': 0, 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(R), 'kf': deep}]}, 60)
     assert pixel(out, 1.0, 150, 30)[0] > 200 and max(pixel(out, 1.0, 60, 30)) < 40, 'deep keyframes: at t=1 s the overlay spans x 120-180'
+    # an overlay starting between frames (91/30 s as the UI stores it): from output frame 91 to 105, like the preview
+    out = render({'w': W, 'h': H, 'fps': F, 'duration': 4, 'bg': '#000000', 'name': 'ovframe', 'audio': [], 'main': [],
+                  'overlay': [{'media': R['id'], 'start': 91 / 30, 'in': 0, 'out': 0.5, 'frames': 15, 'geom': geom(R)}]}, 120)
+    nth = lambda n: tuple(subprocess.run(['ffmpeg', '-v', 'error', '-i', str(out), '-vf', f'select=eq(n\\,{n}),format=rgb24,crop=1:1:135:240', '-frames:v', '1',
+                                          '-f', 'rawvideo', '-'], capture_output=True, check=True).stdout[:3])
+    got = [nth(n) for n in (90, 91, 105, 106)]
+    assert max(got[0]) < 40 and got[1][0] > 200 and got[2][0] > 200 and max(got[3]) < 40, ('overlay on whole output frames 91-105', got)
     mfade = [{'t': 0, 'w': 270, 'x': 0, 'y': 105, 'op': 0}, {'t': 1, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]
     out = render({'w': W, 'h': H, 'fps': F, 'duration': 2, 'bg': '#ffffff', 'name': 'mainop', 'audio': [], 'overlay': [],
                   'main': [{'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': mfade}]}, 60)
@@ -2976,6 +3125,29 @@ def selftest():
     sm = meta(slowmo({}, L['id'], 0, 1, 4)['media'])
     assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, sm
     print('volume envelope + 6 export formats + animated GIF + smooth slow-mo ok')
+    snd = {}  # a WAV is built from the sound alone: the same sound as the video's track (AAC there: levels, not samples)
+    for fmt in ('wav', 'mp4'):
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**plan, 'format': fmt, 'name': f'sound {fmt}'}))
+        assert JOBS['t']['state'] == 'done', (fmt, JOBS['t'])
+        snd[fmt] = EXPORTS / JOBS['t']['file']
+    lv = lambda f, a, b: float(re.search(r'mean_volume: (-?[\d.]+)', sh(['ffmpeg', '-hide_banner', '-ss', str(a), '-to', str(b), '-i', str(f), '-vn', '-af', 'volumedetect', '-f', 'null', '-']).stderr.replace('-inf', '-200'))[1])
+    for a, b in ((0.2, 1), (1, 3), (3, 6), (6, 8.8)):
+        assert abs(lv(snd['wav'], a, b) - lv(snd['mp4'], a, b)) < 0.5, ('sound-only WAV vs the video track', a, b, lv(snd['wav'], a, b), lv(snd['mp4'], a, b))
+    print('sound-only WAV matches the video export track')
+    real_cut, md5 = still_cut, lambda f: sh(['ffmpeg', '-v', 'error', '-i', str(f), '-f', 'md5', '-']).stdout.strip()
+    for base, at in ((tplan, (0.5, 1.5, 2.5, 3.5)), (plan, (0.2, 1.2, 4.0, 5.5))):  # in clips, inside both transitions, under the overlay and text
+        for t_ in at:
+            got = []
+            for cut in (real_cut, lambda q: q):
+                globals()['still_cut'] = cut
+                JOBS['t'] = {'state': 'running'}
+                export('t', clean_plan({**base, 'format': 'png', 'still': t_, 'name': f'still {t_}'}))
+                assert JOBS['t']['state'] == 'done', (t_, JOBS['t'])
+                got.append(md5(EXPORTS / JOBS['t']['file']))
+            globals()['still_cut'] = real_cut
+            assert got[0] == got[1], ('a still cut to its frame differs from the whole render', base['name'], t_, got)
+    print('stills: cut to their frame, the same pixels as from the whole plan')
     plan['loud'] = True
     plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True)
     render(plan, 270)

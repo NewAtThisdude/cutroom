@@ -5,7 +5,7 @@ import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-perf-`), f = `${tmp}/perf-1080.mp4`;
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=30:d=12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', f]);
 const V = await (await fetch(`${B}/api/import?name=perf-1080.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();

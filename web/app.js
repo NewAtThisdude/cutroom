@@ -15,8 +15,9 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
 };
 
-async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
-  const r = await fetch(path, { method, headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+async function api(path, body, method = body === undefined ? 'GET' : 'POST', keepalive = false) {
+  const json = body === undefined ? undefined : JSON.stringify(body);
+  const r = await fetch(path, { method, headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: json, keepalive: keepalive && json.length < 6e4 }); // keepalive: the page may be going away (64 KB cap)
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `${r.status} ${r.statusText}`);
   return j;
@@ -107,7 +108,7 @@ const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1);
 
 let P = null;                        // current project
 const M = new Map();                 // media id -> server metadata
-const S = { sel: null, multi: new Set(), t: 0, playing: false, pps: 60, t0: 0, wall0: 0, end: 0, exporting: false }; // multi: more selected clips ('lane:id')
+const S = { sel: null, multi: new Set(), t: 0, playing: false, rate: 1, back: 0, pps: 60, t0: 0, wall0: 0, end: 0, exporting: false }; // multi: more selected clips ('lane:id')
 let rafId = 0; // the preview draws only when something changed or it plays: an always-on 60 Hz loop kept 8 % of a core busy at rest
 const kick = () => { if (!rafId) rafId = requestAnimationFrame(frame); };
 { let d = true; Object.defineProperty(S, 'dirty', { get: () => d, set: v => { d = v; if (v) kick(); }, enumerable: true }); }
@@ -316,7 +317,29 @@ function setProp(c, key, v) { // with keyframes, an edit lands on the keyframe u
   if (!f) { f = { t: lt, ...propsAt(c, lt) }; c.kf.push(f); c.kf.sort((a, b) => a.t - b.t); }
   f[key] = v;
 }
-function change(fn) { undo.push(JSON.stringify(P)); if (undo.length > 200) undo.shift(); redo = []; fn(); touched(); }
+function change(fn) { undo.push(JSON.stringify(P)); if (undo.length > 200) undo.shift(); redo = []; const an = anchors(); fn(); reanchor(an, true); touched(); }
+// Linkage (on unless the timeline's link button is off): a clip on another track stays over the same picture of the main
+// track when that track is cut, trimmed or reordered. Each one is placed by the source time of the main clip under its start.
+function anchors() {
+  if (P.unlinked || !P.main.length) return [];
+  packMain();
+  const out = [];
+  for (const L of LANES) if (L.key !== 'main') for (const x of P[L.key]) {
+    const h = P.main.find(m => x.start >= m.start - 1e-6 && x.start < m.start + tdur(m, 'main') - 1e-6);
+    if (h) out.push([x, x.start, h.id, h.media, h.in + (x.start - h.start) * h.speed]);
+  }
+  return out;
+}
+function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved stays where it was put
+  if (!list.length) return;
+  packMain();
+  for (const [x, s, hid, media, src] of list) {
+    if (keepMoved && Math.abs(x.start - s) > 1e-9) continue;
+    const has = m => m.media === media && src >= m.in - 1e-6 && src < m.out - 1e-6; // that picture is still there (a split, a reorder)
+    const h = P.main.find(m => m.id === hid && has(m)) || P.main.filter(has).sort((a, b) => Math.abs(a.start - s) - Math.abs(b.start - s))[0];
+    if (h) x.start = snap(Math.max(0, h.start + (src - h.in) / h.speed)); // else (that picture was cut out) it stays where it is
+  }
+}
 function touched() { S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 function restore(from, to) {
   if (!from.length) return;
@@ -326,21 +349,35 @@ function restore(from, to) {
   S.multi.clear();
   fitStage(); touched();
 }
-function scheduleSave() {
+let saveFails = 0;
+function scheduleSave(wait = 400) {
   $('#saveState').textContent = 'Saving…';
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    if (S.hold) return scheduleSave();
-    try { await api(`/api/projects/${P.id}`, P, 'PUT'); $('#saveState').textContent = 'Saved'; }
-    catch (e) { $('#saveState').textContent = 'Not saved'; toast(`Save failed: ${e.message}`); }
-  }, 400);
+  saveTimer = setTimeout(saveNow, wait);
 }
+function flushSave(leaving) { if (saveTimer) return saveNow(leaving); } // now, not in 400 ms: a quit, reload or project switch right after an edit lost it
+async function saveNow(leaving) {
+  clearTimeout(saveTimer); saveTimer = 0;
+  if (!P) return;
+  if (S.hold) return scheduleSave();
+  const p = P;
+  try { await api(`/api/projects/${p.id}`, p, 'PUT', leaving); saveFails = 0; if (p === P && !saveTimer) $('#saveState').textContent = 'Saved'; }
+  catch (e) { // tried again until it goes through (the server restarting, say): an edit is never just dropped
+    if (p !== P) return;
+    $('#saveState').textContent = 'Not saved';
+    if (!saveFails++) toast(`Save failed: ${e.message}. Trying again…`);
+    if (!saveTimer) scheduleSave([1000, 2000, 5000][Math.min(saveFails, 3) - 1]);
+  }
+}
+addEventListener('pagehide', () => flushSave(true));
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(true); });
 
 // ---------- rendering: chrome ----------
 function renderAll() {
   renderTimeline(); renderInspector();
   $('#ratioLabel').textContent = `${P.w}×${P.h} · ${+P.fps.toFixed(3)} fps`;
   if (document.activeElement !== $('#projName')) $('#projName').value = P.name;
+  $('#btnLink').classList.toggle('on', !P.unlinked);
 }
 
 function renderTimeline() {
@@ -442,6 +479,34 @@ function seekTo(t) { // paused seek used by arrows, Home/End and the transport b
   placePlayhead(); follow(); S.dirty = true;
   if (S.sel) renderInspector(); // keyframed values at the new time
 }
+function shuttle(dir) { // L: play, then 2x, 4x; J: backwards at 1x, 2x, 4x (paused seeks, 20 a second); K: stop
+  if (dir > 0) {
+    if (S.back) return shuttleBack(0);
+    if (!S.playing) return play();
+    S.rate = Math.min(4, S.rate * 2); S.t0 = S.t; S.wall0 = performance.now(); // re-anchored at the new speed
+  } else shuttleBack(S.back ? Math.min(4, S.back * 2) : 1);
+}
+function shuttleBack(r) {
+  clearInterval(S.backT); S.back = r;
+  if (!r) return;
+  if (S.playing) pause();
+  S.back = r; S.backT = setInterval(() => { if (S.t <= 0) return shuttleBack(0); S.t = snap(Math.max(0, S.t - 0.05 * S.back)); placePlayhead(); follow(); S.dirty = true; }, 50);
+}
+function editPoints() { // every clip edge on every track, the markers, the start and the end
+  packMain();
+  const s = new Set([0, total(), ...P.markers]);
+  for (const L of LANES) for (const c of P[L.key]) { s.add(c.start); s.add(c.start + tdur(c, L.key)); }
+  return [...s].map(snap).sort((a, b) => a - b);
+}
+function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips are packed: they move by reordering)
+  const sel = selection().filter(([, lane]) => lane !== 'main' && lane !== 'tr');
+  if (sel.length) change(() => { for (const [c] of sel) c.start = snap(Math.max(0, c.start + d / P.fps)); });
+}
+const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
+  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['⌥← ⌥→', 'Nudge the selected clips one frame'],
+  ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
+  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
+function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-close>Close</button></div>`); }
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
 function thumbStyle(m) {
@@ -651,7 +716,7 @@ function mediaPanel(c, lane) {
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
-  return head + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Color', vis ? colorPanel(c) : ''], ['Audio', audio], ['Tools', tools]]) + '<p id="clipStatus" class="muted"></p>';
+  return head + '<p id="clipStatus" class="muted"></p>' + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Color', vis ? colorPanel(c) : ''], ['Audio', audio], ['Tools', tools]]); // status above the tabs: below them it was off screen on 5 of 6
 }
 const WHEELS = [['lift', 'Shadows'], ['gamma', 'Midtones'], ['gain', 'Highlights']], CURVE_CH = [['m', 'Luma'], ['r', 'Red'], ['g', 'Green'], ['b', 'Blue']];
 function colorPanel(c) { // colour wheels, curves, HSL, an imported LUT, and the strength of all colour over time
@@ -795,19 +860,28 @@ function fitStage() {
   cv.height = Math.max(2, Math.round(P.h * s * dpr));
   S.dirty = true;
 }
+const POOL_MAX = 8; // video elements kept loaded (720p copies): jumping back to a clip finds its file still there
 function vidFor(key, m) {
   let v = pool.get(key);
-  if (!v) {
+  if (v) { pool.delete(key); pool.set(key, v); } // most recently used last
+  else {
     v = document.createElement('video');
     v.preload = 'auto';
     v.playsInline = true;
     v.muted = true; // the sound plays from Web Audio buffers (audioTick), not from the element
-    v.addEventListener('seeked', () => { S.dirty = true; setTimeout(() => { S.dirty = true; }, 50); }); // WebKit hands drawImage the new frame a moment later
-    v.addEventListener('loadeddata', () => { S.dirty = true; });
+    // WebKit hands drawImage the new frame a moment after 'seeked'. (Not requestVideoFrameCallback: it never fires for these
+    // off-screen elements once a WebGL pass has read a video, and waiting on it left the preview on a stale frame.)
+    v.addEventListener('seeked', () => { v._t0 = undefined; S.dirty = true; setTimeout(() => { S.dirty = true; }, 50); });
+    v.addEventListener('loadeddata', () => { v._t0 = undefined; S.dirty = true; });
     $('#mediaPool').append(v);
     pool.set(key, v);
+    for (const [k2, old] of pool) { // the least recently used ones go (never one on screen)
+      if (pool.size <= POOL_MAX) break;
+      if (k2 === key || S.live?.has(old)) continue;
+      old.pause(); old.removeAttribute('src'); old.load(); old.remove(); pool.delete(k2);
+    }
   }
-  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr && !m.proxy ? '' : WK_Q}`; }
+  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v._t0 = undefined; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr && !m.proxy ? '' : WK_Q}`; }
   return v;
 }
 function imgFor(m) {
@@ -916,12 +990,18 @@ function clipGain(c, lane, t) { // what paint used to give the element: volume p
   }
   return g;
 }
-function audioStop() { // stops what's scheduled; the chains stay for the next play
-  for (const v of voices.values()) { for (const n of v.srcs.values()) n?.stop(); v.srcs.clear(); }
+function audioStop() { // stops what's scheduled, 5 ms down rather than a click; the chains stay for the next play
+  const now = actx?.currentTime ?? 0;
+  for (const v of voices.values()) { for (const n of v.srcs.values()) if (n) { n.g.gain.setTargetAtTime(0, now, 0.0015); n.stop(now + 0.008); } v.srcs.clear(); }
   S.aA0 = undefined;
 }
+function joined(a, b) { // b carries on a's sound (a split): it plays straight through, no edge fades (the export's joined())
+  return !!a && !!b && a.media === b.media && a.speed === b.speed && a.volume === b.volume && !a.vkf?.length && !b.vkf?.length && !!a.pitch === !!b.pitch
+    && !!a.denoise === !!b.denoise && JSON.stringify(a.au || {}) === JSON.stringify(b.au || {}) && !trF(P.main.indexOf(a))
+    && Math.abs(a.in + tdur(a, 'main') * a.speed - b.in) < 0.5 / P.fps;
+}
 function audioTick(wall) { // while playing: (re)anchor timeline to audio clock, schedule the next second of every sounding clip
-  if (!actx || actx.state !== 'running' || !S.playing || S.stuck) return audioStop(); // a held clock: the sound waits with the picture
+  if (!actx || actx.state !== 'running' || !S.playing || S.stuck || S.rate !== 1) return audioStop(); // a held clock: the sound waits with the picture (and a shuttle is silent)
   // the audio-clock time whose sample leaves the speakers at the frame's wall time: so the sound of S.t is HEARD at S.t
   // (scheduling on currentTime alone put it outputLatency late, 40-75 ms behind the picture)
   const ts = actx.getOutputTimestamp(), out = ts.performanceTime ? ts.contextTime + (wall - ts.performanceTime) / 1000 : actx.currentTime, now = actx.currentTime;
@@ -938,7 +1018,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
     if (S.t >= c.start) v.n.out.gain.setTargetAtTime(clipGain(c, lane, S.t), now, 0.012);
     const tempo = c.pitch || Math.abs(c.speed - 1) < 1e-6 ? 1 : +c.speed.toFixed(4), pbr = c.speed / tempo;
     const sp = pcmSpan(c, tempo), f = t => (c.in - sp[0] + (t - c.start) * c.speed) / tempo, tl = x => c.start + (x * tempo + sp[0] - c.in) / c.speed; // timeline <-> PCM seconds
-    const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d);
+    const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d), i = lane === 'main' ? P.main.indexOf(c) : -1;
     for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp); // fetched 3 s ahead
     for (let k = Math.floor(f(a) / PCM_S); k * PCM_S < f(b); k++) {
       if (v.srcs.has(k)) continue;
@@ -946,11 +1026,16 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
       if (p.buf === undefined) continue; // loading: picked up by a later frame
       if (!p.buf) { v.srcs.set(k, null); continue; }
       let s0 = Math.max(tl(k * PCM_S), c.start, S.t), when = S.aA0 + (s0 - S.aT0);
-      const s1 = Math.min(tl(k * PCM_S + p.buf.duration), c.start + d);
-      if (when < now) { s0 += now - when; when = now; }
+      const s1 = Math.min(tl(k * PCM_S + p.buf.duration), c.start + d), late = when < now;
+      // 3 ms in where sound starts from nothing (play, a re-sync, a clip's start after a cut) and out at a clip's end, like
+      // the export: a hard edge clicks. Not between chunks, nor across a split where the same sound carries on
+      const fadeIn = late || s0 === S.t || (s0 === c.start ? !(i > 0 && joined(P.main[i - 1], c)) : s0 !== tl(k * PCM_S));
+      if (late) { s0 += now - when; when = now; }
       if (s1 - s0 < 1e-3) { v.srcs.set(k, null); continue; }
-      const n = actx.createBufferSource();
-      n.buffer = p.buf; n.playbackRate.value = pbr; n.connect(v.n.src);
+      const n = actx.createBufferSource(), g = n.g = actx.createGain(), e = when + (s1 - s0);
+      n.buffer = p.buf; n.playbackRate.value = pbr; n.connect(g).connect(v.n.src);
+      if (fadeIn) { g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(1, when + 0.003); }
+      if (s1 === c.start + d && !(i >= 0 && joined(c, P.main[i + 1]))) { g.gain.setValueAtTime(1, Math.max(when + 0.003, e - 0.003)); g.gain.linearRampToValueAtTime(0, e); }
       n.start(when, f(s0) - k * PCM_S, (s1 - s0) * pbr);
       v.srcs.set(k, n);
     }
@@ -1045,34 +1130,56 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
   }
   ctx.restore();
 }
+const srcFrame = (v, x) => Math.floor(x * (M.get(v.dataset.media)?.fps || P.fps) + 1e-3); // which of its file's frames a time shows
 function sync(v, src, rate) { // the wall clock is the master; media elements follow it
   if (S.playing && S.stuck && v !== S.lead) { if (!v.paused) v.pause(); return; }
   if (S.playing) {
-    const err = src - v.currentTime, pr = Math.min(16, rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
+    const err = src - v.currentTime, pr = Math.min(16, rate * S.rate); // browsers stop at 16x; above that the clock keeps re-seeking the element
     if (v.playbackRate !== pr) v.playbackRate = pr; // (no steering by rate: AVPlayer's clock jumps at every rate change)
-    if (v.paused) { if (Math.abs(err) > 0.05) v.currentTime = src; v._run = false; v._ct = v.currentTime; v.play().catch(() => {}); }
+    if (v.paused) {
+      if (v.ended || src >= v.duration - 0.02) return; // at its file's end: play() would start it again from 0, and the clock would follow it back
+      if (Math.abs(err) > 0.05) v.currentTime = src; v._run = false; v._ct = v.currentTime; v.play().catch(() => {});
+    }
     else if (Math.abs(err) > 0.3) v.currentTime = src;
     else if (v.currentTime !== v._ct) { v._ct = v.currentTime; v._run = true; } // really moving (a prerolled next cut)
   } else {
     if (!v.paused) v.pause();
     v._run = false;
     v._want = src; // waitFrame checks the element really got here
-    if (!v.seeking && Math.abs(v.currentTime - src) > 0.5 / P.fps) v.currentTime = src + 1e-4; // 5.3 - 5.0 = 0.29999…: on a frame's edge WebKit shows the one before (the export doesn't)
+    // by source frame, not by half a project frame: in slow motion that tolerance spans source frames (0.25x showed the
+    // wrong one and skipped some on frame steps). +1e-4: 5.3 - 5.0 = 0.29999…, and on a frame's edge WebKit shows the one before
+    if (!v.seeking && srcFrame(v, v.currentTime) !== srcFrame(v, src)) v.currentTime = src + 1e-4;
   }
 }
 function paint() {
   if (S.hold) return;
-  const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, t = S.t, live = new Set();
-  hits = []; S.lead = null;
-  packMain();
-  ctx.fillStyle = P.bg;
-  ctx.fillRect(0, 0, cv.width, cv.height);
+  // at (or past) the very end every clip has ended: show the last frame, not black (End, or play to the end)
+  const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, end = total(), t = S.t < end ? S.t : Math.max(0, end - 0.5 / P.fps), live = new Set();
   const act = [];
   P.main.forEach((c, i) => { if (t >= c.start && t < c.start + tdur(c, 'main')) act.push(i); });
   const mi = act.length ? act[act.length - 1] : -1;
   const tr = act.length > 1 ? { type: P.main[act[0]].tr?.type || 'fade', p: clamp((t - P.main[act[1]].start) / (trF(act[0]) / P.fps), 0, 1) } : null;
-  const layers = act.map(i => ['main', P.main[i], `m${i % 2}`, i]); // two elements alternate: next cut pre-seeked, transitions show both
+  // an element per file and side: two alternate (the next cut pre-seeked, transitions show both), and a jump back to a
+  // file already loaded finds it ready (keyed by side alone, every jump to another file reloaded it: 16-116 ms of black)
+  const layers = act.map(i => ['main', P.main[i], `m${i % 2}${P.main[i].media}`, i]);
   for (const c of shown('overlay')) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
+  if (!S.playing) { // paused on a picture still loading: the last frame stays up until it's there ('loadeddata' / 'seeked' repaint)
+    const need = layers.filter(([, c]) => M.get(c.media) && M.get(c.media).kind !== 'image')
+      .map(([lane, c, key, i]) => {
+        const el = vidFor(key, M.get(c.media));
+        sync(el, c.in + (t - c.start) * c.speed, c.speed);
+        if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } // the clock and play() go by the element that's coming, not the last one painted
+        return el;
+      });
+    if (need.some(el => el.readyState < 2 && el.getAttribute('src') && !el.error && performance.now() - (el._t0 ??= performance.now()) < 1500)) { // (not for ever: a broken file)
+      S.live = new Set([...(S.live || []), ...need]); // waitFrame waits for these
+      clearTimeout(paint.retry); paint.retry = setTimeout(() => { S.dirty = true; }, 100);
+      return;
+    }
+  }
+  hits = []; S.lead = null;
+  ctx.fillStyle = P.bg;
+  ctx.fillRect(0, 0, cv.width, cv.height);
   for (const [lane, c, key, i] of layers) {
     const m = M.get(c.media);
     if (!m) continue;
@@ -1089,7 +1196,7 @@ function paint() {
   }
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
-    const v = vidFor(`m${(mi + 1) % 2}`, nm), lead = nx.start - t, PRE = 0.3;
+    const v = vidFor(`m${(mi + 1) % 2}${nx.media}`, nm), lead = nx.start - t, PRE = 0.3;
     if (!live.has(v)) {
       live.add(v);
       // playing: the next cut's element starts PRE early (unseen), so at the cut it's already running in step and the
@@ -1122,7 +1229,7 @@ function paint() {
   if (!S.playing) audioWarm();
   if (G.tab === 'script') scriptNow(t);
   if (SCOPE.on) drawScope();
-  $('#tc').textContent = `${tc(t)} / ${tc(S.playing ? S.end : total())}`;
+  $('#tc').textContent = `${tc(S.t)} / ${tc(S.playing ? S.end : end)}`;
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
 }
@@ -1180,9 +1287,17 @@ function glowDraw(ctx, c, h, draw) { // a cutout's glow: canvas shadow (a Gaussi
   if (c.glow.neon) draw(); // the person itself once more, on top of the doubled glow
 }
 function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small (radius 4 there) and scaled back: ffmpeg's blur at a fraction of the cost
-  const q = Math.max(1, r / 4), tw = Math.max(2, Math.round(W / q)), th = Math.max(2, Math.round(H / q)), t = scratch(tw, th, 'cblur'), tx = t.getContext('2d', { willReadFrequently: true });
+  // and never over ~480 px wide in JS: a small blur ran at full size (11-12 fps at 1080p)
+  const q = Math.max(1, r / 4, Math.max(W, H) / 480), tw = Math.max(2, Math.round(W / q)), th = Math.max(2, Math.round(H / q)), rr = Math.max(1, Math.round(r / q));
+  if (gpu()) { // the same box passes on the GPU: no read-back of the frame (that alone was 10-20 ms)
+    const s = scratch(tw, th, 'cblurg'), sx = s.getContext('2d');
+    sx.globalCompositeOperation = 'copy'; sx.drawImage(x.canvas, 0, 0, tw, th);
+    const g = fxGPU(s, tw, th, [0, 1, 2].flatMap(() => [{ mode: 5, dir: [1, 0], r: rr }, { mode: 5, dir: [0, 1], r: rr }]));
+    if (g) { x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(g[0], 0, g[1], tw, th, 0, 0, W, H); x.restore(); return; }
+  }
+  const t = scratch(tw, th, 'cblur'), tx = t.getContext('2d', { willReadFrequently: true });
   tx.clearRect(0, 0, tw, th); tx.drawImage(x.canvas, 0, 0, tw, th);
-  boxBlurRGB(tx, tw, th, Math.max(1, Math.round(r / q)));
+  boxBlurRGB(tx, tw, th, rr);
   x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(t, 0, 0, W, H); x.restore();
 }
 function colorPass(x, W, H, c, mixK = 1) { // the GPU pass's colour on the CPU (no WebGL2): brightness, contrast, saturate, tone, look, grade LUT, strength
@@ -1236,14 +1351,20 @@ function featherAlpha(x, W, H, sigma) { // maskCanvas's blur(sigma) by hand: 3 b
   for (let i = 0; i < a.length; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = a[i]; }
   x.putImageData(img, 0, 0);
 }
-const keyCv = document.createElement('canvas'), hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const keyCv = document.createElement('canvas'), keyCvG = document.createElement('canvas'), hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
 function offscreen(el, c, src, w, h, filt, lt = 0) { // colour + mirror, then chroma key (colorkey's formula) x mask, vignette, like the export
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h));
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
   const sk = strengthAt(c, lt), mk = maskAt(c, lt), gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
-  if (gp) { x.filter = 'none'; x.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); if (c.adj?.blur > 0) blurInPlace(x, W, H, c.adj.blur * 0.03 * Math.min(W, H)); return keyCv; }
+  if (gp) { // kept on the GPU: drawn into keyCv (CPU-backed, for the by-hand path below) every graded frame was read back, 10-20 ms
+    if (keyCvG.width !== W || keyCvG.height !== H) { keyCvG.width = W; keyCvG.height = H; }
+    const g = keyCvG.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0); g.filter = 'none'; g.globalCompositeOperation = 'copy'; g.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); g.globalCompositeOperation = 'source-over';
+    if (c.adj?.blur > 0) blurInPlace(g, W, H, c.adj.blur * 0.03 * Math.min(W, H));
+    return keyCvG;
+  }
   x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
@@ -1465,7 +1586,8 @@ function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the te
 function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (video and overlays)
   if (P.mute.fx) return;
   const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
-  for (const f of shown('fx')) if (fxOn(f, t) && FX[f.fx]?.px) runOps(ctx, W, H, FX[f.fx].px(W, H, u, t - f.start, f));
+  // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
+  runOps(ctx, W, H, shown('fx').filter(f => fxOn(f, t) && FX[f.fx]?.px).flatMap(f => FX[f.fx].px(W, H, u, t - f.start, f)));
 }
 const scratchCv = new Map();
 function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
@@ -1495,7 +1617,14 @@ function matrixPass(x, W, H, m) { // a 3x3 colour matrix, like colorchannelmixer
   x.putImageData(img, 0, 0);
 }
 function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same order, same numbers
-  for (const o of ops) {
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    if (FX_GPU[o.op]) { // a run of per-pixel steps in one go on the GPU (fxGPU), drawn back once
+      let j = i;
+      while (FX_GPU[ops[j + 1]?.op]) j++;
+      const g = fxGPU(x.canvas, W, H, ops.slice(i, j + 1).flatMap(q => FX_GPU[q.op](q)));
+      if (g) { x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'copy'; x.drawImage(g[0], 0, g[1], W, H, 0, 0, W, H); x.restore(); i = j; continue; }
+    }
     if (o.op === 'negate') { x.save(); x.globalCompositeOperation = 'difference'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.restore(); continue; }
     if (o.op === 'matrix') { matrixPass(x, W, H, o.m.map(v => v * (o.k ?? 1))); continue; }
     if (['mirror', 'grid', 'transform', 'glow', 'blur'].includes(o.op)) {
@@ -2257,6 +2386,15 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   if (st.anim === 'type' && av < 1) shown = Math.floor(av * all);
   if (st.out === 'type' && ao < 1) shown = Math.min(shown, Math.floor(ao * all));
   let left = shown;
+  // WebKit draws shadowed text at full strength whatever globalAlpha says (the default Title popped on instead of fading,
+  // in the preview and the export): such text is drawn solid on a scratch canvas, then laid on at the fade
+  const main = ctx, fade = ctx.globalAlpha;
+  if (st.shadow && fade < 1) {
+    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d');
+    sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, sx.canvas.width, sx.canvas.height);
+    sx.setTransform(main.getTransform()); sx.font = main.font; sx.textBaseline = 'middle'; sx.lineJoin = 'round';
+    ctx = sx;
+  }
   let gradFill = null; // gradient text: top colour to bottom colour over the whole block
   if (st.grad) { gradFill = ctx.createLinearGradient(0, top, 0, top + lines.length * lh); gradFill.addColorStop(0, st.color); gradFill.addColorStop(1, st.grad); }
   if (st.box) {
@@ -2280,6 +2418,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       cx += w.ww * grow + sp;
     }
   }
+  if (ctx !== main) { main.setTransform(1, 0, 0, 1, 0, 0); main.globalAlpha = fade; main.drawImage(ctx.canvas, 0, 0); ctx = main; }
   ctx.restore();
   if (preview) {
     const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;
@@ -2305,11 +2444,11 @@ function frame(now) {
     const stuck = v && !v.ended && (!S.vMoved || v.paused || v.seeking || v.readyState < 3 || now - S.vAt > 80);
     if (stuck && (S.held += dt) < 1500) S.wall0 += dt; else if (!stuck) S.held = 0;
     S.stuck = stuck && S.held < 1500; // the other tracks wait too (sync), instead of running ahead and being seeked back
-    S.t = Math.min(S.t0 + (now - S.wall0) / 1000, S.end);
+    S.t = Math.min(S.t0 + ((now - S.wall0) / 1000) * S.rate, S.end); // S.rate: L shuttles at 2x, 4x
     const lc = S.leadClip;
     if (moved && !S.stuck && lc && M.get(lc.media)?.kind !== 'image') {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
-      if ((first || was || Math.abs(tl - S.t) > 0.06) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= (tl - S.t) * 1000; S.t = Math.min(tl, S.end); }
+      if ((first || was || Math.abs(tl - S.t) > 0.06 * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
     }
     if (S.t >= S.end) pause();
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
@@ -2325,10 +2464,11 @@ function play() {
   if (S.t >= D - 1e-3) S.t = 0;
   audioOn();
   if (!S.playing) busy(1);
-  Object.assign(S, { playing: true, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
+  shuttleBack(0);
+  Object.assign(S, { playing: true, rate: 1, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { if (S.playing) busy(-1); S.playing = false; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { shuttleBack(0); if (S.playing) busy(-1); S.playing = false; S.rate = 1; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t) {
@@ -2446,6 +2586,7 @@ function addText(name, props = {}, style = {}) { // one undo step, whatever it s
     S.sel = { lane: 'text', id: c.id };
   });
 }
+function editText() { const t = $('#inspector textarea[data-k="c.text"]'); t?.focus(); t?.select(); } // typing after Add text goes into the text, not the shortcuts (it split the video)
 function split() {
   packMain();
   const t = S.t, inside = (x, lane) => t > x.start + 1e-6 && t < x.start + tdur(x, lane) - 1e-6;
@@ -2557,9 +2698,14 @@ async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect
 }
 
 const setStatus = msg => { if (remoteLog) remoteLog.push(String(msg)); const s = $('#clipStatus'); if (s) s.textContent = msg; else toast(msg); };
+const sayIn = sel => msg => { const e = $(sel); if (e) e.textContent = msg; else setStatus(msg); }; // a panel's own status line (job progress toasts sat on the transport)
 let busyN = 0; // the Mac app keeps App Nap off only while this is above 0
 const busy = d => { const was = busyN > 0; busyN = Math.max(0, busyN + d); if (was !== busyN > 0) window.webkit?.messageHandlers?.busy?.postMessage(busyN > 0); };
+const running = new Set(); // clip jobs in flight: a second click (nothing showed progress) reversed the wrong range into a second copy
 async function job(path, body, label, say = setStatus) { // start a server job and poll it, showing progress next to the clip (or where say puts it)
+  const key = body?.media && `${path}:${body.media}:${body.t0 ?? ''}:${body.t1 ?? ''}`;
+  if (running.has(key)) throw new Error(`Already ${label.toLowerCase()} this clip`);
+  if (key) running.add(key);
   busy(1);
   try {
     const { job: id } = await api(path, body);
@@ -2567,10 +2713,10 @@ async function job(path, body, label, say = setStatus) { // start a server job a
       await new Promise(r => setTimeout(r, 500));
       const j = await api(`/api/jobs/${id}`);
       if (j.state === 'done') return j;
-      if (j.state !== 'running') throw new Error((j.error || `${label} failed`).slice(-300));
+      if (j.state !== 'running') throw new Error(j.error || `${label} failed`); // already one plain sentence
       say(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
     }
-  } finally { busy(-1); }
+  } finally { busy(-1); running.delete(key); }
 }
 function kfOp(c, lane, op) {
   const lt = snap(clamp(S.t - c.start, 0, tdur(c, lane))), near = x => Math.abs(x.t - lt) < 0.5 / P.fps;
@@ -2649,9 +2795,11 @@ function moveLane(c, lane) {
 }
 async function removeBackground(c) { // Apple Vision: person segmentation for video, subject lifting (any subject) for photos
   try {
-    const img = M.get(c.media)?.kind === 'image', j = img ? await api('/api/lift', { media: c.media }) : await job('/api/matte', { media: c.media, t0: c.in, t1: c.out }, 'Removing background');
+    const pid = P.id, was = c.media, t0 = c.in, img = M.get(c.media)?.kind === 'image', j = img ? await api('/api/lift', { media: c.media }) : await job('/api/matte', { media: c.media, t0: c.in, t1: c.out }, 'Removing background');
     await loadMedia();
-    change(() => { if (!img) { c.out -= c.in; c.in = 0; } c.media = j.media; }); // the cutout covers just the part the clip uses
+    c = live(c, pid, was);
+    const d = M.get(j.media)?.duration ?? Infinity; // the cutout covers the part the clip used when it started: a trim meanwhile maps onto it
+    change(() => { if (!img) { c.in = clamp(c.in - t0, 0, d); c.out = clamp(c.out - t0, c.in + 1 / P.fps, d); } c.media = j.media; });
     toast('Background removed. Put it on the overlay track over B-roll.');
   } catch (e) { setStatus(e.message); throw e; }
 }
@@ -2700,8 +2848,9 @@ async function splitStems(c, lane) { // Demucs, four stems: vocals, drums, bass,
 }
 async function isolateVoice(c, lane, keep = 'voice') { // Demucs on this Mac: the voice alone, or everything but the voice
   try {
-    const j = await job('/api/isolate', { media: c.media, keep }, keep === 'voice' ? 'Isolating the voice' : 'Removing the voice');
+    const pid = P.id, was = c.media, j = await job('/api/isolate', { media: c.media, keep }, keep === 'voice' ? 'Isolating the voice' : 'Removing the voice');
     await loadMedia();
+    c = live(c, pid, was);
     change(() => {
       if (lane === 'audio') { c.media = j.media; return; } // same length as the source, so the timing holds
       packMain();
@@ -2714,10 +2863,18 @@ async function isolateVoice(c, lane, keep = 'voice') { // Demucs on this Mac: th
     toast(keep === 'voice' ? 'Voice isolated: the clean voice is on the audio track and the clip is muted' : 'Voice removed: the music and ambience are on the audio track and the clip is muted');
   } catch (e) { setStatus(e.message); throw e; }
 }
+function live(c, pid, media) { // after a job: the clip as it is NOW (an undo meanwhile made a new copy of it; another project may be open)
+  if (P.id !== pid) throw new Error('Done, but another project is open now: the result is in the library');
+  const f = LANES.map(L => P[L.key].find(x => x.id === c.id)).find(Boolean);
+  if (!f) throw new Error('Done, but that clip is gone now: the result is in the library');
+  if (media && f.media !== media) throw new Error('Done, but that clip shows another file now: the result is in the library');
+  return f;
+}
 async function remake(c, kind) { // reverse / stabilize render a new library item; the clip switches to it
   try {
-    const j = await job(`/api/${kind}`, { media: c.media }, kind === 'reverse' ? 'Reversing' : 'Stabilizing');
+    const pid = P.id, was = c.media, j = await job(`/api/${kind}`, { media: c.media }, kind === 'reverse' ? 'Reversing' : 'Stabilizing');
     await loadMedia();
+    c = live(c, pid, was); // (a relink meanwhile: don't flip a range the result wasn't made for)
     const d = M.get(j.media).duration;
     change(() => {
       if (kind === 'reverse') { const a = c.in, b = c.out; c.in = Math.max(0, d - b); c.out = Math.min(d, d - a); }
@@ -2729,7 +2886,8 @@ async function remake(c, kind) { // reverse / stabilize render a new library ite
 async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
   const m = M.get(c.media);
   try {
-    const j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out }, 'Finding faces');
+    const pid = P.id, was = c.media, j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out }, 'Finding faces');
+    c = live(c, pid, was);
     change(() => {
       c.fit = 'fill';
       const base = propsAt(c, 0), g0 = geom(m, c, P.w, P.h, { ...base, x: 0, y: 0 }), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
@@ -2933,10 +3091,12 @@ function endPreview(go) { // the confirm bar's answer: remove (or cut out) exact
 async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.value || 'best', mode = 'remove', seed) { // rect in project canvas units; the clip switches to the new copy of its range
   if (S.maskPreview) { S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true; }
   const box = srcBox(c, rect, T); // seed: the confirmed outline (PNG), which SAM 2 then follows through the clip
+  const pid = P.id, was = c.media, a = c.in; // the cleaned copy covers in..out as they were now: a trim meanwhile maps onto it
   const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode, seed }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
   await loadMedia();
-  const a = c.in, d = M.get(j.media).duration;
-  change(() => { c.media = j.media; c.in = 0; c.out = Math.min(d, c.out - a); if (c.beats) c.beats = c.beats.map(b => b - a).filter(b => b >= 0 && b <= c.out); });
+  c = live(c, pid, was);
+  const d = M.get(j.media).duration;
+  change(() => { c.media = j.media; c.in = clamp(c.in - a, 0, d); c.out = clamp(c.out - a, c.in + 1 / P.fps, d); if (c.beats) c.beats = c.beats.map(b => b - a).filter(b => b >= 0 && b <= c.out); });
   const how = { 'sam2+propainter': 'SAM 2 outline + ProPainter', 'sam2+aligned+propainter': 'SAM 2 outline + background from other frames + ProPainter',
     'sam2+aligned': 'SAM 2 outline + background from other frames', propainter: 'ProPainter', 'aligned+propainter': 'background from other frames + ProPainter' }[j.engine] || 'background from other frames';
   if (mode === 'cutout') toast(`Cut out over ${j.frames} frames (SAM 2): everything else is transparent now`);
@@ -2985,7 +3145,8 @@ async function finishTrack(rect) { // rect in project canvas units
 async function autoCaptions(force) { // words come back in source time; map them through each clip's in/out/speed
   const lang = $('#capLang').value, per = +$('#capWords').value, status = $('#capStatus'), btn = $('#btnCaptions');
   packMain();
-  const src = [...P.main, ...($('#capAudio').checked ? P.audio : [])].filter(c => M.get(c.media)?.hasAudio && c.volume > 0);
+  const pid = P.id, speech = () => [...P.main, ...($('#capAudio').checked ? P.audio : [])].filter(c => M.get(c.media)?.hasAudio && c.volume > 0);
+  let src = speech();
   if (!src.length) return toast('Add a clip with speech to the main or audio track first');
   if (P.captions.length && force !== true && !confirm(`Replace the ${P.captions.length} captions on the timeline? Text you edited on them is lost (undo brings it back).`)) return;
   btn.disabled = true;
@@ -2995,6 +3156,9 @@ async function autoCaptions(force) { // words come back in source time; map them
       status.textContent = `Transcribing ${i + 1}/${ids.length}: ${M.get(id).name}…`;
       words.set(id, (await api('/api/transcribe', { media: id, lang })).words);
     }
+    // placed on the timeline as it is NOW (edits while it listened move the words with them), in the project it was asked in
+    if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
+    packMain(); src = speech().filter(c => words.has(c.media));
     const all = [];
     for (const c of src) {
       for (const w of words.get(c.media)) {
@@ -3132,7 +3296,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
   };
   const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => shown(l).map(it => [l, it])), layerFx = P.mute.fx ? [] : shown('fx').filter(f => FX[f.fx]?.layer);
   let text = null;
-  if (items.length || layerFx.length) { // one PNG per interval in which the visible text (and effect overlays) don't change
+  if ((items.length || layerFx.length) && !['mp3', 'wav'].includes(format)) { // one PNG per interval in which the visible text (and effect overlays) don't change; none for sound only
     await Promise.all([...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.weight} 40px "${s.font}"`; }))].map(f => document.fonts.load(f)));
     const cuts = new Set([0, D]);
     for (const [l, it] of items) {
@@ -3150,15 +3314,21 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     }
     const nF = Math.round(D * P.fps), fs = new Set([0, nF]);
     for (const c of cuts) fs.add(Math.floor(c * P.fps)).add(Math.ceil(c * P.fps)); // the frames on either side of every change
-    const fr = [...fs].filter(f => f >= 0 && f <= nF).sort((a, b) => a - b);
-    const cv = new OffscreenCanvas(w, h), ctx = cv.getContext('2d'), pngs = [], seen = new Map(), spans = [];
+    const sf = Math.floor(clamp(S.t, 0, Math.max(0, D - 1 / P.fps)) * P.fps + 1e-6); // a still: only its own frame's text (after one span from 0: the spans play back to back)
+    const fr = format === 'png' ? [...new Set([0, sf, sf + 1])] : [...fs].filter(f => f >= 0 && f <= nF).sort((a, b) => a - b);
+    const cv = new OffscreenCanvas(w, h), ctx = cv.getContext('2d', { willReadFrequently: true }), pngs = [], seen = new Map(), spans = [];
     for (let i = 0; i + 1 < fr.length; i++) { // spans on the frame grid: the export can't put a change between two frames
       const a = fr[i] / P.fps, b = fr[i + 1] / P.fps;
       ctx.clearRect(0, 0, w, h);
       drawTexts(ctx, a, k, false); // exactly what the preview draws on that frame (same function, same time)
-      const url = await blobURL(await cv.convertToBlob({ type: 'image/png' }));
-      let idx = seen.get(url);
-      if (idx === undefined) { idx = pngs.push(url) - 1; seen.set(url, idx); }
+      // the same picture again (a looping title comes back every half second) is found by its pixels, not encoded again:
+      // the PNG encode was most of the 20 s before the render started
+      const px = new Uint32Array(ctx.getImageData(0, 0, w, h).data.buffer);
+      let h1 = 2166136261, h2 = 0x9e3779b9;
+      for (let j = 0; j < px.length; j++) { const v = px[j]; h1 = Math.imul(h1 ^ v, 16777619); h2 = Math.imul(h2 ^ v, 2246822519) ^ (h2 >>> 13); }
+      const key = `${h1 >>> 0}:${h2 >>> 0}`;
+      let idx = seen.get(key);
+      if (idx === undefined) { idx = pngs.push(await blobURL(await cv.convertToBlob({ type: 'image/png' }))) - 1; seen.set(key, idx); }
       const last = spans.at(-1);
       if (last && last.i === idx) last.end = b; else spans.push({ i: idx, start: a, end: b });
     }
@@ -3179,7 +3349,7 @@ function openExport() {
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <p class="muted" id="exHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
-    <div class="actions" id="exActions"><span id="exDone"></span><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
+    <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = tc(total()), fps = +P.fps.toFixed(3);
     $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f);
@@ -3189,36 +3359,51 @@ function openExport() {
       wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${tc(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
   };
   $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();
+  if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
 }
-async function runExport() {
-  const go = $('#exGo'), st = $('#exStatus'), bar = $('.dialog .progress');
-  const [, w, h] = exportSizes()[+$('#exRes').value];
-  go.disabled = true; S.exporting = true; bar.hidden = false; $('[data-close]').disabled = true; $('#exDone').innerHTML = '';
-  st.textContent = 'Rendering text layer…';
+function exportUI(pct, msg, done) { // the dialog when it's open (it can be closed and opened again while rendering) and the Export button
+  const bar = $('.dialog .progress'), st = $('#exStatus'), busy = !!S.exporting;
+  if (bar && (busy || pct)) { bar.hidden = false; bar.firstElementChild.style.width = `${pct}%`; }
+  if (st && msg != null) st.innerHTML = msg;
+  if (done != null && $('#exDone')) $('#exDone').innerHTML = done;
+  if ($('#exGo')) $('#exGo').disabled = busy;
+  if ($('#exCancel')) $('#exCancel').hidden = !S.exporting?.job;
+  const b = $('#btnExport');
+  b.classList.toggle('busy', busy); b.style.setProperty('--pct', `${busy ? pct : 0}%`); b.title = busy ? `Exporting… ${pct}%` : '';
+}
+async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
+  if (S.exporting) return;
+  const [, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
+  S.exporting = { pct: 0 };
+  exportUI(0, 'Rendering text layer…', '');
+  const tell = msg => { if ($('#modal').hidden || !$('#exStatus')) toast(msg); };
   try {
-    if ($('#exFmt').value === 'srt') {
-      const file = await saveSRT($('#exName').value.trim());
-      bar.firstElementChild.style.width = '100%'; st.innerHTML = `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`;
-      $('#exDone').innerHTML = `<button data-reveal="${esc(file)}">Show in Finder</button>`;
+    if (fmt === 'srt') {
+      const file = await saveSRT(name);
+      S.exporting = null;
+      exportUI(100, `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
       return;
     }
-    const plan = await buildPlan(w, h, $('#exQ').value, $('#exName').value.trim() || P.name, $('#exLoud').checked, $('#exFmt').value);
+    const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').checked, fmt);
     plan.rate = +$('#exRate').value;
     const { job } = await api('/api/export', plan);
+    S.exporting.job = job;
     for (;;) {
       await new Promise(r => setTimeout(r, 400));
-      const j = await api(`/api/jobs/${job}`);
-      bar.firstElementChild.style.width = `${Math.round((j.progress || 0) * 100)}%`;
+      const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
-        st.innerHTML = `Saved <b>${esc(j.file)}</b> in Movies/Cutroom/exports`;
-        $('#exDone').innerHTML = `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`;
+        S.exporting = null;
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        tell(`Exported ${j.file} (Movies/Cutroom/exports)`);
         break;
       }
-      if (j.state !== 'running') throw new Error((j.error || 'export failed').slice(-300));
-      st.textContent = `Rendering… ${Math.round(j.progress * 100)}%`;
+      if (j.state === 'cancelled') { S.exporting = null; exportUI(0, 'Export cancelled.'); tell('Export cancelled'); break; }
+      if (j.state !== 'running') throw new Error(j.error || 'The export failed');
+      S.exporting.pct = pct;
+      exportUI(pct, `Rendering… ${pct}%`);
     }
-  } catch (e) { st.textContent = `Export failed: ${e.message}`; }
-  finally { go.disabled = false; S.exporting = false; const cl = $('[data-close]'); if (cl) cl.disabled = false; }
+  } catch (e) { S.exporting = null; exportUI(0, `Export failed: ${esc(e.message)}`); tell(`Export failed: ${e.message}`); }
+  finally { if (S.exporting) { S.exporting = null; exportUI(0); } }
 }
 
 // ---------- projects ----------
@@ -3234,6 +3419,7 @@ function migrate(p) {
 function newProject(ratio = '9:16') { const [w, h] = RATIOS[ratio]; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h }); }
 function setProject(p) {
   if (S.playing) pause();
+  flushSave(); // the project being left
   P = migrate(p); undo = []; redo = []; S.sel = null; S.multi.clear(); S.t = 0;
   for (const v of pool.values()) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
   pool.clear();
@@ -3257,7 +3443,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
 
 async function trashProject(id, name) { // reversible: the server moves it to Movies/Cutroom/trash
   if (!confirm(`Delete "${name}"? It moves to Movies/Cutroom/trash, so it can be recovered.`)) return;
-  if (id === P?.id) clearTimeout(saveTimer);
+  if (id === P?.id) { clearTimeout(saveTimer); saveTimer = 0; } // (a pending save would put it back)
   await api(`/api/projects/${id}/trash`, {});
   if (id === P?.id) { const list = await api('/api/projects'); if (list[0]) await openProject(list[0].id); else { setProject(newProject('9:16')); scheduleSave(); } }
   openProjects();
@@ -3320,6 +3506,7 @@ function drag(e, lane, c, el) {
   const vert = mode === 'move' && MULTI.includes(lane) && !group.length, LH = LANES.find(L => L.key === lane)?.h || 42, R0 = vert ? rows(lane).row : null; // up / down: another track
   let moved = false;
   if (S.playing) pause();
+  const an = lane === 'main' ? anchors() : []; // linked clips follow a main-track trim live, and a reorder on the drop
   const move = ev => {
     const dx = ev.clientX - x0, dt = dx / S.pps;
     if (!moved && Math.abs(dx) < 3 && !(vert && Math.abs(ev.clientY - y0) >= 3)) return;
@@ -3329,6 +3516,7 @@ function drag(e, lane, c, el) {
       if (c.media) c.out = clamp(o.out + dt * sp, o.in + minD * sp, maxOut); else c.dur = Math.max(minD, o.dur + dt);
       const [t1, dd] = magnet(c.start + len(c), c);
       if (dd < Infinity) { if (c.media) c.out = clamp(c.in + (t1 - c.start) * sp, c.in + minD * sp, maxOut); else c.dur = Math.max(minD, t1 - c.start); }
+      reanchor(an);
     } else if (mode === 'l') {
       let d = lane === 'main' ? dt : Math.max(dt, -o.start);
       if (lane !== 'main') { const [t1, dd] = magnet(o.start + d, c); if (dd < Infinity) d = t1 - o.start; }
@@ -3338,6 +3526,7 @@ function drag(e, lane, c, el) {
       if (o.kf) c.kf = o.kf.map(f => ({ ...f, t: f.t - d })); // keyframes, envelope and word timing stay on their content
       if (o.vkf) c.vkf = o.vkf.map(f => ({ ...f, t: f.t - d }));
       if (o.words) { c.words = o.words.map(w => ({ ...w, s: w.s - d, e: w.e - d })).filter(w => w.e > 0); c.text = c.words.map(w => w.w).join(' '); }
+      reanchor(an);
     } else {
       c.start = snapTo(Math.max(0, o.start + dt), c, lane);
       const dd = Math.max(c.start - o.start, -Math.min(o.start, ...group.map(g => g[1]))); // the group keeps its spacing and stops at 0
@@ -3360,6 +3549,7 @@ function drag(e, lane, c, el) {
       const mid = o.start + (ev.clientX - x0) / S.pps + tdur(c, 'main') / 2, rest = P.main.filter(x => x !== c);
       rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, c);
       P.main = rest;
+      reanchor(an);
     }
     if (S.dragLane) { S.dragLane = null; restackTracks(lane); }
     if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
@@ -3491,7 +3681,7 @@ function wire() {
   $('#zoom').addEventListener('input', e => setZoom(8 * 2 ** +e.target.value));
   $('#fileInput').addEventListener('click', () => window.webkit?.messageHandlers?.pick?.postMessage('library')); // the app clones picked media by path
   $('#fileInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
-  $('#textPresets').addEventListener('click', e => { const b = e.target.closest('[data-addtext]'); if (b) addText(b.dataset.addtext); });
+  $('#textPresets').addEventListener('click', e => { const b = e.target.closest('[data-addtext]'); if (b) { addText(b.dataset.addtext); editText(); } });
   $('#capPresets').addEventListener('click', e => {
     const b = e.target.closest('[data-cap]');
     if (b) { change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[b.dataset.cap], y: P.capStyle.y }; }); toast(`Caption style: ${b.dataset.cap}`); }
@@ -3521,7 +3711,7 @@ function wire() {
   for (const [id, unit] of [['trDur', 's'], ['lookAmt', '%']]) $(`#${id}`).addEventListener('input', e => { fill(e.target); e.target.nextElementSibling.textContent = fmt(+e.target.value, unit); });
   $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
   $('#btnTrNone').addEventListener('click', () => applyTransition('none'));
-  $('#btnAddText').addEventListener('click', () => addText('Subtitle'));
+  $('#btnAddText').addEventListener('click', () => { addText('Subtitle'); editText(); });
   $('#musicStyles').innerHTML = Object.keys(MUSIC_STYLES).map(k => `<button data-mstyle="${esc(k)}">${esc(k)}</button>`).join('');
   $('#musicStyles').addEventListener('click', e => { const b = e.target.closest('[data-mstyle]'); if (b) { $('#musicPrompt').value = MUSIC_STYLES[b.dataset.mstyle]; for (const x of $('#musicStyles').children) x.classList.toggle('on', x === b); } });
   $('#btnMusic').addEventListener('click', async () => {
@@ -3546,6 +3736,7 @@ function wire() {
   $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
   $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
   $('#btnFit').addEventListener('click', fitTimeline);
+  $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
   $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) { SCOPE.kind = b.dataset.scope; for (const x of $('#scope').querySelectorAll('[data-scope]')) x.classList.toggle('on', x === b); S.dirty = true; } });
@@ -3694,6 +3885,7 @@ function wire() {
     addEventListener('pointerup', up);
   });
 
+  $('#cv').addEventListener('dblclick', () => { if (['text', 'captions'].includes(S.sel?.lane)) editText(); }); // the first click selected it
   $('#cv').addEventListener('pointermove', e => { // the cursor says what a handle does
     if (e.buttons || S.pick || S.keyPick || !P) return;
     const cv = $('#cv'), r = cv.getBoundingClientRect(), px = cv.width / r.width, h = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(q => q.id === S.sel.id);
@@ -3874,15 +4066,16 @@ function wire() {
   });
 
   const modalClick = async e => {
-    if (e.target.id === 'modal') { if (!S.exporting) closeModal(); return; }
+    if (e.target.id === 'modal') { closeModal(); return; } // an export carries on (the Export button shows how far)
     const b = e.target.closest('button');
     if (!b) return;
     const d = b.dataset;
-    if ('close' in d) { if (!S.exporting) closeModal(); } // closing mid-render would lose the result
+    if ('close' in d) closeModal();
     else if (d.new) { setProject(newProject(d.new)); scheduleSave(); closeModal(); }
     else if ('newsel' in d) { setProject(newProject($('#newRatio').value)); scheduleSave(); closeModal(); }
     else if (d.open) { await openProject(d.open).catch(err => toast(err.message)); closeModal(); }
     else if (b.id === 'exGo') runExport();
+    else if (b.id === 'exCancel' && S.exporting?.job) { b.disabled = true; api(`/api/jobs/${S.exporting.job}/cancel`, {}).catch(() => {}); }
     else if (d.trash) trashProject(d.trash, d.name).catch(err => toast(err.message));
     else if (d.dup) { const p = await api(`/api/projects/${d.dup}`); p.id = hex12(); p.name = `${p.name} (copy)`; await api(`/api/projects/${p.id}`, p, 'PUT'); openProjects(); }
     else if ('savetpl' in d) { await saveTemplate(); openTemplates(); }
@@ -3896,8 +4089,10 @@ function wire() {
 
   addEventListener('keydown', e => {
     if (!P) return;
-    if (!$('#modal').hidden) { if (e.key === 'Escape' && !S.exporting) closeModal(); return; }
+    if (!$('#modal').hidden) { if (e.key === 'Escape') closeModal(); return; }
+    if (e.key === 'Escape' && e.target.matches('#inspector textarea')) { e.target.blur(); return; } // back to the timeline keys
     if (e.target.matches('textarea, select, input:not([type=range]):not([type=checkbox]):not([type=color])')) return;
+    if (e.repeat && ['Space', 'KeyF', 'KeyM'].includes(e.code)) { e.preventDefault(); return; } // a held key toggles once, not on every repeat
     const mod = e.metaKey || e.ctrlKey, key = e.key.toLowerCase();
     const field = e.target.matches('input[type=range], input[type=checkbox], input[type=color]');
     if (!$('#confirmBar').hidden && (key === 'enter' || key === 'escape')) { e.preventDefault(); return endPreview(key === 'enter' ? 'ok' : null); }
@@ -3909,6 +4104,14 @@ function wire() {
     else if (mod && e.code === 'KeyV') { e.preventDefault(); if (e.altKey) pasteLook(); else paste(); }
     else if (mod && e.code === 'KeyA') { e.preventDefault(); selectAll(); }
     else if (!mod && /^Digit[1-6]$/.test(e.code) && P.main.some(c => c.mc)) { e.preventDefault(); mcCut(+e.code.slice(5) - 1); }
+    else if (!mod && e.code === 'KeyL') { e.preventDefault(); shuttle(1); }
+    else if (!mod && e.code === 'KeyJ') { e.preventDefault(); shuttle(-1); }
+    else if (!mod && e.code === 'KeyK') { e.preventDefault(); pause(); }
+    else if (!mod && (key === 'arrowup' || key === 'arrowdown') && !field) { e.preventDefault(); const pts = editPoints(), t = snap(S.t); seekTo(key === 'arrowup' ? (pts.filter(x => x < t - 1e-6).at(-1) ?? 0) : (pts.find(x => x > t + 1e-6) ?? total())); }
+    else if (mod && (e.key === '=' || e.key === '+' || e.key === '-')) { e.preventDefault(); const sc = $('#tlScroll'); setZoom(S.pps * (e.key === '-' ? 0.8 : 1.25), clamp(S.t * S.pps - sc.scrollLeft, 0, sc.clientWidth)); }
+    else if (!mod && e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); fitTimeline(); }
+    else if (!mod && e.key === '?') { e.preventDefault(); shortcuts(); }
+    else if (e.altKey && !mod && (key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); nudge(key === 'arrowleft' ? -1 : 1); }
     else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
     else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
     else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
@@ -3939,7 +4142,7 @@ function aiShape(shape) { // generation size for a shape; "canvas" follows the p
 async function aiImage({ prompt, shape = 'canvas', sticker = false, steps = 8, seed, put = 'overlay', start = S.t, duration }) {
   const [w, h] = aiShape(shape), st = $('#aiStatus');
   if (st) st.textContent = 'Generating on this Mac…';
-  const jb = await job('/api/ai/image', { prompt, w, h, steps, seed, sticker }, 'Generating image');
+  const jb = await job('/api/ai/image', { prompt, w, h, steps, seed, sticker }, 'Generating image', sayIn('#aiStatus'));
   await loadMedia();
   if (st) st.textContent = `Done (seed ${jb.seed}).`;
   if (put === 'main' || put === 'overlay') {
@@ -3968,7 +4171,7 @@ async function aiVideo({ prompt = '', image, clip, ratio, quality = 'fast', put 
   return { media: j.media, seed: j.seed };
 }
 async function aiVoice({ text, voice = 'af_heart', speed = 1, at = S.t }) {
-  const jb = await job('/api/ai/voice', { text, voice, speed }, 'Generating voice');
+  const jb = await job('/api/ai/voice', { text, voice, speed }, 'Generating voice', sayIn('#aiVoiceStatus'));
   await loadMedia();
   addMedia(jb.media, 'audio', at);
   return brief(...cfind(S.sel.id));
@@ -3980,16 +4183,15 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
   const vids = [...new Set((Array.isArray(media) ? media : [media]).map(q => mediaBy(q)))].filter(m => m.kind === 'video');
   if (!vids.length) throw new Error('pick at least one video');
   if (music === 'ai') { // music made for this edit: the style's sound, as long as the edit asks (or the longest MusicGen piece)
-    const st0 = $('#scStatus'), say0 = x => { if (st0) st0.textContent = x; };
-    const r = await aiMusic({ prompt: COMBINE_MUSIC[style] || COMBINE_MUSIC.balanced, duration: Math.min(60, +length || 60), add: false, say: say0 });
+    const r = await aiMusic({ prompt: COMBINE_MUSIC[style] || COMBINE_MUSIC.balanced, duration: Math.min(60, +length || 60), add: false, say: sayIn('#scStatus') });
     music = r.id;
   }
   const mus = music ? mediaBy(music) : null;
   if (mus && !mus.hasAudio) throw new Error(`${mus.name} has no sound`);
   if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
-  const st = $('#scStatus'), say = x => { if (st) st.textContent = x; };
+  const say = sayIn('#scStatus');
   say('Looking at every shot…');
-  const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id, sound }, 'Combining');
+  const plan = await job('/api/ai/combine', { media: vids.map(m => m.id), target: +length || 0, style, order, music: mus?.id, sound }, 'Combining', say);
   setProject(newProject(ratio));
   P.name = plan.title || `Smart combine ${new Date().toLocaleDateString()}`;
   const slow = Math.min(...vids.map(m => m.fps || 30)); // the footage's frame rate (60 fps camera clips stay smooth), never above the slowest clip's
@@ -4037,9 +4239,9 @@ async function smartCombine({ media, length = 30, style = 'balanced', order = 'a
 async function makeShorts({ media, count = 3, min = 15, max = 45, captions = true, reframe = true, title = true, lang = 'auto' }) { // long video -> shorts, on this Mac
   const m = mediaBy(media);
   if (m.kind !== 'video' || !m.hasAudio) throw new Error('pick a video with speech');
-  const st = $('#hlStatus'), say = x => { if (st) st.textContent = x; };
+  const say = sayIn('#hlStatus');
   say('Reading the transcript and picking the best moments…');
-  const { clips } = await job('/api/ai/highlights', { media: m.id, count, min, max, lang }, 'Finding highlights');
+  const { clips } = await job('/api/ai/highlights', { media: m.id, count, min, max, lang }, 'Finding highlights', say);
   const made = [];
   for (const [i, h] of clips.entries()) {
     say(`Building short ${i + 1} of ${clips.length}: ${h.title || ''}`);
@@ -4067,7 +4269,7 @@ async function translateCaptions({ to }) { // whole sentences are translated, th
     const g = groups.at(-1), prev = g?.at(-1);
     if (prev && c.start - (prev.start + prev.dur) < 0.6 && !/[.?!…。？！]$/.test(prev.text.trim())) g.push(c); else groups.push([c]);
   }
-  const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating');
+  const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating', sayIn('#trStatus'));
   const per = Math.max(1, +$('#capWords').value || 3), CJK = '぀-ヿ㐀-鿿＀-￯　-〿';
   change(() => {
     const out = [];
@@ -4098,7 +4300,7 @@ const MUSIC_STYLES = { // prompts MusicGen does well with
   Funk: 'funky groove, slap bass, wah guitar, tight drums, 105 bpm', Trap: 'dark trap beat, heavy 808, rolling hi-hats, 140 bpm' };
 async function aiMusic({ prompt, duration = 20, seed, at = S.t, add = true, say }) { // music from a description, on this Mac (MusicGen): into the library, and onto the audio track
   if (!String(prompt || '').trim()) throw new Error('describe the music');
-  const j = await job('/api/ai/music', { prompt, dur: duration, seed }, 'Making music', say || (x => { const e = $('#musicStatus'); if (e) e.textContent = x; else setStatus(x); }));
+  const j = await job('/api/ai/music', { prompt, dur: duration, seed }, 'Making music', say || sayIn('#musicStatus'));
   await loadMedia();
   const m = M.get(j.media);
   if (add) addMedia(j.media, 'audio', at);
@@ -4108,7 +4310,7 @@ async function hookTitles() {
   packMain();
   const ranges = P.main.filter(c => M.get(c.media)?.hasAudio).map(c => ({ media: c.media, in: c.in, out: c.out }));
   if (!ranges.length) throw new Error('no speech on the main track');
-  return job('/api/ai/hooks', { ranges, lang: $('#capLang').value }, 'Writing hooks');
+  return job('/api/ai/hooks', { ranges, lang: $('#capLang').value }, 'Writing hooks', sayIn('#capStatus'));
 }
 function addHook(text) { S.t = 0; addText('Title', { text, dur: 3, y: 0.16 }, { anim: 'pop' }); return brief(P.text.at(-1), 'text'); }
 async function loadAI() { // fill the AI tab from what is installed
@@ -4169,7 +4371,7 @@ function merge(o, patch) { // deep merge; null deletes
 }
 async function waitFrame() { // the preview shows the frame at S.t: every element at its time, then painted
   paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
-  const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && Math.abs(v.currentTime - (v._want ?? v.currentTime)) <= 0.5 / P.fps + 0.002);
+  const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && srcFrame(v, v.currentTime) === srcFrame(v, v._want ?? v.currentTime));
   const t0 = performance.now(); // wall clock, not a count: a covered window throttles timers and decodes no video
   for (let kick = true; performance.now() - t0 < 6000 && ![...(S.live || [])].every(at);) { // re-paint re-issues a seek skipped mid-seek
     if (kick && performance.now() - t0 > 2500) { kick = false; for (const v of S.live || []) if (v.getAttribute('src') && v.readyState < 2) v.load(); } // a first load that stalled: ask again

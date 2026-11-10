@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
-const B = 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
 const STUB = /\/api\/(matte|isolate|remove_object|mask_preview|ai\/|track$|faces|stabilize|reverse|slowmo|transcribe|transcript|fillers|lift|tts)/;
 const get = async p => (await fetch(B + p)).json();
 const EXP = `${LIB}/exports`;
@@ -104,11 +104,17 @@ const undoBack = async (label, was) => { // one undo returns exactly what was th
 };
 let actions = 0;
 const act = async (label, fn) => {
-  const was = await ev(() => JSON.stringify(P));
-  try { await fn(); } catch (e) { findings.push({ label, bad: [`could not interact: ${String(e.message).split('\n')[0]}`], errs: [], toasts: [] }); }
-  await settle();
-  await check(label);
-  await undoBack(label, was);
+  const t0 = Date.now(), was = await ev(() => JSON.stringify(P));
+  if (process.env.FUZZ_LOG) console.log(`… ${label}`); // FUZZ_LOG=1: each action as it starts (a stuck one is the last line)
+  // a step that never returns (the page stopped answering) ends the run with its name, not an endless wait
+  const step = (name, p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`STUCK 60 s in ${name}`)), 60000))]);
+  try {
+    try { await step('the action', fn()); } catch (e) { if (/^STUCK/.test(e.message)) throw e; findings.push({ label, bad: [`could not interact: ${String(e.message).split('\n')[0]}`], errs: [], toasts: [] }); }
+    await step('settling', settle());
+    await step('the check', check(label));
+    await step('the undo', undoBack(label, was));
+  } catch (e) { console.log(`FAIL ${label}: ${e.message}`); for (const f of findings) console.log(`FAIL ${f.label}\n     ${[...f.bad, ...f.errs].join('\n     ')}`); process.exit(2); }
+  if (Date.now() - t0 > 5000) console.log(`slow action (${((Date.now() - t0) / 1000).toFixed(1)} s): ${label}`);
   actions++;
 };
 const run = name => !only || name.includes(only);
@@ -125,7 +131,7 @@ if (run('inspector')) for (const [cname, sel] of Object.entries(contexts)) {
       await focus(tab);
       const el = page.locator('#inspector :is(button,input,select,textarea,output):not(.itabs button)').nth(i);
       const info = await el.evaluate(e => ({ tag: e.tagName, type: e.type, k: e.dataset.k, vis: !!e.offsetParent && !e.disabled, txt: (e.textContent || e.closest('label')?.querySelector('span')?.textContent || '').trim().slice(0, 30),
-        sec: e.closest('.isec')?.querySelector('h4')?.textContent, min: e.min, max: e.max, opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] })).catch(() => null);
+        sec: e.closest('.isec')?.querySelector('h4')?.textContent, min: e.min, max: e.max, opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] }), null, { timeout: 3000 }).catch(() => null); // gone (the list changed): skipped, not waited on for ever
       if (!info || !info.vis) continue;
       const base = `${cname} › ${tab || '-'} › ${info.k || info.txt || info.tag}`;
       if (info.tag === 'INPUT' && info.type === 'range') {
@@ -150,7 +156,7 @@ if (run('inspector')) for (const [cname, sel] of Object.entries(contexts)) {
 if (run('panes')) {
   const tabsR = await ev(() => [...document.querySelectorAll('.rail [data-tab]')].map(x => x.dataset.tab));
   for (const tab of tabsR) for (const selCtx of [null, contexts.main, contexts['overlay video']]) {
-    const focus = () => ev(([tab, sel]) => { S.sel = sel && { ...sel }; S.multi.clear(); renderAll(); openTab(tab); }, [tab, selCtx]);
+    const focus = () => ev(([tab, sel]) => { S.sel = sel && { ...sel }; S.multi.clear(); G.mfilter = 'all'; renderAll(); openTab(tab); }, [tab, selCtx]); // (a filter clicked before shortens the list)
     await focus();
     await settle();
     const q = `#tab-${tab} :is(button, select, input[type=checkbox])`;
@@ -158,7 +164,7 @@ if (run('panes')) {
     for (let i = 0; i < n; i++) {
       await focus();
       const el = page.locator(q).nth(i);
-      const info = await el.evaluate(e => ({ tag: e.tagName, vis: !!e.offsetParent && !e.disabled, id: e.id, d: JSON.stringify(e.dataset), txt: (e.textContent || e.title || '').trim().slice(0, 30), opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] })).catch(() => null);
+      const info = await el.evaluate(e => ({ tag: e.tagName, vis: !!e.offsetParent && !e.disabled, id: e.id, d: JSON.stringify(e.dataset), txt: (e.textContent || e.title || '').trim().slice(0, 30), opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] }), null, { timeout: 3000 }).catch(() => null); // gone (the list changed): skipped, not waited on for ever
       if (!info || !info.vis) continue;
       if (['btnRec'].includes(info.id) || /openproj/.test(info.d)) continue; // the mic; opening another project
       const base = `pane ${tab}${selCtx ? ` (with ${selCtx.lane} selected)` : ''} › ${info.id || info.txt || info.d}`;
@@ -241,7 +247,7 @@ if (run('modals')) {
     for (let i = 0; i < n; i++) {
       await ev(() => closeModal());
       await page.click(open).catch(() => {}); await page.waitForSelector('#modal:not([hidden]) .dialog').catch(() => {}); await settle();
-      const el = page.locator(q).nth(i), info = await el.evaluate(e => ({ tag: e.tagName, type: e.type, id: e.id, d: { ...e.dataset }, txt: (e.textContent || e.name || '').trim().slice(0, 30), vis: !!e.offsetParent && !e.disabled, opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] })).catch(() => null);
+      const el = page.locator(q).nth(i), info = await el.evaluate(e => ({ tag: e.tagName, type: e.type, id: e.id, d: { ...e.dataset }, txt: (e.textContent || e.name || '').trim().slice(0, 30), vis: !!e.offsetParent && !e.disabled, opts: e.tagName === 'SELECT' ? [...e.options].map(o => o.value) : [] }), null, { timeout: 3000 }).catch(() => null); // gone (the list changed): skipped, not waited on for ever
       if (!info?.vis) continue;
       const d = info.d;
       if (d.open || d.dup || d.reveal || d.play || 'savetpl' in d || d.deltpl || d.trash || info.id === 'exGo') continue; // the user's own projects, Finder, players, a real export

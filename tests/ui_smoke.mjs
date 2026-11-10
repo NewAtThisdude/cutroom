@@ -8,7 +8,7 @@ const b = await webkit.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));
-  await page.goto('http://127.0.0.1:4610/', { waitUntil: 'load' });
+  await page.goto((process.env.B || 'http://127.0.0.1:4610') + '/', { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
   const ev = (f, a) => page.evaluate(f, a);
   const id = (await ev(() => api('/api/projects'))).find(p => /cinematic/.test(p.name)).id;

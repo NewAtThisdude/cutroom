@@ -200,6 +200,16 @@ final class EditorView: WKWebView {
         return failed
     }
 
+    // The page saves 400 ms after an edit: quitting inside that window lost the edit. Let it save first (2 s at most).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ready, let web else { return .terminateNow }
+        var answered = false
+        let go = { if !answered { answered = true; NSApp.reply(toApplicationShouldTerminate: true) } }
+        web.callAsyncJavaScript("await flushSave()", in: nil, in: .page) { _ in go() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { go() }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ note: Notification) {
         guard let p = server, p.isRunning else { return }
         server = nil // not restarted by watch()

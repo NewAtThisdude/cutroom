@@ -7,7 +7,7 @@ import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
+const B = process.env.B || 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain)/; // 28: a scaled or turning clip's edges land a pixel apart
 const APPROX = /effect (blur|pixelate)|transition pixelize|blur bg|clip blur|beauty|glow/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
@@ -74,6 +74,7 @@ add('chroma key', `main(B); ov(A).key = { color: '#ffffff', sim: 0.25, blend: 0.
 for (const tr of opt.transitions) add(`transition ${tr}`, `main(A).tr = { type: '${tr}', d: 1 }; main(B); packMain(); T = P.main[1].start + 0.3`); // 30 %: at 50 % Zoom has zoomed into one pixel
 for (const fx of Object.keys(opt.effects)) add(`effect ${fx}`, `main(A); P.fx.push({ id: hex12(), fx: '${fx}', start: 0, dur: 4, amt: 1 }); T = 1.5`);
 for (const tp of opt.textPresets) add(`text ${tp}`, `main(A); text('${tp}'); T = 1.5`);
+add('text Title fading in, half way', `main(A); text('Title'); P.text.at(-1).style.anim = 'fade'; T = 0.15`); // a shadow made WebKit ignore the fade
 for (const an of opt.clipIn.filter(x => x !== 'none')) add(`clip in ${an}`, `main(B); ov(A).anim = { in: '${an}', ind: 1, out: 'none', outd: 0.5, loop: 'none', amt: 1 }; T = 0.5`);
 for (const lp of opt.comboMotion.filter(x => x !== 'none')) add(`motion ${lp}`, `main(B); Object.assign(ov(A), { scale: 0.6 }).anim = { in: 'none', out: 'none', ind: 0.5, outd: 0.5, loop: '${lp}', amt: 1 }; T = 1.7`);
 const SC = S0.filter(([n]) => !only || n.includes(only));

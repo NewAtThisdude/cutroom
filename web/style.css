@@ -266,7 +266,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .clip .h.l { left: 0; } .clip .h.r { right: 0; }
 .clip:hover .h, .clip.sel .h { background: rgba(255, 255, 255, .22); }
 .clip.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff, 0 0 0 4px rgba(139, 92, 246, .45); }
-.clip.sel .h { background: #fff; }
+.clip.sel .h { background: #fff; z-index: 4; } /* above the transition diamond and an overlapping neighbour: a drag on the edge trims it */
 .kfm { position: absolute; bottom: 3px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--accent2); border: 1px solid #10061f; pointer-events: none; }
 .bm { position: absolute; top: 0; width: 1px; height: 7px; background: rgba(255, 255, 255, .75); pointer-events: none; }
 .mk { position: absolute; bottom: 0; width: 9px; height: 9px; margin-left: -4.5px; background: var(--ok); clip-path: polygon(50% 100%, 0 0, 100% 0); pointer-events: none; }
@@ -303,7 +303,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 @media (prefers-reduced-motion: reduce) { .pthumb, .pacts { transition: none; } .pitem:hover .pthumb { transform: none; } }
 .progress { height: 6px; border-radius: 3px; background: #0a0c13; overflow: hidden; margin: 14px 0 4px; }
 .progress div { height: 100%; width: 0; background: var(--grad); transition: width .3s; }
-.toast { position: fixed; left: 50%; bottom: calc(clamp(300px, 36vh, 440px) + 16px); transform: translateX(-50%); background: rgba(26, 30, 46, .96); border: 1px solid var(--line2); padding: 9px 16px; border-radius: 999px; z-index: 30; max-width: 70vw; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); font-weight: 500; }
+.toast { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); pointer-events: none; background: rgba(26, 30, 46, .96); border: 1px solid var(--line2); padding: 9px 16px; border-radius: 999px; z-index: 30; max-width: 70vw; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); font-weight: 500; }
 .toast[hidden] { display: none; }
 .pool { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; overflow: hidden; opacity: 0; pointer-events: none; }
 body.dropping::after { content: "Drop to import"; position: fixed; inset: 12px; border: 2px dashed var(--accent); border-radius: 18px; display: grid; place-items: center; font-size: 22px; font-weight: 700; color: var(--accent2); background: rgba(7, 8, 12, .82); z-index: 40; pointer-events: none; }
@@ -325,7 +325,7 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 
 .clip svg.fade { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .clip svg.fade path { fill: rgba(0, 0, 0, .45); stroke: rgba(255, 255, 255, .7); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.clip .fh { position: absolute; top: 1px; width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); cursor: ew-resize; z-index: 2; display: none; }
+.clip .fh { position: absolute; top: 1px; width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); cursor: ew-resize; z-index: 5; display: none; } /* above the selected clip's trim handles (4) */
 .clip:hover .fh, .clip.sel .fh { display: block; }
 .clip svg.env { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .clip svg.env polyline { fill: none; stroke: #ffd166; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -354,3 +354,9 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .scope .seg button { padding: 3px 8px; font-size: 11px; }
 .scope canvas { width: 256px; height: 150px; border-radius: 6px; }
 #btnScope.on { color: var(--text); background: var(--raised); }
+#clipStatus:empty { display: none; }
+.keys { border-collapse: collapse; margin: 6px 0 12px; font-size: 13px; }
+.keys td { padding: 4px 10px 4px 0; vertical-align: top; }
+.keys kbd { font: 600 12px ui-monospace, monospace; background: var(--panel2); border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+#btnExport.busy { background: linear-gradient(90deg, rgba(255, 255, 255, .32) var(--pct), rgba(0, 0, 0, .25) var(--pct)), var(--grad); } /* an export running with its dialog closed */
+#btnLink.on { color: var(--accent2); border-color: rgba(139, 92, 246, .55); background: rgba(139, 92, 246, .14); }

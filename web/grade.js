@@ -271,3 +271,94 @@ function drawScope() {
   if (SCOPE.kind === 'vec') { o.beginPath(); o.arc(OW / 2, OH / 2, Math.min(OW, OH) / 2 - 4, 0, 6.2832); o.stroke(); }
   else for (let i = 1; i < 4; i++) { o.beginPath(); o.moveTo(0, Math.round((OH * i) / 4) + 0.5); o.lineTo(OW, Math.round((OH * i) / 4) + 0.5); o.stroke(); }
 }
+
+// ---------- effect steps on the GPU ----------
+// The film-look steps (colour matrix, RGB split, pixelate, grain) and the clip blur read and wrote every pixel in JS: a
+// few effects together played at 12-19 fps. Same maths here, step by step through 8-bit textures (the canvas's own
+// precision between steps), so the export's ffmpeg filters still match. No WebGL2: the JS steps run as before.
+const FXG = { gl: null, failed: false };
+function fxgl() {
+  if (FXG.gl || FXG.failed) return FXG.gl;
+  try {
+    const cv = document.createElement('canvas'), gl = cv.getContext('webgl2', { premultipliedAlpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error('no WebGL2');
+    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+    const pg = gl.createProgram();
+    gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+    gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D src; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed;
+out vec4 o;
+vec3 at(ivec2 q) { return texelFetch(src, clamp(q, ivec2(0), size - 1), 0).rgb * 255.0; }
+float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy);
+  if (flipOut == 1) q.y = size.y - 1 - q.y; // the canvas shows row 0 at the bottom; the textures keep the picture's top in row 0
+  vec4 s0 = texelFetch(src, mode == 3 ? q / n : min(q, size - 1), 0);
+  vec3 c = s0.rgb * 255.0;
+  if (mode == 0) c = M * c; // colour matrix (colorchannelmixer)
+  else if (mode == 1) c = vec3(at(q - ivec2(shift.x, 0)).r, c.g, at(q - ivec2(shift.y, 0)).b); // red and blue moved sideways, edges smeared (rgbashift)
+  else if (mode == 2) { // pixelate, 1: q is a block; its mean, truncated (pixelize)
+    ivec2 b0 = q * n; vec3 sum = vec3(0.0); float k = 0.0;
+    for (int j = 0; j < 128; j++) { if (j >= n || b0.y + j >= size.y) break;
+      for (int i = 0; i < 128; i++) { if (i >= n || b0.x + i >= size.x) break; sum += texelFetch(src, b0 + ivec2(i, j), 0).rgb * 255.0; k += 1.0; } }
+    c = floor(sum / k);
+  } // mode 3, pixelate 2: each pixel takes its block's mean (the fetch above)
+  else if (mode == 4) c += (hash(vec2(q) + vec2(seed, seed * 1.7)) * 2.0 - 1.0) * s; // grain on brightness
+  else if (mode == 5) { vec3 sum = vec3(0.0); for (int i = -32; i <= 32; i++) if (i >= -r && i <= r) sum += at(q + dir * i); c = sum / float(2 * r + 1); } // one box pass (boxblur), edges clamped
+  o = vec4(clamp(floor(c + 0.5), 0.0, 255.0) / 255.0, s0.a);
+}`));
+    gl.linkProgram(pg);
+    if (!gl.getProgramParameter(pg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pg));
+    gl.useProgram(pg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
+    const U = {};
+    for (const k of ['src', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed']) U[k] = gl.getUniformLocation(pg, k);
+    gl.uniform1i(U.src, 0); gl.activeTexture(gl.TEXTURE0);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; };
+    Object.assign(FXG, { gl, cv, U, tex: [tex(), tex(), tex()], fb: [gl.createFramebuffer(), gl.createFramebuffer(), gl.createFramebuffer()], sz: [[0, 0], [0, 0], [0, 0]] });
+    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); FXG.gl = null; FXG.failed = false; });
+    return gl;
+  } catch (e) { FXG.failed = true; console.warn('GPU effects off:', e.message); return null; }
+}
+// src (a canvas, W x H) through steps [{mode, ...}] -> [the GL canvas, y of the result in it], or null (no WebGL2)
+function fxGPU(src, W, H, steps) {
+  const gl = fxgl();
+  if (!gl) return null;
+  const { cv, U, tex, fb, sz } = FXG;
+  const target = (k, w, h) => { // texture k as a w x h render target
+    gl.bindTexture(gl.TEXTURE_2D, tex[k]);
+    if (sz[k][0] !== w || sz[k][1] !== h) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); sz[k] = [w, h]; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb[k]); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex[k], 0);
+    gl.viewport(0, 0, w, h);
+  };
+  gl.bindTexture(gl.TEXTURE_2D, tex[0]);
+  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src); } catch { return null; }
+  sz[0] = [W, H];
+  let cur = 0;
+  gl.uniform1i(U.flipOut, 0);
+  for (const st of steps) {
+    const small = st.mode === 2, out = cur === 0 ? 1 : 0; // (pixelate goes through texture 2 at block size first)
+    if (small) target(2, Math.ceil(W / st.n), Math.ceil(H / st.n)); else target(out, W, H);
+    gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+    gl.uniform1i(U.mode, st.mode); gl.uniform2i(U.size, W, H);
+    if (st.M) gl.uniformMatrix3fv(U.M, false, colMajor(st.M));
+    if (st.shift) gl.uniform2i(U.shift, ...st.shift);
+    if (st.dir) gl.uniform2i(U.dir, ...st.dir);
+    gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (small) { // pixelate, 2: back to full size from the block means
+      target(out, W, H); gl.bindTexture(gl.TEXTURE_2D, tex[2]); gl.uniform1i(U.mode, 3); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    cur = out;
+  }
+  if (cv.width < W || cv.height < H) { cv.width = Math.max(cv.width, W); cv.height = Math.max(cv.height, H); }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H);
+  gl.bindTexture(gl.TEXTURE_2D, tex[cur]); gl.uniform1i(U.mode, 6); gl.uniform1i(U.flipOut, 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  return [cv, cv.height - H];
+}
+const FX_GPU = { matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }] };

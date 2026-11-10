@@ -5,7 +5,7 @@ import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
-const B = 'http://127.0.0.1:4610', SR = 48000, N = 4 * SR, res = [];
+const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, N = 4 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 // a steady 440 Hz tone, 4 s, so the level over time is the fade curve
 const wav = Buffer.alloc(44 + N * 4);
