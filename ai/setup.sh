@@ -82,4 +82,22 @@ fi
 # to microsoft/UniSpeech/LICENSE), 386 MB, via transformers; pinned revision, weights checked. No token needed (pyannote's is gated).
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/wavlm-base-plus-sv', revision='feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', allow_patterns=['*.json', 'pytorch_model.bin'], local_dir='vendor/wavlm-base-plus-sv')"
 echo "e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad  vendor/wavlm-base-plus-sv/pytorch_model.bin" | shasum -a 256 -c -
+# Voice clone + dubbing: Chatterbox multilingual v3 (Resemble AI, MIT; 23 languages, 2.7 GB) with its S3 tokenizer
+# (mlx-community/S3TokenizerV2, converted from FunAudioLLM/CosyVoice2-0.5B: Apache-2.0; 0.5 GB), and WavLM speaker verification
+# (microsoft/wavlm-base-plus-sv: CC BY-SA 3.0 via microsoft/UniSpeech's LICENSE, attribution required; 0.4 GB) to measure how close
+# a clone sounds. Pinned revisions, the weight files' SHA-256 checked (ai/worker.py checks them again and runs offline, HF_HUB_OFFLINE=1).
+env -u PYTHONPATH .venv/bin/python -I -c "
+import hashlib
+from huggingface_hub import snapshot_download
+for repo, rev, f, sha in [('mlx-community/chatterbox-multilingual-v3', '03565773edd72e949572557597af8063bb49a18a', 'model.safetensors', 'e702f2c441e040bd360e59a86c85d462539759d665e41cfd1938adadd74187a3'),
+                          ('mlx-community/S3TokenizerV2', 'e0c9886f0e1c35ae85b1f27277416fb19fc72bec', 'model.safetensors', '928726bc1f206a613d36b8f49e297eae9c5593a21bf9b92ddfe2c23f85eb92cc'),
+                          ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', 'pytorch_model.bin', 'e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad')]:
+    d = snapshot_download(repo, revision=rev)
+    h = hashlib.sha256()
+    with open(f'{d}/{f}', 'rb') as fh:
+        for b in iter(lambda: fh.read(1 << 24), b''):
+            h.update(b)
+    assert h.hexdigest() == sha, (repo, f, h.hexdigest())
+    print('ok', repo)"
+# Lip sync (LatentSync 1.6) and talking photos (Wan 2.2 S2V) run on the RTX 4090 PC: ai/gpu_setup.sh (licences listed there).
 echo "On-device AI ready."

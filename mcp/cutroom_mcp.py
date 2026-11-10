@@ -52,6 +52,20 @@ def http(path, body=None, timeout=30):
         return json.loads(r.read() or b'{}')
 
 
+GPU_TOOLS = ('lip_sync', 'talking_photo')  # run on the GPU PC only: listed while it is set up and answering
+
+
+def gpu_up():  # the server's cached check (never a wait on a sleeping PC); no server = not listed
+    try:
+        g = http('/api/ai/status', timeout=3).get('gpu', {})
+        if g.get('configured') and (g.get('stale') or not g.get('checked')):  # a check is out (stale cache): its answer, once
+            time.sleep(4.5)
+            g = http('/api/ai/status', timeout=3).get('gpu', {})
+        return bool(g.get('reachable'))
+    except (OSError, ValueError):
+        return False
+
+
 def connected():
     try:
         return bool(http('/api/remote/status', timeout=3).get('connected'))
@@ -212,6 +226,23 @@ TOOLS = [
                        'emoji=true (one emoji per sentence, above its first caption), speakers=true or a count (who speaks each caption: local speaker embeddings, '
                        "'Speaker 1/2' label + a colour each), bilingual=<language> (second translated line). show={kw, emoji, spk, bi} turns made layers on or off.",
      S({'keywords': boo, 'emoji': boo, 'speakers': {'type': ['boolean', 'integer']}, 'bilingual': txt, 'show': obj}), 'caption_extras'),
+    ('clone_voice', 'Clone the voice in a clip ON THIS MAC (Chatterbox, MIT): ~10 s of its speech from the playhead (or the clip start). consent=true is REQUIRED and means '
+                    'the speaker agreed to be cloned; never set it on your own, ask the user. clip = a clip id (default: the selected one). '
+                    'Returns the voice with similarity (speaker-embedding cosine to the clip) and baseline (the closest stock voice).',
+     S({'clip': txt, 'consent': boo, 'name': txt}, ['consent']), 'clone_voice'),
+    ('voices', 'The cloned voices (id, name, similarity) and the languages dub_video speaks (code: name).', S({}), 'voices'),
+    ('dub_video', 'AI dubbing ON THIS MAC: captions (made first if there are none) -> translated -> spoken in a cloned voice, each sentence fitted to its '
+                  'time (0.8-1.25x; too long = said shorter), as a new audio clip; the clips\' own sound is ducked (original=duck) or muted (mute). '
+                  'lang = a code from voices (es, fr, de, ...); voice = a cloned voice id (default: the one picked in the AI tab). The captions become the translation.',
+     S({'lang': txt, 'voice': txt, 'original': {'type': 'string', 'enum': ['duck', 'mute']}}, ['lang']), 'dub_video'),
+    ('lip_sync', "Lip sync a main-track video clip to the dub under it, on the user's RTX 4090 PC (LatentSync 1.6): only the mouth region of the ORIGINAL "
+                 'footage is re-made and pasted back, so the shot, its motion and everything outside the face stay as filmed. Any length (long clips run in '
+                 'pieces); the clip keeps its length and switches to the new video (muted: the dub plays the sound). Fails clearly when the PC is off.',
+     S({'clip': txt}), 'lip_sync'),
+    ('talking_photo', "Make a portrait photo talk, on the user's RTX 4090 PC (Wan 2.2 S2V re-animates the still: head, face and all; ~1 min per 5 s, 30 s at most): "
+                      'image + audio (library ids or names), or clip = a photo clip on the timeline (30 s at most, it keeps its length), which speaks the audio '
+                      'clip under it and becomes the talking video. prompt = how they move.',
+     S({'image': txt, 'audio': txt, 'clip': txt, 'prompt': txt, 'at': num, 'seed': {'type': 'integer'}}), 'talking_photo'),
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
     ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
@@ -267,7 +298,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':
@@ -292,7 +323,7 @@ def handle(msg):
         return send({'jsonrpc': '2.0', 'id': mid, 'result': {'protocolVersion': params.get('protocolVersion', '2025-06-18'), 'capabilities': {'tools': {}},
                                                               'serverInfo': {'name': 'cutroom', 'version': '1.0'}, 'instructions': INSTRUCTIONS}})
     if method == 'tools/list':
-        return send({'jsonrpc': '2.0', 'id': mid, 'result': {'tools': SCHEMAS}})
+        return send({'jsonrpc': '2.0', 'id': mid, 'result': {'tools': [t for t in SCHEMAS if t['name'] not in GPU_TOOLS or gpu_up()]}})
     if method == 'tools/call':
         try:
             content, err = call_tool(params.get('name'), params.get('arguments') or {}), False
