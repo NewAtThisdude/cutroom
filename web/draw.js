@@ -381,16 +381,17 @@ function layerDraw(ctx, k, f) { // frame f drawn: its pixels, their hash and ink
 function layerScan(ctx, k, frames) { // [frame, hash, ...ink box or null] per frame
   return frames.map(f => { const { key, bb } = layerDraw(ctx, k, f); return [f, key, ...(bb || [null])]; });
 }
-async function layerEncode(ctx, k, box, items, lid, onDone) { // items [index, frame, scan hash]: drawn again, cut to the box, PNG, uploaded; 2 uploads in flight
+async function layerEncode(ctx, k, box, items, lid, onDone) { // items [index, frame, scan hash, scan saw ink]: drawn again, cut to the box, PNG, uploaded; 2 uploads in flight
   const [bx, by, bw, bh] = box, crop = new OffscreenCanvas(bw, bh), cx = crop.getContext('2d', { willReadFrequently: true }), busy = new Set();
   const inBox = bb => !bb || (bb[0] >= bx && bb[1] >= by && bb[2] <= bx + bw && bb[3] <= by + bh);
   let redrawn = 0;
-  for (const [i, f, key] of items) {
+  for (const [i, f, key, ink] of items) {
     // a picture is taken when two drawings of it agree: WebKit workers drawing at the same time now and then draw one
     // differently (a title at another size, a box edge off; 2+ workers, also in the scan). This one matching the scan,
-    // or two redraws matching each other (the scan was the odd one), and its ink inside the box
+    // or two redraws matching each other (the scan was the odd one), and its ink inside the box. Never two empty redraws
+    // of a frame the scan saw text on: that would export the text as nothing, without an error
     let d = layerDraw(ctx, k, f), last = null;
-    for (let n = 0; d.key !== key && !(last?.key === d.key && inBox(d.bb)); n++, redrawn++) {
+    for (let n = 0; d.key !== key && !(last?.key === d.key && inBox(d.bb) && (d.bb || !ink)); n++, redrawn++) {
       if (n === 4) throw new Error(`text layer frame ${f} drew differently every time`);
       last = d; d = layerDraw(ctx, k, f);
     }
