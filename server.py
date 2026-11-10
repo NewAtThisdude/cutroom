@@ -3317,7 +3317,14 @@ class App(BaseHTTPRequestHandler):
             pass
 
     def file(self, path):
-        size = path.stat().st_size
+        fh = open(path, 'rb')  # opened before the headers: a file trashed or replaced meanwhile can't break an answer half-sent
+        try:
+            self._file(fh, path)
+        finally:
+            fh.close()
+
+    def _file(self, fh, path):
+        size = os.fstat(fh.fileno()).st_size
         start, end = 0, size - 1
         rng = re.fullmatch(r'bytes=(\d*)-(\d*)', self.headers.get('Range', ''))
         if rng and (rng[1] or rng[2]):  # <video> seeking needs byte ranges
@@ -3339,18 +3346,17 @@ class App(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(end - start + 1))
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
-        with open(path, 'rb') as f:
-            f.seek(start)
-            left = end - start + 1
-            while left > 0:
-                b = f.read(min(left, 1 << 20))
-                if not b:
-                    break
-                try:
-                    self.wfile.write(b)
-                except (BrokenPipeError, ConnectionResetError):  # the browser aborts ranges it no longer needs
-                    return
-                left -= len(b)
+        fh.seek(start)
+        left = end - start + 1
+        while left > 0:
+            b = fh.read(min(left, 1 << 20))
+            if not b:
+                break
+            try:
+                self.wfile.write(b)
+            except (BrokenPipeError, ConnectionResetError):  # the browser aborts ranges it no longer needs
+                return
+            left -= len(b)
 
     def body(self):
         n = int(self.headers.get('Content-Length') or 0)
