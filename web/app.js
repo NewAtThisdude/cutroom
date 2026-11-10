@@ -112,7 +112,7 @@ function presetFields(k) { // -> the dialog's values for preset k on this projec
 }
 const ANIM_T = 0.3; // default text in/out animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
-const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
+const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror'], ['heart', 'Heart'], ['star', 'Star'], ['polygon', 'Polygon'], ['pen', 'Pen']]; // + 'ai' (SAM 2 subject), made by a job
 const BLENDS = [['normal', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'], ['darken', 'Darken'], ['lighten', 'Lighten'], // canvas modes; the export runs the same formulas
   ['color-dodge', 'Color dodge'], ['color-burn', 'Color burn'], ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'], ['exclusion', 'Exclusion']];
 const CLIP_ANIMS = [['none', 'None'], ['fade', 'Fade'], ['grow', 'Zoom in'], ['shrink', 'Zoom out'], ['left', 'Slide left'], ['right', 'Slide right'], ['up', 'Slide up'], ['down', 'Slide down'], ['rotate', 'Rotate'], ['spin', 'Spin']];
@@ -168,7 +168,16 @@ const mss = t => { const d = Math.round(t * 10) / 10; return `${Math.floor(d / 6
 const fmtDur = s => (s > 0 && s < 1 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`); // a sound effect under a second isn't "0:00"
 
 const ss3 = x => x * x * (3 - 2 * x);
-const easeU = (u, r0, r1) => { const d = ss3(r1) - ss3(r0); return d > 1e-9 ? (ss3(r0 + u * (r1 - r0)) - ss3(r0)) / d : u; }; // part [r0, r1] of a smoothstep, rescaled to 0..1
+// keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
+const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1] };
+function bezE(bz, u) { // cubic-bezier at time u: s by 16 halvings, the very steps the server's pw() writes into ffmpeg (same doubles both sides)
+  const [x1, y1, x2, y2] = bz, cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx, cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  let s = 0, h = 1;
+  for (let i = 0; i < 16; i++) { h /= 2; const q = s + h; if (((ax * q + bx) * q + cx) * q < u) s = q; }
+  s += h / 2;
+  return ((ay * s + by) * s + cy) * s;
+}
+const easeU = (u, r0, r1, bz) => { const E = bz ? v => bezE(bz, v) : ss3, d = E(r1) - E(r0); return Math.abs(d) > 1e-9 ? (E(r0 + u * (r1 - r0)) - E(r0)) / d : u; }; // part [r0, r1] of the curve, rescaled to 0..1
 function propsAt(c, lt) { // keyframed scale/x/y/opacity at clip-local time: linear, exactly like the server's pw()
   const k = c.kf;
   if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1, rot: c.rot ?? 0 };
@@ -177,7 +186,7 @@ function propsAt(c, lt) { // keyframed scale/x/y/opacity at clip-local time: lin
   const a = k[i], b = k[i + 1];
   if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity, rot: a.rot ?? 0 }; // never leak a keyframe's own t
   let u = clamp((lt - a.t) / Math.max(1e-6, b.t - a.t), 0, 1);
-  if (a.ease ?? c.ease) u = easeU(u, a.eu0 ?? 0, a.eu1 ?? 1); // smoothstep from this keyframe (or clip default), same as pw() with e=1
+  if (a.ease ?? c.ease) u = easeU(u, a.eu0 ?? 0, a.eu1 ?? 1, a.bz); // smoothstep (or its cubic-bezier) from this keyframe (or clip default), same as pw() with e=1
   const mix = p => (a[p] ?? 0) + ((b[p] ?? 0) - (a[p] ?? 0)) * u;
   return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity'), rot: mix('rot') };
 }
@@ -236,7 +245,7 @@ function bakeKf(c, lane) { // export keyframes: the user's, plus in/out animatio
   }
   const own = new Map();
   for (const f of uk) if (!inR(f.t + 1e-4)) { pts.set(f.t, ease(f)); own.set(f.t, f); } // the segment after it is outside the sampled stretch: keep its easing
-  return [...pts].sort((x, y) => x[0] - y[0]).map(([t, e]) => ({ t, ...clipAnim(c, t, d, propsAt(c, t)), e, eu0: own.get(t)?.eu0, eu1: own.get(t)?.eu1 }));
+  return [...pts].sort((x, y) => x[0] - y[0]).map(([t, e]) => ({ t, ...clipAnim(c, t, d, propsAt(c, t)), e, eu0: own.get(t)?.eu0, eu1: own.get(t)?.eu1, bz: own.get(t)?.bz }));
 }
 function sliceKf(c, t0, t1, k = 1) { // keyframes for the part of c between clip-local t0..t1 (split, ramps, pauses, freeze); k = old speed / new speed
   if (!c.kf?.length) return undefined;
@@ -246,7 +255,7 @@ function sliceKf(c, t0, t1, k = 1) { // keyframes for the part of c between clip
     delete p.eu0; delete p.eu1;
     if (!o || !n || !(o.ease ?? c.ease)) { p.ease = false; continue; }
     const r0 = o.eu0 ?? 0, r1 = o.eu1 ?? 1, span = n.t - o.t, ua = (p.t - o.t) / span, ub = (q.t - o.t) / span;
-    Object.assign(p, { ease: true, eu0: r0 + ua * (r1 - r0), eu1: r0 + ub * (r1 - r0) });
+    Object.assign(p, { ease: true, bz: o.bz, eu0: r0 + ua * (r1 - r0), eu1: r0 + ub * (r1 - r0) });
   }
   return pts.map(p => ({ ...p, t: (p.t - t0) * k }));
 }
@@ -380,6 +389,7 @@ function change(fn) { undo.push(JSON.stringify(P)); if (undo.length > 200) undo.
 // Linkage (on unless the timeline's link button is off): a clip on another track stays over the same picture of the main
 // track when that track is cut, trimmed or reordered. Each one is placed by the source time of the main clip under its start.
 function anchors() {
+  if (P.rippleAll && P.main.length) return rippleSnap();
   if (P.unlinked || !P.main.length) return [];
   packMain();
   const out = [];
@@ -390,7 +400,46 @@ function anchors() {
   out.ids = new Set(P.main.map(m => m.id)); // the main clips before the edit: a part split off one is new, another copy of the file is not
   return out;
 }
+// Ripple all (P.rippleAll, the timeline's Ripple button): a main-track edit that takes picture out (or puts some in) moves
+// EVERY other track's items after it by that much, linked or not, also past the end of the main track. Items over picture
+// that was cut lose that part; one entirely over it goes with it. Times map by source picture, so cuts, trims and reorders all work.
+const mainSig = () => JSON.stringify(P.main.map(m => [m.id, m.media, m.in, m.out, m.speed, m.start]));
+function rippleSnap() {
+  const end = packMain(), om = P.main.map(m => ({ id: m.id, media: m.media, start: m.start, d: tdur(m, 'main'), in: m.in, speed: m.speed })), items = [];
+  for (const L of LANES) if (L.key !== 'main') for (const x of P[L.key]) items.push({ x, lane: L.key, s: x.start, d: tdur(x, L.key), in: x.in, out: x.out, dur: x.dur, kf: x.kf, vkf: x.vkf, words: x.words, text: x.text, j: JSON.stringify(x) });
+  return Object.assign([], { ripple: true, om, end, items, sig: mainSig(), ids: new Set(om.map(m => m.id)) });
+}
+function rippleMap(R, t, end) { // old timeline time -> [new time, the old time whose picture lands there] (cut-out picture: the next that's left)
+  if (t >= R.end - 1e-6) return [t + end - R.end, t];
+  for (let i = Math.max(0, R.om.findIndex(m => t < m.start + m.d - 1e-6)); i < R.om.length; i++) {
+    const m = R.om[i], src = m.in + Math.max(0, t - m.start) * m.speed;
+    let best = null;
+    for (const n of P.main) if (n.media === m.media && (n.id === m.id || !R.ids.has(n.id)) && n.out > src + 1e-6) { const s = Math.max(src, n.in); if (!best || s < best[1] - 1e-9) best = [n, s]; }
+    if (best) { const [n, s] = best; return [n.start + (s - n.in) / n.speed, Math.max(t, m.start + (s - m.in) / m.speed)]; }
+  }
+  return [end, R.end];
+}
+function rippleApply(R, keepMoved) {
+  const end = packMain();
+  if (keepMoved && mainSig() === R.sig) return; // the main track didn't change: nothing to ripple (a drag back to the start still restores)
+  const tiny = 0.5 / P.fps;
+  for (const it of R.items) {
+    const { x, lane } = it, here = P[lane].includes(x);
+    if (keepMoved && (!here || JSON.stringify(x) !== it.j)) continue; // the edit changed (or deleted) this one itself
+    const [s1, used] = rippleMap(R, it.s, end), head = used - it.s;
+    if (head >= it.d - tiny) { if (here) P[lane] = P[lane].filter(y => y !== x); continue; } // all of it was over picture that's gone
+    const span = rippleMap(R, it.s + it.d, end)[0] - s1, d1 = span > tiny ? Math.min(span, it.d - head) : it.d - head; // (a reorder never stretches it)
+    if (!here) P[lane].push(x); // a drag that took picture out and put it back
+    x.start = snap(Math.max(0, s1));
+    if (it.dur !== undefined) x.dur = d1; else if (x.media) { x.in = it.in + head * (x.speed || 1); x.out = Math.min(it.out, x.in + d1 * (x.speed || 1)); }
+    const sh = f => ({ ...f, t: f.t - head });
+    if (it.kf) x.kf = head > 1e-6 ? it.kf.map(sh) : it.kf; // keyframes, volume points and words stay on their content
+    if (it.vkf) x.vkf = head > 1e-6 ? it.vkf.map(sh) : it.vkf;
+    if (it.words) { x.words = head > 1e-6 ? it.words.map(w => ({ ...w, s: w.s - head, e: w.e - head })).filter(w => w.e > 0) : it.words; x.text = head > 1e-6 ? x.words.map(w => w.w).join(' ') : it.text; }
+  }
+}
 function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved stays where it was put
+  if (list.ripple) return rippleApply(list, keepMoved);
   if (!list.length) return;
   packMain();
   const gone = new Set();
@@ -448,6 +497,7 @@ function renderAll() {
   tag.textContent = `${HDR_NAMES[P.hdr] || ''} export · preview shown in SDR`;
   if (document.activeElement !== $('#projName')) $('#projName').value = P.name;
   $('#btnLink').classList.toggle('on', !P.unlinked);
+  $('#btnRipple').classList.toggle('on', !!P.rippleAll);
   syncHistory();
 }
 
@@ -631,9 +681,12 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
   if (sel.length) change(() => { for (const [c] of sel) c.start = snap(Math.max(0, c.start + d / P.fps)); });
 }
 const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
-  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'],
+  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'], ['V  Y  U  N', 'Tool: select · slip · slide · roll (⌥-drag: slip a clip, roll a cut)'],
   ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
   ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
+const TOOL_KEYS = { KeyV: 'select', KeyY: 'slip', KeyU: 'slide', KeyN: 'roll' };
+const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
+function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
 function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-close>Close</button></div>`); }
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
@@ -784,6 +837,7 @@ function renderInspector() {
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   if (c?.media) drawRamp(c);
+  if (c) drawEase(c);
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
@@ -799,9 +853,31 @@ function trPanel(c) {
 }
 function kfRow(c, lane) {
   const lt = S.t - c.start, on = c.kf?.find(f => Math.abs(f.t - lt) < 0.5 / P.fps), inside = lt >= 0 && lt <= tdur(c, lane);
-  const eased = on && (on.ease ?? c.ease);
-  return `<h4>Keyframes</h4><div class="actions">${c.kf?.length ? '<button data-act="kfprev" title="Previous keyframe" aria-label="Previous keyframe">‹</button><button data-act="kfnext" title="Next keyframe" aria-label="Next keyframe">›</button>' : ''}${on ? `<button data-act="kfdel">Remove keyframe</button><button data-act="kfease">${eased ? 'Linear from here' : 'Ease from here'}</button>` : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>${c.kf?.length ? tick('c.ease', 'Ease all segments', c.ease) : ''}
+  const sg = easeSeg(c, lt), kind = sg && easeKind(c, sg);
+  const ease = sg ? `<div class="easerow"><div class="presets small">${[['linear', 'Linear'], ['in', 'Ease in'], ['out', 'Ease out'], ['inout', 'In-out']].map(([v, n]) => `<button data-ease="${v}" class="${kind === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
+    + `<svg id="easeSvg" data-k="${c.kf.indexOf(sg)}" viewBox="0 0 120 96" width="120" height="96" aria-label="Easing curve: drag the two handles"></svg></div>`
+    + `<p class="hint">Easing from keyframe ${c.kf.indexOf(sg) + 1}${kind === 'custom' ? ' (custom curve)' : ''}: drag the dots for your own curve.</p>` : '';
+  return `<h4>Keyframes</h4><div class="actions">${c.kf?.length ? '<button data-act="kfprev" title="Previous keyframe" aria-label="Previous keyframe">‹</button><button data-act="kfnext" title="Next keyframe" aria-label="Next keyframe">›</button>' : ''}${on ? '<button data-act="kfdel">Remove keyframe</button>' : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>${ease}${c.kf?.length ? tick('c.ease', 'Ease all segments', c.ease) : ''}
     <p class="hint">${c.kf?.length ? 'Scale, position and opacity animate between the diamonds. Changing them at the playhead edits or adds a keyframe there.' : 'Add a keyframe, move the playhead, then change scale or position: zoom, pan, punch-in.'}</p>`;
+}
+const easeSeg = (c, lt) => { const k = c.kf; if (!(k?.length > 1)) return null; const f = k.findLast(x => x.t <= lt + 0.5 / P.fps); return f && f !== k.at(-1) ? f : f ? k.at(-2) : k[0]; }; // the segment the playhead is in (its first keyframe)
+function easeKind(c, f) {
+  if (!(f.ease ?? c.ease)) return 'linear';
+  if (!f.bz) return 'inout';
+  return ['in', 'out'].find(k => EASES[k].every((v, i) => Math.abs(v - f.bz[i]) < 1e-6)) || 'custom';
+}
+function setEase(c, f, kind) { // a preset on one keyframe's segment
+  if (kind === 'linear') { f.ease = false; delete f.bz; } else if (kind === 'inout') { f.ease = true; delete f.bz; } else { f.ease = true; f.bz = [...EASES[kind]]; }
+}
+const EZ = { x: v => 20 + v * 80, y: v => 80 - v * 64, ix: p => (p - 20) / 80, iy: p => (80 - p) / 64 }; // curve units <-> SVG (y -0.25..1.25: overshoot shows)
+function drawEase(c) { // the segment's curve and its two cubic-bezier handles (numbers only go into the markup)
+  const svg = $('#easeSvg'), f = svg && c.kf?.[+svg.dataset.k];
+  if (!f) return;
+  const kind = easeKind(c, f), bz = kind === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout, E = u => (kind === 'linear' ? u : f.bz ? bezE(f.bz, u) : ss3(u));
+  const path = Array.from({ length: 41 }, (_, i) => `${i ? 'L' : 'M'}${EZ.x(i / 40).toFixed(1)},${EZ.y(E(i / 40)).toFixed(1)}`).join('');
+  svg.replaceChildren();
+  svg.insertAdjacentHTML('beforeend', `<rect x="20" y="16" width="80" height="64" class="ez-box"/><path d="M${EZ.x(0)},${EZ.y(0)}L${EZ.x(bz[0])},${EZ.y(bz[1])}M${EZ.x(1)},${EZ.y(1)}L${EZ.x(bz[2])},${EZ.y(bz[3])}" class="ez-arm"/>`
+    + `<path d="${path}" class="ez-curve"/><circle cx="${EZ.x(bz[0])}" cy="${EZ.y(bz[1])}" r="5" class="ez-h"/><circle cx="${EZ.x(bz[2])}" cy="${EZ.y(bz[3])}" r="5" class="ez-h"/>`);
 }
 const RATIO_NAMES = { '9:16': 'TikTok', '16:9': 'YouTube', '1:1': 'Square', '4:5': 'Instagram', '3:4': 'Portrait', '4:3': 'Classic', '21:9': 'Cinema' };
 function projectPanel() {
@@ -909,9 +985,11 @@ function mediaPanel(c, lane) {
       + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
     const [L, R] = c.flip ? ['r', 'l'] : ['l', 'r']; // with Mirror on, "Left" still means the left of what you see
     look += `<h4>Crop</h4>${slider(`c.crop.${L}`, 'Left', cr[L] || 0, 0, 0.45, 0.005, '%')}${slider(`c.crop.${R}`, 'Right', cr[R] || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
-    look += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
+    look += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}${vid ? `<button data-act="aimask" class="${mk?.type === 'ai' ? 'on' : ''}" title="Box the subject: SAM 2 follows its outline through the clip (on this Mac)">AI subject</button>` : ''}</div>`
       + (mk ? slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
-        + (['circle', 'rect'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
+        + (!['linear', 'mirror'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
+        + (mk.type === 'star' || mk.type === 'polygon' ? slider('c.mask.n', mk.type === 'star' ? 'Points' : 'Sides', mk.n ?? (mk.type === 'star' ? 5 : 6), 3, 12, 1, '') : '') + (mk.type === 'star' ? slider('c.mask.inner', 'Inner radius', mk.inner ?? 0.45, 0.1, 0.9, 0.01, '%') : '')
+        + (mk.type === 'pen' ? `<p class="hint">Drag the dots on the preview to shape it; ⌥-click a dot removes it.</p><div class="actions"><button data-act="penadd">Add a point</button></div>` : '')
         + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
         + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert)
         + `<div class="actions">${c.mkf?.length ? '<button data-act="mkfprev" title="Previous mask keyframe" aria-label="Previous mask keyframe">‹</button><button data-act="mkfnext" title="Next mask keyframe" aria-label="Next mask keyframe">›</button>' : ''}<button data-act="mkfadd">${c.mkf?.length ? 'Mask keyframe here' : 'Animate the mask'}</button>${c.mkf?.length ? `<button data-act="mkfdel">Remove here</button><button data-act="mkfclear">Clear ${c.mkf.length}</button>` : ''}</div>`
@@ -1123,7 +1201,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if ('db' in el.dataset) v = v <= -60 ? 0 : +(10 ** (v / 20)).toFixed(4); // volume: dB slider
   if (el.dataset.off) v += +el.dataset.off; // text position is shown as an offset from the centre
   if (el.dataset.k === 'c.speed' && o.speed && v !== o.speed) { const f = o.speed / v; for (const k of ['kf', 'vkf', 'lkf', 'mkf']) o[k]?.forEach(x => { x.t *= f; }); } // they stay on their frames
-  if (el.dataset.k === 'c.ease') o.kf?.forEach(x => delete x.ease); // "ease all segments" really means all
+  if (el.dataset.k === 'c.ease') o.kf?.forEach(x => { delete x.ease; delete x.bz; }); // "ease all segments" really means all
   if (root === 'c' && !path.length && KF_PROPS.includes(last)) return setProp(o, last, v);
   if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
   for (const q of path) o = o[q] ??= {};
@@ -1172,9 +1250,16 @@ function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); s
   if (P.main.some(c => !M.get(c.media)?.hdr || M.get(c.media)?.alpha)) return 'a photo or SDR clip on the main track';
   return '';
 }
+// preview quality (per viewer): the canvas at full display resolution, half or a quarter of it; auto = full, but half while
+// playing once frames are being missed (back to full on pause). The CSS size never changes: the browser scales it up.
+const PQ = { full: 1, half: 0.5, quarter: 0.25 };
+const pqMode = () => (PQ[store.get('cutroom.pq')] || store.get('cutroom.pq') === 'auto' ? store.get('cutroom.pq') : 'auto');
+const pqScale = () => PQ[pqMode()] ?? (S.pqLow ? 0.5 : 1);
+const cpx = () => { const cv = $('#cv'); return cv.width / (cv.clientWidth || cv.width) || 1; }; // canvas pixels per CSS pixel (selection handles keep their size)
+function setPQ(v) { store.set('cutroom.pq', v); S.pqLow = false; $('#pqSel').value = pqMode(); fitStage(); }
 function fitStage() {
   if (!P) return;
-  const st = $('#stage').getBoundingClientRect(), cv = $('#cv'), dpr = devicePixelRatio || 1;
+  const st = $('#stage').getBoundingClientRect(), cv = $('#cv'), dpr = (devicePixelRatio || 1) * pqScale();
   const s = Math.max(0.01, Math.min((st.width - 24) / P.w, (st.height - 24) / P.h));
   cv.style.width = `${Math.round(P.w * s)}px`;
   cv.style.height = `${Math.round(P.h * s)}px`;
@@ -1567,7 +1652,7 @@ function paint() {
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
-    const R = S.pickRect, d = devicePixelRatio || 1;
+    const R = S.pickRect, d = cpx();
     ctx.save(); ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = 2 * d; ctx.setLineDash([5 * d, 4 * d]);
     ctx.strokeRect(R.x * k, R.y * k, R.w * k, R.h * k); ctx.restore();
   }
@@ -1575,9 +1660,10 @@ function paint() {
   for (const [x, lane] of sel) { // the selection: a box that turns with the clip, with handles when one clip is selected
     const h = byId.get(x.id);
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
+    if (h && sel.length === 1 && x.mask?.type === 'pen' && !S.playing) drawPen(ctx, x, h); // its points, to drag
   }
   if (S.guides) { // dragged text is snapped: the line it snapped to
-    const d = devicePixelRatio || 1, { x: gx, y: gy } = S.guides;
+    const d = cpx(), { x: gx, y: gy } = S.guides;
     ctx.save(); ctx.strokeStyle = '#ff3d9a'; ctx.lineWidth = 1 * d; ctx.beginPath();
     if (gx != null) { ctx.moveTo(gx * P.w * k, 0); ctx.lineTo(gx * P.w * k, cv.height); }
     if (gy != null) { ctx.moveTo(0, gy * P.h * k); ctx.lineTo(cv.width, gy * P.h * k); }
@@ -1826,7 +1912,8 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
 }
 const MKF = ['x', 'y', 'w', 'h', 'rot', 'feather'];
 function maskAt(c, lt) { // the mask at clip time lt: its keyframes (c.mkf) interpolated linearly, or the mask as set
-  const k = c.mkf, mk = c.mask;
+  const k = c.mkf, mk0 = c.mask; // an AI mask also says which of its source frames shows at lt (the preview's frame at or before it)
+  const mk = mk0?.type === 'ai' ? { ...mk0, fi: clamp(Math.floor((c.in + lt * (c.speed || 1) - mk0.t0) * mk0.fps + 1e-3), 0, mk0.n - 1), cr: c.crop, fl: !!c.flip } : mk0;
   if (!mk || !k?.length) return mk;
   let a = k[0], b = k[0], u = 0;
   if (lt >= k.at(-1).t) a = b = k.at(-1);
@@ -1842,9 +1929,44 @@ function maskPoint(c) { // the mask keyframe under the playhead (added, from the
   return f;
 }
 const maskCache = new Map();
+const PEN0 = [[0, -0.9], [0.85, -0.2], [0.5, 0.85], [-0.5, 0.85], [-0.85, -0.2]]; // a pen mask's first points (mask units, -1..1)
+function shapePath(x, mk, rw, rh) { // heart, star, polygon and pen outlines, in the mask's own frame (centre 0, half sizes rw x rh)
+  const P2 = (u, v) => [u * rw, v * rh];
+  if (mk.type === 'heart') {
+    x.moveTo(...P2(0, -0.45));
+    x.bezierCurveTo(...P2(0, -0.95), ...P2(-1, -1.05), ...P2(-1, -0.3));
+    x.bezierCurveTo(...P2(-1, 0.2), ...P2(-0.35, 0.55), ...P2(0, 1));
+    x.bezierCurveTo(...P2(0.35, 0.55), ...P2(1, 0.2), ...P2(1, -0.3));
+    x.bezierCurveTo(...P2(1, -1.05), ...P2(0, -0.95), ...P2(0, -0.45));
+  } else if (mk.type === 'star' || mk.type === 'polygon') {
+    const st = mk.type === 'star', n = clamp(Math.round(mk.n ?? (st ? 5 : 6)), 3, 12), k = st ? 2 * n : n, inner = clamp(mk.inner ?? 0.45, 0.05, 1);
+    for (let i = 0; i < k; i++) { const a = -Math.PI / 2 + (i * 2 * Math.PI) / k, r = st && i % 2 ? inner : 1; x.lineTo(...P2(Math.cos(a) * r, Math.sin(a) * r)); }
+  } else { // pen: a smooth closed curve through its points (Catmull-Rom as cubic Béziers)
+    const p = (mk.pts?.length >= 3 ? mk.pts : PEN0).map(([u, v]) => P2(u, v)), n = p.length;
+    x.moveTo(...p[0]);
+    for (let i = 0; i < n; i++) {
+      const a = p[(i - 1 + n) % n], b = p[i], c = p[(i + 1) % n], d = p[(i + 2) % n];
+      x.bezierCurveTo(b[0] + (c[0] - a[0]) / 6, b[1] + (c[1] - a[1]) / 6, c[0] - (d[0] - b[0]) / 6, c[1] - (d[1] - b[1]) / 6, c[0], c[1]);
+    }
+  }
+  x.closePath();
+}
+const aiImgs = new Map(); // AI mask frames (white, alpha = SAM 2's soft outline), a few ahead fetched while playing
+function aiImg(mk, i) {
+  const key = `${mk.src}/${i}`;
+  let im = aiImgs.get(key);
+  if (!im) {
+    im = new Image(); im.onload = () => { S.dirty = true; }; im.src = `/cache/${mk.src}.aimask/${String(i).padStart(5, '0')}.png`; aiImgs.set(key, im);
+    for (const k2 of aiImgs.keys()) { if (aiImgs.size <= 240) break; aiImgs.delete(k2); }
+  }
+  return im;
+}
+const aiReady = im => im.complete && im.naturalWidth > 0;
 function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview and the exported mask PNG
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h)), key = `${W}x${H}${JSON.stringify(mk)}`;
   if (maskCache.has(key)) return maskCache.get(key);
+  const im = mk.type === 'ai' && aiImg(mk, mk.fi ?? 0);
+  if (im) for (let j = 1; j <= 6; j++) if ((mk.fi ?? 0) + j < mk.n) aiImg(mk, (mk.fi ?? 0) + j); // the next frames, before they're needed
   const cv = new OffscreenCanvas(W, H), x = cv.getContext('2d'), big = 4 * Math.hypot(W, H);
   const rw = (mk.w * W) / 2, rh = (mk.h * H) / 2, f = mk.feather * Math.min(W, H);
   x.fillStyle = '#fff';
@@ -1854,10 +1976,18 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
   if (mk.type === 'circle') x.ellipse(0, 0, Math.max(1, rw), Math.max(1, rh), 0, 0, Math.PI * 2);
   else if (mk.type === 'rect') x.rect(-rw, -rh, rw * 2, rh * 2);
   else if (mk.type === 'linear') x.rect(-big, 0, big * 2, big); // keep everything below the line
-  else x.rect(-big, -rh, big * 2, rh * 2); // mirror: a band through the centre
+  else if (mk.type === 'mirror') x.rect(-big, -rh, big * 2, rh * 2); // mirror: a band through the centre
+  else if (mk.type === 'ai') { // the subject's outline on this source frame: cropped like the clip, mirrored with it, scaled by w / h
+    if (aiReady(im)) {
+      const cr = mk.cr || {}, iw = im.naturalWidth, ih = im.naturalHeight;
+      if (mk.fl) x.scale(-1, 1);
+      x.drawImage(im, (cr.l || 0) * iw, (cr.t || 0) * ih, (1 - (cr.l || 0) - (cr.r || 0)) * iw, (1 - (cr.t || 0) - (cr.b || 0)) * ih, -Math.max(1, rw), -Math.max(1, rh), 2 * Math.max(1, rw), 2 * Math.max(1, rh));
+    }
+  } else shapePath(x, mk, Math.max(1, rw), Math.max(1, rh));
   x.fill();
   if (f > 0.5 && !CANVAS_FILTER) { x.setTransform(1, 0, 0, 1, 0, 0); featherAlpha(x, W, H, f); } // the exported mask PNG is drawn here too
   if (mk.invert) { x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none'; x.globalCompositeOperation = 'xor'; x.fillRect(0, 0, W, H); }
+  if (im && !aiReady(im)) return cv; // not loaded yet: drawn again when it is (not cached)
   if (maskCache.size > 12) maskCache.delete(maskCache.keys().next().value);
   maskCache.set(key, cv);
   return cv;
@@ -1865,6 +1995,7 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
 async function maskPNG(c, m, mk = c.mask, side = 1280) { // export: opaque greyscale (luma -> alpha via alphamerge) at the cropped source aspect
   const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0)), s = Math.min(1, side / Math.max(mw, mh));
   const W = Math.round(mw * s), H = Math.round(mh * s), cv = new OffscreenCanvas(W, H), x = cv.getContext('2d');
+  if (mk.type === 'ai') { const im = aiImg(mk, mk.fi ?? 0); if (!aiReady(im)) await im.decode().catch(() => { throw new Error('the AI mask frames are missing: make the AI mask again'); }); }
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(mk, W, H), 0, 0);
   return blobURL(await cv.convertToBlob({ type: 'image/png' }));
 }
@@ -2524,15 +2655,37 @@ function clipMenu(c, lane) { // what a right-click on a clip offers
   items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, '⌫']);
   return items;
 }
+function penMap(c, h) { // a pen mask's units <-> preview canvas pixels (the mask sits in the clip's drawn rect, turning with it)
+  const mk = maskAt(c, clamp(S.t - c.start, 0, len(c))), b = selBox(h), W = 2 * b.hw, H = 2 * b.hh, rw = Math.max(1, (mk.w * W) / 2), rh = Math.max(1, (mk.h * H) / 2);
+  const th = (mk.rot * Math.PI) / 180, ct = Math.cos(th), st = Math.sin(th), cr = Math.cos(b.rad), sr = Math.sin(b.rad), mx = W * mk.x, my = H * mk.y;
+  return {
+    to: ([u, v]) => { const lx = mx + ct * u * rw - st * v * rh, ly = my + st * u * rw + ct * v * rh; return [b.cx + cr * lx - sr * ly, b.cy + sr * lx + cr * ly]; },
+    from: (px, py) => { const dx = px - b.cx, dy = py - b.cy, lx = cr * dx + sr * dy - mx, ly = -sr * dx + cr * dy - my; return [(ct * lx + st * ly) / rw, (-st * lx + ct * ly) / rh]; },
+  };
+}
+function drawPen(ctx, c, h) {
+  const map = penMap(c, h), d = cpx();
+  ctx.save(); ctx.fillStyle = '#fff'; ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 2 * d;
+  for (const p of c.mask.pts || PEN0) { const [px, py] = map.to(p); ctx.beginPath(); ctx.arc(px, py, 5 * d, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+}
+function penDrag(e, c, h, i) { // drag one pen point (one undo step); ⌥-click removes it
+  const before = JSON.stringify(P), cv = $('#cv'), r = cv.getBoundingClientRect(), k = cv.width / r.width, map = penMap(c, h);
+  if (e.altKey) { if ((c.mask.pts || PEN0).length > 3) change(() => { c.mask.pts = (c.mask.pts || PEN0).filter((_, j) => j !== i).map(q => [...q]); }); return; }
+  c.mask.pts ??= PEN0.map(q => [...q]);
+  const move = ev => { const [u, v] = map.from((ev.clientX - r.left) * k, (ev.clientY - r.top) * k); c.mask.pts[i] = [+clamp(u, -2, 2).toFixed(4), +clamp(v, -2, 2).toFixed(4)]; S.dirty = true; };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}
 function selBox(h) { return { cx: (h.x0 + h.x1) / 2, cy: (h.y0 + h.y1) / 2, hw: (h.x1 - h.x0) / 2, hh: (h.y1 - h.y0) / 2, rad: ((h.rot || 0) * Math.PI) / 180 }; }
 function handlePts(h) { // corner handles and the rotate knob, in canvas pixels (they turn with the clip)
-  const b = selBox(h), d = devicePixelRatio || 1, cs = Math.cos(b.rad), sn = Math.sin(b.rad), at = (u, v) => [b.cx + u * cs - v * sn, b.cy + u * sn + v * cs];
+  const b = selBox(h), d = cpx(), cs = Math.cos(b.rad), sn = Math.sin(b.rad), at = (u, v) => [b.cx + u * cs - v * sn, b.cy + u * sn + v * cs];
   return [['nw', ...at(-b.hw, -b.hh)], ['ne', ...at(b.hw, -b.hh)], ['sw', ...at(-b.hw, b.hh)], ['se', ...at(b.hw, b.hh)], ['rot', ...at(0, -b.hh - 26 * d)]];
 }
-const handleAt = (h, x, y) => handlePts(h).find(([, hx, hy]) => Math.hypot(x - hx, y - hy) <= 11 * (devicePixelRatio || 1))?.[0];
+const handleAt = (h, x, y) => handlePts(h).find(([, hx, hy]) => Math.hypot(x - hx, y - hy) <= 11 * cpx())?.[0];
 const canHandle = lane => lane === 'text' || lane === 'overlay' || lane === 'main';
 function drawSel(ctx, h, handles) {
-  const b = selBox(h), d = devicePixelRatio || 1;
+  const b = selBox(h), d = cpx();
   ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rad);
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * d; ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 3 * d;
   if (!handles) ctx.setLineDash([5 * d, 4 * d]);
@@ -2921,6 +3074,10 @@ function frame(now) {
     }
     if (S.t >= S.end) pause();
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
+    if (S.playing && S.shown !== undefined && f - S.shown > 1 && now - S.playAt > 500 && pqMode() === 'auto' && !S.pqLow) { // auto quality: frames missed (4 skips in 2 s) -> half resolution until pause
+      S.miss = (S.miss || []).filter(x => now - x < 2000).concat(now);
+      if (S.miss.length >= 4) { S.pqLow = true; fitStage(); }
+    }
     if (f !== S.shown || !S.playing) { S.shown = f; S.dirty = true; placePlayhead(); follow(); }
     audioTick(now);
     kick();
@@ -2935,10 +3092,10 @@ function play() {
   audioOn();
   if (!S.playing) busy(1);
   shuttleBack(0);
-  Object.assign(S, { playing: true, rate: 1, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true });
+  Object.assign(S, { playing: true, rate: 1, end: D, t0: S.t, wall0: performance.now(), last: undefined, held: 0, stuck: false, vAt: performance.now(), vEl: undefined, dirty: true, shown: undefined, playAt: performance.now(), miss: [] });
   $('#btnPlay').innerHTML = ICON.pause;
 }
-function pause() { shuttleBack(0); if (S.playing) busy(-1); S.playing = false; S.rate = 1; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
+function pause() { shuttleBack(0); if (S.playing) busy(-1); S.playing = false; if (S.pqLow) { S.pqLow = false; fitStage(); } S.rate = 1; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
 function addMedia(id, lane, t, range) { // range: [in, out] marked in the source viewer
@@ -3714,10 +3871,10 @@ function canvasToSrc(c, T) { // project-canvas point -> normalized source-frame 
   return (cx, cy) => { let u = (cx - g.x) / g.w; if (c.flip) u = 1 - u; return [(cr.l || 0) + u * fx, (cr.t || 0) + ((cy - g.y) / g.h) * fy]; };
 }
 function startRemove(c, lane, mode = 'remove') { // CapCut's "Remove object" / cutout: box it at any frame; it is followed both ways through the clip
-  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast(`Move the playhead to a frame of this clip where the ${mode === 'cutout' ? 'subject' : 'object'} shows`);
+  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast(`Move the playhead to a frame of this clip where the ${mode !== 'remove' ? 'subject' : 'object'} shows`);
   if (S.playing) pause();
   S.pick = { c, lane, remove: true, mode };
-  toast(mode === 'cutout' ? 'Drag a box around what to keep (Esc cancels)' : 'Drag a box around the object to remove (Esc cancels)');
+  toast(mode !== 'remove' ? 'Drag a box around what to keep (Esc cancels)' : 'Drag a box around the object to remove (Esc cancels)');
 }
 function srcBox(c, rect, T) { // a box on the project canvas -> the same box in the clip's source frame (normalized)
   const toSrc = canvasToSrc(c, T), [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
@@ -3734,7 +3891,7 @@ async function tintMask(b64) { // the grey outline PNG as a pink see-through ove
 }
 async function maskPreview(c, lane, rect, T, mode, points = []) { // SAM 2's outlines of the box on this frame (part ... whole), the best fit tinted on the preview
   const seq = S.mpSeq = (S.mpSeq || 0) + 1; // only the latest ask is shown: an older answer arriving after it is dropped
-  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T), points, mode });
+  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T), points, mode: mode === 'mask' ? 'cutout' : mode });
   const imgs = await Promise.all(r.masks.map(tintMask));
   if (seq !== S.mpSeq) return null;
   S.maskPreview = { id: c.id, c, lane, rect, T, mode, points, b64: r.masks, areas: r.areas, pick: r.pick, unsure: r.unsure, imgs };
@@ -3750,7 +3907,7 @@ function previewFor(c, r) { // the outline previewed for this clip and (about) t
 function markPreview() { // the confirm bar's question and its Smaller / Bigger follow the candidates
   const mp = S.maskPreview, bar = $('#confirmBar');
   if (!mp || !bar) return;
-  bar.querySelector('span').textContent = mp.unsure ? 'Not sure what you boxed: click on it (⌥-click leaves a spot out)' : mp.mode === 'cutout' ? 'Keep only the pink part?' : 'Remove the pink part from the whole clip?';
+  bar.querySelector('span').textContent = mp.unsure ? 'Not sure what you boxed: click on it (⌥-click leaves a spot out)' : mp.mode === 'mask' ? 'Mask the clip to the pink part, through the whole clip?' : mp.mode === 'cutout' ? 'Keep only the pink part?' : 'Remove the pink part from the whole clip?';
   bar.querySelector('[data-smaller]').disabled = mp.pick <= 0;
   bar.querySelector('[data-bigger]').disabled = mp.pick >= mp.imgs.length - 1;
 }
@@ -3781,7 +3938,13 @@ async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.v
   if (S.maskPreview) { S.maskPreview = null; $('#confirmBar').hidden = true; S.dirty = true; }
   const box = srcBox(c, rect, T); // seed: the confirmed outline (PNG), which SAM 2 then follows through the clip
   const pid = P.id, was = c.media, a = c.in; // the cleaned copy covers in..out as they were now: a trim meanwhile maps onto it
-  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode, seed }, mode === 'cutout' ? 'Cutting out' : 'Removing the object');
+  const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box, quality, mode, seed }, mode === 'mask' ? 'Making the AI mask' : mode === 'cutout' ? 'Cutting out' : 'Removing the object');
+  if (mode === 'mask') { // the outline frames stay in the cache; the clip keeps its own picture and gets them as its mask
+    c = live(c, pid, was);
+    change(() => { c.mask = { type: 'ai', src: j.mask, n: j.n, fps: j.fps, t0: j.t0, x: 0, y: 0, w: 1, h: 1, rot: 0, feather: c.mask?.feather ?? 0.01, invert: !!c.mask?.invert }; delete c.mkf; });
+    toast(`AI mask over ${j.n} frames (SAM 2): feather, invert and move it like any mask`);
+    return { ...brief(c, lane), engine: j.engine };
+  }
   await loadMedia();
   c = live(c, pid, was);
   const d = M.get(j.media).duration;
@@ -3795,7 +3958,7 @@ async function removeObject(c, lane, rect, T = S.t, quality = $('#rmQuality')?.v
 async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline first, so a wrong pick costs a second, not the whole clip
   const { c, lane, mode } = S.pick, T = S.t, q = $('#rmQuality')?.value || 'best';
   S.pick = null; $('#toast').hidden = true; // the "drag a box" hint is done
-  if (q === 'fast' && mode !== 'cutout') return removeObject(c, lane, rect, T, q, mode).catch(e => setStatus(e.message));
+  if (q === 'fast' && mode === 'remove') return removeObject(c, lane, rect, T, q, mode).catch(e => setStatus(e.message));
   setStatus('Finding its outline (SAM 2)…');
   try {
     const r = await maskPreview(c, lane, rect, T, mode);
@@ -3806,7 +3969,7 @@ async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline fi
   const bar = $('#confirmBar');
   markPreview();
   bar.title = 'Smaller / Bigger: a part of it, or more of it.';
-  bar.querySelector('[data-ok]').textContent = mode === 'cutout' ? 'Cut it out' : 'Remove it';
+  bar.querySelector('[data-ok]').textContent = mode === 'mask' ? 'Use as mask' : mode === 'cutout' ? 'Cut it out' : 'Remove it';
   bar.hidden = false;
   bar.querySelector('[data-ok]').focus();
 }
@@ -4031,8 +4194,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       o.geom = { x: g.x * k, y: g.y * k, w: g.w * k, h: g.h * k };
       // keyframes as export-pixel width + top-left: those interpolate exactly like scale/x/y do (same easing)
       const bk = bakeKf(c, lane); // keyframes as export-pixel width + top-left (they interpolate like scale/x/y do), clip animations baked in
-      if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1 }; });
-      if (c.mask && c.mkf?.length) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m);
+      if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1, bz: f.e ? f.bz : undefined }; });
+      if (c.mask && (c.mkf?.length || c.mask.type === 'ai')) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m); // an AI mask changes every frame
       if (c.adj?.vig > 0) o.vig = await vigPNG(c, m);
       if (mbN(c)) o.mb = mbN(c);
       const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
@@ -4334,6 +4497,9 @@ function drag(e, lane, c, el) {
   const group = lane !== 'main' && selection().length > 1 && isSel(lane, c.id) ? selection().filter(([x, l]) => x !== c && l !== 'main').map(([x]) => [x, x.start]) : [];
   const r = el.getBoundingClientRect(), edge = Math.min(8, r.width / 3);
   const mode = e.clientX - r.left < edge ? 'l' : r.right - e.clientX < edge ? 'r' : 'move';
+  const tool = S.tool && S.tool !== 'select' ? S.tool : e.altKey && (mode === 'move' || lane === 'main') ? (mode === 'move' ? 'slip' : 'roll') : null; // ⌥: slip the body, roll a cut
+  const tf = tool && editTool(tool, lane, c, mode === 'l' || (mode === 'move' && e.clientX - r.left < r.width / 2) ? 'l' : 'r');
+  if (typeof tf === 'string') return toast(tf);
   const minD = 1 / P.fps, sp = c.speed || 1, maxOut = m && m.kind !== 'image' ? m.duration : Infinity;
   const vert = mode === 'move' && MULTI.includes(lane) && !group.length, LH = LANES.find(L => L.key === lane)?.h || 42, R0 = vert ? rows(lane).row : null; // up / down: another track
   let moved = false;
@@ -4349,6 +4515,7 @@ function drag(e, lane, c, el) {
     const dx = ev.clientX - x0, dt = dx / S.pps;
     if (!moved && Math.abs(dx) < 3 && !(vert && Math.abs(ev.clientY - y0) >= 3)) return;
     moved = true;
+    if (tf) { tf(dt); S.dirty = true; renderTimeline(); return; } // slip / slide / roll: the rest of the timeline keeps its timing
     if (mode === 'move' && lane === 'main') { // reorder on drop (selected main clips go as one block)
       for (const x of block) { const e2 = document.querySelector(`.clip[data-lane="main"][data-id="${x.id}"]`); if (e2) { e2.style.transform = `translateX(${dx}px)`; e2.style.zIndex = 3; } }
       const [rest, i] = dropAt(ev.clientX), at = i ? rest[i - 1].start + tdur(rest[i - 1], 'main') : 0; // the cut it goes into, as laid out now
@@ -4390,7 +4557,7 @@ function drag(e, lane, c, el) {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
     line?.remove();
-    if (moved && mode === 'move' && lane === 'main') {
+    if (moved && mode === 'move' && lane === 'main' && !tf) {
       const [rest, i] = dropAt(ev.clientX);
       rest.splice(i, 0, ...block);
       P.main = rest;
@@ -4402,6 +4569,27 @@ function drag(e, lane, c, el) {
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+function editTool(tool, lane, c, side = 'r') { // slip / slide / roll as a function of dt (timeline seconds) from the clips as they are now, or why not
+  const m = M.get(c.media), i = lane === 'main' ? P.main.indexOf(c) : -1, minD = 1 / P.fps;
+  if (tool === 'slip') { // other in/out, same place and length: drag right = the picture moves right (earlier frames)
+    if (!m || m.kind === 'image') return 'Slip needs a video or audio clip';
+    const o = { in: c.in, out: c.out }, sp = c.speed || 1;
+    return dt => { const d = clamp(-dt * sp, -o.in, m.duration - o.out); c.in = o.in + d; c.out = o.out + d; return -d / sp; };
+  }
+  if (i < 0) return `${tool === 'slide' ? 'Slide' : 'Roll'} works on main-track clips`;
+  const [a, b] = tool === 'slide' ? [P.main[i - 1], P.main[i + 1]] : side === 'l' ? [P.main[i - 1], c] : [c, P.main[i + 1]];
+  if (!a || !b) return tool === 'slide' ? 'Slide needs a clip on each side' : 'Roll needs a clip on the other side of that cut';
+  // slide = the left neighbour ends later and the right one starts later in its picture; roll = the same on one cut
+  const oa = structuredClone(a), ob = structuredClone(b), ma = M.get(a.media), mb = M.get(b.media), sa = a.speed || 1, sb = b.speed || 1, img = mb?.kind === 'image';
+  const lo = Math.max(-(len(oa) - minD), img ? -Infinity : -ob.in / sb), hi = Math.min(ma && ma.kind !== 'image' ? (ma.duration - oa.out) / sa : Infinity, len(ob) - minD);
+  return dt => {
+    const d = clamp(dt, lo, hi);
+    a.out = oa.out + d * sa;
+    if (img) b.out = ob.out - d * sb; else b.in = ob.in + d * sb;
+    for (const k of ['kf', 'vkf']) if (ob[k]) b[k] = ob[k].map(f => ({ ...f, t: f.t - d })); // they stay on their picture
+    return d;
+  };
 }
 function kfDrag(e, c, el, f) { // a keyframe diamond: click goes to it, drag moves it (on frames, one undo step)
   if (!f) return;
@@ -4608,6 +4796,9 @@ function wire() {
   $('#btnMirror').addEventListener('click', () => { const c = selClip(); if (c) change(() => { c.flip = !c.flip; }); });
   $('#btnRotate').addEventListener('click', () => { const c = selClip(); if (c) rotate90(c); });
   $('#btnFit').addEventListener('click', fitTimeline);
+  $('#tlTool').addEventListener('change', e => setTool(e.target.value));
+  $('#pqSel').value = pqMode(); $('#pqSel').addEventListener('change', e => setPQ(e.target.value));
+  $('#btnRipple').addEventListener('click', () => { if (P.rippleAll) delete P.rippleAll; else P.rippleAll = true; scheduleSave(); renderAll(); toast(P.rippleAll ? 'Ripple all: cutting or trimming the main track moves every track after it, linked or not' : 'Ripple all off: only linked clips follow the main track'); });
   $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
@@ -4753,6 +4944,8 @@ function wire() {
     }
     if (S.maskPreview) return refinePreview(x / (cv.width / P.w), y / (cv.width / P.w), !e.altKey); // clicks shape the outline
     const hs = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(h => h.id === S.sel.id), hk = hs && handleAt(hs, x, y);
+    const pc = hs && selClip(), pm = pc?.mask?.type === 'pen' && penMap(pc, hs), pi = pm ? (pc.mask.pts || PEN0).findIndex(q => { const [qx, qy] = pm.to(q); return Math.hypot(qx - x, qy - y) <= 9 * px; }) : -1;
+    if (pi >= 0) return penDrag(e, pc, hs, pi); // a pen mask's point (ahead of the corner handles, which may sit on one)
     if (hk) return handleDrag(e, hs, hk, cv);
     const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1 && !locked(h.lane, P[h.lane].find(q => q.id === h.id) || {}));
     if (!hit) { if (S.sel) { S.sel = null; renderAll(); S.dirty = true; } return; }
@@ -4838,13 +5031,20 @@ function wire() {
 
   const insp = $('#inspector');
   insp.addEventListener('pointerdown', e => { // colour wheels and the curve editor: one undo step per drag
-    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), rsv = e.target.closest('#rampSvg'), c = selClip();
-    if (!c || (!wcv && !svg && !rsv)) return;
+    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), rsv = e.target.closest('#rampSvg'), esv = e.target.closest('#easeSvg'), c = selClip();
+    if (!c || (!wcv && !svg && !rsv && !esv)) return;
     e.preventDefault();
-    const before = JSON.stringify(P), el = wcv || svg || rsv, r = el.getBoundingClientRect();
+    const before = JSON.stringify(P), el = wcv || svg || rsv || esv, r = el.getBoundingClientRect();
     const pos = ev => [clamp((ev.clientX - r.left) / r.width, 0, 1), clamp((ev.clientY - r.top) / r.height, 0, 1)];
     let set;
-    if (rsv) { // the speed ramp draft: y = log speed, 1x has a detent; nothing is in P (no undo steps, saves or renders) until Apply
+    if (esv) { // the easing graph: drag the nearer handle; the segment becomes that cubic-bezier (x 0..1, y may overshoot)
+      const f = c.kf?.[+esv.dataset.k];
+      if (!f) return;
+      const at = ev => [(ev.clientX - r.left) / r.width * 120, (ev.clientY - r.top) / r.height * 96];
+      const bz0 = easeKind(c, f) === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout, [px, py] = at(e);
+      const h = Math.hypot(px - EZ.x(bz0[0]), py - EZ.y(bz0[1])) <= Math.hypot(px - EZ.x(bz0[2]), py - EZ.y(bz0[3])) ? 0 : 2;
+      set = ev => { const [qx, qy] = at(ev), b = [...(f.bz || bz0)]; b[h] = +clamp(EZ.ix(qx), 0, 1).toFixed(3); b[h + 1] = +clamp(EZ.iy(qy), -0.25, 1.25).toFixed(3); f.ease = true; f.bz = b; drawEase(c); };
+    } else if (rsv) { // the speed ramp draft: y = log speed, 1x has a detent; nothing is in P (no undo steps, saves or renders) until Apply
       drawRamp(c);
       const yp = S.rampDraft.pts.map(([u, s]) => [u, rampY(s)]), mv = curvePts(e, yp, ev => rampXY(pos(ev)), { width: r.width * 200 / 222, height: r.height * 100 / 112 });
       const put = hot => { S.rampDraft.pts = yp.map(([u, y]) => { const s = 10 ** (y * 2 - 1); return [u, Math.abs(Math.log2(s)) < 0.06 ? 1 : +s.toFixed(3)]; }); drawRamp(c, hot); };
@@ -4854,7 +5054,7 @@ function wire() {
       addEventListener('pointermove', move); addEventListener('pointerup', up);
       return;
     }
-    if (wcv) {
+    if (esv) { /* set above */ } else if (wcv) {
       const k = wcv.dataset.wheel;
       set = ev => { const [u, v] = pos(ev), R = (wcv.width / 2 - 6) / wcv.width; let x = (u - 0.5) / R, y = (0.5 - v) / R; const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; } c.grade ??= {}; c.grade[k] = { ...c.grade[k], x: +x.toFixed(3), y: +y.toFixed(3) }; drawWheels(c); };
     } else {
@@ -4919,6 +5119,7 @@ function wire() {
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
     else if (d.look) change(() => { if (d.look === 'none') delete c.look; else c.look = { name: d.look, amount: c.look?.amount ?? 1 }; });
     else if (['kfadd', 'kfdel', 'kfclear'].includes(d.act)) kfOp(c, S.sel.lane, d.act.slice(2));
+    else if (d.ease) change(() => { const f = easeSeg(c, S.t - c.start); if (f) setEase(c, f, d.ease); });
     else if (d.act === 'beats') quiet(detectBeats(c));
     else if (d.act === 'beatsync') beatSync(c, +$('#beatEvery').value);
     else if (d.act === 'freeze') quiet(freeze(c, S.sel.lane));
@@ -4927,7 +5128,9 @@ function wire() {
     else if (d.act === 'track') startTrack(c, S.sel.lane);
     else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
     else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
-    else if (d.mask) change(() => { if (d.mask === 'none') { delete c.mask; delete c.mkf; } else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
+    else if (d.mask) change(() => { if (d.mask === 'none') { delete c.mask; delete c.mkf; } else { const was = c.mask?.type; c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; if (was === 'ai') for (const q of ['src', 'n', 'fps', 't0']) delete c.mask[q]; if (d.mask === 'pen') c.mask.pts ??= PEN0.map(q => [...q]); } });
+    else if (d.act === 'aimask') startRemove(c, S.sel.lane, 'mask');
+    else if (d.act === 'penadd') change(() => { const p = c.mask.pts ??= PEN0.map(q => [...q]); let bi = 0, bd = -1; p.forEach((q, i) => { const r = p[(i + 1) % p.length], dd = Math.hypot(r[0] - q[0], r[1] - q[1]); if (dd > bd) { bd = dd; bi = i; } }); const q = p[bi], r = p[(bi + 1) % p.length]; p.splice(bi + 1, 0, [+((q[0] + r[0]) / 2).toFixed(4), +((q[1] + r[1]) / 2).toFixed(4)]); }); // in the middle of the longest side
     else if (d.act === 'ramp') { drawRamp(c); quiet(applyRamp(c, S.sel.lane, S.rampDraft.pts)); }
     else if (d.act === 'rampoff') removeRamp(c);
     else if (d.rampp) { S.rampDraft = { id: c.id, pts: rampPts(d.rampp) }; drawRamp(c); }
@@ -4942,7 +5145,6 @@ function wire() {
     else if (d.act === 'reframepick') { const ratio = $('#reframeRatio')?.value || undefined, ln = S.sel.lane; startPick(c, ln, R => quiet(autoReframe(c, { ratio, rect: R, T: S.t })), 'Drag a box around the subject to keep in frame (Esc cancels)'); }
     else if (d.act === 'blurregion') { const ln = S.sel.lane; startPick(c, ln, R => quiet(finishBlur(c, ln, R)), 'Drag a box around what to blur: it is followed through the clip (Esc cancels)'); }
     else if (d.act === 'blurfaces') quiet(blurFaces(c, S.sel.lane, { style: $('#blurStyle')?.value || 'blur' }));
-    else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
     else if (d.act === 'duck') quiet(autoDuck(c, +($('#duckDepth')?.value || 0.25)));
     else if (d.align) change(() => { (c.style ??= {}).align = d.align; });
     else if (d.act === 'capall') { change(() => { Object.assign(P.capStyle, c.style); for (const x of P.captions) delete x.style; }); toast('Every caption has this style now'); }
@@ -5046,6 +5248,7 @@ function wire() {
     else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
     else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
     else if ((key === 'backspace' || key === 'delete') && G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) { e.preventDefault(); cutScript(); }
+    else if (!mod && !e.altKey && TOOL_KEYS[e.code]) { e.preventDefault(); setTool(TOOL_KEYS[e.code]); }
     else if ((mod && key === 'b') || (!mod && key === 's')) { e.preventDefault(); split(); }
     else if (!mod && key === 'm') { e.preventDefault(); toggleMarker(); }
     else if ((key === 'backspace' || key === 'delete') && !field) { e.preventDefault(); del(); }
@@ -5360,7 +5563,8 @@ const REMOTE = {
         if (k === 'ratio') { if (!RATIOS[v]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`); [P.w, P.h] = RATIOS[v]; }
         else if (['name', 'fps', 'bg'].includes(k)) P[k] = v;
         else if (k === 'capStyle') merge(P.capStyle, v);
-        else throw new Error(`can't set project.${k} (name, ratio, fps, bg, capStyle)`);
+        else if (k === 'rippleAll' || k === 'unlinked') { if (v) P[k] = true; else delete P[k]; } // ripple every track on main-track edits; unlink the tracks
+        else throw new Error(`can't set project.${k} (name, ratio, fps, bg, capStyle, rippleAll, unlinked)`);
       }
     });
     fitStage();
@@ -5395,6 +5599,14 @@ const REMOTE = {
     for (const [k, need] of [['kf', ['t']], ['vkf', ['t', 'v']], ['lkf', ['t', 'v']], ['mkf', ['t']]]) { // keyframes and volume points arrive as written: check them before they reach the clip
       if (set[k] === undefined || set[k] === null) continue;
       if (!Array.isArray(set[k]) || set[k].some(f => !f || need.some(q => !Number.isFinite(f[q])) || Object.values(f).some(v => typeof v === 'number' && !Number.isFinite(v)))) throw new Error(`${k} must be a list of {${need.join(', ')}${k === 'kf' ? ', scale, x, y, opacity, rot' : ''}} with numbers`);
+    }
+    for (const f of set.kf || []) { // ease: true|false or linear|ease-in|ease-out|ease-in-out; bz: [x1, y1, x2, y2] = a custom cubic-bezier
+      if (f.bz != null && !(Array.isArray(f.bz) && f.bz.length === 4 && f.bz.every((v, i) => Number.isFinite(v) && (i % 2 ? Math.abs(v) <= 5 : v >= 0 && v <= 1)))) throw new Error('kf bz must be [x1, y1, x2, y2]: x1, x2 in 0..1, y1, y2 in -5..5');
+      if (typeof f.ease === 'string') {
+        const k = { linear: 'linear', 'ease-in': 'in', in: 'in', 'ease-out': 'out', out: 'out', 'ease-in-out': 'inout', inout: 'inout' }[f.ease];
+        if (!k) throw new Error('kf ease must be linear, ease-in, ease-out, ease-in-out (or true / false), bz [x1, y1, x2, y2] for a custom curve');
+        const bz = f.bz; setEase(c, f, k); if (bz) f.bz = bz;
+      } else if (f.bz) f.ease = true;
     }
     change(() => {
       if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); }
@@ -5460,17 +5672,22 @@ const REMOTE = {
     await loadMedia(); addMedia(m.id, 'audio', at);
     return brief(...cfind(S.sel.id));
   },
-  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', curve, at, ref }) {
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', curve, at, ref, by, side = 'end' }) {
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), speed_ramp: () => {
+      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), ...Object.fromEntries(['slip', 'slide', 'roll'].map(t => [t, () => { // by seconds; one undo step, the rest of the timeline keeps its timing
+        if (!Number.isFinite(by)) throw new Error(`${t}: by (seconds) is required`);
+        const f = editTool(t, L, c, side === 'start' ? 'l' : 'r');
+        if (typeof f === 'string') throw new Error(f);
+        undo.push(JSON.stringify(P)); redo = []; f(+by); touched();
+      }])), speed_ramp: () => {
         if (curve !== undefined) { if (!Array.isArray(curve) || curve.length < 2 || curve.length > 12 || curve.some((q, i) => !Array.isArray(q) || !(q[1] >= 0.1 && q[1] <= 10) || !(q[0] >= 0 && q[0] <= 1) || (i && !(q[0] > curve[i - 1][0]))) || curve[0][0] !== 0 || curve.at(-1)[0] !== 1) throw new Error('curve must be 2-12 [u, speed] points: u rising from 0 to 1, speed 0.1-10'); }
         else if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`);
         return applyRamp(c, L, curve?.map(q => [+q[0], +q[1]]) ?? rampPts(rp));
       } }[action];
-    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
+    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), slip, slide, roll (by seconds; roll side start|end), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },
@@ -5547,13 +5764,13 @@ const REMOTE = {
     return { t: r3(S.t), candidates: r.areas.map(a => +a.toFixed(4)), candidate: S.maskPreview.pick, unsure: !!r.unsure, image: cv.toDataURL('image/png').split(',')[1],
       note: 'pink = what will be taken (candidates: area of each outline, smallest first; pass candidate to show another). remove_object / cut_out_object with the same box then take exactly this outline' };
   },
-  async cut_out_object({ id, box, t }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency
+  async cut_out_object({ id, box, t, as_mask = false }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency (as_mask: its mask, the clip's file stays)
     const [c, L] = cfind(id);
     if (M.get(c.media)?.kind !== 'video') throw new Error('cut_out_object works on video clips');
     if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
     const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
     const rect = { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, mp = previewFor(c, rect);
-    return removeObject(c, L, rect, mp ? mp.T : T, 'best', 'cutout', mp?.b64[mp.pick]);
+    return removeObject(c, L, rect, mp ? mp.T : T, 'best', as_mask ? 'mask' : 'cutout', mp?.b64[mp.pick]);
   },
   async cut_timeline({ ranges }) { // ripple-delete [start, end] ranges (timeline seconds) from the main track
     if (!Array.isArray(ranges) || !ranges.length || ranges.some(r => !Array.isArray(r) || !(r[1] > r[0]))) throw new Error('ranges: [[start, end], ...] in timeline seconds');

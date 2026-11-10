@@ -31,11 +31,13 @@ au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, tim
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
 look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
-key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror, x, y -0.5..0.5, w, h, rot, feather, invert}
+key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror|heart|star|polygon|pen, x, y -0.5..0.5, w, h, rot, feather, invert;
+  star/polygon: n points/sides 3-12, star: inner 0.1-0.9; pen: pts [[u, v], ...] -1..1 in the mask's box (a smooth closed curve)} (an AI subject mask: cut_out_object as_mask)
 anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd seconds; loop: none|kbin|kbout|drift|pulse|shake|sway|float; amt strength}
 text clips: text, style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
   align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, anim pop|fade|slide|type, out pop|fade|slide|type, loop bounce|pulse|wiggle, animT, outT}
-track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease}] (replaces them)
+track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease, bz}] (replaces them;
+  ease = the segment after it: linear|ease-in|ease-out|ease-in-out (or true/false); bz: [x1, y1, x2, y2] a custom cubic-bezier, x 0..1)
 effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)
 grade (colour grading, video/photo clips): {lift|gamma|gain: {x, y: colour wheel offset -1..1 (x = towards red, y = towards green-yellow), l: level -1..1},
   curves: {m|r|g|b: [[x, y], ...] points 0..1 (m = luma)}, hsl: {red|orange|yellow|green|aqua|blue|purple|magenta: {h, s, l} -1..1},
@@ -93,7 +95,7 @@ TOOLS = [
     ('projects', 'List saved projects.', S(), 'projects'),
     ('open_project', 'Open a project by id or (part of its) name.', S({'project': txt}, ['project']), 'open_project'),
     ('new_project', 'Start a new empty project.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt}), 'new_project'),
-    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object).', S({'set': obj}, ['set']), 'set_project'),
+    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
     ('add_clip', 'Put a library item on a track. Main clips append (or insert at start); overlay/audio clips start at start (default: playhead).',
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
     ('update_clip', 'Change any clip setting. ' + CLIP_PROPS, S({'id': txt, 'set': obj}, ['id', 'set']), 'update_clip'),
@@ -126,8 +128,9 @@ TOOLS = [
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
-                  'ref = another clip id to match its colours instead).',
-     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
+                  'ref = another clip id to match its colours instead), slip (by seconds: new in/out, same place and length), slide (by: a main clip moves between its neighbours), '
+                  'roll (by: moves the cut at the clip\'s side end|start). slip/slide/roll keep the rest of the timeline as it is.',
+     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt, 'by': num, 'side': txt}, ['id', 'action']), 'clip_tool'),
     ('track_motion', 'Motion tracking: an overlay, sticker or text clip (id) follows what is inside box on the main-track video at time t, '
                      'moving, growing and turning with it (keyframes for x, y, scale, rot). box = {x, y, w, h} fractions of the canvas (look with snapshot first). '
                      'scale / rotate false: follow position only.',
@@ -168,8 +171,9 @@ TOOLS = [
                      'second = f/m; e.g. af_heart, af_bella, am_michael, bf_emma, bm_george. speed 0.5-2.',
      S({'text': txt, 'voice': txt, 'speed': num, 'at': num}, ['text']), 'ai_voiceover'),
     ('cut_out_object', 'Keep only one subject of a video clip, any kind (person, car, pet, product), on a transparent background: box = where it '
-                       'is on the canvas as fractions {x, y, w, h} at time t; SAM 2 follows its exact outline through the clip.',
-     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num}, ['id', 'box']), 'cut_out_object'),
+                       'is on the canvas as fractions {x, y, w, h} at time t; SAM 2 follows its exact outline through the clip. '
+                       'as_mask=true: the outline becomes the clip\'s mask instead (AI subject mask: the file stays, feather / invert / move it like any mask).',
+     S({'id': txt, 'box': {'type': 'object', 'properties': {k: num for k in 'xywh'}, 'required': list('xywh')}, 't': num, 'as_mask': boo}, ['id', 'box']), 'cut_out_object'),
     ('smart_combine', 'Smart combine (CapCut AutoCut), on this Mac: from several videos, the best-looking part of every scene, ordered '
                       '(order: auto | story = by what each shot shows | shot = as filmed), fitted to length seconds (0 = all the good parts), '
                       'cut to the music\'s beats, transitions chosen from what changes between shots. style: balanced | energetic | calm | cinematic. '
