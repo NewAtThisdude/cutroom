@@ -1,7 +1,7 @@
 // Reduce noise and auto duck, measured. Headless WebKit + the real export, on a scratch server:
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node audio_tools.mjs
 // Denoise: speech (say) + pink noise -> export WAV: the cleaned speech must sit where the clean speech is (lag), the noise
-// between words must drop >= 10 dB, and the preview must play the same denoised samples (?dn=1). Duck: a night drive (road
+// between words must drop >= 10 dB, and the preview must play the same denoised samples (&fx=dn). Duck: a night drive (road
 // noise, nobody talking) must leave the song alone; on talk + music, trimming 2 s off the talk moves every dip 2 s.
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
@@ -83,7 +83,7 @@ const drop = db(rmsAt(ex, qi)) - db(rmsAt(plainEx, qi)), keep = db(rmsAt(ex, li)
 check('noise between words drops >= 10 dB, the speech stays', drop <= -10 && keep > -1.5, `noise ${drop.toFixed(1)} dB, speech ${keep.toFixed(1)} dB, first export ${dnCold.toFixed(1)} s incl. denoising`);
 // the preview's sound for a denoised clip = that same file
 const pv = await ev(async ([id]) => {
-  const p = pcmChunk(id, 1, 0, undefined, true); await p; const L = p.buf.getChannelData(0);
+  const p = pcmChunk(id, 1, 0, undefined, 'dn'); await p; const L = p.buf.getChannelData(0);
   const u = new Uint8Array(L.buffer); let s = ''; for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode(...u.subarray(i, i + 32768)); return btoa(s);
 }, [sm.id]);
 const pvL = (u => new Float32Array(u.buffer, u.byteOffset, u.length / 4))(Buffer.from(pv, 'base64'));
@@ -92,7 +92,7 @@ const pvRef = new Float32Array(ex.length); for (let t = 0; t < ex.length; t++) {
 check('the preview plays the same denoised samples as the export', 10 * Math.log10(ss / (se + 1e-15)) > 60, `${(10 * Math.log10(ss / (se + 1e-15))).toFixed(1)} dB SNR, offset ${lagOf(pvRef.subarray(0, 4 * SR), ex.subarray(0, 4 * SR))} samples`);
 // and playback asks for them
 const asked = [];
-page.on('request', r => { if (/pcm=.*dn=1/.test(r.url())) asked.push(r.url()); });
+page.on('request', r => { if (/pcm=.*fx=dn\b/.test(r.url())) asked.push(r.url()); });
 await ev(async ([id]) => { pcmBufs.clear(); setProject(newProject('16:9')); P.name = 'Audio tools play (scratch)'; addMedia(id, 'audio', 0); P.audio[0].denoise = true; touched(); S.t = 0; audioAwake?.(); play(); await sleep(1500); pause(); }, [sm.id]);
 made.push(await ev(() => P.id));
 check('playing a denoised clip fetches the denoised PCM', asked.length > 0, `${asked.length} requests`);
