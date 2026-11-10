@@ -454,7 +454,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
     label = m.name + (c.speed !== 1 ? ` · ${c.speed}×` : '');
     const full = (m.duration / c.speed) * pps, off = (-c.in / c.speed) * pps, wave = m.wave && (lane === 'audio' || lane === 'main');
     if (m.kind === 'video' && m.stripN && lane !== 'audio') layers.push([`url(/cache/${m.id}.strip.jpg)`, `${full}px ${wave ? '68%' : '100%'}`, `${off}px 0`, 'no-repeat']);
-    if (m.kind === 'image') layers.push([`url(/media/${m.id})`, 'auto 100%', '0 0', 'repeat-x']);
+    if (m.kind === 'image') layers.push([`url(/media/${m.id}?thumb=1)`, 'auto 100%', '0 0', 'repeat-x']); // a 320 px copy: full-size photos cost WebKit ~12 MB each
     if (wave) layers.push([`url(/cache/${m.id}.wave.png)`, `${full}px ${lane === 'main' ? '32%' : '100%'}`, `${off}px 100%`, 'no-repeat']);
   }
   const bg = layers.length ? `background-image:${layers.map(l => l[0])};background-size:${layers.map(l => l[1])};background-position:${layers.map(l => l[2])};background-repeat:${layers.map(l => l[3])};` : '';
@@ -510,7 +510,7 @@ function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${K
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
 function thumbStyle(m) {
-  if (m.kind === 'image') return `background-image:url(/media/${m.id})`;
+  if (m.kind === 'image') return `background-image:url(/media/${m.id}?thumb=1)`;
   if (m.stripN) return `background-image:url(/cache/${m.id}.strip.jpg);background-size:auto 100%;background-position:0 0;background-repeat:repeat-x`; // frames at their own shape (portrait ones side by side)
   if (m.wave) return `background-image:url(/cache/${m.id}.wave.png);background-size:100% 100%`;
   return '';
@@ -886,7 +886,7 @@ function vidFor(key, m) {
 }
 function imgFor(m) {
   let i = imgs.get(m.id);
-  if (!i) { i = new Image(); i.onload = () => { S.dirty = true; }; i.src = `/media/${m.id}`; imgs.set(m.id, i); }
+  if (!i) { i = new Image(); i.onload = () => { S.dirty = true; }; i.src = `/media/${m.id}?view=1`; imgs.set(m.id, i); } // at most 2560 px: the canvas never shows more
   return i;
 }
 let actx;
@@ -1176,7 +1176,10 @@ function paint() {
         if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } // the clock and play() go by the element that's coming, not the last one painted
         return el;
       });
-    if (need.some(el => el.readyState < 2 && el.getAttribute('src') && !el.error && performance.now() - (el._t0 ??= performance.now()) < 1500)) { // (not for ever: a broken file)
+    const pics = layers.filter(([, c]) => M.get(c.media)?.kind === 'image').map(([, c]) => imgFor(M.get(c.media)));
+    S.pics = pics;
+    if (need.some(el => el.readyState < 2 && el.getAttribute('src') && !el.error && performance.now() - (el._t0 ??= performance.now()) < 1500) // (not for ever: a broken file)
+      || pics.some(i => !i.complete && performance.now() - (i._t0 ??= performance.now()) < 1500)) {
       S.live = new Set([...(S.live || []), ...need]); // waitFrame waits for these
       clearTimeout(paint.retry); paint.retry = setTimeout(() => { S.dirty = true; }, 100);
       return;
@@ -1990,7 +1993,9 @@ let clipboard = null;
 function copySel(cut = false) {
   const many = selection();
   if (!many.length) return toast('Select a clip first');
-  clipboard = { items: many.map(([c, lane]) => ({ lane, c: structuredClone(c) })), t0: Math.min(...many.map(([c]) => c.start)) };
+  packMain();
+  const order = ([c, lane]) => (lane === 'main' ? P.main.indexOf(c) : 1e6 + c.start); // pasted in timeline order, not click order
+  clipboard = { items: [...many].sort((a, b) => order(a) - order(b)).map(([c, lane]) => ({ lane, c: structuredClone(c) })), t0: Math.min(...many.map(([c]) => c.start)) };
   if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes the look`);
 }
 function paste(at = S.t) { // main clips insert at the playhead's cut; the others keep their spacing, starting at the playhead
@@ -2636,6 +2641,14 @@ function del() {
   change(() => { P[S.sel.lane] = P[S.sel.lane].filter(x => x !== c); S.sel = null; });
 }
 function dup() {
+  const many = selection().filter(([x, l]) => !locked(l, x));
+  if (many.length > 1) { // all of them (it duplicated just the one clicked last)
+    change(() => {
+      packMain();
+      for (const [x, l] of many) { const b = { ...structuredClone(x), id: hex12() }; if (l === 'main') { delete b.tr; P.main.splice(P.main.indexOf(x) + 1, 0, b); } else { b.start = x.start + tdur(x, l); P[l].push(b); } }
+    });
+    return toast(`Duplicated ${many.length} clips`);
+  }
   const c = selClip(), lane = S.sel?.lane;
   if (!c || lane === 'tr') return;
   if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
@@ -3431,7 +3444,7 @@ function setProject(p) {
   flushSave(); // the project being left
   P = migrate(p); undo = []; redo = []; S.sel = null; S.multi.clear(); S.t = 0;
   for (const v of pool.values()) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
-  pool.clear();
+  pool.clear(); imgs.clear(); // (the last project's photos stayed decoded)
   store.set('cutroom.last', P.id);
   fitStage(); renderAll();
 }
@@ -3540,11 +3553,15 @@ function drag(e, lane, c, el) {
   let moved = false;
   if (S.playing) pause();
   const an = lane === 'main' ? anchors() : []; // linked clips follow a main-track trim live, and a reorder on the drop
+  const block = lane === 'main' && isSel(lane, c.id) ? selection().filter(([, l]) => l === 'main').map(([x]) => x).sort((a, b) => P.main.indexOf(a) - P.main.indexOf(b)) : [c];
   const move = ev => {
     const dx = ev.clientX - x0, dt = dx / S.pps;
     if (!moved && Math.abs(dx) < 3 && !(vert && Math.abs(ev.clientY - y0) >= 3)) return;
     moved = true;
-    if (mode === 'move' && lane === 'main') { el.style.transform = `translateX(${dx}px)`; el.style.zIndex = 3; return; } // reorder on drop
+    if (mode === 'move' && lane === 'main') { // reorder on drop (selected main clips go as one block)
+      for (const x of block) { const e2 = document.querySelector(`.clip[data-lane="main"][data-id="${x.id}"]`); if (e2) { e2.style.transform = `translateX(${dx}px)`; e2.style.zIndex = 3; } }
+      return;
+    }
     if (mode === 'r') {
       if (c.media) c.out = clamp(o.out + dt * sp, o.in + minD * sp, maxOut); else c.dur = Math.max(minD, o.dur + dt);
       const [t1, dd] = magnet(c.start + len(c), c);
@@ -3579,8 +3596,8 @@ function drag(e, lane, c, el) {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
     if (moved && mode === 'move' && lane === 'main') {
-      const mid = o.start + (ev.clientX - x0) / S.pps + tdur(c, 'main') / 2, rest = P.main.filter(x => x !== c);
-      rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, c);
+      const mid = o.start + (ev.clientX - x0) / S.pps + tdur(c, 'main') / 2, rest = P.main.filter(x => !block.includes(x));
+      rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, ...block);
       P.main = rest;
       reanchor(an);
     }
@@ -4408,7 +4425,8 @@ async function waitFrame() { // the preview shows the frame at S.t: every elemen
   paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
   const at = v => !v.getAttribute('src') || (v.readyState >= 2 && !v.seeking && srcFrame(v, v.currentTime) === srcFrame(v, v._want ?? v.currentTime));
   const t0 = performance.now(); // wall clock, not a count: a covered window throttles timers and decodes no video
-  for (let kick = true; performance.now() - t0 < 6000 && ![...(S.live || [])].every(at);) { // re-paint re-issues a seek skipped mid-seek
+  const pic = i => i.complete || performance.now() - t0 > 3000; // a photo still loading (its preview copy being made)
+  for (let kick = true; performance.now() - t0 < 6000 && !([...(S.live || [])].every(at) && (S.pics || []).every(pic));) { // re-paint re-issues a seek skipped mid-seek
     if (kick && performance.now() - t0 > 2500) { kick = false; for (const v of S.live || []) if (v.getAttribute('src') && v.readyState < 2) v.load(); } // a first load that stalled: ask again
     await sleep(40); paint();
   }

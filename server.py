@@ -75,6 +75,18 @@ def save_meta(m):
     (MEDIA / f"{m['id']}.json").write_text(json.dumps(m))
 
 
+def gop(path):
+    """The longest gap between keyframes in a video's first 30 s. A phone's 10 s GOP made every seek decode up to 10 s
+    of frames (a scrub step 184-205 ms, a jump 327 ms); such files get a proxy with a keyframe every second."""
+    r = sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey', '-show_entries', 'frame=pts_time', '-of', 'csv=p=0',
+            '-read_intervals', '%+30', str(path)])
+    ts = sorted(float(x) for x in re.findall(r'^-?[\d.]+', r.stdout, re.M))
+    if not ts:
+        return 0.0
+    end = min(30.0, float(sh(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(path)]).stdout.strip() or 0) or 30.0)
+    return round(max([b - a for a, b in zip(ts, ts[1:])] + [end - ts[-1] if len(ts) == 1 else 0.0]), 2)
+
+
 def probe(path):
     r = sh(['ffprobe', '-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', str(path)])
     if r.returncode:
@@ -84,6 +96,10 @@ def probe(path):
     info = {'hasAudio': any(s['codec_type'] == 'audio' for s in j['streams']), 'duration': float(j['format'].get('duration') or 0)}
     if v:
         rot = v.get('tags', {}).get('rotate') or next((d['rotation'] for d in v.get('side_data_list', []) if 'rotation' in d), 0)
+        if not rot and v['codec_name'] in ('mjpeg', 'png', 'webp', 'tiff') and info['duration'] < 0.2:  # a photo: EXIF orientation is on its frame
+            f = sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-read_intervals', '%+#1', '-show_frames', '-of', 'json', str(path)])
+            fr = (json.loads(f.stdout or '{}').get('frames') or [{}])[0]
+            rot = next((d['rotation'] for d in fr.get('side_data_list', []) if 'rotation' in d), 0)
         w, h = int(v['width']), int(v['height'])
         if abs(int(float(rot))) % 180 == 90:  # phone footage: ffmpeg and the browser both auto-rotate
             w, h = h, w
@@ -147,6 +163,22 @@ def import_file(name, stream, length, background=True, src=None):
     if kind != 'image':
         threading.Thread(target=prepare, args=(m,), daemon=True).start() if background else prepare(m)
     return m
+
+
+def photo_copy(m, size):
+    """A photo at most `size` px on its long edge, for the library card (320) and the preview (2560): sixty full-size
+    camera photos as card backgrounds took 742-867 MB in WebKit and scrolled at 117 ms a step. The export reads the original."""
+    if max(m.get('w') or 0, m.get('h') or 0) <= size:
+        return MEDIA / m['file']
+    fmt = 'png' if m.get('trans') else 'jpeg'
+    out = CACHE / f"{m['id']}.{size}.{'png' if m.get('trans') else 'jpg'}"
+    if not out.exists():
+        tmp = out.with_name(f'{uuid.uuid4().hex[:8]}.{out.name}')  # (two requests at once each write their own)
+        if sh(['sips', '-Z', str(size), '-s', 'format', fmt, str(MEDIA / m['file']), '--out', str(tmp)], low=True).returncode or not tmp.exists():
+            tmp.unlink(missing_ok=True)
+            return MEDIA / m['file']
+        tmp.replace(out)
+    return out
 
 
 def alpha_mov(m):
@@ -284,6 +316,7 @@ def proxy(m, src, out, sw=False):
     try:
         run_ffmpeg(['nice', '-n', '10', *cmd], max(m['duration'], 0.1), lambda f: PREP_PCT.__setitem__(m['id'], round(0.9 * f, 3)))
         tmp.replace(out)
+        (CACHE / f"{m['id']}.wk.mov").unlink(missing_ok=True)  # WebKit's copy was of the original: remade from the proxy
         return True
     except RuntimeError:
         tmp.unlink(missing_ok=True)
@@ -297,7 +330,8 @@ def proxy_cmd(m, src, out, sw=False):
     dec, vf = hdr_decode(m)
     if not dec and not sw and not (BIG_MAC and m.get('codec') == 'h264'):
         dec = ['-hwaccel', 'videotoolbox', '-threads', '1']  # one thread: ffmpeg's frame threads would only hold frames
-    return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min(720,ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M',
+    tall = 720 if heavy(m) else 1080  # 4K60 at 720p (decoding speed); a long-GOP 1080p phone clip keeps its size
+    return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M' if tall == 720 else '8M',
             '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
 
 
@@ -310,7 +344,8 @@ def prepare_(m):
                                  '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(tmp)], low=True).returncode
             if m['proxy']:
                 tmp.replace(CACHE / f'{mid}.proxy.webm')
-        elif m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m):  # e.g. ProRes, MKV, 4K60
+        elif (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
+              or m.setdefault('gop', gop(src)) > 2):  # a keyframe only every few seconds: seeks decode all of it
             out = CACHE / f'{mid}.proxy.mp4'
             m['proxy'] = proxy(m, src, out) or proxy(m, src, out, sw=True)
         n = max(4, min(60, round(d / 1.5)))
@@ -2652,6 +2687,8 @@ class App(BaseHTTPRequestHandler):
                 if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
                     if mov := alpha_mov(mm):  # made at import; older library items get it on first request
                         return self.file(mov)
+                if mm.get('kind') == 'image' and (q.get('thumb') or q.get('view')):
+                    return self.file(photo_copy(mm, 320 if q.get('thumb') else 2560))
                 if q.get('wk') and mm.get('kind') == 'video' and not (mm.get('alpha') or mm.get('trans')):
                     return self.file(wk_copy(mm))  # the app's preview: colour labels WebKit shows as decoded
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
@@ -3302,8 +3339,11 @@ def resume_prepare():
             m = json.loads(f.read_text())
         except ValueError:
             continue
+        if m.get('kind') == 'video' and 'gop' not in m and m.get('ready') and m.get('file') and (MEDIA / m['file']).is_file() and not m.get('trans'):
+            m['gop'] = gop(MEDIA / m['file'])  # measured once for items imported before it was
+            save_meta(m)
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
-                not m.get('ready') or (heavy(m) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
+                not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
             save_meta(m)
             prepare(m)
