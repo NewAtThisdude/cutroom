@@ -3958,6 +3958,9 @@ function wire() {
   $('#zoom').addEventListener('input', e => setZoom(8 * 2 ** +e.target.value));
   $('#fileInput').addEventListener('click', () => window.webkit?.messageHandlers?.pick?.postMessage('library')); // the app clones picked media by path
   $('#fileInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
+  const photosApp = window.webkit?.messageHandlers?.photos; // only the Mac app has the system Photos picker
+  $('#btnPhotos').hidden = !photosApp;
+  $('#btnPhotos').addEventListener('click', () => photosApp?.postMessage('pick'));
   $('#textPresets').addEventListener('click', e => { const b = e.target.closest('[data-addtext]'); if (b) { addText(b.dataset.addtext); editText(); } });
   $('#capPresets').addEventListener('click', e => {
     const b = e.target.closest('[data-cap]');
