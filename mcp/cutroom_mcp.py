@@ -26,7 +26,7 @@ CLIP_PROPS = """Clip properties (objects merge, null deletes a key):
 speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit fit|fill|blur (blur = blurred background, main only)
 scale (1 = fitted size) | x, y: offset in canvas fractions, 0 = centred (text clips: 0..1 position, 0.5 = centre) | rot degrees | opacity 0-1
 blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|color-burn|hard-light|soft-light|difference|exclusion
-fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (export)
+fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (RNNoise, heard in preview and export)
 au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
