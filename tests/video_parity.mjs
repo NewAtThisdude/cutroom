@@ -10,7 +10,7 @@ import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain)/; // 28: a scaled or turning clip's edges land a pixel apart
-const APPROX = /effect (blur|pixelate)|transition pixelize|blur bg|clip blur|beauty|glow/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
+const APPROX = /effect (blur|pixelate|motionblur|zoomblur)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-parity-`);
 const gen = (name, args) => { const f = `${tmp}/${name}`; execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, f]); return f; };
 const files = {
@@ -38,6 +38,8 @@ const add = (name, code) => S0.push([name, code]);
 add('plain', 'main(A); T = 1.5');
 add('speed 2x', 'main(A).speed = 2; T = 1.2');
 add('speed 0.5x', 'main(A).speed = 0.5; T = 3.1');
+for (const T of [0.05, 1.2, 2.3]) add(`motion blur 2x at ${T}s`, `Object.assign(main(A), { speed: 2, mb: 0.5 }); T = ${T}`); // tmix of the last 3 frames (the first ones repeat frame 0)
+add('motion blur 1x graded overlay', `main(B); Object.assign(ov(A), { scale: 0.6, x: 0.15, mb: 1, adj: { b: 1.2, c: 1.1, s: 0.6 } }); T = 1.5`);
 add('trimmed in', 'Object.assign(main(A), { in: 2.2 }); T = 0.7');
 for (const l of opt.looks) add(`look ${l}`, `main(A).look = { name: '${l}', amount: 1 }; T = 1.5`);
 add('look at 50%', `main(A).look = { name: 'teal', amount: 0.5 }; T = 1.5`);

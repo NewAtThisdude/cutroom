@@ -28,8 +28,12 @@ RANGE_CAP = 8 << 20
 CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 'text/javascript', '.ttf': 'font/ttf'}
 XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', 'wipedown', 'slideleft', 'slideright', 'slideup', 'slidedown',
           'circleopen', 'circleclose', 'zoomin', 'dissolve', 'pixelize', 'radial', 'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
-          'vertopen', 'horzopen', 'diagtl', 'diagbr', 'hlslice', 'vuslice', 'hblur', 'fadegrays', 'squeezeh', 'squeezev'}  # the UI mirrors these per pixel
-FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow'}  # video effects: the UI expands each one into these
+          'vertopen', 'horzopen', 'diagtl', 'diagbr', 'hlslice', 'vuslice', 'hblur', 'fadegrays', 'squeezeh', 'squeezev',
+          'whipleft', 'whipright', 'zoomblur'}  # the UI mirrors these per pixel
+# blur transitions: an xfade underneath, then a blur that peaks half way (sin(pi p)) on those frames; the UI's transition() does the same
+TR_BLUR = {'whipleft': 'slideleft', 'whipright': 'slideright', 'zoomblur': 'fade'}
+WHIP, ZOOMB, ZB_K = 0.04, 0.25, 8  # whip: horizontal sigma, x frame width; zoom blur: the last copy's extra zoom; copies averaged
+FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur'}  # video effects: the UI expands each one into these
 BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expressions; x = backdrop, y = clip, 0..255 (ffmpeg's own blend modes differ)
     'multiply': 'x*y/255', 'screen': 'x+y-x*y/255', 'darken': 'min(x,y)', 'lighten': 'max(x,y)',
     'overlay': 'if(lte(x,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
@@ -1806,6 +1810,8 @@ def clean_plan(p):
             raise ValueError('grade must be a 33-point 3D table')
         k['lkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 1)} for f in (c.get('lkf') or [])[:2000]] or None  # filter strength keyframes
         k['blur'] = int(fnum(c.get('blur', 0), 0, 400)) or None  # px in the source
+        mb = int(fnum(c.get('mb', 0), 0, 9))  # motion blur: frames mixed
+        k['mb'] = mb if mb > 1 and m['kind'] == 'video' else None
         b = c.get('beauty') or {}
         k['beauty'] = {'amt': fnum(b.get('amt', 0), 0, 1), 'sigma': fnum(b.get('sigma', 4), 0.1, 512)} if b.get('amt') else None
         g = c.get('glow') or {}
@@ -1861,8 +1867,10 @@ def fx_op(f, W, H):
         k['k'] = per('k', 0, 4) if f.get('k') is not None else 1.0  # brightness flicker: a factor per frame
         if len(k['m']) != 9:
             raise ValueError('matrix needs 9 values')
-    elif op == 'blur':
+    elif op in ('blur', 'hblur'):
         k['sigma'] = fnum(f['sigma'], 0.1, 500)
+    elif op == 'zblur':
+        k['s'] = fnum(f['s'], 0, 2)
     elif op == 'pixelize':
         k['size'] = int(fnum(f['size'], 2, 1024))
     elif op == 'rgbshift':
@@ -1881,6 +1889,16 @@ def fx_op(f, W, H):
 
 def even(x):
     return int(round(x / 2)) * 2
+
+
+def zoom_blur(tag, z, W, H):
+    """Zoom blur of a W x H stream: ZB_K copies zoomed 1 .. 1+z about the centre, averaged (the preview's zblurInPlace).
+    z is an expression; n there is the frame number in this stream (scale eval=frame), so a transition can ramp it."""
+    s = f"split={2 * ZB_K - 1}[{tag}o0]" + ''.join(f'[{tag}a{i}][{tag}b{i}]' for i in range(1, ZB_K))
+    for i in range(1, ZB_K):  # each zoomed copy over the frame it came from (it covers it all), centred
+        s += (f";[{tag}b{i}]scale=w='2*trunc({W}*(1+({z})*{i / (ZB_K - 1):.6f})/2)':h=-2:eval=frame:flags=bilinear[{tag}s{i}]"
+              f";[{tag}a{i}][{tag}s{i}]overlay=x='({W}-overlay_w)/2':y='({H}-overlay_h)/2':eval=frame:format=gbrp[{tag}o{i}]")
+    return s + ';' + ''.join(f'[{tag}o{i}]' for i in range(ZB_K)) + f'mix=inputs={ZB_K}'
 
 
 def ss3(x):
@@ -2121,6 +2139,8 @@ def graph(p, td):
             v += f",boxblur=luma_radius={c['blur']}:luma_power=3:chroma_radius={c['blur']}:chroma_power=3"
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
+        if c.get('mb'):  # motion blur: each output frame the plain mean of it and the mb-1 before it (the preview mixes the same frames)
+            v += f",tmix=frames={c['mb']}:weights='{' '.join(['1'] * c['mb'])}'"
         return v
 
     def audio(i, c, dur, delay=0.0, joins=(False, False)):
@@ -2285,12 +2305,19 @@ def graph(p, td):
             if ao:
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]' if o else f'[{ca}][a{k}]concat=n=2:v=0:a=1[ma{k}]')
             elif o:
-                fg.append(f"[{cv}][v{k}]xfade=transition={prev['tr']}:duration={o / F:.6f}:offset={(n - o) / F:.6f}[mv{k}]")
+                tr, n0 = prev['tr'], n - o  # the overlap is main-stream frames n0 .. n-1; its frame i is at p = i/o
+                fg.append(f"[{cv}][v{k}]xfade=transition={TR_BLUR.get(tr, tr)}:duration={o / F:.6f}:offset={n0 / F:.6f}[mv{k}]")
+                if tr == 'zoomblur':
+                    zb = zoom_blur(f'zt{k}', f'{ZOOMB}*sin(PI*n/{o})', W, H)
+                    fg.append(f'[mv{k}]split[zt{k}m][zt{k}c];[zt{k}c]trim=start_frame={n0}:end_frame={n},{zb}[zt{k}e];[zt{k}m][zt{k}e]overlay=eof_action=pass:format=gbrp[mb{k}]')
+                elif tr in TR_BLUR:  # whips: a sideways blur per frame
+                    fg.append(f'[mv{k}]' + ','.join(f"gblur=sigma={WHIP * W * math.sin(math.pi * i / o):.3f}:sigmaV=0:steps=3:enable='eq(n,{n0 + i})'" for i in range(1, o)) + f'[mb{k}]'
+                              if o > 1 else f'[mv{k}]null[mb{k}]')
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]')
             else:
                 fg.append(f'[{cv}][{ca}][v{k}][a{k}]concat=n=2:v=1:a=1[mv{k}][ma{k}]')
             n += c['frames'] - o
-            cv, ca = f'mv{k}', f'ma{k}'
+            cv, ca = f"m{'b' if o and not ao and prev['tr'] in TR_BLUR else 'v'}{k}", f'ma{k}'
         if not ao:
             fg.append(f'[{cv}]null[vm]')
         fg.append(f'[{ca}]anull[am]')
@@ -2363,7 +2390,11 @@ def graph(p, td):
     for j, f in enumerate([] if ao else p.get('fx') or []):  # video effects, in order, on everything below the text layer
         op, tag, nxt = f['op'], f'fx{j}', f'X{j}'
         en = f"enable='between(n,{f['a']},{f['b'] - 1})'"  # frame numbers: exact, unlike times
-        if op in ('matrix', 'negate', 'blur', 'pixelize', 'rgbshift'):  # filters with timeline support: in place, on those frames only
+        if op == 'zblur':  # only its own frames go through the copies (trim keeps their times), laid back over the rest
+            zb = zoom_blur(tag, f"{f['s']:.4f}", W, H)
+            fg.append(f"[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]trim=start_frame={f['a']}:end_frame={f['b']},{zb}[{tag}e];"
+                      f"[{tag}a][{tag}e]overlay=eof_action=pass:format=gbrp[{nxt}]")
+        elif op in ('matrix', 'negate', 'blur', 'hblur', 'pixelize', 'rgbshift'):  # filters with timeline support: in place, on those frames only
             pre = ''
             if op == 'matrix':
                 names, m, kk = ('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb'), f['m'], f['k']
@@ -2375,6 +2406,8 @@ def graph(p, td):
                 body = 'negate='
             elif op == 'blur':
                 body = f"gblur=sigma={f['sigma']:.3f}:"
+            elif op == 'hblur':  # sideways only (motion blur)
+                body = f"gblur=sigma={f['sigma']:.3f}:sigmaV=0:steps=3:"
             elif op == 'pixelize':
                 body = f"pixelize=w={f['size']}:h={f['size']}:"
             else:
@@ -3209,7 +3242,18 @@ def selftest():
     assert abs(g1[0] - g1[1]) < 8 and 40 < g1[0] < 70 and 18 < g2[0] < 40, ('matrix with a per-frame factor', g1, g2)
     assert at(42, 145)[0] > 200 and at(42, 145)[2] > 200 and at(47, 145)[0] < 50, ('red moved 20 px right, then back', at(42, 145), at(47, 145))
     assert at(55, 160)[0] > 200 and at(55, 190)[2] > 200, ('zoom 1.5 about the centre, moved 40 px right: the seam goes to x = 135 + 40', at(55, 160), at(55, 190))
-    for op in ({'op': 'blur', 'sigma': 4}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
+    gen('-f', 'lavfi', '-i', 'color=red:s=320x320,drawbox=x=200:y=0:w=120:h=320:color=blue:t=fill', '-frames:v', '1', str(HOME / 'box.png'))
+    out = render({**tplan, 'name': 'fx-zblur', 'duration': 1, 'main': [{**still_clip(imp('box.png')), 'frames': 30}], 'fx': [{'op': 'zblur', 's': 0.5, 'a': 10, 'b': 20}]}, 30)
+    z5, z15, z25 = at(5, 210), at(15, 210), at(25, 210)  # blue from x = 195; zoomed copies (up to 1.5x about x = 135) push it out to 225
+    assert z5[2] > 200 and z5[0] < 50 and 40 < z15[0] < 200 and z25[0] < 50, ('zoom blur on frames 10-19 only: red pulled over the blue', z5, z15, z25)
+    gen('-f', 'lavfi', '-i', 'color=black:s=320x320:r=30:d=1,geq=lum=40+N*6:cb=128:cr=128', '-c:v', 'libx264', '-qp', '0', '-pix_fmt', 'yuv420p', str(HOME / 'ramp.mp4'))
+    RP = imp('ramp.mp4')  # flat grey, 6 levels brighter every frame
+    outs = [render({**tplan, 'name': f'mb{k}', 'duration': 1, 'main': [{**still_clip(RP), 'out': 1, 'frames': 30, 'mb': k}]}, 30) for k in (0, 3)]
+    g0, g3 = ([pixel(o, max(0.0, n - 0.25) / F, 135, 240)[1] for n in (0, 1, 2, 10)] for o in outs)
+    want = [g0[0], (2 * g0[0] + g0[1]) / 3, (g0[0] + g0[1] + g0[2]) / 3, g0[3] - (g0[2] - g0[1])]  # tmix repeats the first frame before it
+    assert all(abs(a - b) <= 2 for a, b in zip(g3, want)), ('motion blur 3 = mean of the frame and the 2 before', g0, g3, want)
+    print(f'motion blur ok: zoom blur on its frames only; tmix of 3 frames = their mean ({g0} -> {g3})')
+    for op in ({'op': 'blur', 'sigma': 4}, {'op': 'hblur', 'sigma': 8}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
         out = render({**tplan, 'name': f"fx-{op['op']}", 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{**op, 'a': 0, 'b': 30}]}, 30)
         if op['op'] == 'mirror':
             assert pixel(out, 0.5, 260, 240)[0] > 200, 'mirror: the right edge shows the (red) left edge'
