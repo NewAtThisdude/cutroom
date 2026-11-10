@@ -9,7 +9,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid
+import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -116,7 +116,7 @@ def probe(path):
         info['trans'] = v.get('pix_fmt', '') in ('rgba', 'bgra', 'argb', 'abgr', 'ya8', 'pal8', 'yuva420p') or v['codec_name'] == 'gif'
         info.update(w=w, h=h, codec=v['codec_name'], rot=int(float(rot)),
                     hdr=v.get('color_transfer') in ('arib-std-b67', 'smpte2084'),  # HLG / PQ (iPhone HDR is HLG)
-                    cs=v.get('color_space', ''), pix=v.get('pix_fmt', ''),
+                    cs=v.get('color_space', ''), pix=v.get('pix_fmt', ''), trc=v.get('color_transfer', ''),
                     alpha=v['codec_name'] == 'vp9' and v.get('tags', {}).get('alpha_mode') == '1')
     return info
 
@@ -1987,7 +1987,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
-           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'hdr': p.get('hdr') if p.get('hdr') in ('hlg', 'pq') else None, 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -2007,6 +2007,8 @@ def clean_plan(p):
         k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
+                 trc=m.get('hdr') and (m.get('trc') or sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
+                                                          '-of', 'csv=p=0', k['path']]).stdout.strip()),  # HLG / PQ (items imported before 'trc' was kept: read from the file)
                  flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')), heavy=heavy(m))
         if k['denoise'] and m['hasAudio'] and m['kind'] != 'image':  # the sound the preview plays: the same denoised PCM file
             if not (f := pcm(m, dn=True)):
@@ -2085,6 +2087,12 @@ def clean_plan(p):
     out['frames'] = [{'i': int(fnum(f['i'], 0, len(out['pngs']) - 1)), 'start': fnum(f['start'], 0, 1e6), 'end': fnum(f['end'], 0, 1e6)}
                      for f in t.get('frames', [])]
     out['fx'] = [fx_op(f, out['w'], out['h']) for f in (p.get('fx') or [])[:300]]
+    hv = {'mp4': 'hevc'}.get(out['format'], out['format'])  # HDR in an MP4 is HEVC Main 10 (H.264 has no 10-bit hardware encoder)
+    if out['hdr'] and (why := hdr_why({**out, 'format': hv})):  # exported in SDR (the format chosen), and the job says why
+        out['hdr'], out['sdr'] = None, why
+    elif out['hdr']:
+        out['format'] = hv
+    out['alpha'] = bool(p.get('alpha')) and out['format'] in ALPHA_FORMATS  # transparent background
     return out
 
 
@@ -2306,21 +2314,47 @@ def adjust(c):
     return f',format=rgb24,lutrgb=r={lut}:g={lut}:b={lut},colorchannelmixer={mix}'
 
 
+RGB_NEEDS = (('kf', 'keyframes'), ('alpha', 'a transparent clip'), ('trans', 'a transparent clip'), ('key', 'chroma key'), ('mask', 'a mask'),
+             ('mask_seq', 'a mask'), ('vig', 'a vignette'), ('look', 'a filter'), ('tone', 'adjustments'), ('grade', 'a colour grade'),
+             ('lkf', 'filter keyframes'), ('beauty', 'beauty'), ('blur', 'blur'))
+
+
+def rgb_need(c):
+    """What in a main clip needs the RGB composite ('' = nothing: it can stay 4:2:0 YUV)."""
+    return ('a blurred background' if c['fit'] == 'blur' else 'opacity' if c['opacity'] < 1 else 'a transition other than Dissolve' if c.get('tr') not in (None, 'fade')
+            else 'brightness / contrast / saturation' if adjust(c) else 'rotation' if rotation(c) else next((n for k, n in RGB_NEEDS if c.get(k)), ''))
+
+
 def yuv_ok(p):
     """Nothing in the plan needs RGB: plain cuts, dissolves and fades on the main track only, into a 4:2:0 file. Those stay
     in yuv420p from decode to encode, no base-frame overlay (1 min of 1080p60 from 4K: 245 -> 170 CPU-s, 46 dB vs the RGB path).
-    p['rgb'] (selftest only) forces the RGB path."""
-    return bool(p['main']) and not (p.get('rgb') or p['overlay'] or p['frames'] or p.get('fx')) and p.get('format', 'mp4') in ('mp4', 'hevc') and all(
-        c['fit'] != 'blur' and c['opacity'] >= 1 and c.get('tr') in (None, 'fade') and not adjust(c) and not rotation(c)
-        and not any(c.get(k) for k in ('kf', 'alpha', 'trans', 'key', 'mask', 'mask_seq', 'vig', 'look', 'tone', 'grade', 'lkf', 'beauty', 'blur'))
-        for c in p['main'])
+    An HDR export takes this path only (10-bit, any format). A transparent plan (and its 'mp4' chunks) needs RGBA. p['rgb'] (selftest only) forces the RGB path."""
+    return bool(p['main']) and not (p.get('rgb') or p.get('alpha') or p['overlay'] or p['frames'] or p.get('fx')) and (p.get('format', 'mp4') in ('mp4', 'hevc') or p.get('hdr')) and not any(map(rgb_need, p['main']))
+
+
+def hdr_why(p):
+    """Why an HDR export comes out SDR ('' = it stays HDR). HDR keeps the 10-bit YUV path from decode to encode: cuts, trims,
+    speed, crop, flip, fades and dissolves of HLG / PQ video on the main track. Everything else composites in 8-bit RGB as
+    BT.709 (overlays, text, stickers, effects, colour), and an SDR clip would need an SDR -> HDR conversion: those export SDR."""
+    if p['format'] not in ('hevc', 'prores'):
+        return 'HDR is made as HEVC (MP4) or ProRes 422 HQ only'
+    if not p['main']:
+        return 'there is no main track'
+    why = ('overlay clips' if p['overlay'] else 'text, captions or stickers' if p['frames'] else 'effects' if p.get('fx') else
+           next((f'a clip with {n}' for c in p['main'] if (n := rgb_need(c))), '') or
+           next(('a photo or SDR clip on the main track' for c in p['main'] if not c['hdr']), '') or
+           next(('PQ footage (it exports as PQ only)' for c in p['main'] if p['hdr'] == 'hlg' and c['trc'] == 'smpte2084'), ''))
+    return why
 
 
 def graph(p, td):
     """Return (input args, filtergraph). Layer order matches the preview: bg, main, overlays, text."""
     W, H, F, D, BG = p['w'], p['h'], p['fps'], p['duration'], p['bg'].replace('#', '0x')
     ins, fg, mix = [], [], []
-    yuv = yuv_ok(p)
+    yuv, hdr, A = yuv_ok(p), p.get('hdr'), p.get('alpha')  # hdr: clean_plan kept it only where yuv holds (hdr_why)
+    if A:  # transparent background: the composite carries alpha (gbrap) from the base frame to the file
+        BG = 'black@0'
+    RGB = 'gbrap' if A else 'gbrp'
 
     def inp(c, dur):  # (see ss() for where a video input starts)
         if c['kind'] == 'image':
@@ -2328,7 +2362,7 @@ def graph(p, td):
         else:  # input seek: each clip decodes only its own range
             # VideoToolbox inputs get ONE ffmpeg thread: the media engine decodes, and ffmpeg's default frame threads only held
             # frames (a 4K60 input: 478 MB -> 137 MB, same speed). 4K on a smaller Mac decodes there too; the cores filter.
-            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'] if c.get('hdr')
+            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1'] if c.get('hdr')
                    else ['-c:v', 'libvpx-vp9'] if c.get('alpha')  # native vp9 decoder drops the alpha plane
                    else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c['kind'] == 'video' and (c.get('heavy') and not BIG_MAC or p.get('light'))  # Light export: the media engine decodes, the cores stay free
                    else [])
@@ -2347,8 +2381,8 @@ def graph(p, td):
             # the explicit scale makes the link take the new tags: without it, the RGB conversions ffmpeg inserts later
             # (looks, colour, keys, rotation) still read the frames as BT.601 and shift every colour a look touches
             v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,'
-        if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709; rotation applied by hand since autorotate can't touch hw frames
-            v += VT_SDR
+        if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709, or kept as 10-bit HDR; rotation by hand since autorotate can't touch hw frames
+            v += 'hwdownload,format=p010le,format=yuv420p10le,' if hdr else VT_SDR
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
         # round=up: each output frame shows the last source frame at or before its time, as the preview's <video> does
         # (nearest put 59.94 fps footage in a 60 fps project one frame early for half of every 16.7 s)
@@ -2522,21 +2556,22 @@ def graph(p, td):
                 v += (f',split=2[f{k}][b{k}];[b{k}]scale={even(W * 1.08)}:{even(H * 1.08)}:force_original_aspect_ratio=increase,crop={W}:{H},'  # 8% overscan, as the preview
                       f'boxblur={max(2, W // 40)}:3[bb{k}];[f{k}]null')
             else:
-                v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}[bb{k}];[f{k}]null'
+                v += f'[f{k}];color=c={BG}:s={W}x{H}:r={F:g}:d={dur:.6f}' + (',format=gbrap' if A else '') + f'[bb{k}];[f{k}]null'
             sc, px_, py_ = place(c, 't')
             v = masked(vignetted(v, c, f'mv{k}', dur), c, f'm{k}', dur) + rot + opacity(c, f'mop{k}', n) + sc + f'[ff{k}];[bb{k}][ff{k}]overlay=x={px_}:y={py_}:shortest=1:format=gbrp'
         else:
             cx, cy = max(0, -x), max(0, -y)
             cw, ch = min(w - cx, W - max(0, x)), min(h - cy, H - max(0, y))
-            v += (f',scale={w}:{h},crop={cw}:{ch}:{cx}:{cy},pad={W}:{H}:{max(0, x)}:{max(0, y)}:color={BG}' if cw >= 2 and ch >= 2
-                  else f',scale={W}:{H},drawbox=c={BG}:t=fill')  # dragged fully off-canvas
+            v += (',format=gbrap' if A else '') + (f',scale={w}:{h},crop={cw}:{ch}:{cx}:{cy},pad={W}:{H}:{max(0, x)}:{max(0, y)}:color={BG}' if cw >= 2 and ch >= 2
+                  else f',scale={W}:{H},' + ('colorchannelmixer=aa=0' if A else f'drawbox=c={BG}:t=fill'))  # dragged fully off-canvas
+        fa = ':alpha=1' if A else ''  # on a transparent background a fade fades to clear (the preview shows the checkerboard through it)
         if c['fadeIn']:
-            v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}"
+            v += f",fade=t=in:st=0:d={c['fadeIn']:.3f}{fa}"
         if c['fadeOut']:
-            v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}"
+            v += f",fade=t=out:st={max(0, dur - c['fadeOut']):.3f}:d={c['fadeOut']:.3f}{fa}"
         # RGB like the canvas; xfade needs identical timebases on both inputs. The 4:2:0 path passes BT.709 video through as
         # is; anything else (SD BT.601, pictures) goes through RGB as on the RGB path: swscale's direct 601->709 was 2 levels off
-        fg.append(v + (('' if c.get('bt709') else ',format=gbrp') + ',scale=out_color_matrix=bt709:out_range=tv,format=yuv420p' if yuv else ',format=gbrp')
+        fg.append(v + (hdr_tail(c, hdr) if hdr else ('' if c.get('bt709') else ',format=gbrp') + ',scale=out_color_matrix=bt709:out_range=tv,format=yuv420p' if yuv else f',format={RGB}')
                   + f',setsar=1,settb=AVTB[v{k}]')
         fg.append(snd)
     if p['main']:  # cuts concatenate; transitions overlap the two clips (xfade + acrossfade), like CapCut
@@ -2566,7 +2601,7 @@ def graph(p, td):
         mix.append('[am]')
 
     if not ao and not yuv:
-        fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format=gbrp[L0]')
+        fg.append(f'color=c={BG}:s={W}x{H}:r={F:g}:d={D:.6f},format={RGB}[L0]')
     cur = ['L0']
     if yuv:  # no base frame to lay the main track on: past its end (sound runs on) the background is padded on
         fg.append(f'[vm]tpad=stop_duration={D - n / F:.6f}:color={BG}[vp]' if D * F > n + 0.5 else '[vm]null[vp]')
@@ -2702,13 +2737,54 @@ def graph(p, td):
     loud = (',loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json' if lp == 'measure' else f',volume={lp:.3f}dB' if type(lp) is float
             else ',alimiter=limit=0.891:attack=1:release=50:level=false:latency=1')
     fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
-    if not ao:
-        fg.append(f'[{cur[0]}]format=rgb24[vout]' if p.get('format') in ('png', 'gif') else  # stills and GIFs stay RGB: no 4:2:0 round trip
-                  f'[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
+    fmt = p.get('format', 'mp4')
+    if not ao and A and fmt == 'mp4':  # a chunk of a transparent export (ffmpeg_cmd intermediate): RGBA as it is
+        fg.append(f'[{cur[0]}]format=gbrap[vout]')
+    elif not ao and hdr:  # 10-bit HDR as it came (or as PQ): only the labels are set
+        fg.append(f"[{cur[0]}]format={'yuv422p10le' if fmt == 'prores' else 'p010le' if fmt == 'hevc' else 'yuv420p10le'},setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc={HDR_TRC[hdr]}:range=tv[vout]")
+    elif not ao:
+        fg.append(f"[{cur[0]}]format={'rgba' if A else 'rgb24'}[vout]" if fmt in ('png', 'gif', 'pngseq') else  # stills and GIFs stay RGB: no 4:2:0 round trip
+                  f"[{cur[0]}]scale=out_color_matrix=bt709:out_range=tv,format={OUT_PIX.get((fmt, bool(A)), 'yuv420p')},"
+                  'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[vout]')
     return sum(ins, []), ';'.join(fg)
 
 
-FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'gif': '.gif', 'mp3': '.mp3', 'wav': '.wav', 'png': '.png'}
+FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'prores4444': '.mov', 'webm': '.webm', 'gif': '.gif', 'pngseq': '.zip', 'mp3': '.mp3', 'wav': '.wav', 'png': '.png'}
+ALPHA_FORMATS = ('prores4444', 'webm', 'pngseq', 'gif', 'png')  # the ones that keep a transparent background
+OUT_PIX = {('prores4444', True): 'yuva444p10le', ('prores4444', False): 'yuv444p10le', ('webm', True): 'yuva420p'}  # (format, alpha) -> encoder input
+HDR_TRC = {'hlg': 'arib-std-b67', 'pq': 'smpte2084'}
+
+
+def hlg_to_pq(r, g, b):
+    """One HLG signal (BT.2100, non-linear R'G'B' 0-1) as PQ on the 1000-nit display HLG is mastered for (BT.2100 / BT.2408):
+    inverse OETF -> scene light, OOTF (system gamma 1.2 on the luminance, black level 0) -> display light, PQ inverse EOTF.
+    HLG 0.75 (reference white) -> 203 cd/m2 -> PQ 0.5806; HLG 1.0 -> 1000 cd/m2 -> PQ 0.7518."""
+    a, b_, c = 0.17883277, 0.28466892, 0.55991073
+    E = [x * x / 3 if x <= 0.5 else (math.exp((x - c) / a) + b_) / 12 for x in (max(0.0, min(1.0, v)) for v in (r, g, b))]
+    Ys = 0.2627 * E[0] + 0.6780 * E[1] + 0.0593 * E[2]
+    k = 1000 * Ys ** 0.2 if Ys > 0 else 0.0
+    m1, m2, c1, c2, c3 = 2610 / 16384, 2523 / 4096 * 128, 3424 / 4096, 2413 / 4096 * 32, 2392 / 4096 * 32
+    return [((c1 + c2 * y ** m1) / (1 + c3 * y ** m1)) ** m2 for y in (k * e / 10000 for e in E)]
+
+
+def hlg_pq_cube():
+    """hlg_to_pq as a 65-point 3D table (lut3d, tetrahedral), made once into the cache."""
+    f = CACHE / 'hlg_to_pq_65.cube'
+    if not f.exists():
+        n = 65
+        rows = (hlg_to_pq(r / (n - 1), g / (n - 1), b / (n - 1)) for b in range(n) for g in range(n) for r in range(n))  # red fastest (.cube order)
+        tmp = f.with_suffix('.part')
+        tmp.write_text(f'LUT_3D_SIZE {n}\n' + ''.join(f'{x:.7f} {y:.7f} {z:.7f}\n' for x, y, z in rows))
+        tmp.replace(f)
+    return f
+
+
+def hdr_tail(c, hdr):
+    """The end of an HDR main clip's chain: nothing (its 10-bit YUV as it came), or HLG -> PQ through the table in 16-bit RGB."""
+    if hdr != 'pq' or not c.get('hdr') or c.get('trc') != 'arib-std-b67':  # PQ footage, or a chunk already made PQ
+        return ''
+    return (f",scale=in_color_matrix=bt2020:in_range=tv,format=gbrp16le,lut3d=file='{hlg_pq_cube()}':interp=tetrahedral,"
+            'scale=out_color_matrix=bt2020:out_range=tv,format=yuv420p10le')
 
 
 def h264_level(W, H, F):
@@ -2723,30 +2799,46 @@ def h264_level(W, H, F):
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
     W, H, F, fmt = p['w'], p['h'], p['fps'], 'mp4' if intermediate else p.get('format', 'mp4')
+    hdr, A = p.get('hdr'), p.get('alpha')
     vmap, amap, br = ['-map', '[vout]'], ['-map', '[aout]'], f"{max(2000, round(W * H * F * 0.2 * p.get('rate', 1) / 1000))}k"  # Bitrate: Standard / High / Very high
-    if intermediate:
-        enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le']
+    pf, cs = 'yuv420p', ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
+    if hdr:
+        cs = ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', HDR_TRC[hdr], '-color_range', 'tv']
+    if intermediate:  # chunks of a long main track: near-lossless, 10-bit HDR or lossless with alpha where the final pass needs it
+        enc = (['-c:v', 'ffv1', '-c:a', 'pcm_s16le'] if A else ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le'])
+        pf = 'gbrap' if A else 'yuv420p10le' if hdr else pf
     elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
-        # at most 640 px across: a 1080p GIF of 30 s was ~60 MB and ffmpeg held 1.5 GB of frames for the palette
-        fg += (f";[vout]fps={min(F, 15):g},scale='min(640,iw)':-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff[gp];"
-               f'[g2][gp]paletteuse=dither=bayer:bayer_scale=4[gout];[aout]anullsink')
+        # at most 640 px across: a 1080p GIF of 30 s was ~60 MB and ffmpeg held 1.5 GB of frames for the palette.
+        # Transparent: one palette entry is kept for clear pixels; alpha below half is clear (GIF has no partial alpha)
+        fg += (f";[vout]fps={min(F, 15):g},scale='min(640,iw)':-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff{':reserve_transparent=1' if A else ''}[gp];"
+               f"[g2][gp]paletteuse=dither=bayer:bayer_scale=4{':alpha_threshold=128' if A else ''}[gout];[aout]anullsink")
         vmap, amap, enc = ['-map', '[gout]'], [], ['-loop', '0']
+    elif fmt == 'pngseq':  # numbered PNGs (RGBA when transparent), zipped by export()
+        fg += ';[aout]anullsink'
+        amap, enc = [], ['-c:v', 'png', '-f', 'image2', '-start_number', '0']
+        (Path(td) / 'seq').mkdir(exist_ok=True)
+        out = Path(td) / 'seq' / 'frame_%06d.png'
     elif fmt == 'png':  # still frame at p['still']
         fg += ';[aout]anullsink'
         amap, enc = [], ['-ss', f"{p['still']:.6f}", '-frames:v', '1', '-update', '1']  # (ffmpeg takes the frame NEAREST to it: the frame's own time)
     elif fmt in ('mp3', 'wav'):  # graph() built no picture
         vmap, enc = [], ['-c:a', 'libmp3lame', '-q:a', '2'] if fmt == 'mp3' else ['-c:a', 'pcm_s16le']
-    elif fmt == 'prores':
-        enc = ['-c:v', 'prores_ks', '-profile:v', '2', '-c:a', 'pcm_s16le']
-    elif fmt == 'hevc':  # "smaller": about half H.264's bitrate for the same look
+    elif fmt == 'prores':  # 422 HQ when HDR (10-bit, the HDR mastering format)
+        enc, pf = ['-c:v', 'prores_ks', '-profile:v', '3' if hdr else '2', '-c:a', 'pcm_s16le'], 'yuv422p10le'
+    elif fmt == 'prores4444':  # ProRes 4444 + 16-bit alpha: what Final Cut / Premiere / Resolve read as a transparent clip
+        enc, pf = ['-c:v', 'prores_ks', '-profile:v', '4', '-alpha_bits', '16', '-vendor', 'apl0', '-c:a', 'pcm_s16le'], OUT_PIX[(fmt, bool(A))]
+    elif fmt == 'webm':  # VP9 with alpha (browsers, CapCut-style overlays); alt-ref frames can't carry alpha
+        enc, pf = ['-c:v', 'libvpx-vp9', '-b:v', br, '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1', '-auto-alt-ref', '0', '-c:a', 'libopus', '-b:a', '160k'], 'yuva420p' if A else 'yuv420p'
+    elif fmt == 'hevc':  # "smaller": about half H.264's bitrate for the same look. HDR: Main 10
         enc = ['-c:v', 'hevc_videotoolbox', '-b:v', f"{max(1200, round(int(br[:-1]) * 0.55))}k", '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
+        if hdr:
+            enc[2:2], pf = ['-profile:v', 'main10'], 'p010le'
     elif p['quality'] == 'best':
         enc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac', '-b:a', '192k']
     else:
         enc = ['-c:v', 'h264_videotoolbox', '-b:v', br, '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
     video = fmt not in ('mp3', 'wav')
-    pix = (['-pix_fmt', 'yuv422p10le' if fmt == 'prores' else 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
-           if video and fmt not in ('gif', 'png') else [])
+    pix = ['-pix_fmt', pf] + (cs if pf != 'gbrap' else []) if video and fmt not in ('gif', 'png', 'pngseq') else []
     rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
     gf = Path(td) / f'graph{len(list(Path(td).glob("graph*.txt")))}.txt'
     gf.write_text(fg)
@@ -2866,7 +2958,7 @@ def export(job, p):
                 if st.get('cancel'):
                     raise RuntimeError('cancelled')
                 frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
-                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'fx': [], 'duration': frames / F, 'format': 'mp4'}  # chunks are always YUV video
+                sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'fx': [], 'duration': frames / F, 'format': 'mp4'}  # chunks: YUV video (10-bit HDR, or RGBA)
                 f = Path(td) / f'chunk{n}.mkv'
                 run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps), 'The export', job)
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
@@ -2881,6 +2973,10 @@ def export(job, p):
             # rendered aside and moved in when complete: a failed or stopped export left an unplayable file under its name
             out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}"
             run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps), 'The export', job)
+            if p.get('format') == 'pngseq':  # the frames, stored (PNG is compressed already) in a folder named after the export
+                with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
+                    for f in sorted((Path(td) / 'seq').glob('*.png')):
+                        z.write(f, f"{p['name']}/{f.name}")
             if not out.exists() or not out.stat().st_size:
                 raise RuntimeError('ffmpeg finished without writing a file')
             if lib:
@@ -2890,7 +2986,7 @@ def export(job, p):
                 return
             dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
             shutil.move(out, dst)
-        st.update(state='done', progress=1.0, file=dst.name)
+        st.update(state='done', progress=1.0, file=dst.name, **({'sdr': p['sdr']} if p.get('sdr') else {}))
     except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
         if st.get('cancel'):
             st.update(state='cancelled')
@@ -3728,6 +3824,109 @@ def selftest():
     render({'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#000000', 'name': 'hdrstill', 'overlay': [], 'audio': [],
             'main': [{'media': fz['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(fz)}]}, 30)
     print(f'hdr ok: HLG tone-mapped to SDR, rotated clip matches the SDR path at {float(ps[1]):.1f} dB PSNR; HDR freeze frame exports')
+    # HDR export (10-bit, no SDR round trip): the rotated HLG clip trimmed + faded in -> HEVC Main 10 HLG, PQ (through the
+    # table), ProRes 422 HQ; upright, labelled, its luma = the source's; what can't stay HDR exports SDR and says why
+    vst = lambda f: json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=codec_name,codec_tag_string,profile,pix_fmt,width,height,'
+                                   'color_space,color_primaries,color_transfer,nb_read_frames:stream_tags=alpha_mode:stream_side_data=rotation:format=duration', '-of', 'json', str(f)]).stdout)
+    y10 = lambda f, n, pre='': array('H', subprocess.run(['ffmpeg', '-v', 'error', '-i', str(f), '-vf', f"select=eq(n\\,{n}),{pre}format=yuv420p10le", '-frames:v', '1',
+                                                          '-f', 'rawvideo', '-pix_fmt', 'yuv420p10le', '-'], capture_output=True, check=True).stdout[:W * H * 2])
+    hcl = {'media': hr['id'], 'in': 0.2, 'out': 0.8, 'frames': 18, 'geom': geom(hr), 'fadeIn': 0.2}
+    hbase = {**hplan, 'duration': 0.6, 'main': [hcl]}
+    src = [y10(HOME / 'hlg_rot.mp4', 6 + n, f'scale={W}:{H},') for n in (3, 9, 12, 15, 17)]  # the source frames under export frames 3 (fading), 9-17
+    for hk, fmt, pix, prof in (('hlg', 'hevc', 'yuv420p10le', 'Main 10'), ('pq', 'hevc', 'yuv420p10le', 'Main 10'), ('hlg', 'prores', 'yuv422p10le', 'HQ')):
+        assert clean_plan({**hbase, 'hdr': hk, 'format': fmt}).get('hdr') == hk, ('HDR kept for a plain cut + fade', hk, fmt)
+        out = render({**hbase, 'name': f'hdr {hk} {fmt}', 'hdr': hk, 'format': fmt}, 18)
+        v = vst(out)['streams'][0]
+        assert (v['pix_fmt'], v['profile'], v['color_space'], v['color_primaries'], v['color_transfer'], v['width'], v['height']) == (
+            pix, prof, 'bt2020nc', 'bt2020', HDR_TRC[hk], W, H) and not v.get('side_data_list') and (fmt != 'hevc' or v['codec_tag_string'] == 'hvc1'), ('HDR export', hk, fmt, v)
+        if hk == 'hlg':  # the same code values as the source (10-bit), the fade a share of them
+            got = [y10(out, n) for n in (3, 9, 12, 15, 17)]
+            mean = lambda a: sum(a) / len(a)
+            shift = max(abs(mean(g) - mean(s)) / 876 for g, s in zip(got[1:], src[1:]))
+            mad = max(sum(abs(a - b) for a, b in zip(g, s)) / len(s) / 876 for g, s in zip(got[1:], src[1:]))
+            share = (mean(got[0]) - 64) / (mean(src[0]) - 64)
+            assert shift < 0.01 and mad < 0.01 and 0.3 < share < 0.7, ('HDR luma vs source', hk, fmt, shift, mad, share)
+            print(f'hdr export ok ({hk} {fmt}): {pix} {prof} {v["color_transfer"]}, upright {W}x{H}, 18 frames; luma vs source at 4 frames: '
+                  f'mean shift {shift * 100:.2f} %, mean |d| {mad * 100:.2f} % of the 10-bit range; fade frame at {share:.2f} of the source')
+        else:
+            print(f'hdr export ok ({hk} {fmt}): {pix} {prof} {v["color_transfer"]}, upright {W}x{H}, 18 frames')
+    CHUNK = 1  # the chunked path keeps HDR too (10-bit intermediates)
+    out = render({**hbase, 'name': 'hdr chunks', 'duration': 1.2, 'hdr': 'hlg', 'format': 'hevc', 'main': [hcl, {**hcl, 'fadeIn': 0}]}, 36)
+    CHUNK = 24
+    v = vst(out)['streams'][0]
+    assert (v['pix_fmt'], v['color_transfer']) == ('yuv420p10le', 'arib-std-b67'), ('HDR chunks', v)
+    # HLG -> PQ at known values: greys and saturated patches, BT.2100 maths (reference white HLG 0.75 = 203 nits = PQ 0.58)
+    pats = [(0, 0, 0), (.25, .25, .25), (.5, .5, .5), (.75, .75, .75), (1, 1, 1), (.75, .2, .2), (.2, .75, .2), (.2, .2, .75)]
+    ycc = lambda r, g, b: (lambda y: (64 + 876 * y, 512 + 896 * (b - y) / 1.8814, 512 + 896 * (r - y) / 1.4746))(.2627 * r + .678 * g + .0593 * b)
+    pw_, ph_ = 256, 16
+    yy = [round(ycc(*pats[x * 8 // pw_])[0]) for _ in range(ph_) for x in range(pw_)]
+    uv = [[round(ycc(*pats[2 * x * 8 // pw_])[k]) for _ in range(ph_ // 2) for x in range(pw_ // 2)] for k in (1, 2)]
+    o = array('H', subprocess.run(['ffmpeg', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'yuv420p10le', '-s', f'{pw_}x{ph_}', '-i', '-', '-vf', 'setparams=range=tv'
+                                   + hdr_tail({'hdr': True, 'trc': 'arib-std-b67'}, 'pq'), '-f', 'rawvideo', '-pix_fmt', 'yuv420p10le', '-'],
+                                  input=array('H', yy + uv[0] + uv[1]).tobytes(), capture_output=True, check=True).stdout)
+    q = pw_ * ph_
+    worst = max(max(abs(a - b) for a, b in zip((o[8 * pw_ + x], o[q + 4 * pw_ // 2 + x // 2], o[q * 5 // 4 + 4 * pw_ // 2 + x // 2]), ycc(*hlg_to_pq(*pats[i]))))
+                for i, x in ((i, int((i + 0.5) * pw_ / 8)) for i in range(8)))
+    assert abs(hlg_to_pq(.75, .75, .75)[0] - 0.5806) < 0.001 and abs(hlg_to_pq(1, 1, 1)[0] - 0.7518) < 0.001 and worst < 2, ('HLG -> PQ', worst)
+    print(f'hlg -> pq ok: 8 known patches within {worst:.2f} 10-bit codes (HLG 0.75 -> PQ {hlg_to_pq(.75, .75, .75)[0]:.4f}, 1.0 -> {hlg_to_pq(1, 1, 1)[0]:.4f})')
+    for extra, why in (({'text': plan['text']}, 'text, captions or stickers'), ({'main': [{**hcl, 'opacity': 0.5}]}, 'a clip with opacity'),
+                       ({'main': [hcl, {'media': R['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(R)}]}, 'a photo or SDR clip on the main track'), ({'format': 'gif'}, 'HDR is made as')):
+        cp = clean_plan({**hbase, 'hdr': 'hlg', 'format': 'hevc', **extra})
+        assert cp['hdr'] is None and cp['sdr'].startswith(why), ('SDR because', why, cp.get('sdr'))
+    print('hdr ok: text / opacity / photos / GIF export SDR and say why')
+    # transparent background: a cut-out clip (VP9 alpha), a sticker (PNG alpha) and a text layer, no main track, in each alpha format
+    gen('-f', 'lavfi', '-i', 'color=c=red:s=60x60:r=30:d=1,format=rgba,pad=120:120:30:30:color=black@0', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-auto-alt-ref', '0', str(HOME / 'cut.webm'))
+    gen('-f', 'lavfi', '-i', 'color=c=blue:s=50x50,format=rgba,pad=100:100:25:25:color=black@0', '-frames:v', '1', str(HOME / 'stk.png'))
+    gen('-f', 'lavfi', '-i', f'color=c=white:s=100x40,format=rgba,pad={W}:{H}:20:20:color=black@0', '-frames:v', '1', str(HOME / 'txt.png'))
+    cut, stk = imp('cut.webm'), imp('stk.png')
+    assert cut['alpha'] and stk['trans'], (cut, stk)
+    aplan = {'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#101010', 'name': 'alpha', 'alpha': True, 'main': [], 'audio': [],
+             'overlay': [{'media': cut['id'], 'start': 0, 'in': 0, 'out': 1, 'frames': 30, 'geom': {'x': 150, 'y': 300, 'w': 120, 'h': 120}},
+                         {'media': stk['id'], 'start': 0, 'in': 0, 'out': 0.5, 'frames': 15, 'geom': {'x': 20, 'y': 200, 'w': 100, 'h': 100}}],  # gone after 0.5 s
+             'text': {'pngs': [png('txt')], 'frames': [{'i': 0, 'start': 0, 'end': 1}]}}
+    pts = {'clear': (5, 5, 0), 'text': (70, 40, 255), 'sticker': (70, 250, 255), 'cut-out': (210, 360, 255), 'cut-out edge': (155, 305, 0)}
+
+    def rgba(f, n, dec=()):  # frame n decoded with its alpha, straight RGBA
+        b = subprocess.run(['ffmpeg', '-v', 'error', *dec, '-i', str(f), '-vf', f"select=eq(n\\,{n})", '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'],
+                           capture_output=True, check=True).stdout
+        return lambda x, y: tuple(b[(y * W + x) * 4:(y * W + x) * 4 + 4])
+    for fmt, frames, pixa in (('prores4444', 30, 'yuva444p'), ('webm', 30, 'alpha_mode'), ('gif', 15, 'bgra'), ('pngseq', 30, 'rgba')):
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**aplan, 'name': f'alpha {fmt}', 'format': fmt}))
+        assert JOBS['t']['state'] == 'done', JOBS['t']
+        out = EXPORTS / JOBS['t']['file']
+        dec = ['-c:v', 'libvpx-vp9'] if fmt == 'webm' else []  # the native VP9 decoder drops the alpha
+        if fmt == 'pngseq':
+            with zipfile.ZipFile(out) as z:
+                names = sorted(z.namelist())
+                for k in (12, 24):
+                    (HOME / f'seq{k}.png').write_bytes(z.read(names[k]))
+            assert len(names) == frames, ('PNG sequence frames', len(names))
+            v, dur = vst(HOME / 'seq12.png')['streams'][0], len(names) / F
+            px, late = rgba(HOME / 'seq12.png', 0), rgba(HOME / 'seq24.png', 0)
+        else:
+            j = vst(out)
+            v, dur = j['streams'][0], float(j['format']['duration'])
+            assert int(v['nb_read_frames']) == frames, (fmt, v['nb_read_frames'])
+            px, late = rgba(out, frames * 12 // 30, dec), rgba(out, frames * 24 // 30, dec)  # at 0.4 s and 0.8 s
+        kind = v['pix_fmt'] + (' + alpha_mode 1' if v.get('tags', {}).get('alpha_mode') == '1' else '')
+        assert pixa in kind and abs(dur - 1) < 0.08, ('alpha format', fmt, v, dur)
+        got = {k: px(x, y) for k, (x, y, _) in pts.items()}
+        assert all(abs(got[k][3] - a) <= 2 for k, (_, _, a) in pts.items()), ('alpha', fmt, got)
+        assert got['sticker'][2] > 180 and got['cut-out'][0] > 180 and min(got['text'][:3]) > 200, ('colours under alpha', fmt, got)
+        assert late(70, 250)[3] <= 2 and late(70, 40)[3] >= 253, ('a sticker that ended leaves clear pixels', fmt, late(70, 250))
+        print(f"alpha ok ({fmt}): {kind}, {frames} frames, {dur:.2f} s; alpha clear {got['clear'][3]}, text {got['text'][3]}, sticker {got['sticker'][3]} "
+              f"(after it ends {late(70, 250)[3]}), cut-out {got['cut-out'][3]} (edge {got['cut-out edge'][3]})")
+    out = render({**aplan, 'name': 'alpha main', 'format': 'webm', 'overlay': [], 'text': None, 'main': [{'media': L['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(L), 'fadeOut': 0.5}]}, 30)
+    px = rgba(out, 5, ['-c:v', 'libvpx-vp9'])
+    assert px(135, 20)[3] <= 2 and px(135, 240)[3] >= 253, ('letterbox of a main clip is clear', px(135, 20), px(135, 240))
+    assert 90 < rgba(out, 22, ['-c:v', 'libvpx-vp9'])(135, 240)[3] < 200, 'a fade on a clear background fades the alpha'
+    CHUNK = 1  # chunked: the intermediates keep the alpha (FFV1 RGBA)
+    lc = {'media': L['id'], 'in': 0, 'out': 0.5, 'frames': 15, 'geom': geom(L)}
+    px = rgba(render({**aplan, 'name': 'alpha chunks', 'format': 'webm', 'overlay': [], 'text': None, 'main': [lc, lc]}, 30), 20, ['-c:v', 'libvpx-vp9'])
+    CHUNK = 24
+    assert px(135, 20)[3] <= 2 and px(135, 240)[3] >= 253, ('alpha through chunks', px(135, 20), px(135, 240))
+    print('alpha ok (main track): letterbox clear, picture opaque, fade-out fades to clear; chunked too')
     gen('-f', 'lavfi', '-i', "aevalsrc='0.9*sin(2*PI*55*t)*exp(-25*mod(t,0.5))':s=44100:d=12", '-c:a', 'aac', str(HOME / 'kick.m4a'))
     bt = beats(imp('kick.m4a')['id'])
     err = max(abs(b - round(b * 2) / 2) for b in bt['beats'][1:-1])

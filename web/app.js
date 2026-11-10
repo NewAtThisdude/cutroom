@@ -88,7 +88,10 @@ const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.a
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
-const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['gif', 'GIF'], ['mp3', 'Audio · MP3'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'], ['srt', 'Subtitles · SRT (captions)']];
+const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'],
+  ['webm', 'WebM · VP9 (with transparency)'], ['gif', 'GIF'], ['pngseq', 'PNG sequence (zip)'], ['mp3', 'Audio · MP3'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'], ['srt', 'Subtitles · SRT (captions)']];
+const ALPHA_FMTS = ['prores4444', 'webm', 'gif', 'pngseq', 'png']; // keep a transparent background (server.py ALPHA_FORMATS)
+const HDR_NAMES = { sdr: 'SDR', hlg: 'HDR · HLG', pq: 'HDR · PQ (HDR10)' };
 const ANIM_T = 0.3; // default text in/out animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
@@ -421,6 +424,10 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { flu
 function renderAll() {
   renderTimeline(); renderInspector();
   $('#ratioLabel').textContent = `${P.w}×${P.h} · ${+P.fps.toFixed(3)} fps`;
+  let tag = $('#hdrTag'); // the preview is always SDR (tone mapped), whatever the export makes: said on the picture
+  if (!tag) { tag = document.createElement('div'); tag.id = 'hdrTag'; tag.style.cssText = 'position:absolute;left:10px;top:8px;padding:2px 7px;border-radius:5px;font-size:11px;background:rgba(0,0,0,.6);color:#e8e8e8;pointer-events:none'; $('#stage').append(tag); }
+  tag.hidden = !P.hdr || P.hdr === 'sdr';
+  tag.textContent = `${HDR_NAMES[P.hdr] || ''} export · preview shown in SDR`;
   if (document.activeElement !== $('#projName')) $('#projName').value = P.name;
   $('#btnLink').classList.toggle('on', !P.unlinked);
   syncHistory();
@@ -786,7 +793,8 @@ function projectPanel() {
     <div class="pinfo"><div><b>${fmtDur(total())}</b><span>Length</span></div><div><b>${P.w}×${P.h}</b><span>Size</span></div><div><b>${n}</b><span>Clips</span></div></div>
     <h4>Canvas</h4><div class="ratios">${Object.keys(RATIOS).map(tile).join('')}</div>
     <h4>Frame rate</h4><div class="seg full">${[24, 25, 30, 50, 60].map(f => `<button data-fps="${f}" class="${f === P.fps ? 'on' : ''}">${f} fps</button>`).join('')}</div>
-    ${colour('p.bg', 'Background', P.bg)}
+    <div class="row"><span>Background</span><input type="color" data-k="p.bg" value="${P.bg}"><label style="margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12.5px" title="Transparent background: what nothing covers exports clear (ProRes 4444, WebM, GIF, PNG); the preview shows a checkerboard there">Transparent<input type="checkbox" data-k="p.alpha"${P.alpha ? ' checked' : ''}></label></div>
+    <label class="row" title="HDR keeps iPhone HLG footage HDR in the export (HEVC Main 10 or ProRes 422 HQ). The preview always shows SDR"><span>Export as</span><select data-k="p.hdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <h4>Shortcuts</h4><p class="hint" title="⇧←/→ one second · Home/End · ⇧⌘Z redo · ⌘+scroll zooms the timeline">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ frame · M marker · ⌘Z undo</p>`;
 }
 function tabbed(sections) { // inspector tabs; empty tabs are hidden and the open tab survives re-renders
@@ -1118,6 +1126,31 @@ function retext(c) { // keep word timings when the word count still matches, oth
 }
 
 // ---------- preview engine ----------
+function backdrop(ctx) { // the background colour, or a checkerboard where it's transparent (what an alpha export leaves clear)
+  if (!P.alpha) return P.bg;
+  const q = Math.max(6, Math.round(ctx.canvas.width / 40));
+  if (backdrop.q !== q) {
+    const t = new OffscreenCanvas(2 * q, 2 * q), x = t.getContext('2d');
+    x.fillStyle = '#3c3c3c'; x.fillRect(0, 0, 2 * q, 2 * q); x.fillStyle = '#5a5a5a'; x.fillRect(0, 0, q, q); x.fillRect(q, q, q, q);
+    backdrop.p = ctx.createPattern(t, 'repeat'); backdrop.q = q;
+  }
+  return backdrop.p;
+}
+function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); server.py hdr_why() decides, this tells before the export
+  if (!['mp4', 'hevc', 'prores'].includes(fmt)) return 'HDR is made as HEVC (MP4) or ProRes 422 HQ only';
+  if (!P.main.length) return 'there is no main track';
+  if (!P.mute.overlay && shown('overlay').length) return 'overlay clips';
+  if (['text', 'captions'].some(l => !P.mute[l] && shown(l).length) || (!P.mute.fx && shown('fx').some(f => FX[f.fx]?.layer))) return 'text, captions or stickers';
+  if (!P.mute.fx && shown('fx').length) return 'effects';
+  for (const [i, c] of P.main.entries()) {
+    const a = c.adj || {}, n = c.fit === 'blur' ? 'a blurred background' : (c.opacity ?? 1) < 1 ? 'opacity' : trF(i) && c.tr?.type !== 'fade' ? 'a transition other than Dissolve'
+      : ['b', 'c', 's'].some(k => (a[k] ?? 1) !== 1) ? 'brightness / contrast / saturation' : c.rot ? 'rotation' : bakeKf(c, 'main') ? 'keyframes' : c.key ? 'chroma key' : c.mask ? 'a mask'
+      : a.vig > 0 ? 'a vignette' : lookMatrix(c) ? 'a filter' : toneLUT(c) ? 'adjustments' : gradeLUT(c) ? 'a colour grade' : c.lkf?.length ? 'filter keyframes' : c.beauty?.amt > 0 ? 'beauty' : a.blur > 0 ? 'blur' : '';
+    if (n) return `a clip with ${n}`;
+  }
+  if (P.main.some(c => !M.get(c.media)?.hdr || M.get(c.media)?.alpha)) return 'a photo or SDR clip on the main track';
+  return '';
+}
 function fitStage() {
   if (!P) return;
   const st = $('#stage').getBoundingClientRect(), cv = $('#cv'), dpr = devicePixelRatio || 1;
@@ -1466,7 +1499,7 @@ function paint() {
     }
   }
   hits = []; S.lead = null;
-  ctx.fillStyle = P.bg;
+  ctx.fillStyle = backdrop(ctx);
   ctx.fillRect(0, 0, cv.width, cv.height);
   for (const [lane, c, key, i] of layers) {
     const m = M.get(c.media);
@@ -1478,11 +1511,11 @@ function paint() {
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
       if (i !== act[1]) continue;
-      const cap = TR_GPU[tr.type] && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases
+      const cap = TR_GPU[tr.type] && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
       if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
       for (const j of [0, 1]) {
         const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
-        lx.fillStyle = P.bg; lx.fillRect(0, 0, L.width, L.height);
+        lx.fillStyle = backdrop(lx); lx.fillRect(0, 0, L.width, L.height);
         if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
       }
       transition(ctx, layer(0), layer(1), tr.type, tr.p);
@@ -3864,7 +3897,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     }
     text = { pngs, frames: spans };
   }
-  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
+  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
     audio: P.mute.audio ? [] : await Promise.all(shown('audio').map(c => clip(c, 'audio'))) };
 }
@@ -3878,18 +3911,29 @@ function openExport() {
     <label class="row chk"><span>Loudness −14 LUFS</span><input id="exLoud" type="checkbox"></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
-    <p class="muted" id="exHint"></p>
+    <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+    <p class="muted" id="exHint"></p><p class="muted" id="exHdrHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), fps = +P.fps.toFixed(3);
     $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f); $('#exLight').disabled = ['mp3', 'wav', 'srt'].includes(f);
-    $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
-    $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
-      prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
+    const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
+    $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
+    $('#exHdr').disabled = !['mp4', 'hevc', 'prores'].includes(f);
+    if (hdr && f === 'mp4') $('#exQ').disabled = true; // HDR in an MP4 is HEVC Main 10 on the Apple encoder
+    const tr = HDR_NAMES[hk];
+    $('#exHdrHint').textContent = ALPHA_FMTS.includes(f) && f !== 'png' || (f === 'png' && P.alpha) ? (P.alpha ? 'Transparent background: what nothing covers stays clear (alpha).'
+      : 'The background colour fills the frame. Turn on Transparent (next to Background, in Project) to keep it clear.')
+      : !$('#exHdr').disabled && hk !== 'sdr' ? (why ? `Exports SDR: ${why}. HDR keeps cuts, trims, speed, crop, flips, fades and dissolves of HDR clips only.`
+        : `${tr}, 10-bit: ${f === 'prores' ? 'ProRes 422 HQ' : 'HEVC Main 10 (hvc1)'}, BT.2020${hk === 'pq' ? ', HLG footage mapped to PQ for a 1000-nit display' : ''}. The preview shows SDR.`) : '';
+    $('#exHint').textContent = { mp4: hdr ? `MP4 · HEVC Main 10 + AAC · ${fps} fps · ${d}` : `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC${hdr ? ' Main 10' : ''} + AAC, about half the size · ${fps} fps · ${d}`,
+      prores: `MOV · ProRes 422${hdr ? ' HQ' : ''} + PCM, for further editing (large) · ${d}`, prores4444: `MOV · ProRes 4444 + PCM, for editing apps (large) · ${fps} fps · ${d}`,
+      webm: `WebM · VP9 + Opus, for the web · ${fps} fps · ${d}`, pngseq: `ZIP of ${Math.round(total() * P.fps)} PNG frames · ${fps} fps, no sound · ${d}`,
+      gif: `GIF · 15 fps, up to 640 px wide, no sound, loops${P.alpha ? ', clear or solid pixels only' : ''} · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
       wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
   };
-  $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();
+  $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); $('#exHdr').addEventListener('change', hint); hint();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
 }
 function exportUI(pct, msg, done) { // the dialog when it's open (it can be closed and opened again while rendering) and the Export button
@@ -3916,7 +3960,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       return;
     }
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').checked, fmt);
-    plan.rate = +$('#exRate').value; plan.light = $('#exLight').checked;
+    plan.rate = +$('#exRate').value; plan.light = $('#exLight').checked; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     const { job } = await api('/api/export', plan);
     S.exporting.job = job;
     for (;;) {
@@ -3924,7 +3968,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
         S.exporting = null;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in Movies/Cutroom/exports${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
         tell(`Exported ${j.file} (Movies/Cutroom/exports)`);
         break;
       }
@@ -4620,7 +4664,7 @@ function wire() {
     renderTimeline();
     const k = e.target.dataset.k;
     if (k === 'c.speed' || k === 'c.pitch') warmTempo(selClip()); // the new speed's sound is made now, not when Space is pressed
-    if (k === 'p.fps') renderAll();
+    if (k === 'p.fps' || k === 'p.hdr') renderAll();
     else if (selClip()?.kf || k === 'c.tr.d' || k === 'c.speed' || e.target.tagName === 'SELECT' || e.target.type === 'checkbox') renderInspector(); // controls that depend on it
   });
   insp.addEventListener('click', e => {
@@ -5298,7 +5342,7 @@ const REMOTE = {
       plan.rate = +bitrate || 1;
       const jb = await job('/api/export', plan, 'Exporting');
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, shown: !!show };
+      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}) };
     } finally { S.exporting = false; }
   },
 };
