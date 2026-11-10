@@ -17,6 +17,7 @@
   <input id="projName" class="name" spellcheck="false" aria-label="Project name">
   <div class="tright">
   <span id="saveState" class="muted"></span>
+  <button id="btnAsk" class="ghost" title="Ask Cutroom (⌘K): say what to do, the local model plans it"><svg class="i" viewBox="0 0 24 24"><path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/></svg>Ask<kbd>⌘K</kbd></button>
   <button id="btnExport" class="primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Export</button>
   </div>
 </header>
@@ -40,7 +41,8 @@
       <div class="imports"><label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt,.txt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label><button id="btnPhotos" class="import" hidden title="Import from your Photos library"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.5"/><path d="M21 16l-5-5-8 8"/></svg>Photos</button></div>
       <button id="btnMulticam" class="wide ghostline" title="Several recordings of the same moment, lined up by their sound">Multicam…</button>
       <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button><button data-mfilter="proj" title="Only what this project uses">Used</button></div>
-      <div class="mtools"><input id="mediaSearch" type="search" placeholder="Search the library" aria-label="Search the library"><select id="mediaSort" aria-label="Sort the library"><option value="new">Newest</option><option value="name">Name</option><option value="dur">Longest</option></select></div>
+      <div class="mtools"><input id="mediaSearch" type="search" placeholder="Search: name, or Enter for what's in it / said" title="Typing filters by name. Enter searches inside: what the picture shows (red car, night, two people) and what is said" aria-label="Search the library"><select id="mediaSort" aria-label="Sort the library"><option value="new">Newest</option><option value="name">Name</option><option value="dur">Longest</option></select></div>
+      <div id="mediaHits" class="hits" hidden></div>
       <div id="mediaList" class="media-list"></div>
       <p class="hint">Or drop files anywhere. Drag a card onto a track, or press + on it. Hover a video to skim it; click it to mark a range (I, O).</p>
     </section>

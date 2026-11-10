@@ -216,6 +216,13 @@ TOOLS = [
     ('compound_clip', 'Make several clips (ids; at least one main-track clip, the main ones next to each other) into one compound clip: rendered once into the library, one video to play instead of many. break_compound undoes it.',
      S({'ids': {'type': 'array', 'items': txt}}, ['ids']), 'compound_clip'),
     ('break_compound', 'Put a compound clip\'s original clips back where they were.', S({'id': txt}, ['id']), 'break_compound'),
+    ('pilot', 'The editor\'s own command bar (⌘K): a plain-language instruction ("cut the silences, add captions in Bold") planned by the LOCAL model '
+              '(qwen3.5 on this Mac) into these same tools and run step by step; called here the whole run is one undo step (in the editor\'s bar, one per step). run=false returns the plan only. '
+              'Returns what was done, what failed and what it could not do (cant).', S({'text': txt, 'run': boo}, ['text']), 'pilot'),
+    ('search_media', 'Smart search of the library by content: what the picture shows ("red car", "night", "two people"), what is said (transcripts) and how many people. '
+                     'Returns the best moment per item (media id, t seconds, why picture|speech, text), best first, and how many items are not indexed yet; '
+                     'index=true first describes those with the local vision model (slow the first time, cached).',
+     S({'q': txt, 'index': boo}, ['q']), 'search_media'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
@@ -254,7 +261,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

@@ -71,4 +71,11 @@ assert hashlib.sha256(open(p + '/model.safetensors', 'rb').read()).hexdigest() =
 # the CC0 sound and music library (packs.json: Kenney sound packs + CC0 music from archive.org, ~100 MB, each SHA-256 and licence
 # checked) into the library's packs folder. Not AI, but the same one-time setup; the Audio rail can also download it
 env -u PYTHONPATH python3 -I ../server.py --packs
+# Smart search in the Media panel: text embeddings (nomic-embed-text v1.5, Apache-2.0, 137M parameters, 274 MB) in Ollama;
+# Ollama checks the blob's sha256 itself. Pinned manifest digest: 0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f
+if command -v ollama > /dev/null; then
+  ollama pull nomic-embed-text:v1.5 > /dev/null
+  curl -s http://127.0.0.1:11434/api/tags | grep -q '"nomic-embed-text:v1.5".*0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f' \
+    || echo "warning: nomic-embed-text:v1.5 is not the pinned build (search still works, scores may differ)"
+fi
 echo "On-device AI ready."
