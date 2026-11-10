@@ -120,6 +120,10 @@ if (run('ui') || run('captions') || run('pauses')) {
       const used = JSON.parse(fs.readFileSync(path.join(HOME, 'projects', `${DRIVE}.json`))), heard = () => Object.fromEntries(
         [...new Set([...used.main, ...used.audio].map(c => c.media))].map(id => { const f = path.join(HOME, 'cache', `${id}.auto.words.json`); const d = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : null;
           return [id, d ? (Array.isArray(d) ? Infinity : d.have.reduce((s, [a, z]) => s + z - a, 0)) : 0]; }));
+      const dji = ['979a851bf114', '1640ec308499', '6d11bd2694f2'], wf = id => path.join(HOME, 'cache', `${id}.auto.words.json`);
+      // a whole-file cache from before spans would answer without listening (heard = Infinity): park it for this check, put it back after
+      const parked = dji.filter(id => fs.existsSync(wf(id)) && Array.isArray(JSON.parse(fs.readFileSync(wf(id)))));
+      for (const id of parked) fs.renameSync(wf(id), wf(id) + '.parked');
       const before = heard();
       await inPage(id => openProject(id), DRIVE); await page.waitForTimeout(2000);
       await page.click('.rail button[data-tab="captions"]'); await inPage(() => { $('#capLang').value = 'auto'; });
@@ -127,7 +131,8 @@ if (run('ui') || run('captions') || run('pauses')) {
       const [, ms] = await timed(async () => { await page.click('#btnCaptions'); await page.waitForTimeout(300); await page.waitForFunction(() => !$('#btnCaptions').disabled, null, { timeout: 900000, polling: 200 }); });
       clearInterval(poll);
       const after = heard(), src = await inPage(() => [...P.main, ...($('#capAudio').checked ? P.audio : [])].reduce((s, c) => s + c.out - c.in, 0));
-      const dji = ['979a851bf114', '1640ec308499', '6d11bd2694f2'], newly = dji.reduce((s, id) => s + after[id] - before[id], 0);
+      for (const id of parked) fs.renameSync(wf(id) + '.parked', wf(id));
+      const newly = dji.reduce((s, id) => s + after[id] - before[id], 0);
       check('captions on the night-drive project listen to the used spans only', dji.every(id => Number.isFinite(after[id])) && newly < 80,
         `DJI: ${newly.toFixed(1)} s heard (${dji.map(id => `${id.slice(0, 4)} ${before[id].toFixed(0)}->${after[id].toFixed(0)}`).join(', ')}), used ${src.toFixed(1)} s incl. the music track, source 431 s, ${(ms / 1000).toFixed(1)} s; status ${[...new Set(pct.filter(Boolean))].slice(-3).join(' / ')}`);
     }
