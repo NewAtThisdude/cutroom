@@ -56,7 +56,11 @@ GPU_TOOLS = ('lip_sync', 'talking_photo')  # run on the GPU PC only: listed whil
 
 def gpu_up():  # the server's cached check (never a wait on a sleeping PC); no server = not listed
     try:
-        return bool(http('/api/ai/status', timeout=3).get('gpu', {}).get('reachable'))
+        g = http('/api/ai/status', timeout=3).get('gpu', {})
+        if g.get('configured') and (g.get('stale') or not g.get('checked')):  # a check is out (stale cache): its answer, once
+            time.sleep(4.5)
+            g = http('/api/ai/status', timeout=3).get('gpu', {})
+        return bool(g.get('reachable'))
     except (OSError, ValueError):
         return False
 

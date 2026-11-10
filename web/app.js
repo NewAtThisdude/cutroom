@@ -5362,7 +5362,7 @@ async function loadAI() { // fill the AI tab from what is installed
   const gpu = s.gpu || {}; // lip sync and talking photo run on the GPU PC only: shown while it is set up and answering (cached on the server)
   $('#gpuTools').hidden = !gpu.reachable; $('#gpuHint').hidden = !!gpu.reachable;
   $('#gpuHint').textContent = gpu.configured ? `Needs the 4090 PC (${gpu.host}): it is off or not answering right now.` : 'Needs the 4090 PC (set up with ai/gpu_setup.sh; see README).';
-  if (gpu.configured && !gpu.checked) setTimeout(loadAI, 4500); // the server's first check is still out
+  if (gpu.configured && (!gpu.checked || gpu.stale) && !loadAI.again) { loadAI.again = true; setTimeout(() => { loadAI.again = false; if (G.tab === 'ai') loadAI(); }, 4500); } // a check is out: ask once more
   G.ai = s; $('#btnMusic').disabled = !s.music;
   if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
   renderMediaList();

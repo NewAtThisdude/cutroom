@@ -1923,8 +1923,10 @@ def gpu_probe():
         ok = False
         if gpu_configured():
             try:
-                g = dict(ln.split(' ', 1) for ln in subprocess.run(['ssh', '-G', GPU_HOST], capture_output=True, text=True, timeout=3).stdout.splitlines() if ' ' in ln)
-                socket.create_connection((g.get('hostname', GPU_HOST), int(g.get('port', 22))), timeout=3).close()
+                if not GPU.get('addr'):  # ssh -G once per server run (the alias's host and port don't change)
+                    g = dict(ln.split(' ', 1) for ln in subprocess.run(['ssh', '-G', GPU_HOST], capture_output=True, text=True, timeout=3).stdout.splitlines() if ' ' in ln)
+                    GPU['addr'] = (g.get('hostname', GPU_HOST), int(g.get('port', 22)))
+                socket.create_connection(GPU['addr'], timeout=3).close()
                 ok = True
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 pass
@@ -1937,9 +1939,11 @@ def gpu_status():
     """For the AI tab and the MCP tool list: answers at once from the cache; a check older than GPU_TTL runs again in the
     background (the page asks again when the first one is still out). Lip sync and talking photo show only when reachable."""
     c = gpu_configured()
-    if c and time.time() - GPU['t'] > GPU_TTL and not GPU['busy'].locked():
+    stale = c and time.time() - GPU['t'] > GPU_TTL
+    if stale and not GPU['busy'].locked():
         threading.Thread(target=gpu_probe, daemon=True).start()
-    return {'host': GPU_HOST, 'configured': c, 'reachable': c and GPU['reachable'], 'checked': GPU['t'] > 0 or not c}
+    # no timer: nothing runs while nobody asks (CPU/battery). A stale answer says so and the asker asks once more shortly
+    return {'host': GPU_HOST, 'configured': c, 'reachable': c and GPU['reachable'], 'checked': GPU['t'] > 0 or not c, 'stale': bool(stale or GPU['busy'].locked())}
 
 
 def gpu_reachable():
