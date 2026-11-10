@@ -3456,7 +3456,7 @@ function openExport() {
     $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f);
     $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
     $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
-      prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, no sound, loops · ${d}`, mp3: `Audio only · MP3 · ${d}`,
+      prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
       wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${tc(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
   };
   $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();

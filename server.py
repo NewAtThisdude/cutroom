@@ -2425,7 +2425,9 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     if intermediate:
         enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le']
     elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
-        fg += f';[vout]fps={min(F, 15):g},split[g1][g2];[g1]palettegen=stats_mode=diff[gp];[g2][gp]paletteuse=dither=bayer:bayer_scale=4[gout];[aout]anullsink'
+        # at most 640 px across: a 1080p GIF of 30 s was ~60 MB and ffmpeg held 1.5 GB of frames for the palette
+        fg += (f";[vout]fps={min(F, 15):g},scale='min(640,iw)':-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff[gp];"
+               f'[g2][gp]paletteuse=dither=bayer:bayer_scale=4[gout];[aout]anullsink')
         vmap, amap, enc = ['-map', '[gout]'], [], ['-loop', '0']
     elif fmt == 'png':  # still frame at p['still']
         fg += ';[aout]anullsink'
