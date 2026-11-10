@@ -360,3 +360,4 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .keys kbd { font: 600 12px ui-monospace, monospace; background: var(--panel2); border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
 #btnExport.busy { background: linear-gradient(90deg, rgba(255, 255, 255, .32) var(--pct), rgba(0, 0, 0, .25) var(--pct)), var(--grad); } /* an export running with its dialog closed */
 #btnLink.on { color: var(--accent2); border-color: rgba(139, 92, 246, .55); background: rgba(139, 92, 246, .14); }
+.clip canvas.cstrip { position: absolute; top: 0; pointer-events: none; } /* drawn by drawStrips for the part in view */

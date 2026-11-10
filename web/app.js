@@ -423,6 +423,62 @@ function renderTimeline() {
   }
   $('#heads').innerHTML = heads;
   placePlayhead();
+  drawStrips();
+}
+// The filmstrip and waveform of the part of each clip in view, at this zoom: frames at their own shape, each the one at
+// its own time, and the sound's peaks per 10 ms shaded by the clip's volume and fades (stretched pictures went blocky)
+const gridImgs = new Map(), peakData = new Map();
+function gridImg(m) {
+  let i = gridImgs.get(m.id);
+  if (!i) { i = new Image(); i.onload = () => requestAnimationFrame(drawStrips); i.src = `/cache/${m.id}.grid.jpg`; gridImgs.set(m.id, i); }
+  return i;
+}
+function peaksOf(m) {
+  if (!peakData.has(m.id)) {
+    peakData.set(m.id, null);
+    fetch(`/cache/${m.id}.peaks`).then(r => (r.ok ? r.arrayBuffer() : null)).then(b => { if (b) { peakData.set(m.id, new Uint8Array(b)); requestAnimationFrame(drawStrips); } }).catch(() => {});
+  }
+  return peakData.get(m.id);
+}
+function drawStrips() {
+  if (!P) return;
+  const [wa, wb] = S.tlWin || [0, 0], pps = S.pps, dpr = devicePixelRatio || 1;
+  for (const cv of document.querySelectorAll('#lanes canvas.cstrip')) {
+    const el = cv.parentElement, lane = el.dataset.lane, c = P[lane]?.find(x => x.id === el.dataset.id), m = c && M.get(c.media);
+    if (!m) continue;
+    const left = c.start * pps, d = tdur(c, lane), x0 = Math.max(0, wa - left), x1 = Math.min(d * pps, wb - left), h = el.clientHeight;
+    if (x1 <= x0 || !h) { cv.width = 0; continue; }
+    const cw = Math.ceil(x1 - x0);
+    cv.style.left = `${x0}px`; cv.style.width = `${cw}px`; cv.style.height = `${h}px`;
+    if (cv.width !== Math.ceil(cw * dpr)) cv.width = Math.ceil(cw * dpr);
+    if (cv.height !== Math.ceil(h * dpr)) cv.height = Math.ceil(h * dpr);
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, h);
+    const wave = m.peaks && (lane === 'audio' || lane === 'main'), vh = m.kind === 'video' && lane !== 'audio' ? (wave ? Math.round(h * 0.68) : h) : 0;
+    if (vh && m.grid) {
+      const G = m.grid, img = gridImg(m);
+      if (img.complete && img.naturalWidth) {
+        const dw = (vh * G.tw) / G.th;
+        for (let i = Math.floor(x0 / dw); i * dw < x1; i++) {
+          const k = clamp(Math.floor(((c.in + (((i + 0.5) * dw) / pps) * c.speed) / m.duration) * G.n), 0, G.n - 1);
+          g.drawImage(img, (k % G.cols) * G.tw, Math.floor(k / G.cols) * G.th, G.tw, G.th, i * dw - x0, 0, dw, vh);
+        }
+      }
+    }
+    const pk = wave && peaksOf(m);
+    if (pk) {
+      const wh = h - vh, mid = vh + wh / 2;
+      const path = new Path2D(); // one fill for all the columns (a fillRect each doubled the timeline's render time)
+      for (let x = 0; x < cw; x++) {
+        const lt = (x0 + x) / pps, s0 = c.in + lt * c.speed, b0 = Math.floor(s0 * 100), b1 = Math.max(b0 + 1, Math.ceil((s0 + c.speed / pps) * 100));
+        let v = 0;
+        for (let b = b0; b < b1 && b < pk.length; b++) if (pk[b] > v) v = pk[b];
+        const a = (Math.sqrt(Math.min(1, (v / 255) * volAt(c, lt) * fadeAt(c, lt, d))) * wh) / 2;
+        if (a > 0.25) path.rect(x, mid - a, 1, a * 2);
+      }
+      g.fillStyle = '#7ee0c3'; g.fill(path);
+    }
+  }
 }
 const MULTI = ['overlay', 'audio', 'text', 'fx']; // lanes with several tracks
 function rows(lane) { // each clip on its track (c.track: dragged up or down); one that would overlap another there goes a track further. Later in the array = drawn on top
@@ -461,9 +517,9 @@ function clipHTML(lane, c, top = 0, h = 42) {
   if (m) {
     label = m.name + (c.speed !== 1 ? ` · ${c.speed}×` : '');
     const full = (m.duration / c.speed) * pps, off = (-c.in / c.speed) * pps, wave = m.wave && (lane === 'audio' || lane === 'main');
-    if (m.kind === 'video' && m.stripN && lane !== 'audio') layers.push([`url(/cache/${m.id}.strip.jpg)`, `${full}px ${wave ? '68%' : '100%'}`, `${off}px 0`, 'no-repeat']);
+    if (m.kind === 'video' && m.stripN && !m.grid && lane !== 'audio') layers.push([`url(/cache/${m.id}.strip.jpg)`, `${full}px ${wave ? '68%' : '100%'}`, `${off}px 0`, 'no-repeat']); // (older items until their grid is made)
     if (m.kind === 'image') layers.push([`url(/media/${m.id}?thumb=1)`, 'auto 100%', '0 0', 'repeat-x']); // a 320 px copy: full-size photos cost WebKit ~12 MB each
-    if (wave) layers.push([`url(/cache/${m.id}.wave.png)`, `${full}px ${lane === 'main' ? '32%' : '100%'}`, `${off}px 100%`, 'no-repeat']);
+    if (wave && !m.peaks) layers.push([`url(/cache/${m.id}.wave.png)`, `${full}px ${lane === 'main' ? '32%' : '100%'}`, `${off}px 100%`, 'no-repeat']);
   }
   const bg = layers.length ? `background-image:${layers.map(l => l[0])};background-size:${layers.map(l => l[1])};background-position:${layers.map(l => l[2])};background-repeat:${layers.map(l => l[3])};` : '';
   const env = c.vkf?.length ? (() => { // the volume points as a line over the clip (0 dB in the middle, -40 dB at the bottom)
@@ -477,7 +533,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
   })() : '';
   const marks = env + fades + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
-  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}"><span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
+  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}">${m && ((m.grid && m.kind === 'video' && lane !== 'audio') || (m.peaks && (lane === 'audio' || lane === 'main'))) ? '<canvas class="cstrip"></canvas>' : ''}<span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
 
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }

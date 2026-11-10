@@ -368,8 +368,43 @@ def prepare_(m):
         m['wave'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex',
                             'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x7ee0c3:scale=sqrt',
                             '-frames:v', '1', str(CACHE / f'{mid}.wave.png')], low=True).returncode
+    timeline_assets(m)
     m['ready'] = True
     save_meta(m)
+
+
+def timeline_assets(m):
+    """What the timeline draws a clip with when zoomed in: a grid of frames at their own shape, about one a second (up
+    to 300), and the sound's peak per 10 ms. The old strip (at most 60 frames stretched over the clip) and waveform
+    (one 1600 px picture) went blocky and blurred as soon as you zoomed in."""
+    mid, d, changed = m['id'], max(m.get('duration') or 0.1, 0.1), False
+    if m['kind'] == 'video' and not m.get('grid'):
+        px = CACHE / f'{mid}.proxy.mp4'
+        src = px if px.exists() else MEDIA / m['file']
+        n = max(4, min(300, round(d)))
+        cols = min(n, 20)
+        out, tmp = CACHE / f'{mid}.grid.jpg', CACHE / f'{mid}.grid.tmp.jpg'
+        for skip in ((['-skip_frame', 'nokey'],) if d > 60 else ()) + ([],):
+            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(src), '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={cols}x{math.ceil(n / cols)}',
+                       '-frames:v', '1', '-q:v', '5', str(tmp)], low=True).returncode and tmp.exists():
+                w = int(sh(['ffprobe', '-v', 'error', '-show_entries', 'stream=width', '-of', 'csv=p=0', str(tmp)]).stdout.strip() or 0)
+                tmp.replace(out)
+                m['grid'] = {'n': n, 'cols': cols, 'tw': w // cols, 'th': 72}
+                changed = True
+                break
+        tmp.unlink(missing_ok=True)
+    if m.get('hasAudio') and not m.get('peaks') and (f := pcm(m)):
+        raw = array('h')
+        with open(f, 'rb') as fh:
+            raw.frombytes(fh.read())
+        if sys.byteorder != 'little':
+            raw.byteswap()
+        step = 960  # 10 ms of 48 kHz stereo samples
+        out = bytes(min(255, round(max(max(raw[i:i + step]), -min(raw[i:i + step])) / 128)) for i in range(0, len(raw) - 1, step))
+        (CACHE / f'{mid}.peaks').write_bytes(out)
+        m['peaks'] = True
+        changed = True
+    return changed
 
 
 def transcribe(mid, lang='auto'):
@@ -2705,7 +2740,7 @@ class App(BaseHTTPRequestHandler):
                 return self.file(HOME / 'luts' / f'{m[1]}.cube')
             if path == '/api/templates':
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
-            if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png))', path):
+            if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
                 return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|gif|mp3|wav|png|srt))', path):
                 return self.file(EXPORTS / m[1])
@@ -3350,6 +3385,11 @@ def resume_prepare():
         elif m.get('ready') and m.get('hasAudio') and m.get('file') and (MEDIA / m['file']).is_file() and not (CACHE / f"{m['id']}.pcm").exists():
             with PREP:  # library items from before the preview played its sound from PCM: made now, not on the first play
                 pcm(m)
+        if m.get('ready') and m.get('file') and (MEDIA / m['file']).is_file() and (
+                (m.get('kind') == 'video' and not m.get('grid')) or (m.get('hasAudio') and not m.get('peaks'))):
+            with PREP:  # the zoomable filmstrip and waveform, once, for items from before them
+                if timeline_assets(m):
+                    save_meta(m)
 
 
 def main():
