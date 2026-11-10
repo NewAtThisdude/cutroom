@@ -351,7 +351,7 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
   }
   if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
-function touched() { S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+function touched() { reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) {
   if (!from.length) return;
@@ -764,6 +764,7 @@ function setVoice(c, k) {
 function volPoint(c, db) { // set the envelope at the playhead (a new point, or the one already there)
   const lt = clamp(S.t - c.start, 0, len(c)), v = db <= -40 ? 0 : +(10 ** (db / 20)).toFixed(4), near = f => Math.abs(f.t - lt) < 0.5 / P.fps;
   const k = (c.vkf || []).filter(f => !near(f));
+  delete c.duck; // a point set by hand: the auto-duck points become this clip's own
   c.vkf = [...k, { t: +lt.toFixed(4), v }].sort((a, b) => a.t - b.t);
 }
 function editOutput(out) { // click a slider's value to type an exact one (in the units shown)
@@ -847,8 +848,9 @@ function mediaPanel(c, lane) {
   }
   let audio = '';
   if (m.hasAudio) {
-    audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise (export)', c.denoise)
-      + `<h4>Separate</h4><div class="actions">${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac)">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button><button data-act="stems" title="Vocals, drums, bass and the rest as four audio clips (Demucs, on this Mac)">Split into stems</button></div>`;
+    audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise', c.denoise)
+      + `<p class="hint">RNNoise on this Mac, heard in the preview too. For the strongest cut, Isolate voice below keeps only the voice.</p>`
+      + `<h4>Separate</h4><div class="actions">${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac): the strongest noise reduction">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button><button data-act="stems" title="Vocals, drums, bass and the rest as four audio clips (Demucs, on this Mac)">Split into stems</button></div>`;
   }
   if (m.hasAudio) { // CapCut's voice effects, pitch, equalizer, pan; volume points; stems
     const a = { ...AU0, ...c.au }, lt = clamp(S.t - c.start, 0, len(c)), vk = voiceOf(a);
@@ -860,7 +862,9 @@ function mediaPanel(c, lane) {
       + `<h4>Volume points</h4><p class="hint">${c.vkf?.length ? `${c.vkf.length} point${c.vkf.length > 1 ? 's' : ''}, on top of the volume above. ` : ''}The level at the playhead; points ramp into each other, and the first one sets the whole clip.</p>`
       + slider('vk.here', 'Level here', +dB(envAt(c, lt)).toFixed(1), -40, 6, 0.5, 'dB', ' id="vkHere"')
       + `<div class="actions"><button data-act="vkprev" title="Previous volume point">◀ Point</button><button data-act="vknext" title="Next volume point">Point ▶</button>${c.vkf?.length ? '<button data-act="vkdel">Delete point</button><button data-act="vkfclear">Clear all</button>' : ''}</div>`
-      + (lane === 'audio' ? '<div class="row"><span>Duck by</span><select id="duckDepth"><option value="0.5">−6 dB</option><option value="0.25" selected>−12 dB</option><option value="0.125">−18 dB</option><option value="0.0625">−24 dB</option></select></div><div class="actions"><button data-act="duck" title="Volume points that lower this clip wherever another clip has speech">Auto duck under speech</button></div>' : '');
+      + (lane === 'audio' ? `<div class="row"><span>Duck by</span><select id="duckDepth">${[[0.5, 6], [0.25, 12], [0.125, 18], [0.0625, 24]].map(([v, n]) => `<option value="${v}"${(c.duck?.depth ?? 0.25) === v ? ' selected' : ''}>−${n} dB</option>`).join('')}</select></div>`
+        + `<div class="actions"><button data-act="duck" title="Lower this clip wherever another clip has speech, and keep following it through later edits">${c.duck ? 'Set depth' : 'Auto duck under speech'}</button>${c.duck ? '<button data-act="unduck">Duck off</button>' : ''}</div>`
+        + (c.duck ? '<p class="hint">Auto duck is on: the dips follow the speech through every edit.</p>' : '') : '');
   }
   if (lane === 'audio') {
     audio += `<h4>Beats</h4>${c.beats ? `<p class="muted">${c.bpm} BPM · ${c.beats.length} beats marked; edits snap to them</p>
@@ -942,7 +946,7 @@ async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person 
     change(() => {
       packMain();
       cut = { ...structuredClone(c), id: hex12(), media: j.media, in: 0, out: c.out - c.in, start: c.start, volume: 0, body: kind };
-      for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'compound', 'mc', 'track']) delete cut[k];
+      for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'duck', 'compound', 'mc', 'track']) delete cut[k];
       if (cut.adj) delete cut.adj.blur;
       if (lane === 'overlay') P.overlay.splice(P.overlay.indexOf(c) + 1, 0, cut); else P.overlay.push(cut);
       if (kind === 'blur') c.adj = { ...c.adj, blur: 0.45 };
@@ -1125,13 +1129,14 @@ const PCM_S = 4, PCM_BYTES = PCM_S * 48000 * 4, pcmBufs = new Map(), voices = ne
 let pcmBusy = 0;
 const pcmSlot = () => new Promise(go => { const run = () => { pcmBusy++; go(() => { pcmBusy--; pcmWait.shift()?.(); }); }; if (pcmBusy < 2) run(); else pcmWait.push(run); });
 const pcmSpan = (c, tempo) => (tempo === 1 ? [0, 0] : [Math.floor(c.in), Math.ceil(c.out)]); // a kept-pitch speed's PCM covers the clip's whole seconds
-function pcmChunk(id, tempo, k, [a, b] = [0, 0]) { // a promise with .buf once loaded (null: no sound there); the last 24 kept (~37 MB)
-  const key = `${id}|${tempo}|${a}-${b}|${k}`;
+function pcmChunk(id, tempo, k, [a, b] = [0, 0], dn = false) { // a promise with .buf once loaded (null: no sound there); the last 24 kept (~37 MB)
+  dn = !!dn; // Reduce noise: the server's denoised copy, the same file the export reads
+  const key = `${id}|${tempo}|${a}-${b}|${k}|${dn}`;
   let p = pcmBufs.get(key);
   if (p) { pcmBufs.delete(key); pcmBufs.set(key, p); return p; }
   // two at a time: WebKit has 6 connections to the server, and a first play of a long file waits for its PCM to be made
   // (seconds): unthrottled, those waits filled every connection and the projects list or a save queued behind them
-  p = pcmSlot().then(release => fetch(`/media/${id}?pcm=${tempo}${tempo === 1 ? '' : `&a=${a}&b=${b}`}`, { headers: { Range: `bytes=${k * PCM_BYTES}-${(k + 1) * PCM_BYTES - 1}` } })
+  p = pcmSlot().then(release => fetch(`/media/${id}?pcm=${tempo}${tempo === 1 ? '' : `&a=${a}&b=${b}`}${dn ? '&dn=1' : ''}`, { headers: { Range: `bytes=${k * PCM_BYTES}-${(k + 1) * PCM_BYTES - 1}` } })
     .then(r => (r.status === 206 || r.status === 200 ? r.arrayBuffer() : null)).finally(release)).then(b => {
       const n = b ? b.byteLength >> 2 : 0;
       if (!n) return (p.buf = null);
@@ -1183,10 +1188,10 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
     const tempo = c.pitch || Math.abs(c.speed - 1) < 1e-6 ? 1 : +c.speed.toFixed(4), pbr = c.speed / tempo;
     const sp = pcmSpan(c, tempo), f = t => (c.in - sp[0] + (t - c.start) * c.speed) / tempo, tl = x => c.start + (x * tempo + sp[0] - c.in) / c.speed; // timeline <-> PCM seconds
     const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d), i = lane === 'main' ? P.main.indexOf(c) : -1;
-    for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp); // fetched 3 s ahead
+    for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp, c.denoise); // fetched 3 s ahead
     for (let k = Math.floor(f(a) / PCM_S); k * PCM_S < f(b); k++) {
       if (v.srcs.has(k)) continue;
-      const p = pcmChunk(c.media, tempo, k, sp);
+      const p = pcmChunk(c.media, tempo, k, sp, c.denoise);
       if (p.buf === undefined) continue; // loading: picked up by a later frame
       if (!p.buf) { v.srcs.set(k, null); continue; }
       let s0 = Math.max(tl(k * PCM_S), c.start, S.t), when = S.aA0 + (s0 - S.aT0);
@@ -1209,13 +1214,13 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
 function warmTempo(c) { // a kept-pitch speed's sound (its own copy of the clip's seconds), from the playhead on
   if (!c?.media || c.pitch || Math.abs(c.speed - 1) < 1e-6 || !M.get(c.media)?.hasAudio) return;
   const tempo = +c.speed.toFixed(4), sp = pcmSpan(c, tempo), at = (c.in - sp[0] + Math.max(0, S.t - c.start) * c.speed) / tempo;
-  pcmChunk(c.media, tempo, Math.floor(at / PCM_S), sp);
+  pcmChunk(c.media, tempo, Math.floor(at / PCM_S), sp, c.denoise);
 }
 function audioWarm() { // paused: the chunks at the playhead, so play starts with sound at once
   for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
     const m = M.get(c.media);
     // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
-    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S));
+    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, c.denoise);
   }
 }
 const layerCv = [];
@@ -3036,7 +3041,7 @@ async function freeze(c, lane) {
     change(() => {
       const pr = propsAt(c, lt), fr = { ...structuredClone(c), id: hex12(), media: img.id, start: S.t, in: 0, out: 2, speed: 1, fadeIn: 0, fadeOut: 0,
         scale: pr.scale, x: pr.x, y: pr.y, opacity: pr.opacity, rot: pr.rot }; // the still holds the frame exactly where it was
-      delete fr.kf; delete fr.tr; delete fr.vkf; delete fr.anim;
+      delete fr.kf; delete fr.tr; delete fr.vkf; delete fr.duck; delete fr.anim;
       if (lane !== 'main') P[lane].push(fr);
       else {
         const i = P.main.indexOf(c);
@@ -3185,30 +3190,59 @@ async function autoReframe(c) { // keep the largest face centred (CapCut's auto 
     toast(`Reframed from ${j.points.length} face samples`);
   } catch (e) { setStatus(e.message); throw e; }
 }
-async function autoDuck(c, depth = 0.25) { // music dips (default 12 dB) wherever another clip has sound (speech), with short ramps
-  const src = [...P.main, ...P.overlay, ...P.audio].filter(x => x !== c && M.get(x.media)?.hasAudio && x.volume > 0);
+// Auto duck is a rule: c.duck = { depth }, and its volume points are re-made from where the other clips have speech after
+// every edit (touched) and before an export, so they follow trims and moves. Speech = Silero VAD per file (/api/speech,
+// cached there and here); loudness (silencedetect) heard road noise as talk and ducked 99 % of a night-drive song.
+const SPEECH = new Map(); // media id -> [[a, b], ...] source seconds, or the promise while it loads
+function loadSpeech(id) {
+  let s = SPEECH.get(id);
+  if (!s) { s = api('/api/speech', { media: id }).then(r => { SPEECH.set(id, r.speech); return r.speech; }); s.catch(() => SPEECH.delete(id)); SPEECH.set(id, s); }
+  return Promise.resolve(s);
+}
+const duckSrc = c => ['main', 'overlay', 'audio'].flatMap(L => (P.mute[L] ? [] : P[L])).filter(x => x !== c && x.media && M.get(x.media)?.hasAudio && x.volume > 0);
+function duckSpeech(c) { // the other clips' speech on the timeline, merged across short gaps; null while a file's is loading
+  const speech = [];
+  let missing = false;
+  for (const x of duckSrc(c)) {
+    const s = SPEECH.get(x.media);
+    if (!Array.isArray(s)) { missing = true; loadSpeech(x.media).then(() => { if (reduck()) { scheduleSave(); renderAll(); } }, () => {}); continue; }
+    for (const [a0, b0] of s) { const a = Math.max(a0, x.in), b = Math.min(b0, x.out); if (b - a > 0.05) speech.push([x.start + (a - x.in) / x.speed, x.start + (b - x.in) / x.speed]); }
+  }
+  if (missing) return null;
+  speech.sort((p, q) => p[0] - q[0]);
+  const merged = [];
+  for (const s of speech) { const l = merged.at(-1); if (l && s[0] <= l[1] + 0.6) l[1] = Math.max(l[1], s[1]); else merged.push([...s]); }
+  return merged.filter(([a, b]) => b > c.start && a < c.start + len(c));
+}
+function reduck() { // every ducked clip's points from the current edit: dips of c.duck.depth with 0.3 s / 0.5 s ramps; true if any moved
+  const ducked = ['main', 'overlay', 'audio'].flatMap(L => P[L].filter(c => c.duck));
+  let moved = false;
+  if (ducked.length) packMain();
+  for (const c of ducked) {
+    const sp = duckSpeech(c);
+    if (!sp) continue;
+    const v1 = c.duck.depth, end = len(c), pts = [{ t: 0, v: 1 }]; // multipliers of the clip volume
+    for (const [a, b] of sp) { const s = a - c.start, e = b - c.start; pts.push({ t: Math.max(0, s - 0.3), v: 1 }, { t: Math.max(0, s), v: v1 }, { t: Math.min(end, e), v: v1 }, { t: Math.min(end, e + 0.5), v: 1 }); }
+    const vkf = sp.length ? pts.sort((p, q) => p.t - q.t).filter((p, i, arr) => i === 0 || p.t > arr[i - 1].t + 1e-3).map(p => ({ t: +p.t.toFixed(4), v: p.v })) : undefined; // no speech: no points
+    if (JSON.stringify(vkf) !== JSON.stringify(c.vkf)) { if (vkf) c.vkf = vkf; else delete c.vkf; moved = true; }
+  }
+  return moved;
+}
+async function duckReady() { // before an export: the speech of every file under a ducked clip, then the points
+  const ids = new Set();
+  for (const L of ['main', 'overlay', 'audio']) for (const c of P[L]) if (c.duck) for (const x of duckSrc(c)) ids.add(x.media);
+  await Promise.all([...ids].map(id => loadSpeech(id).catch(() => {})));
+  reduck();
+}
+async function autoDuck(c, depth = 0.25) { // music dips (default 12 dB) wherever another clip has speech
+  const src = duckSrc(c);
   if (!src.length) return toast('No other clips with sound to duck under');
   setStatus('Finding speech…');
   try {
-    packMain();
-    const sil = new Map(), speech = [];
-    for (const id of new Set(src.map(x => x.media))) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min: 0.3 })).silences);
-    for (const x of src) { // non-silent stretches of each clip, on the timeline
-      let cur = x.in;
-      const add = (a, b) => { if (b - a > 0.05) speech.push([x.start + (a - x.in) / x.speed, x.start + (b - x.in) / x.speed]); };
-      for (const [a, b] of sil.get(x.media)) { if (b <= x.in || a >= x.out) continue; add(cur, Math.min(a, x.out)); cur = Math.max(cur, b); }
-      add(cur, x.out);
-    }
-    speech.sort((p, q) => p[0] - q[0]);
-    const merged = [];
-    for (const s of speech) { const l = merged.at(-1); if (l && s[0] <= l[1] + 0.6) l[1] = Math.max(l[1], s[1]); else merged.push([...s]); }
-    const v0 = 1, v1 = depth, end = len(c), pts = [{ t: 0, v: v0 }]; // multipliers of the clip volume
-    for (const [a, b] of merged) {
-      const s = a - c.start, e = b - c.start;
-      if (e > 0 && s < end) pts.push({ t: Math.max(0, s - 0.3), v: v0 }, { t: Math.max(0, s), v: v1 }, { t: Math.min(end, e), v: v1 }, { t: Math.min(end, e + 0.5), v: v0 });
-    }
-    change(() => { c.vkf = pts.sort((p, q) => p.t - q.t).filter((p, i, arr) => i === 0 || p.t > arr[i - 1].t + 1e-3); });
-    toast(`Music ducks ${Math.round(-20 * Math.log10(depth))} dB under ${merged.length} speech passage${merged.length === 1 ? '' : 's'}`);
+    await Promise.all([...new Set(src.map(x => x.media))].map(loadSpeech));
+    change(() => { c.duck = { depth }; }); // touched() re-makes the points
+    const n = duckSpeech(c)?.length || 0;
+    toast(`Music ducks ${Math.round(-20 * Math.log10(depth))} dB under ${n} speech passage${n === 1 ? '' : 's'}`);
   } catch (e) { setStatus(e.message); throw e; }
 }
 async function smoothSlowmo(c) { // interpolated frames for slow clips (rendered copy of just this range)
@@ -3544,6 +3578,7 @@ function exportSizes() {
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
   await lutsReady([...P.main, ...P.overlay]); // imported LUTs in the grades are loaded
+  await duckReady();
   const k = w / P.w, D = total();
   const clip = async (c, lane, i) => {
     const m = M.get(c.media);
@@ -3807,7 +3842,7 @@ function scrubSound() { // 70 ms of what is under the playhead, at most every 40
   S.scrubAt = now;
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
     if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
-    const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k), g0 = clipGain(c, lane, S.t);
+    const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, c.denoise), g0 = clipGain(c, lane, S.t);
     if (!p.buf || !g0) continue; // loading: the next move has it
     const n = actx.createBufferSource(), g = actx.createGain();
     n.buffer = p.buf; n.playbackRate.value = c.speed; n.connect(g).connect(actx.destination);
@@ -4380,7 +4415,7 @@ function wire() {
     else if (d.act === 'delete') del();
     else if (d.voice) setVoice(c, d.voice);
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.anim; delete c.pitch; delete c.au; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.duck; delete c.anim; delete c.pitch; delete c.au; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
@@ -4411,14 +4446,14 @@ function wire() {
       const lt = S.t - c.start, ts = (c.kf || []).map(f => f.t), t = d.act === 'kfprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
       if (t !== undefined) seekTo(c.start + t);
     }
-    else if (d.act === 'vkfclear') change(() => { delete c.vkf; });
+    else if (d.act === 'vkfclear' || d.act === 'unduck') change(() => { delete c.vkf; delete c.duck; });
     else if (d.act === 'soundreset') { change(() => { delete c.au; }); renderInspector(); }
     else if (d.act === 'stems') quiet(splitStems(c, S.sel.lane));
     else if (d.act === 'vkprev' || d.act === 'vknext') {
       const lt = S.t - c.start, ts = (c.vkf || []).map(f => f.t), t = d.act === 'vkprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
       if (t !== undefined) { seekTo(c.start + t); renderInspector(); }
     }
-    else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
+    else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; delete c.duck; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
     else if (d.act === 'slowmo') quiet(smoothSlowmo(c));
     else if (d.act === 'restore') api(`/api/media/${c.media}/restore`, {}).then(loadMedia).then(() => { if (!M.get(c.media)) throw new Error('not in the trash'); touched(); toast('Restored from the trash'); }).catch(err => setStatus(`Couldn't restore it: ${err.message}. Relink it to the file instead.`));
     else if (d.act === 'relinklib') relink(c.media, $('#relinkSel').value);
@@ -4747,6 +4782,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
+  if (c.duck) o.duck = c.duck;
   return o;
 }
 const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
@@ -4844,7 +4880,7 @@ const REMOTE = {
       if (set.speed && c.speed && (c.kf || c.vkf)) { const f = c.speed / set.speed; c.kf?.forEach(x => { x.t *= f; }); c.vkf?.forEach(x => { x.t *= f; }); }
       merge(c, set);
       if (set.kf) { const base = propsAt({ ...c, kf: null }, 0); c.kf = c.kf.map(f => ({ ...base, ...f })).sort((x, y) => x.t - y.t); } // a keyframe that names only scale keeps the clip's position, opacity and angle
-      if (set.vkf) c.vkf.sort((x, y) => x.t - y.t);
+      if (set.vkf) { c.vkf.sort((x, y) => x.t - y.t); delete c.duck; }
       if (set.lkf) { c.lkf = c.lkf.map(f => ({ t: f.t, v: clamp(f.v, 0, 1) })).sort((x, y) => x.t - y.t); if (!c.lkf.length) delete c.lkf; }
       if (c.grade && !gradeOn(c.grade)) delete c.grade;
       if (set.mkf) { if (!c.mask) throw new Error('set a mask first (mask: {type, ...})'); c.mkf = c.mkf.map(f => ({ ...Object.fromEntries(MKF.map(q => [q, c.mask[q]])), ...f })).sort((x, y) => x.t - y.t); if (!c.mkf.length) delete c.mkf; }

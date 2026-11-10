@@ -22,6 +22,10 @@ MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports'
 WHISPER = os.environ.get('CUTROOM_WHISPER', 'whisper-cli')
 MODEL = os.environ.get('CUTROOM_MODEL', str(Path.home() / 'Library/Application Support/com.prakashjoshipax.VoiceInk/WhisperModels/ggml-large-v3-turbo-q5_0.bin'))
 VAD = os.environ.get('CUTROOM_VAD', str(HOME / 'models' / 'ggml-silero-v5.1.2.bin'))
+# Reduce noise = RNNoise (ffmpeg arnndn), model "conjoined-burgers" (general sound, recording noise) from
+# GregorR/rnnoise-models @3eee541a (not subject to copyright, per its README), bundled and checked by SHA-256
+RNN = (Path(__file__).resolve().parent / 'ai' / 'rnnoise-cb.rnnn', 'f1357c4e5be9dee8467bead486dfced2d75b640c26ad0b594fa7f102322371d9')
+RNN_LAG = 480  # arnndn's output trails its input by one 10 ms frame (measured: exactly 480 samples at 48 kHz)
 IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic'}
 PREVIEW_CODECS, PREVIEW_EXT = {'h264', 'hevc', 'vp8', 'vp9'}, {'.mp4', '.mov', '.m4v', '.webm'}  # AV1 gets a proxy: WebKit shows paused AV1 frames empty
 RANGE_CAP = 8 << 20
@@ -266,14 +270,29 @@ PCM_LOCKS = {}  # one lock per output file: a play waiting for its own sound nev
 PCM_LOCKS_LOCK = threading.Lock()
 
 
-def pcm(m, tempo=1.0, a=0, b=0):
+RNN_OK = []
+
+
+def rnn_model():
+    """The bundled RNNoise model, its checksum verified once."""
+    if not RNN_OK:
+        import hashlib
+        if not RNN[0].is_file() or hashlib.sha256(RNN[0].read_bytes()).hexdigest() != RNN[1]:
+            raise RuntimeError('the noise reduction model (ai/rnnoise-cb.rnnn) is missing or damaged')
+        RNN_OK.append(str(RNN[0]))
+    return RNN_OK[0]
+
+
+def pcm(m, tempo=1.0, a=0, b=0, dn=False):
     """The preview's sound: raw 16-bit 48 kHz stereo, decoded once from the start (sample-exact). The page reads byte
     ranges of it into Web Audio buffers. A <video>'s own sound routed through Web Audio started ~0.3 s late in WebKit and
     held the picture meanwhile: a stall at every cut. A clip that keeps its pitch at another speed gets the export's
     atempo over just its source seconds [a, b] (whole seconds, cut by atrim on decoded samples, so exact): a whole-file
-    copy per speed made 3.5 GB from one 5-minute clip whose speed slider was swept. The 4 newest per file are kept."""
+    copy per speed made 3.5 GB from one 5-minute clip whose speed slider was swept. The 4 newest per file are kept.
+    dn: Reduce noise, the 1x copy through RNNoise with its 10 ms lag taken back out (the export reads this same file:
+    afftdn was 25 ms late, took 1-5 dB of the noise and played only in the export)."""
     one = abs(tempo - 1) < 1e-6
-    out = CACHE / (f"{m['id']}.pcm" if one else f"{m['id']}.{tempo:g}.{a}-{b}.pcm")
+    out = CACHE / (f"{m['id']}{'.dn' if dn else ''}.pcm" if one else f"{m['id']}{'.dn' if dn else ''}.{tempo:g}.{a}-{b}.pcm")
     with PCM_LOCKS_LOCK:
         lock = PCM_LOCKS.setdefault(out.name, threading.Lock())
     with lock:
@@ -283,8 +302,13 @@ def pcm(m, tempo=1.0, a=0, b=0):
             trim = '' if one else f"atrim=start={a}{f':end={b}' if b > a else ''},asetpts=PTS-STARTPTS,"
             # a span at another speed is cut from the 1x copy (raw samples: the seek is exact and instant); from the source
             # it decoded everything before the span first: 1.6 s of silence on a sped-up clip 5 minutes in
-            base = None if one else pcm(m)
-            cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', atempo(tempo)]
+            base = None if one and not dn else pcm(m, dn=dn and not one)
+            if dn and not base:
+                return None
+            n = base.stat().st_size // 4 if base else 0
+            af = (f"apad=pad_len={RNN_LAG},arnndn=m='{rnn_model()}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}" if dn and one
+                  else atempo(tempo))
+            cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', af]
                    if base else ['-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}'])
             if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp)], low=not base).returncode:
                 tmp.unlink(missing_ok=True)
@@ -917,6 +941,31 @@ def silences(mid, noise=-35.0, mind=0.5):
     en = [float(x) for x in re.findall(r'silence_end: ([\d.]+)', r.stderr)]
     en += [m['duration']] * (len(st) - len(en))  # silence running to EOF has no end line
     return [[max(0.0, a), b] for a, b in zip(st, en)]
+
+
+def speech(mid):
+    """Where someone talks in a file, [[start, end], ...] seconds: Silero VAD (as captions use) on the preview's PCM, cached
+    per file. Auto-duck used loudness (silencedetect) and heard the road under a night drive as talk: 99 % of the song
+    ducked; and it read the whole original each time (19 s on 4K clips). VAD over the 48 kHz PCM: ~1 s per 5 minutes."""
+    m, out = meta(mid), CACHE / f'{mid}.speech.json'
+    if out.exists():
+        return json.loads(out.read_text())
+    if not (Path(VAD).exists() and shutil.which('whisper-vad-speech-segments')):
+        raise RuntimeError('speech detection needs whisper-cpp and the Silero VAD model (models/ggml-silero-v5.1.2.bin)')
+    if not m.get('hasAudio') or not (src := pcm(m)):
+        return []
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        wav = Path(td) / 'a.wav'
+        if sh(['ffmpeg', '-v', 'error', '-y', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(src), '-ac', '1', '-ar', '16000', str(wav)]).returncode:
+            raise RuntimeError('could not read the sound')
+        v = sh(['whisper-vad-speech-segments', '-vm', VAD, '-f', str(wav)])
+    if v.returncode:
+        raise RuntimeError(plain('Finding speech', v.stderr, v.returncode))
+    segs = [[float(a) / 100, float(b) / 100] for a, b in re.findall(r'start = ([\d.]+), end = ([\d.]+)', v.stdout)]  # centiseconds
+    tmp = out.with_suffix('.tmp')
+    tmp.write_text(json.dumps(segs))
+    tmp.replace(out)
+    return segs
 
 
 AI_DIR = Path(__file__).resolve().parent / 'ai'
@@ -1776,6 +1825,10 @@ def clean_plan(p):
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
                  flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')), heavy=heavy(m))
+        if k['denoise'] and m['hasAudio'] and m['kind'] != 'image':  # the sound the preview plays: the same denoised PCM file
+            if not (f := pcm(m, dn=True)):
+                raise ValueError(f"{m.get('name') or 'A clip'}: reducing its noise failed")
+            k['dn'] = str(f)
         au = c.get('au') if isinstance(c.get('au'), dict) else {}
         k['au'] = {'voice': au.get('voice') if au.get('voice') in VOICE_FX else 'none', 'semi': round(fnum(au.get('semi', 0), -12, 12)),
                    **{b: fnum(au.get(b, 0), -15, 15) for b in ('bass', 'mid', 'treb')}, 'pan': fnum(au.get('pan', 0), -1, 1)}
@@ -2149,7 +2202,10 @@ def graph(p, td):
         vol = f"asetnsamples=n=64:p=0,volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"
         tempo = f"aresample=48000,asetrate={48000 * c['speed']:.3f},aresample=48000" if c.get('pitch') and c['speed'] != 1 else atempo(c['speed'])
         lead = c['in'] - ss(c)
-        a = f"[{i}:a]" + (f'atrim=start={lead:.6f},' if lead > 1e-6 else '') + f"asetpts=PTS-STARTPTS,{tempo}" + (',afftdn=nr=15:nf=-40:tn=1' if c.get('denoise') else '') + afx(c.get('au'), next(AFX_N)) + f',{vol}' if live else 'anullsrc=r=48000:cl=stereo'
+        if live and c.get('dn'):  # Reduce noise: its own input, the denoised PCM (raw samples: the seek is exact)
+            ins.append(['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', f"{ss(c):.6f}", '-t', f"{c['out'] - ss(c):.6f}", '-i', c['dn']])
+            i = len(ins) - 1
+        a = f"[{i}:a]" + (f'atrim=start={lead:.6f},' if lead > 1e-6 else '') + f"asetpts=PTS-STARTPTS,{tempo}" + afx(c.get('au'), next(AFX_N)) + f',{vol}' if live else 'anullsrc=r=48000:cl=stereo'
         a += f',aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={dur:.6f},atrim=end={dur:.6f}'
         # 3 ms in and out at a hard edge (a cut from one sample value to another, or to silence, clicks), as the preview
         # does; not where the clip carries on from the same file (a split), which plays straight through
@@ -2805,7 +2861,7 @@ class App(BaseHTTPRequestHandler):
                 if q.get('pcm') and mm.get('hasAudio'):
                     tempo = fnum(q['pcm'][0], 0.1, 100)
                     a, b = (int(fnum(q.get(k, ['0'])[0], 0, 1e7)) for k in ('a', 'b'))
-                    if f := pcm(mm, tempo, a, b):
+                    if f := pcm(mm, tempo, a, b, dn=q.get('dn') == ['1']):
                         return self.file(f)
                     return self.reply({'error': 'no sound in this file'}, 404)
                 if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
@@ -2958,6 +3014,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
             if u.path == '/api/silences':
                 return self.reply({'silences': silences(body['media'], fnum(body.get('noise', -35), -90, 0), fnum(body.get('min', 0.5), 0.05, 30))})
+            if u.path == '/api/speech':
+                return self.reply({'speech': speech(body['media'])})
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})/cancel', u.path):  # an export: its ffmpeg killed at once (TERM left it running 45 s)
                 if m[1] in JOBS:
                     JOBS[m[1]]['cancel'] = True
