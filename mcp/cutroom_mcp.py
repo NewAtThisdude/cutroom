@@ -206,7 +206,7 @@ TOOLS = [
      S({'ids': {'type': 'array', 'items': txt}}, ['ids']), 'compound_clip'),
     ('break_compound', 'Put a compound clip\'s original clips back where they were.', S({'id': txt}, ['id']), 'break_compound'),
     ('pilot', 'The editor\'s own command bar (⌘K): a plain-language instruction ("cut the silences, add captions in Bold") planned by the LOCAL model '
-              '(qwen3.5 on this Mac) into these same tools and run step by step, one undo step each. run=false returns the plan only. '
+              '(qwen3.5 on this Mac) into these same tools and run step by step; called here the whole run is one undo step (in the editor\'s bar, one per step). run=false returns the plan only. '
               'Returns what was done, what failed and what it could not do (cant).', S({'text': txt, 'run': boo}, ['text']), 'pilot'),
     ('search_media', 'Smart search of the library by content: what the picture shows ("red car", "night", "two people"), what is said (transcripts) and how many people. '
                      'Returns the best moment per item (media id, t seconds, why picture|speech, text), best first, and how many items are not indexed yet; '

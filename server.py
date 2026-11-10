@@ -2209,6 +2209,7 @@ def pilot_check(ans, c, text=""):
     ids = {x['id'] for x in main} | set(c.get('ids') or [])
     cant, out = [str(ans.get('cant') or '').strip()] if isinstance(ans, dict) else [], []
     norm = lambda s: re.sub(r'[\s_\-]+', '', str(s).lower())
+    one = re.search(r'\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|selected)\b|#\d|\bclip\s*\d|\b\d+(\.\d+)?\s*(s|secs?|seconds?)\b', text, re.I)
 
     def canon(en, v, k):  # en: names, or {name: label} (a transition called by its label: Dissolve = fade)
         names = {**{norm(re.sub(r'\s*\(.*', '', str(lab))): x for x, lab in en.items()}, **{norm(x): x for x in en}} if isinstance(en, dict) else {norm(x): x for x in en}
@@ -2292,11 +2293,15 @@ def pilot_check(ans, c, text=""):
                 elif c.get('selected') in ids:
                     args['id'] = c['selected']
             key = next((k for k in ('at', 'start', 'after') if k in props), None)
-            if each == 'cut' and key:  # a tool without a time or clip (remove_pauses) runs once: 'each' is ignored
+            # a tool without a time or clip (remove_pauses) runs once: 'each' is ignored. So is a time or clip the step names when the
+            # model listed this tool more than once (four reframes with ids and each:clip were 16 steps) or the user named one
+            # ("duplicate the first clip" duplicated every clip); a lone step's id is the model's filler and 'each' fills it
+            mine = (key if each == 'cut' else 'id') in args and (sum(isinstance(x, dict) and x.get('tool') == name for x in ans['steps']) > 1 or one)
+            if each == 'cut' and key and not mine:
                 if not (cuts := c.get('cuts') or []):
                     raise ValueError('there are no cuts (one clip on the main track)')
                 reps = [{**args, key: main[i]['id'] if key == 'after' else round(t, 3)} for i, t in enumerate(cuts)]
-            elif each == 'clip' and 'id' in props:
+            elif each == 'clip' and 'id' in props and not mine:
                 reps = [{**args, 'id': x['id']} for x in main if x.get('kind') in ('video', 'image')]
             for a in reps:
                 if miss := [k for k in s['required'] if k not in a]:
@@ -4049,6 +4054,15 @@ def selftest():
     global HOME, MEDIA, PROJ, EXPORTS, CACHE, CHUNK
     # language-model features with a stub model: picks snap to sentence edges, padding stops halfway into a pause,
     # overlapping / malformed picks are dropped, two-clause titles keep the first clause, translations keep the line count
+    # command bar: 'each' never multiplies steps the model listed itself, nor overrides a clip or time the user named
+    pc = {'main': [{'id': 'a1', 'kind': 'video'}, {'id': 'a2', 'kind': 'video'}], 'cuts': [3.0]}
+    run = lambda *st: [(x['tool'], x['args'].get('id', x['args'].get('at'))) for x in pilot_check({'steps': list(st)}, pc, 'x')[0]]
+    assert run(*({'tool': 'auto_reframe', 'args': {'id': i}, 'each': 'clip'} for i in ('a1', 'a2'))) == [('auto_reframe', 'a1'), ('auto_reframe', 'a2')]
+    assert [(x['tool'], x['args']['id']) for x in pilot_check({'steps': [{'tool': 'duplicate_clip', 'args': {'id': 'a1'}, 'each': 'clip'}]}, pc,
+                                                              'duplicate the first clip')[0]] == [('duplicate_clip', 'a1')]
+    assert run({'tool': 'auto_reframe', 'args': {}, 'each': 'clip'}) == run({'tool': 'auto_reframe', 'args': {'id': 'a1'}, 'each': 'clip'}) == [('auto_reframe', 'a1'), ('auto_reframe', 'a2')]
+    assert [x['args']['at'] for x in pilot_check({'steps': [{'tool': 'add_sound_effect', 'args': {'name': 'pop', 'at': 1}, 'each': 'cut'}]}, pc, 'a pop at 1 s')[0]] == [1]
+    assert run({'tool': 'add_sound_effect', 'args': {'name': 'whoosh'}, 'each': 'cut'}) == [('add_sound_effect', 3.0)]
     keep = {k: globals()[k] for k in ('transcribe', 'meta', 'llm', 'shots')}
     words = [{'w': w, 's': a, 'e': b} for w, a, b in (('Intro.', 0, 1), ('First', 2, 2.4), ('point', 2.5, 3), ('here.', 3.1, 20), ('Second', 20.2, 20.6), ('one.', 20.7, 40), ('Bye.', 41, 42))]
     answer = {'clips': [{'start': 1.7, 'end': 20.3, 'title': 'Big claim: details.'}, {'start': 5, 'end': 25}, {'start': 'x'}, {'start': 20, 'end': 40.5, 'title': 'Two'}],
