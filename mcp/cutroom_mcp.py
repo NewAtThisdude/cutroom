@@ -128,6 +128,19 @@ TOOLS = [
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
+    ('track_motion', 'Motion tracking: an overlay, sticker or text clip (id) follows what is inside box on the main-track video at time t, '
+                     'moving, growing and turning with it (keyframes for x, y, scale, rot). box = {x, y, w, h} fractions of the canvas (look with snapshot first). '
+                     'scale / rotate false: follow position only.',
+     S({'id': txt, 'box': obj, 't': num, 'scale': boo, 'rotate': boo}, ['id', 'box']), 'track_motion'),
+    ('blur_region', 'Blur (or mosaic) a moving region of a video clip: a number plate, a face, a logo. box = {x, y, w, h} canvas fractions at time t; '
+                    'it is tracked both ways through the clip and a blurred copy of the clip, masked to it, goes on the overlay track. '
+                    'shape rect|circle, style blur|mosaic, amount 0.05-1.',
+     S({'id': txt, 'box': obj, 't': num, 'shape': txt, 'style': txt, 'amount': num}, ['id', 'box']), 'blur_region'),
+    ('blur_faces', 'Blur (or mosaic) every face in a video clip (Apple Vision): each face gets its own tracked blur on the overlay track. style blur|mosaic, amount 0.05-1.',
+     S({'id': txt, 'style': txt, 'amount': num}, ['id']), 'blur_faces'),
+    ('auto_reframe', 'Auto reframe a video clip for another shape: keeps the largest face, or with none the main subject (Vision saliency), in frame with a smooth camera path. '
+                     'ratio 9:16|1:1|4:5|16:9|3:4|4:3|21:9 changes the canvas first; box = {x, y, w, h} canvas fractions at time t picks the subject (it is tracked).',
+     S({'id': txt, 'ratio': txt, 'box': obj, 't': num}, ['id']), 'auto_reframe'),
     ('main_transcript', "The main track's speech as it plays on the timeline: sentences with start/end seconds, and every word timed. "
                         'Use it to decide what to cut, then cut_timeline. Transcribes on this Mac the first time (cached).', S({'lang': txt}), 'main_transcript'),
     ('cut_timeline', 'Ripple-delete ranges from the main track: ranges = [[start, end], ...] in timeline seconds (e.g. a sentence from main_transcript). '
@@ -218,7 +231,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

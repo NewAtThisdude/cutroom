@@ -902,7 +902,7 @@ function mediaPanel(c, lane) {
       + `${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
       + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
       + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%')
-      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%');
+      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%') + (a.pix > 0 ? slider('c.adj.pix', 'Mosaic', a.pix, 0, 1, 0.01, '%') : '');
     look += `<h4>Beauty</h4>${slider('c.beauty.amt', 'Smooth skin', c.beauty?.amt || 0, 0, 1, 0.01, '%')}<p class="hint">Evens out skin texture (skin-coloured areas only); edges, eyes and hair stay sharp.</p>`;
     if (m.alpha || m.trans) look += `<h4>Glow</h4>${segs('glowkind', 'Style', !c.glow ? 'none' : c.glow.neon ? 'neon' : 'glow', [['none', 'None'], ['glow', 'Glow'], ['neon', 'Neon']])}`
       + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
@@ -950,13 +950,14 @@ function mediaPanel(c, lane) {
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   if (c.compound) acts.unshift('<button data-act="breakcompound" title="Put back the clips it was made of">Break apart</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe" title="Keeps the face (or, with none, the main subject) in frame with a smooth camera; pick the shape next to it">Auto reframe</button><select id="reframeRatio" title="Reframe to this canvas shape"><option value="">Canvas</option><option>9:16</option><option>1:1</option><option>4:5</option></select><button data-act="reframepick" title="Box the subject: it is tracked and the frame follows it">Reframe on…</button><button data-act="blurregion" title="Box a plate, a face, a logo: it is tracked through the clip and stays blurred">Blur a region</button><button data-act="blurfaces" title="Every face in the clip, each followed by its own blur">Blur faces</button><select id="blurStyle" title="Blur or mosaic"><option value="blur">Blur</option><option value="mosaic">Mosaic</option></select><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
     <h4>Speed ramp</h4><div class="presets small rampchips">${Object.keys(RAMPS).map(n => `<button data-rampp="${n}"><svg viewBox="0 0 40 14" preserveAspectRatio="none" aria-hidden="true"><path d="${rampPath(rampPts(n), 40, 14)}"/></svg>${RAMP_NAMES[n]}</button>`).join('')}</div>
     <div class="curvebox rampbox"><svg id="rampSvg" viewBox="-16 -6 222 112" preserveAspectRatio="none"></svg></div><p class="muted ramplen" id="rampLen"></p>
     <div class="actions"><button data-act="ramp">Apply ramp</button>${c.ramp && c.media === c.ramp.copy ? `<button data-act="rampoff"${M.get(c.ramp.src) ? '' : ' disabled title="Its original file is not in the library any more"'}>Remove ramp</button>` : ''}</div>
     <p class="hint">Up is faster (the middle line is 1×). Drag a point, click the line to add one, double-click a point to remove it. Rendered once into a copy the clip plays; sound off; undo goes back.</p>` : '';
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
-  if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
+  if (m.kind === 'image') tools += `<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button>${lane === 'overlay' ? '<button data-act="track" title="Follow something in the video under it: moves, grows and turns with it">Track motion</button>' : ''}</div>`
+    + '<p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
   return head + '<p id="clipStatus" class="muted"></p>' + tabbed([['Basic', basic], ['Animate', animate], ['Look', look], ['Color', vis ? colorPanel(c) : ''], ['Audio', audio], ['Tools', tools]]); // status above the tabs: below them it was off screen on 5 of 6
 }
@@ -1163,7 +1164,7 @@ function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); s
   for (const [i, c] of P.main.entries()) {
     const a = c.adj || {}, n = c.fit === 'blur' ? 'a blurred background' : (c.opacity ?? 1) < 1 ? 'opacity' : trF(i) && c.tr?.type !== 'fade' ? 'a transition other than Dissolve'
       : ['b', 'c', 's'].some(k => (a[k] ?? 1) !== 1) ? 'brightness / contrast / saturation' : c.rot ? 'rotation' : bakeKf(c, 'main') ? 'keyframes' : c.key ? 'chroma key' : c.mask ? 'a mask'
-      : a.vig > 0 ? 'a vignette' : lookMatrix(c) ? 'a filter' : toneLUT(c) ? 'adjustments' : gradeLUT(c) ? 'a colour grade' : c.lkf?.length ? 'filter keyframes' : c.beauty?.amt > 0 ? 'beauty' : a.blur > 0 ? 'blur' : '';
+      : a.vig > 0 ? 'a vignette' : lookMatrix(c) ? 'a filter' : toneLUT(c) ? 'adjustments' : gradeLUT(c) ? 'a colour grade' : c.lkf?.length ? 'filter keyframes' : c.beauty?.amt > 0 ? 'beauty' : a.blur > 0 ? 'blur' : a.pix > 0 ? 'mosaic' : '';
     if (n) return `a clip with ${n}`;
   }
   if (P.main.some(c => !M.get(c.media)?.hdr || M.get(c.media)?.alpha)) return 'a photo or SDR clip on the main track';
@@ -1593,7 +1594,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0, sk = strengthAt(c, lt);
+  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0 || a.pix > 0, sk = strengthAt(c, lt);
   if (cap) { // trGPU asks: a plain picture in a box? then where it goes (nothing drawn); anything more keeps the canvas path
     if (lane !== 'main' || rad || c.flip || c.glow || c.fit === 'blur' || pr.opacity < 1 || f < 1 || filt || graded || c.key || c.mask || a.vig > 0 || mbN(c) > 1) return false;
     return Object.assign(cap, { el, src: [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], dst: [g.x * k, g.y * k, g.w * k, g.h * k], hit: { lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: 0 } });
@@ -1641,6 +1642,23 @@ function glowDraw(ctx, c, h, draw) { // a cutout's glow: canvas shadow (a Gaussi
   for (let i = 0; i < (c.glow.neon ? 2 : 1); i++) draw(); // neon: the glow twice as strong
   ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
   if (c.glow.neon) draw(); // the person itself once more, on top of the doubled glow
+}
+function pixBlock(c, m, W) { // mosaic block: px of the cropped source (the export's pixelize), or of a W-wide drawing of it
+  const cr = c.crop || {}, cw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), ch = m.h * (1 - (cr.t || 0) - (cr.b || 0));
+  const n = Math.max(2, 2 * Math.round((c.adj.pix * 0.04 * Math.min(cw, ch)) / 2));
+  return W ? (n * W) / cw : n;
+}
+function pixelInPlace(x, W, H, n) { // pixelize: block averages (truncated) from the top-left; n = block in these pixels, blocks at the same places as the source's
+  const img = x.getImageData(0, 0, W, H), d = img.data, cols = Math.ceil(W / n - 1e-6), rows = Math.ceil(H / n - 1e-6);
+  for (let by = 0; by < rows; by++) for (let bx = 0; bx < cols; bx++) {
+    const x0 = Math.round(bx * n), x1 = Math.min(W, Math.round((bx + 1) * n)), y0 = Math.round(by * n), y1 = Math.min(H, Math.round((by + 1) * n));
+    let r = 0, g = 0, b = 0;
+    for (let y = y0; y < y1; y++) for (let i = (y * W + x0) * 4, e = (y * W + x1) * 4; i < e; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+    const q = Math.max(1, (x1 - x0) * (y1 - y0));
+    r = Math.floor(r / q); g = Math.floor(g / q); b = Math.floor(b / q);
+    for (let y = y0; y < y1; y++) for (let i = (y * W + x0) * 4, e = (y * W + x1) * 4; i < e; i += 4) { d[i] = r; d[i + 1] = g; d[i + 2] = b; }
+  }
+  x.putImageData(img, 0, 0);
 }
 function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small (radius 4 there) and scaled back: ffmpeg's blur at a fraction of the cost
   // and never over ~480 px wide in JS: a small blur ran at full size (11-12 fps at 1080p)
@@ -1763,8 +1781,8 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
-  const sk = strengthAt(c, lt), mk = maskAt(c, lt), N = mbN(c);
-  let gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
+  const sk = strengthAt(c, lt), mk = maskAt(c, lt), N = mbN(c), late = mk && (c.adj?.blur > 0 || c.adj?.pix > 0); // blur / mosaic come before the mask, as in the export
+  let gp = gpuPass(el, src, W, H, c, { k: sk, mask: late ? null : mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
   if (gp && N > 1) { // motion blur: this frame and the clip's N-1 before it, mixed on the GPU (store: only keep this one, for mbFill)
     const j = store ?? clipFrame(c, lt), r = gpuMotion(c.id, mbSig(c), j, N, W, H, store != null);
     if (store != null) return null;
@@ -1775,6 +1793,8 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
     const g = keyCvG.getContext('2d');
     g.setTransform(1, 0, 0, 1, 0, 0); g.filter = 'none'; g.globalCompositeOperation = 'copy'; g.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); g.globalCompositeOperation = 'source-over';
     if (c.adj?.blur > 0) blurInPlace(g, W, H, c.adj.blur * 0.03 * Math.min(W, H));
+    if (c.adj?.pix > 0) pixelInPlace(g, W, H, pixBlock(c, M.get(c.media), W));
+    if (late) { g.globalCompositeOperation = 'destination-in'; g.drawImage(maskCanvas(mk, W, H), 0, 0); g.globalCompositeOperation = 'source-over'; }
     return keyCvG;
   }
   x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
@@ -1790,6 +1810,8 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
     }
     x.putImageData(img, 0, 0);
   }
+  if (c.adj?.blur > 0) blurInPlace(x, W, H, c.adj.blur * 0.03 * Math.min(W, H));
+  if (c.adj?.pix > 0) pixelInPlace(x, W, H, pixBlock(c, M.get(c.media), W));
   if (mk) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(mk, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
   if (c.adj?.vig > 0) { // vignette: RGB x the multiplier map, alpha untouched (the export multiplies by the same map as a PNG)
     const img = x.getImageData(0, 0, W, H), d = img.data, mm = vigMap(c.adj.vig, W, H);
@@ -3356,26 +3378,40 @@ async function denoiseVideo(c, strength = 'light') { // night grain: the clip sw
     toast('Noise reduced: the clip plays the cleaned copy (undo goes back)');
   } catch (e) { setStatus(e.message); throw e; }
 }
-async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
-  const m = M.get(c.media);
+function smoothPath(ts, vs, sigma) { // Gaussian over time (uneven samples): a camera that glides instead of twitching
+  return vs.map((_, i) => { let s = 0, w = 0; for (let j = 0; j < vs.length; j++) { const d = (ts[j] - ts[i]) / sigma; if (d > -3 && d < 3) { const q = Math.exp(-0.5 * d * d); s += q * vs[j]; w += q; } } return s / w; });
+}
+async function autoReframe(c, { ratio, rect, T = S.t } = {}) { // CapCut's auto reframe for any subject: the largest face, else Vision's salient subject,
+  // or (rect) the thing boxed at T, tracked; a smooth camera path that never lets it leave the frame. ratio: the canvas shape first
+  const m = M.get(c.media), lane = P.main.includes(c) ? 'main' : 'overlay';
   try {
-    const pid = P.id, was = c.media, j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out }, 'Finding faces');
+    if (ratio && !RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
+    const pid = P.id, was = c.media;
+    let src, kind = 'subject';
+    if (rect) src = (await followTarget(c, rect, T, c.start, c.start + tdur(c, lane))).pts.map(p => ({ t: p.T - c.start, sx: p.cx, sy: p.cy })); // rect: on the canvas as it is now
+    else {
+      const j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out, mode: 'subject' }, 'Finding the subject');
+      kind = j.kind;
+      src = j.points.map(p => ({ t: (p.t - c.in) / c.speed, sx: p.x + p.w / 2, sy: p.y + p.h / 2 }));
+    }
     c = live(c, pid, was);
+    if (ratio && (RATIOS[ratio][0] !== P.w || RATIOS[ratio][1] !== P.h)) { change(() => { [P.w, P.h] = RATIOS[ratio]; }); fitStage(); }
+    const pts = thin(src.filter(p => p.t >= -1e-6 && p.t <= len(c) + 1e-6), 600), ts = pts.map(p => p.t);
+    if (!pts.length) throw new Error('found nothing to follow in this clip');
     change(() => {
       c.fit = 'fill';
       const base = propsAt(c, 0), g0 = geom(m, c, P.w, P.h, { ...base, x: 0, y: 0 }), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
-      const mx = Math.max(0, (g0.w - P.w) / 2 / P.w), my = Math.max(0, (g0.h - P.h) / 2 / P.h);
-      const pts = j.points.map(p => {
-        let u = (p.x + p.w / 2 - (cr.l || 0)) / fx;
-        if (c.flip) u = 1 - u;
-        const v = (p.y + p.h / 2 - (cr.t || 0)) / fy;
-        return { t: (p.t - c.in) / c.speed, x: clamp((0.5 * P.w - (g0.x + u * g0.w)) / P.w, -mx, mx), y: clamp((0.42 * P.h - (g0.y + v * g0.h)) / P.h, -my, my) };
-      }).filter(p => p.t >= 0 && p.t <= len(c));
-      const avg = (i, k) => { const w = pts.slice(Math.max(0, i - 2), i + 3); return w.reduce((s, q) => s + q[k], 0) / w.length; }; // smooth the jitter
-      c.kf = pts.map((p, i) => ({ t: p.t, scale: base.scale, opacity: base.opacity, rot: base.rot, x: avg(i, 'x'), y: avg(i, 'y') })).filter((_, i, a) => i % 2 === 0 || i === a.length - 1);
-      c.ease = true;
+      const mx = Math.max(0, (g0.w - P.w) / 2 / P.w), my = Math.max(0, (g0.h - P.h) / 2 / P.h), aim = kind === 'face' ? 0.42 : 0.5; // a face sits a little high (headroom)
+      const ideal = pts.map(p => { let u = (p.sx - (cr.l || 0)) / fx; if (c.flip) u = 1 - u; return [(0.5 * P.w - (g0.x + u * g0.w)) / P.w, (aim * P.h - (g0.y + ((p.sy - (cr.t || 0)) / fy) * g0.h)) / P.h]; });
+      const path = (k, lim) => { // one-look outliers out (median of 3), glide (0.5 s), keep the subject in the middle 60 %, glide again (0.25 s), then hard limits: in frame, no bars
+        const R = ideal.map(q => q[k]), X = R.map((x, i) => [R[i - 1] ?? x, x, R[i + 1] ?? x].sort((a, b) => a - b)[1]), band = (q, w) => X.map((x, i) => clamp(q[i], x - w, x + w));
+        return band(smoothPath(ts, band(smoothPath(ts, X, 0.5), 0.3), 0.25), 0.45).map(v => clamp(v, -lim, lim));
+      };
+      const xs = path(0, mx), ys = path(1, my);
+      c.kf = pts.map((p, i) => ({ t: +p.t.toFixed(5), scale: base.scale, opacity: base.opacity, rot: base.rot, x: +xs[i].toFixed(5), y: +ys[i].toFixed(5), ease: false }));
     });
-    toast(`Reframed from ${j.points.length} face samples`);
+    toast(`Reframed on the ${kind === 'face' ? 'face' : 'subject'} (${src.length} looks)${ratio ? ` at ${ratio}` : ''}`);
+    return { kind, samples: src.length };
   } catch (e) { setStatus(e.message); throw e; }
 }
 // Auto duck is a rule: c.duck = { depth }, and its volume points are re-made from where the other clips have speech after
@@ -3594,8 +3630,24 @@ function startTrack(c, lane) { // pick a target on the main-track video; the cli
   if (!host || M.get(host.media)?.kind !== 'video') return toast('Move the playhead to where the thing to follow is visible on a main-track video');
   if (S.playing) pause();
   S.pick = { c, lane, host };
-  toast('Drag a box around what this clip should follow');
+  toast('Drag a box around what this clip should follow: it moves, grows and turns with it');
 }
+function startPick(c, lane, done, say) { // draw a box on the clip itself (blur a region, reframe on a subject); done(rect) gets it
+  if (M.get(c.media)?.kind !== 'video') return toast('That works on video clips: select one first');
+  if (S.t < c.start || S.t >= c.start + tdur(c, lane)) return toast('Move the playhead to a frame of this clip where it shows');
+  if (S.playing) pause();
+  S.pick = { c, lane, done };
+  toast(say);
+}
+async function followTarget(host, rect, T, a, b) { // a box on the canvas at timeline time T -> that target through timeline a..b of host, both ways:
+  // [{T, cx, cy, s, r, ...}] (source-normalized centre, scale and clockwise turn relative to the frame at T)
+  const tl = x => host.in + (x - host.start) * host.speed, box = srcBox(host, rect, T);
+  const j = await job('/api/track', { media: host.media, t0: tl(a), t1: tl(b), t: tl(T), box }, 'Tracking');
+  const pts = j.points.map(p => ({ ...p, T: host.start + (p.t - host.in) / host.speed })).filter(p => p.T >= a - 1e-6 && p.T <= b + 1e-6);
+  if (pts.length < 2) throw new Error('Lost the target right away; try a bigger box around something with more detail');
+  return { pts, lost: j.lost, box };
+}
+const thin = (a, n = 400) => { const step = Math.max(1, Math.round(a.length / n)); return a.filter((_, i) => i % step === 0 || i === a.length - 1); }; // keyframes enough for the eye
 function canvasToSrc(c, T) { // project-canvas point -> normalized source-frame point of clip c at timeline time T (undoes fit, crop, flip)
   const g = geom(M.get(c.media), c, P.w, P.h, propsAt(c, T - c.start)), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
   return (cx, cy) => { let u = (cx - g.x) / g.w; if (c.flip) u = 1 - u; return [(cr.l || 0) + u * fx, (cr.t || 0) + ((cy - g.y) / g.h) * fy]; };
@@ -3697,26 +3749,80 @@ async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline fi
   bar.hidden = false;
   bar.querySelector('[data-ok]').focus();
 }
-async function finishTrack(rect) { // rect in project canvas units
-  const { c, lane, host } = S.pick, m = M.get(host.media), t0 = S.t;
+async function finishTrack(rect, opt = {}) { // rect in project canvas units; the clip moves, grows and turns with the target (opt.scale / opt.rot false: not that)
+  const { c, lane, host } = S.pick, m = M.get(host.media), T0 = S.t;
   S.pick = null;
   const cr = host.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
-  const toSrc = canvasToSrc(host, t0);
-  const toCanvas = (sx, sy, G) => { let u = (sx - (cr.l || 0)) / fx; if (host.flip) u = 1 - u; return [(G.x + u * G.w) / P.w, (G.y + ((sy - (cr.t || 0)) / fy) * G.h) / P.h]; };
+  const toCanvas = (sx, sy, G) => { let u = (sx - (cr.l || 0)) / fx; if (host.flip) u = 1 - u; return [G.x + u * G.w, G.y + ((sy - (cr.t || 0)) / fy) * G.h]; }; // canvas units
   const gAt = T => geom(m, host, P.w, P.h, propsAt(host, T - host.start)); // the host may be zooming / reframed
-  const [sx, sy] = toSrc(rect.x, rect.y), [ex, ey] = toSrc(rect.x + rect.w, rect.y + rect.h);
-  const end = Math.min(host.start + tdur(host, 'main'), c.start + tdur(c, lane));
+  const a = Math.max(host.start, c.start), b = Math.min(host.start + tdur(host, 'main'), c.start + tdur(c, lane));
   try {
-    const j = await job('/api/track', { media: host.media, t0: host.in + (t0 - host.start) * host.speed, t1: host.in + (end - host.start) * host.speed,
-      box: { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) } }, 'Tracking');
-    const pts = j.points.map(p => { const T = host.start + (p.t - host.in) / host.speed; return { T, q: toCanvas(p.x + p.w / 2, p.y + p.h / 2, gAt(T)) }; }).filter(p => p.T >= c.start && p.T <= end);
-    if (pts.length < 2) throw new Error('Lost the target right away; try a bigger, higher-contrast box');
-    const base = propsAt(c, pts[0].T - c.start), q0 = pts[0].q, step = Math.max(1, Math.round(pts.length / 400));
-    change(() => {
-      c.kf = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map(p => ({ t: p.T - c.start, scale: base.scale, opacity: base.opacity, rot: base.rot, x: base.x + p.q[0] - q0[0], y: base.y + p.q[1] - q0[1] }));
+    const { pts, lost } = await followTarget(host, rect, T0, a, b);
+    const L = 0.05 * m.w, F = pts.map(p => { // the target's centre and a short arm from it (scaled and turned with it) on the canvas: the canvas zoom and mirror come with it
+      const G = gAt(p.T), q = toCanvas(p.cx, p.cy, G), rr = (p.r * Math.PI) / 180, e = toCanvas(p.cx + (p.s * L * Math.cos(rr)) / m.w, p.cy + (p.s * L * Math.sin(rr)) / m.h, G);
+      return { T: p.T, q, k: Math.hypot(e[0] - q[0], e[1] - q[1]), r: host.flip ? -p.r : p.r };
     });
-    toast(`Tracked ${pts.length} frames${j.lost ? ' (target lost before the end)' : ''}`);
-  } catch (e) { toast(e.message); }
+    const f0 = F.reduce((x, y) => (Math.abs(y.T - T0) < Math.abs(x.T - T0) ? y : x)), base = propsAt(c, f0.T - c.start); // as placed on the picked frame
+    const at = lane === 'text' ? [base.x * P.w, base.y * P.h] : [(0.5 + base.x) * P.w, (0.5 + base.y) * P.h]; // the clip's centre (text: x, y place its centre)
+    const rel = [at[0] - f0.q[0], at[1] - f0.q[1]];
+    change(() => {
+      c.kf = thin(F).map(f => {
+        const k = opt.scale === false ? 1 : f.k / f0.k, dr = opt.rot === false ? 0 : f.r - f0.r, rad = (dr * Math.PI) / 180, cs = Math.cos(rad), sn = Math.sin(rad);
+        const px = f.q[0] + k * (cs * rel[0] - sn * rel[1]), py = f.q[1] + k * (sn * rel[0] + cs * rel[1]); // it keeps its place on the target: grown and turned about it
+        return { t: +(f.T - c.start).toFixed(5), scale: base.scale * k, opacity: base.opacity, rot: base.rot + dr, x: base.x + (px - at[0]) / P.w, y: base.y + (py - at[1]) / P.h, ease: false };
+      });
+    });
+    toast(`Tracked ${pts.length} frames: position, scale and rotation${lost ? ' (lost the target part of the way)' : ''}`);
+    return { frames: pts.length, lost };
+  } catch (e) { toast(e.message); throw e; }
+}
+function srcToClip(c, sx, sy) { // a source-normalized point -> the clip's own frame (after crop and mirror), 0..1: where its mask is drawn
+  const cr = c.crop || {}, u = (sx - (cr.l || 0)) / (1 - (cr.l || 0) - (cr.r || 0));
+  return [c.flip ? 1 - u : u, (sy - (cr.t || 0)) / (1 - (cr.t || 0) - (cr.b || 0))];
+}
+function blurCopy(c, lane, mask, mkf, span, amt = 1, style = 'blur') { // CapCut's camera-tracking blur: the clip again on the overlay track, blurred (or mosaic) only inside a mask that follows the target
+  const cut = { ...structuredClone(c), id: hex12(), volume: 0, blurs: c.id };
+  for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'duck', 'compound', 'mc', 'track', 'body', 'glow', 'beauty']) delete cut[k];
+  if (cut.fit === 'blur') cut.fit = 'fit';
+  if (span) { cut.in = span[0]; cut.out = span[1]; cut.start = c.start + (span[0] - c.in) / c.speed; delete cut.anim; if (c.kf) cut.kf = sliceKf(c, (span[0] - c.in) / c.speed, (span[1] - c.in) / c.speed); }
+  cut.adj = { ...(c.adj || {}), blur: style === 'mosaic' ? 0 : clamp(amt, 0.05, 1), pix: style === 'mosaic' ? clamp(amt, 0.05, 1) : 0 };
+  cut.mask = { invert: false, ...mask };
+  if (mkf?.length > 1) cut.mkf = thin(mkf, 600); else Object.assign(cut.mask, mkf?.[0] || {});
+  if (lane === 'overlay') P.overlay.splice(P.overlay.indexOf(c) + 1, 0, cut); else P.overlay.unshift(cut); // over its clip, under the rest (a sticker on the face stays on top)
+  return cut;
+}
+const boxMask = (c, m, p, pad = 1.25) => { // a tracked point {cx, cy, w, h (source, on the picked frame), s, r} -> mask keyframe values in the clip's frame
+  const [u, v] = srcToClip(c, p.cx, p.cy), cr = c.crop || {};
+  return { x: +(u - 0.5).toFixed(5), y: +(v - 0.5).toFixed(5), w: +((p.bw * p.s * pad) / (1 - (cr.l || 0) - (cr.r || 0))).toFixed(5), h: +((p.bh * p.s * pad) / (1 - (cr.t || 0) - (cr.b || 0))).toFixed(5), rot: +((c.flip ? -p.r : p.r) || 0).toFixed(3) };
+};
+async function finishBlur(c, lane, rect, T0 = S.t, opt = {}) { // the region boxed on the clip at T0, tracked through the whole clip both ways, blurred where it goes
+  const m = M.get(c.media), shape = opt.shape || 'rect', style = opt.style || $('#blurStyle')?.value || 'blur';
+  try {
+    const pid = P.id, was = c.media, { pts, lost, box } = await followTarget(c, rect, T0, c.start, c.start + tdur(c, lane));
+    c = live(c, pid, was);
+    const mk = p => ({ ...boxMask(c, m, { ...p, bw: box.w, bh: box.h }), feather: +(0.06 * Math.min(box.w * m.w, box.h * m.h) / Math.min(m.w, m.h)).toFixed(4) }); // a soft edge (6 % of the box) outside what was boxed: padded 25 %
+    let cut;
+    change(() => { packMain(); cut = blurCopy(c, lane, { type: shape === 'circle' ? 'circle' : 'rect', ...mk(pts[0]) }, pts.map(p => ({ t: +(p.T - c.start).toFixed(5), ...mk(p) })), null, opt.amount ?? 1, style); S.sel = { lane: 'overlay', id: cut.id }; });
+    toast(`Blurred it over ${pts.length} frames${lost ? ' (lost it part of the way: check the ends)' : ''}`);
+    return { id: cut.id, frames: pts.length, lost };
+  } catch (e) { setStatus(e.message); throw e; }
+}
+async function blurFaces(c, lane, { amount = 1, style = 'mosaic' } = {}) { // every face in the clip (Vision, 15 looks a second), each followed by its own blur
+  if (M.get(c.media)?.kind !== 'video') throw new Error('blur faces works on video clips');
+  try {
+    const pid = P.id, was = c.media, m = M.get(c.media), j = await job('/api/faces', { media: c.media, t0: c.in, t1: c.out, mode: 'all', rate: 15 }, 'Finding faces');
+    c = live(c, pid, was);
+    const tracks = j.tracks.sort((x, y) => y.length - x.length).slice(0, 12), pad = 0.5 / 15, cuts = [];
+    change(() => {
+      packMain();
+      for (const tk of tracks) { // a head is bigger than the face Vision boxes: wider, taller, a little higher
+        const a = Math.max(c.in, tk[0].t - pad), b = Math.min(c.out, tk.at(-1).t + pad), mk = p => ({ ...boxMask(c, m, { cx: p.x + p.w / 2, cy: p.y + p.h * 0.42, bw: p.w * 1.5, bh: p.h * 1.75, s: 1, r: 0 }, 1), feather: +(0.15 * p.w * m.w / Math.min(m.w, m.h)).toFixed(4) });
+        cuts.push(blurCopy(c, lane, { type: 'circle', ...mk(tk[0]) }, tk.map(p => ({ t: +((p.t - a) / c.speed).toFixed(5), ...mk(p) })), [a, b], amount, style).id);
+      }
+    });
+    toast(`Blurred ${tracks.length} face${tracks.length === 1 ? '' : 's'}: each on the overlay track, following it`);
+    return { faces: tracks.length, ids: cuts };
+  } catch (e) { setStatus(e.message); throw e; }
 }
 
 async function autoCaptions(force) { // words come back in source time; map them through each clip's in/out/speed
@@ -3870,6 +3976,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       if (mbN(c)) o.mb = mbN(c);
       const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
       if (c.adj?.blur > 0) o.blur = Math.max(1, Math.min(Math.round(c.adj.blur * 0.03 * short0), Math.floor(short0 / 4) - 1));
+      if (c.adj?.pix > 0) o.pix = pixBlock(c, m);
       if (c.beauty?.amt > 0) o.beauty = { amt: c.beauty.amt, sigma: 0.008 * short0 };
       if (c.glow) o.glow = { color: c.glow.color, sigma: c.glow.size * 0.04 * ch, gain: c.glow.neon ? 2 : 1 };
       const gl3 = gradeLUT(c);
@@ -4574,7 +4681,10 @@ function wire() {
         removeEventListener('pointermove', mv); removeEventListener('pointerup', upp);
         const R = S.pickRect;
         S.pickRect = null; S.dirty = true;
-        if (R && R.w > 8 && R.h > 8) (S.pick.remove ? finishRemove : finishTrack)(R); else { S.pick = null; toast('Cancelled'); }
+        const done = S.pick.done;
+        if (!(R && R.w > 8 && R.h > 8)) { S.pick = null; toast('Cancelled'); }
+        else if (done) { S.pick = null; $('#toast').hidden = true; done(R); }
+        else quiet((S.pick.remove ? finishRemove : finishTrack)(R));
       };
       addEventListener('pointermove', mv);
       addEventListener('pointerup', upp);
@@ -4763,7 +4873,10 @@ function wire() {
     else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
     else if (d.act === 'denoise') quiet(denoiseVideo(c, $('#dnStrength')?.value));
     else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
-    else if (d.act === 'reframe') quiet(autoReframe(c));
+    else if (d.act === 'reframe') quiet(autoReframe(c, { ratio: $('#reframeRatio')?.value || undefined }));
+    else if (d.act === 'reframepick') { const ratio = $('#reframeRatio')?.value || undefined, ln = S.sel.lane; startPick(c, ln, R => quiet(autoReframe(c, { ratio, rect: R, T: S.t })), 'Drag a box around the subject to keep in frame (Esc cancels)'); }
+    else if (d.act === 'blurregion') { const ln = S.sel.lane; startPick(c, ln, R => quiet(finishBlur(c, ln, R)), 'Drag a box around what to blur: it is followed through the clip (Esc cancels)'); }
+    else if (d.act === 'blurfaces') quiet(blurFaces(c, S.sel.lane, { style: $('#blurStyle')?.value || 'blur' }));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
     else if (d.act === 'duck') quiet(autoDuck(c, +($('#duckDepth')?.value || 0.25)));
     else if (d.align) change(() => { (c.style ??= {}).align = d.align; });
@@ -5294,6 +5407,37 @@ const REMOTE = {
     if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
+  },
+  async track_motion({ id, box, t, scale = true, rotate = true }) { // the clip (text, sticker, overlay) follows what is in box (canvas fractions) on the main-track video at t
+    const [c, L] = cfind(id);
+    if (L === 'main' || L === 'captions' || L === 'audio') throw new Error('track_motion moves an overlay, sticker or text clip: pass its id');
+    if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
+    if (t !== undefined) seekTo(+t);
+    packMain();
+    const host = P.main.find(x => S.t >= x.start && S.t < x.start + tdur(x, 'main'));
+    if (!host || M.get(host.media)?.kind !== 'video') throw new Error('t must be a time with a main-track video under it');
+    S.pick = { c, lane: L, host };
+    const r = await finishTrack({ x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, { scale, rot: rotate });
+    return { ...r, clip: brief(c, L), keyframes: c.kf.length };
+  },
+  async blur_region({ id, box, t, shape = 'rect', style = 'blur', amount = 1 }) { // box (canvas fractions) on video clip id at t: tracked both ways, blurred (or mosaic) where it goes
+    const [c, L] = cfind(id);
+    if (M.get(c.media)?.kind !== 'video') throw new Error('blur_region works on video clips');
+    if (!(box?.w > 0 && box?.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas is required');
+    const T = t ?? (S.t >= c.start && S.t < c.start + tdur(c, L) ? S.t : c.start);
+    if (T < c.start || T >= c.start + tdur(c, L)) throw new Error('t must be a time inside the clip');
+    if (!['rect', 'circle'].includes(shape) || !['blur', 'mosaic'].includes(style)) throw new Error('shape rect|circle, style blur|mosaic');
+    seekTo(T);
+    return finishBlur(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, { shape, style, amount: clamp(+amount || 1, 0.05, 1) });
+  },
+  async blur_faces({ id, style = 'blur', amount = 1 }) { const [c, L] = cfind(id); return blurFaces(c, L, { style: style === 'mosaic' ? 'mosaic' : 'blur', amount: clamp(+amount || 1, 0.05, 1) }); },
+  async auto_reframe({ id, ratio, box, t }) { // keep the face / subject (or what box, canvas fractions at t, holds) in frame; ratio 9:16 | 1:1 | 4:5 | ... changes the canvas first
+    const [c, L] = cfind(id);
+    if (M.get(c.media)?.kind !== 'video') throw new Error('auto_reframe works on video clips');
+    if (box && !(box.w > 0 && box.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas');
+    if (box) seekTo(t ?? c.start);
+    const r = await autoReframe(c, { ratio, rect: box && { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, T: S.t });
+    return { ...r, canvas: [P.w, P.h], clip: brief(c, L) };
   },
   async remove_object({ id, box, t, quality = 'best' }) { // box = where it is on the canvas (snapshot), as fractions {x, y, w, h}
     const [c, L] = cfind(id);

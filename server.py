@@ -741,6 +741,36 @@ def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     return {'points': pts, 'lost': lost}
 
 
+def follow(st, mid, t0, t1, box, t=None):
+    """Motion tracking for attaching things and blurring: position, scale and rotation (ai/track.py, OpenCV corners), both
+    ways from the picked frame t. Points {t, cx, cy, x, y, w, h, s, r}: s and r (clockwise degrees) relative to that frame.
+    Without the AI tools (or with too little detail in the box) Vision follows the box forward: scale = its width, no turn."""
+    m = meta(mid)
+    t = t0 if t is None else min(max(t, t0), t1)
+    if (AI_BIN / 'python').exists():
+        dec, vf = hdr_decode(m)
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'track.py'), str(MEDIA / m['file']), f'{t0:.4f}', f'{t1:.4f}', f'{t:.4f}',
+                                 str(float(m.get('fps') or 30)), *(f'{box[k]:.5f}' for k in 'xywh'), json.dumps(dec), vf],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=AI_ENV)
+        pts, lost = [], [False, False]
+        for line in proc.stdout:
+            d = json.loads(line)
+            if 'p' in d:
+                st['progress'] = d['p']
+            elif 'lost' in d:
+                lost = d['lost']
+            else:
+                pts.append(d)
+        err = proc.stderr.read()
+        if not proc.wait() and pts:
+            return {'points': pts, 'lost': any(lost), 'engine': 'corners'}
+        if 'too little detail' not in err:
+            raise RuntimeError(err.strip().splitlines()[-1][-300:] if err.strip() else 'tracking failed')
+    r = track(st, mid, t, t1, box)
+    w0 = r['points'][0]['w'] or 1
+    return {**r, 'engine': 'vision', 'points': [{**p, 'cx': p['x'] + p['w'] / 2, 'cy': p['y'] + p['h'] / 2, 's': p['w'] / w0, 'r': 0} for p in r['points']]}
+
+
 def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=None):
     """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
     [t0, t1] gets the background filled in (ai/remove.py; best = SAM 2 outline + ProPainter when installed)
@@ -1004,21 +1034,62 @@ def denoise(st, mid, t0, t1, strength='light'):
     return {'media': new['id']}
 
 
-def faces(st, mid, t0, t1):
-    """Largest face over time (Apple Vision), for auto-reframe."""
-    proc = subprocess.Popen([build_tool('faces'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', '5'],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def faces(st, mid, t0, t1, mode='largest', rate=5, span=(0.0, 1.0)):
+    """Faces over time (Apple Vision). largest: the biggest face per sample, for auto-reframe. all: every face, grouped into
+    one track per face (nearest box in the last 0.5 s), for blur-all-faces. subject: auto-reframe's target, the largest face
+    when the clip has faces in 40 % of its samples, else Vision's saliency (the salient object that carries on from the last one)."""
+    if mode == 'subject':
+        r = faces(st, mid, t0, t1, 'samples', rate, (0.0, 0.5))
+        n = len(r['samples']) or 1
+        if sum(1 for s in r['samples'] if s['f']) >= 0.4 * n:
+            big = [{'t': s['t'], **dict(zip('xywh', max(s['f'], key=lambda b: b[2] * b[3])))} for s in r['samples'] if s['f']]
+            return {'points': big, 'kind': 'face'}
+        sal, pts, last = faces(st, mid, t0, t1, 'salient', rate, (0.5, 1.0))['samples'], [], None
+        for s in sal:
+            if not s['f']:
+                continue
+            b = max(s['f'], key=lambda b: b[4] * math.sqrt(b[2] * b[3]) + (iou(b, last) if last else 0))
+            last = b
+            pts.append({'t': s['t'], **dict(zip('xywh', b[:4]))})
+        if not pts:
+            raise RuntimeError('found no face and no clear subject in this clip')
+        return {'points': pts, 'kind': 'subject'}
+    proc = subprocess.Popen([build_tool('faces'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', str(rate), 'all' if mode == 'samples' else mode],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)  # samples: every face per sample, as found
     pts = []
     for line in proc.stdout:
         d = json.loads(line)
-        pts.append({k: d[k] for k in ('t', 'x', 'y', 'w', 'h')})
-        st['progress'] = min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
+        pts.append(d if 'f' in d else {k: d[k] for k in ('t', 'x', 'y', 'w', 'h')})
+        st['progress'] = span[0] + (span[1] - span[0]) * min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
     err = proc.stderr.read()
     if proc.wait():
         raise RuntimeError(err.strip()[-300:] or 'face detection failed')
+    if mode in ('salient', 'samples'):
+        return {'samples': pts}
+    if mode == 'all':
+        tracks = []
+        for s in pts:
+            for b in sorted(s['f'], key=lambda b: -b[2] * b[3]):
+                near = [k for k in tracks if s['t'] - k[-1]['t'] <= 0.5 and k[-1]['t'] < s['t'] and
+                        math.hypot(k[-1]['x'] + k[-1]['w'] / 2 - b[0] - b[2] / 2, k[-1]['y'] + k[-1]['h'] / 2 - b[1] - b[3] / 2) < 0.6 * max(b[2], b[3], k[-1]['w'])]
+                k = min(near, key=lambda k: math.hypot(k[-1]['x'] - b[0], k[-1]['y'] - b[1]), default=None)
+                if k is None:
+                    tracks.append(k := [])
+                k.append({'t': s['t'], **dict(zip('xywh', b))})
+        tracks = [k for k in tracks if len(k) >= 2 or len(pts) < 3]  # one stray hit is a false face; a still photo has one sample
+        if not tracks:
+            raise RuntimeError('no face found in this clip')
+        return {'samples': pts, 'tracks': tracks}
     if not pts:
         raise RuntimeError('no face found in this clip')
     return {'points': pts}
+
+
+def iou(a, b):
+    """Overlap of two [x, y, w, h] boxes (intersection over union)."""
+    w = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    h = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    return w * h / max(1e-9, a[2] * a[3] + b[2] * b[3] - w * h)
 
 
 def slowmo(st, mid, t0, t1, factor):
@@ -2050,6 +2121,7 @@ def clean_plan(p):
             raise ValueError('grade must be a 33-point 3D table')
         k['lkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 1)} for f in (c.get('lkf') or [])[:2000]] or None  # filter strength keyframes
         k['blur'] = int(fnum(c.get('blur', 0), 0, 400)) or None  # px in the source
+        k['pix'] = int(fnum(c.get('pix', 0), 0, 400)) // 2 * 2 or None  # mosaic block, px in the source (even: whole chroma samples)
         mb = int(fnum(c.get('mb', 0), 0, 9))  # motion blur: frames mixed
         k['mb'] = mb if mb > 1 and m['kind'] == 'video' else None
         b = c.get('beauty') or {}
@@ -2319,7 +2391,7 @@ def adjust(c):
 
 RGB_NEEDS = (('kf', 'keyframes'), ('alpha', 'a transparent clip'), ('trans', 'a transparent clip'), ('key', 'chroma key'), ('mask', 'a mask'),
              ('mask_seq', 'a mask'), ('vig', 'a vignette'), ('look', 'a filter'), ('tone', 'adjustments'), ('grade', 'a colour grade'),
-             ('lkf', 'filter keyframes'), ('beauty', 'beauty'), ('blur', 'blur'))
+             ('lkf', 'filter keyframes'), ('beauty', 'beauty'), ('blur', 'blur'), ('pix', 'mosaic'))
 
 
 def rgb_need(c):
@@ -2413,6 +2485,8 @@ def graph(p, td):
                   f"[{t}o]format=yuva444p,chromakey=color=0xC89682:similarity=0.10:blend=0.12,lut=a='255-(255-val)*{b['amt']:.4f}'[{t}k];[{t}s][{t}k]overlay=format=yuv444")
         if c.get('blur'):  # the clip's own blur: boxblur, 3 passes (a Gaussian), radius in source pixels
             v += f",boxblur=luma_radius={c['blur']}:luma_power=3:chroma_radius={c['blur']}:chroma_power=3"
+        if c.get('pix'):  # mosaic: block averages from the top-left corner (the preview's pixelInPlace)
+            v += f",format=gbrp,pixelize=width={c['pix']}:height={c['pix']}"
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         if c.get('mb'):  # motion blur: each output frame the plain mean of it and the mb-1 before it (the preview mixes the same frames)
@@ -3367,11 +3441,13 @@ class App(BaseHTTPRequestHandler):
             if u.path in ('/api/reverse', '/api/stabilize'):
                 return self.reply({'job': run_job(reverse if u.path == '/api/reverse' else stabilize, body['media'])})
             if u.path == '/api/faces':
-                return self.reply({'job': run_job(faces, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6))})
+                mode = body.get('mode') if body.get('mode') in ('largest', 'all', 'subject') else 'largest'
+                return self.reply({'job': run_job(faces, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), mode, int(fnum(body.get('rate', 5), 1, 60)))})
             if u.path == '/api/track':
                 b = body.get('box') or {}
                 box = {k: fnum(b.get(k), 0, 1) for k in 'xywh'}
-                return self.reply({'job': run_job(track, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), box)})
+                return self.reply({'job': run_job(follow, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), box,
+                                                  fnum(body['t'], 0, 1e6) if body.get('t') is not None else None)})
             if u.path == '/api/beats':
                 return self.reply(beats(body['media']))
             if u.path == '/api/still':
@@ -3701,6 +3777,10 @@ def selftest():
     want = [g0[0], (2 * g0[0] + g0[1]) / 3, (g0[0] + g0[1] + g0[2]) / 3, g0[3] - (g0[2] - g0[1])]  # tmix repeats the first frame before it
     assert all(abs(a - b) <= 2 for a, b in zip(g3, want)), ('motion blur 3 = mean of the frame and the 2 before', g0, g3, want)
     print(f'motion blur ok: zoom blur on its frames only; tmix of 3 frames = their mean ({g0} -> {g3})')
+    out = render({**tplan, 'name': 'mosaic', 'duration': 1, 'main': [{**still_clip(SP), 'out': 1, 'frames': 30, 'pix': 64}]}, 30)
+    mo = [pixel(out, 0.5, x, 240) for x in (40, 135, 230)]  # source blocks of 64 px from x = 0: [128, 192) spans the red | blue seam at 160
+    assert mo[0][0] > 200 and mo[0][2] < 50 and 90 < mo[1][0] < 165 and 90 < mo[1][2] < 165 and mo[2][2] > 200 and mo[2][0] < 50, ('mosaic = block averages in the source', mo)
+    print(f'mosaic ok: 64 px source blocks, the seam block averaged {mo[1]}')
     swap = base64.b64encode(array('H', [round(v * 65535 / 32) for b in range(33) for g in range(33) for r in range(33) for v in (b, g, r)]).tobytes()).decode()
     out = render({**tplan, 'name': 'fx-lut', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'lut', 'lut': swap, 'a': 10, 'b': 20}]}, 30)
     l5, l15, l25 = at(5, 60), at(15, 60), at(15, 200)
