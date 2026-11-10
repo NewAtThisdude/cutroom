@@ -368,6 +368,21 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #curveSvg .diag { stroke: rgba(255,255,255,.12); stroke-width: .4; stroke-dasharray: 2 2; fill: none; }
 #curveSvg .crv { stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
 #curveSvg circle { fill: #fff; stroke: #000; stroke-width: .6; }
+.rampchips { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 6px 0; }
+.rampchips button { flex-direction: column; gap: 3px; min-width: 0; }
+.rampchips svg { width: 100%; max-width: 54px; height: 14px; }
+.rampchips path { fill: none; stroke: currentColor; stroke-width: 1.4; vector-effect: non-scaling-stroke; opacity: .8; }
+.rampbox { aspect-ratio: 222 / 112; }
+#rampSvg { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#rampSvg .grid { stroke: rgba(255,255,255,.07); stroke-width: .4; }
+#rampSvg .one { stroke: rgba(255,255,255,.22); stroke-width: .5; stroke-dasharray: 2 2; }
+#rampSvg text { fill: var(--muted); font-size: 7px; text-anchor: end; pointer-events: none; }
+#rampSvg .out { fill: rgba(0,0,0,.5); }
+#rampSvg .ghost { fill: none; stroke: rgba(255,255,255,.28); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+#rampSvg .crv { fill: none; stroke: var(--accent2); stroke-width: 2; vector-effect: non-scaling-stroke; }
+#rampSvg circle { fill: #fff; stroke: #000; stroke-width: .6; }
+#rampSvg circle.hot { fill: var(--accent2); }
+.ramplen { margin: 2px 0 0; font-variant-numeric: tabular-nums; font-size: 12px; }
 .hslbands { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 5px; margin: 6px 0; }
 .hslbands button { padding: 0; height: 22px; border-radius: 50%; aspect-ratio: 1; width: 100%; max-width: 24px; justify-self: center; background: var(--c); border: 2px solid transparent; }
 .hslbands button.on { border-color: #fff; }
