@@ -1105,7 +1105,7 @@ function audioAwake() {
   wokeAt = now; audioNapLater();
   if (actx?.state !== 'running') audioOn();
 }
-function audioNapLater() { clearTimeout(napTimer); napTimer = setTimeout(() => S.playing || actx?.suspend(), audioNap); }
+function audioNapLater() { clearTimeout(napTimer); napTimer = setTimeout(() => S.playing || rec || actx?.suspend(), audioNap); } // (a voiceover take runs on past the end)
 for (const e of ['pointerdown', 'pointermove', 'keydown', 'wheel']) addEventListener(e, audioAwake, { capture: true, passive: true });
 function resound() { for (const v of voices.values()) v.n.key = ''; S.dirty = true; } // re-apply every clip's sound settings
 const AU0 = { voice: 'none', semi: 0, bass: 0, mid: 0, treb: 0, pan: 0 };
@@ -1200,6 +1200,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
   // the audio-clock time whose sample leaves the speakers at the frame's wall time: so the sound of S.t is HEARD at S.t
   // (scheduling on currentTime alone put it outputLatency late, 40-75 ms behind the picture)
   const ts = actx.getOutputTimestamp(), out = ts.performanceTime ? ts.contextTime + (wall - ts.performanceTime) / 1000 : actx.currentTime, now = actx.currentTime;
+  rec?.offs.push(S.t - out); // a voiceover take: timeline time minus the audio-clock time heard now (toggleRecord)
   if (S.aA0 === undefined || Math.abs(S.aT0 + (out - S.aA0) - S.t) > 0.04) { audioStop(); S.aA0 = out; S.aT0 = S.t; } // a hold, a seek or clock drift
   const seen = new Set(), t1 = S.t + 1;
   packMain();
@@ -3345,27 +3346,95 @@ async function uploadOne(file) {
   await loadMedia();
   return m;
 }
-let rec = null;
-async function toggleRecord() { // voiceover from the mic while the timeline plays (muted, so it doesn't bleed in)
+// ---------- voiceover from the mic ----------
+// The take is the mic's samples as the audio graph receives them (an AudioWorklet stamps the first one's frame), not a
+// MediaRecorder file: its first sample lands an unknown 40-50 ms after start(). A sample that reached the graph at
+// context time c was spoken when the speakers played context time c - lat, and audioTick logs S.t - out (timeline time
+// minus the context time heard) every frame, so its timeline time is c - lat + off. lat, the mic's delay, is measured on
+// every take: three count-in blips from the speakers, found in the take. With headphones the mic doesn't hear them:
+// then the last measured delay, else what the browser reports, else 0.
+// ponytail: one offset per take (the median frame); a video stall mid-take (the clock holds up to 1.5 s) shifts the part
+// before it. Raw float samples in memory: ~12 MB a minute.
+let rec = null, recMod;
+const REC_JS = `registerProcessor('cutroom-rec', class extends AudioWorkletProcessor { process([i]) {
+  const d = new Float32Array(i.length ? i[0].length : 128); // no channels = an input sending nothing (yet): silence keeps the time
+  for (const ch of i) for (let k = 0; k < d.length; k++) d[k] += ch[k] / i.length;
+  this.port.postMessage([currentFrame, d], [d.buffer]); return true; } });`;
+const BLIPS = 3, BLIP_S = 0.45;
+function blip(sr) { // 10 ms chirp 1-4 kHz: one sharp correlation peak
+  const n = Math.round(sr / 100), b = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const t = i / sr; b[i] = 0.5 * Math.sin(2 * Math.PI * (1000 * t + 150000 * t * t)) * Math.sin((Math.PI * i) / n); }
+  return b;
+}
+function blipLag(x, i0, tpl, w) { // the lag (samples) past i0 where x best matches tpl, and how well (normalised correlation)
+  let e = 0, best = 0, at = 0;
+  for (const v of tpl) e += v * v;
+  for (let l = 0; l < w && i0 + l + tpl.length <= x.length; l++) {
+    let s = 0, q = 0;
+    for (let j = 0; j < tpl.length; j++) { const v = x[i0 + l + j]; s += v * tpl[j]; q += v * v; }
+    const r = s / Math.sqrt(e * q + 1e-12);
+    if (r > best) { best = r; at = l; }
+  }
+  return [at, best];
+}
+function wavMono(x, sr) { // 16-bit PCM: the export seeks a WAV to the sample
+  const b = new DataView(new ArrayBuffer(44 + x.length * 2)), str = (o, s) => [...s].forEach((ch, i) => b.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, 'RIFF'); b.setUint32(4, 36 + x.length * 2, true); str(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+  b.setUint32(24, sr, true); b.setUint32(28, sr * 2, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true); str(36, 'data'); b.setUint32(40, x.length * 2, true);
+  for (let i = 0; i < x.length; i++) b.setInt16(44 + i * 2, Math.round(clamp(x[i], -1, 1) * 32767), true);
+  return b.buffer;
+}
+async function toggleRecord() { // the timeline plays muted (unless "hear the project" is on) so it doesn't bleed in
   const btn = $('#btnRec');
   if (rec) return rec.stop();
+  if (S.playing) pause();
+  const r = (rec = { offs: [], parts: [], f1: 0, hear: $('#recHear').checked, stop() {} }); // a click while the mic opens does nothing
+  let stream, src, node;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }), chunks = [], t0 = S.t, mr = new MediaRecorder(stream);
-    mr.ondataavailable = e => chunks.push(e.data);
-    mr.onstop = async () => {
-      stream.getTracks().forEach(tr => tr.stop());
-      rec = null; S.recMute = false; btn.textContent = 'Record voiceover (mic)';
-      if (S.playing) pause();
-      try { // WebKit records AAC in MP4, Chrome Opus in WebM: name it so the server serves it right
-        const ext = mr.mimeType.includes('mp4') ? 'm4a' : 'webm', m = await uploadOne(new File(chunks, `Recording ${new Date().toLocaleTimeString().replace(/:/g, '.')}.${ext}`, { type: mr.mimeType }));
-        addMedia(m.id, 'audio', t0);
-      }
-      catch (e) { toast(e.message); }
+    audioOn();
+    await actx.resume();
+    await (recMod ??= actx.audioWorklet.addModule(URL.createObjectURL(new Blob([REC_JS], { type: 'text/javascript' }))));
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); // echo cancelling would take the blips out
+    const A = actx, sr = A.sampleRate, go = A.currentTime + 0.3 + BLIPS * BLIP_S; // count-in, then the timeline plays
+    src = A.createMediaStreamSource(stream); node = new AudioWorkletNode(A, 'cutroom-rec');
+    node.port.onmessage = ({ data: [f, d] }) => {
+      if (r.f0 === undefined) r.f0 = r.f1 = f;
+      if (f > r.f1) r.parts.push(new Float32Array(f - r.f1)); // a block the graph skipped: silence keeps the time
+      r.parts.push(d); r.f1 = f + d.length;
     };
-    mr.start();
-    rec = mr; S.recMute = true; btn.textContent = 'Stop recording';
-    play();
+    src.connect(node).connect(A.destination);
+    const tpl = blip(sr), bb = new AudioBuffer({ length: tpl.length, sampleRate: sr, numberOfChannels: 1 }), at0 = go - BLIPS * BLIP_S;
+    bb.copyToChannel(tpl, 0);
+    for (let k = 0; k < BLIPS; k++) { const s = A.createBufferSource(); s.buffer = bb; s.connect(A.destination); s.start(at0 + k * BLIP_S); }
+    const stopped = new Promise(done => { r.stop = () => { r.stopped = true; done(); }; });
+    S.recMute = !r.hear; btn.textContent = 'Stop recording';
+    if (r.hear) toast('Hearing the project: wear headphones, or the mic records it too');
+    await Promise.race([stopped, sleep((go - A.currentTime) * 1000)]);
+    if (r.stopped) return toast('Stopped during the count-in: nothing recorded');
+    play(); r.t0 = S.t;
+    await stopped;
+    if (S.playing) pause();
+    if (r.f0 === undefined) throw new Error('no sound came in');
+    const x = new Float32Array(r.f1 - r.f0), c0 = r.f0 / sr, lags = [];
+    for (let o = 0, i = 0; i < r.parts.length; o += r.parts[i++].length) x.set(r.parts[i], o);
+    for (let k = 0; k < BLIPS; k++) {
+      const i0 = Math.round((at0 + k * BLIP_S - c0) * sr), [l, q] = i0 >= 0 ? blipLag(x, i0, tpl, Math.round(0.4 * sr)) : [0, 0];
+      if (q > 0.3) lags.push(l / sr);
+    }
+    lags.sort((a, b) => a - b);
+    const heard = lags.length === BLIPS && lags[BLIPS - 1] - lags[0] < 0.002;
+    if (heard) store.set('cutroom.micDelay', lags[1]);
+    const lat = heard ? lags[1] : +(store.get('cutroom.micDelay') ?? stream.getAudioTracks()[0]?.getSettings().latency ?? 0) || 0;
+    const off = r.offs.length ? r.offs.sort((a, b) => a - b)[r.offs.length >> 1] : r.t0 - go, z = c0 - lat + off, start = Math.max(r.t0, z); // z: the timeline time of the take's first sample
+    if (x.length / sr - (start - z) < 0.1) return toast('Stopped as the playback started: nothing recorded');
+    const m = await uploadOne(new File([wavMono(x, sr)], `Recording ${new Date().toLocaleTimeString().replace(/:/g, '.')}.wav`, { type: 'audio/wav' }));
+    addMedia(m.id, 'audio', start, [start - z, x.length / sr]);
+    toggleRecord.last = { lat, heard, start, in: start - z, frames: r.offs.length }; // for tests
   } catch (e) { toast(`Microphone: ${e.message}`); }
+  finally {
+    src?.disconnect(); node?.disconnect(); stream?.getTracks().forEach(tr => tr.stop());
+    rec = null; S.recMute = false; btn.textContent = 'Record voiceover (mic)';
+  }
 }
 function startTrack(c, lane) { // pick a target on the main-track video; the clip then follows it via keyframes
   packMain();
@@ -4033,6 +4102,7 @@ function wire() {
   $('#btnProjects').addEventListener('click', openProjects);
   $('#btnTts').addEventListener('click', addVoiceover);
   $('#btnRec').addEventListener('click', toggleRecord);
+  $('#recHear').addEventListener('change', e => { $('#recHearHint').hidden = !e.target.checked; });
   $('#btnAiImage').addEventListener('click', async () => {
     const prompt = $('#aiPrompt').value.trim(), b = $('#btnAiImage');
     if (!prompt) return toast('Describe the image first');

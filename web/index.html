@@ -69,7 +69,10 @@
       <label class="row"><span>Speed</span><select id="ttsRate"><option value="160">Slow</option><option value="185" selected>Normal</option><option value="215">Fast</option><option value="250">Faster</option></select></label>
       <button id="btnTts" class="wide">Add voiceover at playhead</button>
       <h4>Record</h4>
+      <label class="row chk"><span>Hear the project while recording</span><input id="recHear" type="checkbox"></label>
+      <p id="recHearHint" class="hint" hidden>Wear headphones: from the speakers the mic records the project's sound too.</p>
       <button id="btnRec" class="wide">Record voiceover (mic)</button>
+      <p class="hint">Three blips count you in; the speakers' blips also measure the mic's delay.</p>
     </section>
     <section id="tab-text" class="pane">
       <button id="btnAddText" class="primary wide first"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add text</button>
