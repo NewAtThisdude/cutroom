@@ -539,6 +539,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }
 function seekTo(t) { // paused seek used by arrows, Home/End and the transport buttons
   if (S.playing) pause();
+  closeSource();
   S.t = snap(clamp(t, 0, total()));
   placePlayhead(); follow(); S.dirty = true;
   if (S.sel) renderInspector(); // keyframed values at the new time
@@ -567,7 +568,7 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
   if (sel.length) change(() => { for (const [c] of sel) c.start = snap(Math.max(0, c.start + d / P.fps)); });
 }
 const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
-  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['⌥← ⌥→', 'Nudge the selected clips one frame'],
+  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'],
   ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
   ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
 function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-close>Close</button></div>`); }
@@ -581,16 +582,109 @@ function thumbStyle(m) {
 }
 function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
-  const items = [...M.values()].filter(m => G.mfilter === 'all' || m.kind === G.mfilter).map(m => `<div class="mitem" draggable="true" data-media="${m.id}" title="Drag onto a track">
-      <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span></div>
+  const q = $('#mediaSearch')?.value.trim().toLowerCase(), used = G.mfilter === 'proj' && P && new Set(LANES.flatMap(L => P[L.key].map(c => c.media)));
+  const by = { name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }), dur: (a, b) => (b.duration || 0) - (a.duration || 0) }[$('#mediaSort')?.value]; // 'new': the server's order
+  const list = [...M.values()].filter(m => (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
+  if (by) list.sort(by);
+  const items = list.map(m => { const r = srcRange(m.id); return `<div class="mitem${S.src?.id === m.id ? ' src' : ''}" draggable="true" data-media="${m.id}" title="${m.kind === 'video' ? 'Hover to skim · click to mark a range · drag onto a track' : 'Drag onto a track'}">
+      <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span>${r ? `<i class="srng" style="left:${(r[0] / m.duration) * 100}%;width:${((r[1] - r[0]) / m.duration) * 100}%"></i>` : ''}</div>
       <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : m.prep === -1 ? ' · waiting to prepare' : m.prep > 0 ? ` · preparing ${Math.round(m.prep * 100)} %` : ' · preparing'}</span></div>
-      <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`).join('');
+      <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`; }).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
+  if (!up && !items && M.size) $('#mediaList .hint').textContent = 'Nothing matches.';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
   if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
   if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name))}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
   if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name, 22))} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
+}
+
+// ---------- source viewer: a library video on its own in the preview. Hovering its card skims it, a click opens it to
+// mark a range (I, O) that + or a drag adds. The timeline is untouched until then.
+function srcRange(id) { // the marked [in, out] of library item id, or null
+  const s = S.src, m = M.get(id);
+  if (!s || s.id !== id || !m || (s.i == null && s.o == null)) return null;
+  const a = s.i ?? 0, b = s.o ?? m.duration;
+  return b - a >= 0.05 ? [a, b] : null;
+}
+function openSource(id, t) {
+  const m = M.get(id);
+  if (m?.kind !== 'video') return;
+  if (S.playing) pause();
+  if (S.src?.id !== id) S.src = { id, t: 0, i: null, o: null };
+  const r = $('#srcPos');
+  r.max = m.duration; r.step = 'any';
+  $('#srcName').textContent = m.name; $('#srcBar').hidden = false;
+  srcSeek(t); srcInfo(); renderMediaList();
+}
+function closeSource() { if (!S.src) return; S.src = null; $('#srcBar').hidden = true; S.dirty = true; renderMediaList(); }
+function srcSeek(t) { const s = S.src, r = $('#srcPos'); s.t = clamp(t, 0, M.get(s.id)?.duration || 0); r.value = s.t; fill(r); S.dirty = true; }
+function srcMark(k) { // I / O: at the skimmed frame while the pointer is on the card, else where the viewer is
+  const s = S.src;
+  if (S.skim?.id === s.id) srcSeek(S.skim.t);
+  s[k] = +s.t.toFixed(3);
+  if (s.i != null && s.o != null && s.o <= s.i) s[k === 'i' ? 'o' : 'i'] = null; // an in after the out starts a new range
+  srcInfo(); renderMediaList();
+}
+function srcInfo() { const r = srcRange(S.src.id); $('#srcRange').textContent = r ? `In ${tc(r[0])} · Out ${tc(r[1])} · ${(r[1] - r[0]).toFixed(2)} s` : 'I and O mark a range · ← → step'; }
+function paintSource(V) { // the viewer's frame, fitted to the canvas (the pooled 'src' element: the timeline's own stay loaded)
+  const m = M.get(V.id), cv = $('#cv'), ctx = cv.getContext('2d');
+  if (!m) { S.skim = null; closeSource(); return; }
+  const el = vidFor('src', m);
+  sync(el, V.t, 1);
+  S.live = new Set([el]); S.pics = []; hits = [];
+  for (const v of pool.values()) if (v !== el && !v.paused) v.pause();
+  $('#tc').textContent = `${tc(V.t)} / ${tc(m.duration)}`;
+  if (el.readyState < 2) return; // the last frame stays up until 'loadeddata' / 'seeked' repaint
+  const w = el.videoWidth, h = el.videoHeight, s = Math.min(cv.width / w, cv.height / h);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(el, (cv.width - w * s) / 2, (cv.height - h * s) / 2, w * s, h * s);
+}
+function skimAt(e) { // pointer over a video card: its frame from the 1-per-second grid at once, the real frame in the preview after 100 ms at rest
+  const it = e.target.closest('.mitem[data-media]'), m = it && M.get(it.dataset.media);
+  if (G.skimId && G.skimId !== m?.id) skimEnd();
+  if (m?.kind !== 'video' || !m.grid) return;
+  const r = it.getBoundingClientRect(), f = clamp((e.clientX - r.left) / r.width, 0, 1), t = f * m.duration, th = it.querySelector('.thumb');
+  let cv = th.querySelector('.skim');
+  if (!cv) { cv = document.createElement('canvas'); cv.className = 'skim'; th.append(cv); }
+  G.skimId = m.id;
+  const dpr = devicePixelRatio || 1, w = th.clientWidth, h = th.clientHeight, img = gridImg(m), Gd = m.grid, g = cv.getContext('2d');
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (img.complete && img.naturalWidth) {
+    const k = clamp(Math.floor((t / m.duration) * Gd.n), 0, Gd.n - 1), s = Math.max(w / Gd.tw, h / Gd.th);
+    g.drawImage(img, (k % Gd.cols) * Gd.tw, Math.floor(k / Gd.cols) * Gd.th, Gd.tw, Gd.th, (w - Gd.tw * s) / 2, (h - Gd.th * s) / 2, Gd.tw * s, Gd.th * s);
+  }
+  g.fillStyle = '#fff'; g.fillRect(Math.round(f * w) - 1, 0, 2, h); // where the pointer is in the file
+  clearTimeout(G.skimT);
+  G.skimT = setTimeout(() => { if (G.skimId === m.id && !S.playing) { S.skim = { id: m.id, t }; S.dirty = true; } }, 100);
+}
+function skimEnd() {
+  clearTimeout(G.skimT);
+  $(`#mediaList .mitem[data-media="${G.skimId}"] .skim`)?.remove();
+  G.skimId = null;
+  if (S.skim) { S.skim = null; S.dirty = true; }
+}
+function replaceClip(c, id) { // the clip plays another library item: same place and length, its effects, keyframes and settings kept
+  const m = M.get(id);
+  if (!m) throw new Error(`no media ${id} in the library`);
+  const span = c.out - c.in;
+  change(() => {
+    c.media = id;
+    if (m.kind === 'image') { c.in = 0; c.out = span; }
+    else { c.in = clamp(c.in, 0, Math.max(0, m.duration - span)); c.out = Math.min(c.in + span, m.duration); }
+  });
+  if (c.out - c.in < span - 1e-3) toast(`${m.name} is shorter, so the clip is too`);
+}
+function replaceMenu(c, lane) {
+  const snd = lane === 'audio', list = [...M.values()].filter(m => m.id !== c.media && m.ready && (snd ? m.kind === 'audio' || (m.kind === 'video' && m.hasAudio) : m.kind !== 'audio'));
+  modal(`<h3>Replace clip</h3><p class="hint">It plays in the same place for the same time, keeping this clip's effects, keyframes and settings.</p>
+    <input id="repQ" type="search" placeholder="Search the library" aria-label="Search the library">
+    <div class="media-list rep">${list.map(m => `<button class="mitem" data-rep="${m.id}" title="${esc(m.name)}"><div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span></div><div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}</span></div></button>`).join('') || '<p class="hint">Nothing in the library fits this track.</p>'}</div>
+    <div class="actions"><button data-close>Cancel</button></div>`);
+  const d = $('#modal .dialog');
+  d.querySelector('.rep').addEventListener('click', e => { const b = e.target.closest('[data-rep]'); if (b) { closeModal(); replaceClip(c, b.dataset.rep); } });
+  $('#repQ').addEventListener('input', e => { const q = e.target.value.trim().toLowerCase(); for (const b of d.querySelectorAll('[data-rep]')) b.hidden = !!q && !M.get(b.dataset.rep).name.toLowerCase().includes(q); });
 }
 
 const short = (n, max = 26) => { // a long file name for a dropdown: start … end, extension kept (a select can't draw an ellipsis in WebKit)
@@ -1222,6 +1316,8 @@ function sync(v, src, rate) { // the wall clock is the master; media elements fo
 }
 function paint() {
   if (S.hold) return;
+  const V = !S.playing && (S.skim || S.src);
+  if (V) return paintSource(V);
   // at (or past) the very end every clip has ended: show the last frame, not black (End, or play to the end)
   const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, end = total(), t = S.t < end ? S.t : Math.max(0, end - 0.5 / P.fps), live = new Set();
   const act = [];
@@ -2129,6 +2225,7 @@ function clipMenu(c, lane) { // what a right-click on a clip offers
   const items = [['Split', split, 'S'], ['Duplicate', dup, '⌘D'], ['Copy', () => copySel(), '⌘C'], ['Cut', () => copySel(true), '⌘X'], ['Paste', () => paste(), '⌘V', !clipboard],
     ['Paste look', pasteLook, '⌥⌘V', !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), 'Q'], ['Trim end to playhead', () => trimTo('right'), 'W']];
   if (vid || vis) items.push('-');
+  if (m && !many && !c.mc && !c.compound) items.push(['Replace…', () => replaceMenu(c, lane)]);
   if (vid) items.push(['Freeze frame', () => quiet(freeze(c, lane))], ['Reverse', () => quiet(remake(c, 'reverse'))]);
   if (vid && lane !== 'audio' && m.hasAudio && c.volume > 0) items.push(['Detach audio', () => detachAudio(c)]);
   if (vid) items.push(['Remove object…', () => startRemove(c, lane)], ['Cut out object…', () => startRemove(c, lane, 'cutout')]);
@@ -2537,6 +2634,7 @@ function play() {
   const D = total();
   if (D <= 0) return;
   if (S.t >= D - 1e-3) S.t = 0;
+  closeSource();
   audioOn();
   if (!S.playing) busy(1);
   shuttleBack(0);
@@ -2546,11 +2644,11 @@ function play() {
 function pause() { shuttleBack(0); if (S.playing) busy(-1); S.playing = false; S.rate = 1; audioStop(); audioWarm(); audioNapLater(); S.t = snap(S.t); S.dirty = true; $('#btnPlay').innerHTML = ICON.play; placePlayhead(); if (S.sel) renderInspector(); }
 
 // ---------- edits ----------
-function addMedia(id, lane, t) {
+function addMedia(id, lane, t, range) { // range: [in, out] marked in the source viewer
   const m = M.get(id);
   if (!m) return;
   lane = m.kind === 'audio' ? 'audio' : lane === 'overlay' ? 'overlay' : 'main';
-  const c = { id: hex12(), media: id, start: 0, in: 0, out: m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
+  const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
   change(() => {
     if (lane === 'main') { packMain(); P.main.splice(t === undefined ? P.main.length : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, 0, c); }
     else { c.start = Math.max(0, t ?? S.t); P[lane].push(c); }
@@ -3872,7 +3970,9 @@ function wire() {
 
   $('#mediaList').addEventListener('click', async e => {
     const b = e.target.closest('[data-add]'), rm = e.target.closest('[data-rm]');
-    if (b) return addMedia(b.dataset.add);
+    if (b) { const r = srcRange(b.dataset.add); return addMedia(b.dataset.add, undefined, r ? S.t : undefined, r); } // a marked range goes in at the playhead
+    const it = !rm && e.target.closest('.mitem[data-media]');
+    if (it) { const R = it.getBoundingClientRect(); return openSource(it.dataset.media, clamp((e.clientX - R.left) / R.width, 0, 1) * (M.get(it.dataset.media)?.duration || 0)); }
     if (!rm) return;
     const m = M.get(rm.dataset.rm), used = LANES.some(L => P[L.key].some(c => c.media === m.id));
     if (used) return toast(`"${m.name}" is used in this project; delete those clips first`);
@@ -3900,7 +4000,18 @@ function wire() {
     if (!id) return;
     e.preventDefault();
     e.stopPropagation();
-    addMedia(id, e.target.closest('.lane')?.dataset.lane, Math.max(0, (e.clientX - $('#tlInner').getBoundingClientRect().left) / S.pps));
+    addMedia(id, e.target.closest('.lane')?.dataset.lane, Math.max(0, (e.clientX - $('#tlInner').getBoundingClientRect().left) / S.pps), srcRange(id));
+  });
+  $('#mediaList').addEventListener('pointermove', skimAt);
+  $('#mediaList').addEventListener('pointerleave', skimEnd);
+  $('#mediaSearch').addEventListener('input', renderMediaList);
+  $('#mediaSort').addEventListener('change', renderMediaList);
+  $('#srcPos').addEventListener('input', e => { fill(e.target); srcSeek(+e.target.value); });
+  $('#srcBar').addEventListener('click', e => {
+    const k = e.target.closest('[data-src]')?.dataset.src;
+    if (k === 'i' || k === 'o') srcMark(k);
+    else if (k === 'add') { const r = srcRange(S.src.id); addMedia(S.src.id, 'main', S.t, r); }
+    else if (k === 'close') closeSource();
   });
   addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); document.body.classList.add('dropping'); } });
   addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
@@ -3908,6 +4019,7 @@ function wire() {
 
   $('#tlInner').addEventListener('pointerdown', e => {
     if (e.button !== 0 || !P) return;
+    closeSource(); // back to the timeline
     const th = e.target.closest('.trh');
     if (th) { S.sel = { lane: 'tr', id: th.dataset.trFor }; renderAll(); S.dirty = true; return; }
     const el = e.target.closest('.clip');
@@ -4236,6 +4348,9 @@ function wire() {
     else if (mod && e.code === 'KeyX') { e.preventDefault(); copySel(true); }
     else if (mod && e.code === 'KeyV') { e.preventDefault(); if (e.altKey) pasteLook(); else paste(); }
     else if (mod && e.code === 'KeyA') { e.preventDefault(); selectAll(); }
+    else if (!mod && S.src && (e.code === 'KeyI' || e.code === 'KeyO')) { e.preventDefault(); srcMark(e.code === 'KeyI' ? 'i' : 'o'); }
+    else if (!mod && !e.altKey && S.src && !field && (key === 'arrowleft' || key === 'arrowright')) { e.preventDefault(); const m = M.get(S.src.id); srcSeek(S.src.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / (m?.fps || 30))); }
+    else if (key === 'escape' && S.src && !menuEl) closeSource();
     else if (!mod && /^Digit[1-6]$/.test(e.code) && P.main.some(c => c.mc)) { e.preventDefault(); mcCut(+e.code.slice(5) - 1); }
     else if (!mod && e.code === 'KeyL') { e.preventDefault(); shuttle(1); }
     else if (!mod && e.code === 'KeyJ') { e.preventDefault(); shuttle(-1); }
