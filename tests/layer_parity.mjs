@@ -2,7 +2,7 @@
 // page fallback (S.layerForce = 'page') and the old full-frame PNG path (text.pngs, rebuilt here as buildPlan made it before
 // the crop). All three must give the same frames: crop + upload change where the pixels travel, not what they are.
 // Twice: with the effects (the box is the whole frame) and text only (a real crop). Project: 4 s of 1080p30 footage with titles in Cutroom's fonts (in/out/loop animations, shadow, box, letter spacing), an
-// imported font, a Mac font, Bold captions with word highlights and Snow, VHS and Camcorder overlays.
+// imported font, a Mac font, Bold captions with word highlights and Snow, VHS, Camcorder, Lens flare and Dust overlays.
 //   B=http://127.0.0.1:4721 CUTROOM_HOME=<scratch lib> node layer_parity.mjs
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
@@ -29,7 +29,8 @@ await ev(async fam => {
   p.captions = [{ id: hex12(), start: 0.5, dur: 1.6, text: 'three bold words', words: [{ w: 'three', s: 0, e: 0.5 }, { w: 'bold', s: 0.5, e: 1 }, { w: 'words', s: 1, e: 1.6 }] },
     { id: hex12(), start: 2.2, dur: 1.4, text: 'and some more', words: [{ w: 'and', s: 0, e: 0.4 }, { w: 'some', s: 0.4, e: 0.9 }, { w: 'more', s: 0.9, e: 1.4 }], style: { font: 'Poppins', weight: 900 } }];
   p.capStyle = { ...TEXT_BASE, ...CAP_PRESETS.Bold, y: 0.72 };
-  p.fx = [{ id: hex12(), fx: 'snow', start: 0, dur: 1.5, amt: 1 }, { id: hex12(), fx: 'vhs', start: 1.5, dur: 1.2, amt: 1 }, { id: hex12(), fx: 'rec', start: 2.7, dur: 1.3, amt: 1 }];
+  p.fx = [{ id: hex12(), fx: 'snow', start: 0, dur: 1.5, amt: 1 }, { id: hex12(), fx: 'vhs', start: 1.5, dur: 1.2, amt: 1 }, { id: hex12(), fx: 'rec', start: 2.7, dur: 1.3, amt: 1 },
+    { id: hex12(), fx: 'flare', start: 0.5, dur: 1.5, amt: 1 }, { id: hex12(), fx: 'dust', start: 2, dur: 1.5, amt: 1 }]; // (the effects pack's drawn overlays: draw.js only)
   setProject(p); renderAll(); S.t = 1.6;
 }, fonts);
 

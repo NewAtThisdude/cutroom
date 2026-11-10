@@ -30,7 +30,7 @@ fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (RNNoise, heard in p
 au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
-look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
+look: {name: a filter from options().looks (colour matrices such as vivid, mono, teal; film looks such as tealorange, bleach, print, portra, noir, cinema), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
 key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror|heart|star|polygon|pen, x, y -0.5..0.5, w, h, rot, feather, invert;
   star/polygon: n points/sides 3-12, star: inner 0.1-0.9; pen: pts [[u, v], ...] -1..1 in the mask's box (a smooth closed curve)} (an AI subject mask: cut_out_object as_mask)
 anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd seconds; loop: none|kbin|kbout|drift|pulse|shake|sway|float; amt strength}

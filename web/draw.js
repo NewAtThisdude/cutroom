@@ -165,6 +165,56 @@ const FX = {
     x.fill();
   } },
 };
+// the effects pack: expression steps ('expr', compiled by web/fxpack.js on the page: GLSL in the preview, geq in the export), the
+// transform op, and two drawn overlays (in the text layer, so the export workers draw them too)
+Object.assign(FX, {
+  handheld: { n: 'Handheld', cat: 'camera', d: 3, px: shake(0.012, 1.9, 1.5) }, // slow sway, like a held camera
+  beatshake: { n: 'Beat shake', cat: 'camera', d: 2, px: (W, H, u, lt, f) => { const s = 0.045 * f.amt * Math.exp(-sinceBeat(f, lt) / 0.16); return [{ op: 'transform', z: 1 + 2 * s + 0.01, x: W * s * wob(lt * 29), y: H * s * wob(lt * 23 + 5) }]; } },
+  leaks: { n: 'Light leaks', cat: 'light', d: 4, px: (W, H, u, lt, f) => [xop('leaks', f, lt)] },
+  flare: { n: 'Lens flare', cat: 'light', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => { // a source drifting across the top, its halo, a streak and ghosts through the centre
+    const a = Math.min(1, 0.85 * f.amt), sx = W * (0.22 + 0.5 * clamp(lt / f.dur, 0, 1)), sy = H * 0.26, R = Math.min(W, H);
+    x.globalCompositeOperation = 'lighter';
+    const halo = x.createRadialGradient(sx, sy, 0, sx, sy, R * 0.42);
+    halo.addColorStop(0, `rgba(255,250,235,${a})`); halo.addColorStop(0.08, `rgba(255,220,170,${0.7 * a})`); halo.addColorStop(0.35, `rgba(255,170,90,${0.18 * a})`); halo.addColorStop(1, 'rgba(255,150,80,0)');
+    x.fillStyle = halo; x.fillRect(0, 0, W, H);
+    const st = x.createLinearGradient(sx - W * 0.45, 0, sx + W * 0.45, 0);
+    st.addColorStop(0, 'rgba(160,200,255,0)'); st.addColorStop(0.5, `rgba(200,225,255,${0.55 * a})`); st.addColorStop(1, 'rgba(160,200,255,0)');
+    x.fillStyle = st; x.fillRect(sx - W * 0.45, sy - 2.5 * u, W * 0.9, 5 * u);
+    for (const [t, r, col, al] of [[0.45, 0.05, '120,255,180', 0.22], [0.8, 0.025, '255,200,120', 0.3], [1.25, 0.09, '140,170,255', 0.16], [1.55, 0.04, '255,140,200', 0.24], [1.9, 0.13, '120,200,255', 0.1]]) {
+      const gx = sx + (W / 2 - sx) * t, gy = sy + (H / 2 - sy) * t, g = x.createRadialGradient(gx, gy, 0, gx, gy, r * R);
+      g.addColorStop(0, `rgba(${col},${al * a * 0.6})`); g.addColorStop(0.85, `rgba(${col},${al * a})`); g.addColorStop(1, `rgba(${col},0)`);
+      x.fillStyle = g; x.beginPath(); x.arc(gx, gy, r * R, 0, 6.2832); x.fill();
+    }
+  } },
+  edges: { n: 'Edge glow', cat: 'light', d: 3, px: (W, H, u, lt, f) => [xop('edges', f, lt)] },
+  dust: { n: 'Dust & scratches', cat: 'retro', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => { // new specks, hairs and scratches every frame
+    const g = fxFrame(lt), a = Math.min(1, f.amt);
+    x.lineCap = 'round';
+    for (let i = 0; i < 1 + Math.floor(rnd(g, 1) * 3); i++) { // scratches: long thin lines, light or dark
+      const xx = rnd(g, 10 + i) * W, lite = rnd(g, 15 + i) > 0.5;
+      x.strokeStyle = lite ? `rgba(240,235,220,${0.35 * a})` : `rgba(25,20,15,${0.4 * a})`; x.lineWidth = Math.max(1, (0.8 + 1.4 * rnd(g, 20 + i)) * u);
+      x.beginPath(); x.moveTo(xx, 0); x.lineTo(xx + (rnd(g, 25 + i) - 0.5) * 30 * u, H); x.stroke();
+    }
+    for (let i = 0; i < Math.floor(rnd(g, 2) * 14 * a); i++) { // specks
+      x.fillStyle = rnd(g, 60 + i) > 0.35 ? `rgba(20,15,10,${0.6 * a})` : `rgba(250,245,230,${0.55 * a})`;
+      x.beginPath(); x.arc(rnd(g, 30 + i) * W, rnd(g, 40 + i) * H, (0.8 + 3.5 * rnd(g, 50 + i) ** 3) * u * 2, 0, 6.2832); x.fill();
+    }
+    if (rnd(g, 3) < 0.25 * a) { // a hair
+      const hx = rnd(g, 70) * W, hy = rnd(g, 71) * H, L = (30 + 60 * rnd(g, 72)) * u;
+      x.strokeStyle = `rgba(15,10,8,${0.55 * a})`; x.lineWidth = Math.max(1, 1.2 * u);
+      x.beginPath(); x.moveTo(hx, hy); x.bezierCurveTo(hx + L * (rnd(g, 73) - 0.5), hy + L * 0.6, hx + L * (rnd(g, 74) - 0.2), hy - L * 0.3, hx + L * 0.7, hy + L * (rnd(g, 75) - 0.5)); x.stroke();
+    }
+  } },
+  halftone: { n: 'Halftone', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [xop('halftone', f, lt)] },
+  posterize: { n: 'Posterize', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [xop('posterize', f, lt)] },
+  oldtv: { n: 'Old TV', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [xop('oldtv', f, lt), { op: 'noise', s: Math.round(clamp(9 * f.amt, 1, 60)) }] },
+  nightvision: { n: 'Night vision', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [xop('nightvision', f, lt), { op: 'noise', s: Math.round(clamp(14 * f.amt, 1, 60)) }] },
+  thermal: { n: 'Thermal', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [xop('thermal', f, lt)] },
+  chroma: { n: 'Chromatic aberration', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [xop('chroma', f, lt)] },
+  kaleido: { n: 'Kaleidoscope', cat: 'distort', d: 3, px: (W, H, u, lt, f) => [xop('kaleido', f, lt)] },
+  tunnel: { n: 'Mirror tunnel', cat: 'distort', d: 3, px: (W, H, u, lt, f) => [xop('tunnel', f, lt)] },
+  datamosh: { n: 'Datamosh', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [xop('datamosh', f, lt)] }, // an approximation: block smears, no real motion vectors
+});
 
 const fxOn = (f, t) => t >= f.start && t < f.start + f.dur;
 function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the text layer (preview and export draw them the same way)

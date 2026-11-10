@@ -52,7 +52,7 @@ function sampleLUT(L, r, g, b) { // trilinear, like lut3d interp=trilinear
   }
   return out;
 }
-function gradeFn(g) { // the grade as rgb (0..1) -> rgb: wheels, then curves (master, then per channel), then HSL, then the LUT
+function gradeFn(g, look) { // the grade as rgb (0..1) -> rgb: a film look (lookLutOf), wheels, then curves (master, then per channel), then HSL, then the LUT
   const L = wheelRGB(g.lift), Gm = wheelRGB(g.gamma), Gn = wheelRGB(g.gain), ll = g.lift?.l || 0, gl = g.gamma?.l || 0, nl = g.gain?.l || 0;
   const lift = L.map(v => 0.25 * ll + 0.12 * v), gain = Gn.map(v => 1 + 0.5 * nl + 0.25 * v), gam = Gm.map(v => 2 ** -(gl + 0.4 * v));
   const wheels = [lift, gain, gam].some((a, i) => a.some(v => Math.abs(v - (i ? 1 : 0)) > 1e-6));
@@ -61,6 +61,7 @@ function gradeFn(g) { // the grade as rgb (0..1) -> rgb: wheels, then curves (ma
   const lut = g.lut?.id && lutLib.get(g.lut.id), amt = clamp(g.lut?.amount ?? 1, 0, 1), useLut = lut && !(lut instanceof Promise) && amt > 0;
   return (r, gg, b) => {
     let v = [r, gg, b];
+    if (look) { const o = look[0](v); v = v.map((x, i) => x + (clamp(o[i], 0, 1) - x) * look[1]); }
     if (wheels) v = v.map((x, i) => clamp(Math.max(0, x * gain[i] + lift[i] * (1 - x)) ** gam[i], 0, 1));
     if (cm) v = v.map(cm);
     v = v.map((x, i) => (cc[i] ? cc[i](x) : x));
@@ -78,12 +79,12 @@ function gradeFn(g) { // the grade as rgb (0..1) -> rgb: wheels, then curves (ma
 }
 const gradeCache = new Map();
 function gradeLUT(c) { // the clip's grade as a GN^3 table (rgb 0..1, r fastest), or null
-  const g = c.grade;
-  if (!gradeOn(g)) return null;
+  const g = c.grade || {}, lk = lookLutOf(c);
+  if (!gradeOn(g) && !lk) return null;
   if (g.lut?.id && !lutLib.has(g.lut.id)) loadLut(g.lut.id);
-  const key = JSON.stringify(g) + (g.lut?.id && !(lutLib.get(g.lut.id) instanceof Promise) ? '+' : '');
+  const key = JSON.stringify(g) + (g.lut?.id && !(lutLib.get(g.lut.id) instanceof Promise) ? '+' : '') + (lk ? `|${c.look.name}:${lk[1]}` : '');
   if (!gradeCache.has(key)) {
-    const f = gradeFn(g), d = new Float32Array(GN * GN * GN * 3);
+    const f = gradeFn(g, lk), d = new Float32Array(GN * GN * GN * 3);
     for (let bi = 0, o = 0; bi < GN; bi++) for (let gi = 0; gi < GN; gi++) for (let ri = 0; ri < GN; ri++, o += 3) { const v = f(ri / (GN - 1), gi / (GN - 1), bi / (GN - 1)); d[o] = v[0]; d[o + 1] = v[1]; d[o + 2] = v[2]; }
     if (gradeCache.size > 24) gradeCache.delete(gradeCache.keys().next().value);
     gradeCache.set(key, { key, d });
@@ -367,7 +368,7 @@ function trGPU(ctx, sides, type, P1, bg) {
     for (const u of [4, 5, 6]) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, null); } // (a layer being drawn can't also be bound)
     gl.uniform1i(U.mode, 0); gl.uniform3f(U.bg, ...hexRgb(bg)); gl.viewport(0, 0, W, H);
     for (const [j, s] of sides.entries()) {
-      const vw = s.el.videoWidth || s.el.naturalWidth, vh = s.el.videoHeight || s.el.naturalHeight;
+      const vw = s.el.videoWidth || s.el.naturalWidth || s.el.width, vh = s.el.videoHeight || s.el.naturalHeight || s.el.height;
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, Q.vid);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.el);
       gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.t[j]);
@@ -379,6 +380,7 @@ function trGPU(ctx, sides, type, P1, bg) {
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, Q.t[0]);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, Q.t[1]);
     gl.uniform2f(U.wh, W, H);
+    if (TRX[type]) { Q.sz = sz; trxPass(gl, Q, type, bg, W, H, 1 - P1); } else {
     if (type === 'hblur') {
       const nb = Math.ceil(W / 32);
       gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.bs);
@@ -395,6 +397,7 @@ function trGPU(ctx, sides, type, P1, bg) {
     gl.uniform1f(U.dist, dist); gl.uniform1f(U.sq, (2 * dist * Math.min(W, H)) / 20); gl.uniform1i(U.size, Math.trunc(1 + Math.trunc(W / 2) * prog));
     gl.uniform1f(U.s1, smoothstep(0.8, 1, P1)); gl.uniform1f(U.s2, smoothstep(0.2, 1, P1));
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
   } catch (e) { console.warn('GPU transition:', e.message); return false; } finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
   ctx.drawImage(cv, 0, cv.height - H, W, H, 0, 0, W, H);
   return true;
@@ -443,7 +446,7 @@ function fxgl() {
     gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
     gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
 precision highp float; precision highp int; precision highp sampler3D;
-uniform sampler2D src; uniform sampler3D lut; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN;
+uniform sampler2D src, vid; uniform sampler3D lut; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN; uniform vec4 box, crop; uniform vec3 bgc;
 out vec4 o;
 vec3 at(ivec2 q) { return texelFetch(src, clamp(q, ivec2(0), size - 1), 0).rgb * 255.0; }
 float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
@@ -463,6 +466,7 @@ void main() {
   else if (mode == 4) c += (hash(vec2(q) + vec2(seed, seed * 1.7)) * 2.0 - 1.0) * s; // grain on brightness
   else if (mode == 7) c = texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0; // an adjustment layer's table (gpuPass's lookup)
   else if (mode == 5) { vec3 sum = vec3(0.0); for (int i = -32; i <= 32; i++) if (i >= -r && i <= r) sum += at(q + dir * i); c = sum / float(2 * r + 1); } // one box pass (boxblur), edges clamped
+  else if (mode == 8) { vec2 f = gl_FragCoord.xy; c = bgc; if (all(greaterThanEqual(f, box.xy)) && all(lessThan(f, box.xy + box.zw))) c = floor(texture(vid, crop.xy + (f - box.xy) / box.zw * crop.zw).rgb * 255.0 + 0.5); s0.a = 1.0; } // a plain picture in its box on the canvas colour (trGPU's layer)
   o = vec4(clamp(floor(c + 0.5), 0.0, 255.0) / 255.0, s0.a);
 }`));
     gl.linkProgram(pg);
@@ -471,19 +475,19 @@ void main() {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const k of ['src', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed']) U[k] = gl.getUniformLocation(pg, k);
+    for (const k of ['src', 'vid', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed', 'box', 'crop', 'bgc']) U[k] = gl.getUniformLocation(pg, k);
     const lutT = gl.createTexture(); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lutT);
     for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v);
-    gl.uniform1i(U.src, 0); gl.uniform1i(U.lut, 1); gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(U.src, 0); gl.uniform1i(U.lut, 1); gl.uniform1i(U.vid, 2); gl.activeTexture(gl.TEXTURE0);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
     const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; };
-    Object.assign(FXG, { gl, cv, U, lutT, lutKey: '', tex: [tex(), tex(), tex()], fb: [gl.createFramebuffer(), gl.createFramebuffer(), gl.createFramebuffer()], sz: [[0, 0], [0, 0], [0, 0]] });
+    Object.assign(FXG, { gl, cv, U, pg, lp, xp: new Map(), vidT: null, lutT, lutKey: '', tex: [tex(), tex(), tex()], fb: [gl.createFramebuffer(), gl.createFramebuffer(), gl.createFramebuffer()], sz: [[0, 0], [0, 0], [0, 0]] });
     cv.addEventListener('webglcontextlost', e => { e.preventDefault(); FXG.gl = null; FXG.failed = false; });
     return gl;
   } catch (e) { FXG.failed = true; console.warn('GPU effects off:', e.message); return null; }
 }
-// src (a canvas, W x H) through steps [{mode, ...}] -> [the GL canvas, y of the result in it], or null (no WebGL2)
+// src (a canvas, W x H, or { cap, bg }: a <video>/<img> in its box, drawMedia's cap) through steps [{mode, ...}] -> [the GL canvas, y of the result in it], or null (no WebGL2)
 function fxGPU(src, W, H, steps) {
   const gl = fxgl();
   if (!gl) return null;
@@ -494,8 +498,18 @@ function fxGPU(src, W, H, steps) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb[k]); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex[k], 0);
     gl.viewport(0, 0, w, h);
   };
-  gl.bindTexture(gl.TEXTURE_2D, tex[0]);
-  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src); } catch { return null; }
+  if (src.cap) { // the picture itself goes up (a video frame is a GPU copy; a 2D canvas upload cost 6-8 ms a frame), laid in its box in texture 0
+    const { el, src: sr, dst } = src.cap, vw = el.videoWidth || el.naturalWidth, vh = el.videoHeight || el.naturalHeight;
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, FXG.vidT ??= (() => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; })());
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { gl.activeTexture(gl.TEXTURE0); return null; }
+    gl.activeTexture(gl.TEXTURE0);
+    target(0, W, H); gl.bindTexture(gl.TEXTURE_2D, tex[1]);
+    gl.uniform1i(U.mode, 8); gl.uniform2i(U.size, W, H); gl.uniform1i(U.flipOut, 0); gl.uniform4f(U.box, ...dst); gl.uniform4f(U.crop, sr[0] / vw, sr[1] / vh, sr[2] / vw, sr[3] / vh); gl.uniform3f(U.bgc, ...hexRgb(src.bg));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else {
+    gl.bindTexture(gl.TEXTURE_2D, tex[0]);
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src); } catch { return null; }
+  }
   sz[0] = [W, H];
   let cur = 0;
   gl.uniform1i(U.flipOut, 0);
@@ -503,6 +517,7 @@ function fxGPU(src, W, H, steps) {
     const small = st.mode === 2, out = cur === 0 ? 1 : 0; // (pixelate goes through texture 2 at block size first)
     if (small) target(2, Math.ceil(W / st.n), Math.ceil(H / st.n)); else target(out, W, H);
     gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+    if (st.x) { try { fxExprStep(gl, st, W, H); cur = out; } catch (e) { console.warn('effect expression:', e.message); gl.useProgram(FXG.pg); } continue; } // (fxpack.js)
     gl.uniform1i(U.mode, st.mode); gl.uniform2i(U.size, W, H);
     if (st.M) gl.uniformMatrix3fv(U.M, false, colMajor(st.M));
     if (st.shift) gl.uniform2i(U.shift, ...st.shift);
@@ -530,13 +545,13 @@ const FX_GPU = { lut: o => [{ mode: 7, G: o.G }], matrix: o => [{ mode: 0, M: o.
 // (fxGPU mode 7, gpuPass's trilinear lookup) or the CPU (lutPass); the export gives that table to lut3d on those frames.
 const ADJUST = { n: 'Adjustment layer', d: 5 };
 function adjustLUT(f) { // -> { key, d } or null (nothing to do)
-  const a = f.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, T = toneLUT(f), L = lookMatrix(f), gr = gradeOn(f.grade);
+  const a = f.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, T = toneLUT(f), L = lookMatrix(f), lk = lookLutOf(f), gr = gradeOn(f.grade) || !!lk;
   if (b === 1 && k === 1 && s === 1 && !T && !L && !gr) return null;
   const lid = gr && f.grade.lut?.id;
   if (lid && !lutLib.has(lid)) loadLut(lid);
-  const key = 'adj' + JSON.stringify([b, k, s, T && T.join(), L, gr && f.grade]) + (lid && !(lutLib.get(lid) instanceof Promise) ? '+' : '');
+  const key = 'adj' + JSON.stringify([b, k, s, T && T.join(), L, gr && f.grade, lk && f.look]) + (lid && !(lutLib.get(lid) instanceof Promise) ? '+' : '');
   if (!gradeCache.has(key)) { // (loadLut clears gradeCache when a LUT arrives, so this table is remade with it)
-    const g = gr ? gradeFn(f.grade) : null, Sm = satM(s), q = v => clamp(v, 0, 255), d = new Float32Array(GN * GN * GN * 3);
+    const g = gr ? gradeFn(f.grade || {}, lk) : null, Sm = satM(s), q = v => clamp(v, 0, 255), d = new Float32Array(GN * GN * GN * 3);
     const tn = v => { const i = Math.min(254, Math.floor(v)); return T[i] + (T[i + 1] - T[i]) * (v - i); }; // the 256-entry curve between its entries
     for (let bi = 0, o = 0; bi < GN; bi++) for (let gi = 0; gi < GN; gi++) for (let ri = 0; ri < GN; ri++, o += 3) {
       let c = [ri, gi, bi].map(i => q((q((i * 255) / (GN - 1) * b) - 127.5) * k + 127.5)); // the clip colour pass's order: brightness, contrast, saturation, tone, look

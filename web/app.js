@@ -77,7 +77,8 @@ const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip 
   ['pixelize', 'Pixelate'], ['hblur', 'Blur'], ['zoomin', 'Zoom'], ['whipleft', 'Whip left'], ['whipright', 'Whip right'], ['zoomblur', 'Zoom blur'], ['wipeleft', 'Wipe left'], ['wiperight', 'Wipe right'], ['wipeup', 'Wipe up'], ['wipedown', 'Wipe down'],
   ['smoothleft', 'Soft wipe left'], ['smoothright', 'Soft wipe right'], ['smoothup', 'Soft wipe up'], ['smoothdown', 'Soft wipe down'], ['slideleft', 'Slide left'], ['slideright', 'Slide right'],
   ['slideup', 'Slide up'], ['slidedown', 'Slide down'], ['squeezeh', 'Squeeze'], ['squeezev', 'Squeeze sideways'], ['circleopen', 'Circle open'], ['circleclose', 'Circle close'],
-  ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds']];
+  ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds'],
+  ['blurfade', 'Blur dissolve'], ['whipup', 'Whip up'], ['whipdown', 'Whip down'], ...Object.entries(TRX).map(([k, d]) => [k, d.n])]; // TRX: web/fxpack.js
 const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter']];
 const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace']];
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
@@ -941,7 +942,7 @@ function mediaPanel(c, lane) {
     + '<p class="hint">Picking one plays it once on the clip. It plays on top of keyframes, the same in the preview and the export. Splitting keeps In on the first part and Out on the last.</p>' : '';
   let look = '';
   if (vis) {
-    look += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
+    look += `<h4>Filter</h4><div class="presets small">${['none', ...LOOK_NAMES()].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${lookLabel(n)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
     const others = [...P.main, ...P.overlay].filter(x => x !== c && M.get(x.media) && M.get(x.media).kind !== 'audio');
     look += `<h4>Adjust</h4><div class="actions"><button data-act="autoadj" title="Exposure, contrast and white balance from the clip's own picture">Auto adjust</button>${others.length ? `<select id="matchRef" title="The clip whose colours to copy">${others.map(x => `<option value="${x.id}">${esc(M.get(x.media).name)} @ ${tc(x.start).slice(0, 5)}</option>`).join('')}</select><button data-act="matchcol">Match colour</button>` : ''}</div>`
       + `${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
@@ -1440,13 +1441,16 @@ function layer(n) {
   return L;
 }
 // blur transitions (the server's TR_BLUR): a slide or a dissolve, blurred most half way through (sin(pi p)), like the export
-const TR_BLUR = { whipleft: 'slideleft', whipright: 'slideright', zoomblur: 'fade' }, WHIP = 0.04, ZOOMB = 0.25, ZB_K = 8;
+const TR_BLUR = { whipleft: 'slideleft', whipright: 'slideright', zoomblur: 'fade', whipup: 'slideup', whipdown: 'slidedown', blurfade: 'fade' }, WHIP = 0.04, ZOOMB = 0.25, ZB_K = 8, BLURF = 0.02;
 function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, whose progress P runs 1 -> 0
   const W = A.width, H = A.height, P1 = clamp(1 - p, 0, 1);
   if (TR_BLUR[type]) {
     transition(ctx, A, B, TR_BLUR[type], p);
     const s = Math.sin(Math.PI * clamp(p, 0, 1));
-    if (type === 'zoomblur') zblurInPlace(ctx, W, H, ZOOMB * s); else hblurInPlace(ctx, W, H, WHIP * W * s);
+    if (type === 'zoomblur') zblurInPlace(ctx, W, H, ZOOMB * s);
+    else if (type === 'blurfade') { if (Math.round(BLURF * H * s) >= 1) blurInPlace(ctx, W, H, BLURF * H * s); } // the export's boxblur, 3 passes (radius rounded there)
+    else if (type === 'whipup' || type === 'whipdown') hblurInPlace(ctx, W, H, WHIP * H * s, true);
+    else hblurInPlace(ctx, W, H, WHIP * W * s);
     return;
   }
   ctx.save();
@@ -1510,6 +1514,7 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
     cx.globalCompositeOperation = 'destination-in'; cx.fillStyle = g; cx.fillRect(0, 0, W, H);
     cx.globalCompositeOperation = 'source-over';
     ctx.drawImage(C, 0, 0);
+  } else if (TRX[type] && !P.alpha && trGPU(ctx, [A, B].map(el => ({ el, src: [0, 0, W, H], dst: [0, 0, W, H] })), type, P1, P.bg)) { // fxpack.js: on the GPU only (no WebGL2: a dissolve)
   } else if (TR_MASK[type]) maskTr(ctx, A, B, TR_MASK[type], P1);
   else if (['dissolve', 'pixelize', 'hblur', 'fadegrays'].includes(type)) pixelTr(ctx, A, B, type, P1);
   else if (type === 'squeezeh' || type === 'squeezev') { // a squeezed into a band P wide through the middle, b around it
@@ -1549,6 +1554,7 @@ function paint() {
   // at (or past) the very end every clip has ended: show the last frame, not black (End, or play to the end)
   const cv = $('#cv'), ctx = cv.getContext('2d'), k = cv.width / P.w, end = total(), t = S.t < end ? S.t : Math.max(0, end - 0.5 / P.fps), live = new Set();
   const act = [];
+  let fxDone = false; // the effects already ran on the picture (fxCap)
   P.main.forEach((c, i) => { if (t >= c.start && t < c.start + tdur(c, 'main')) act.push(i); });
   const mi = act.length ? act[act.length - 1] : -1;
   const tr = act.length > 1 ? { type: P.main[act[0]].tr?.type || 'fade', p: clamp((t - P.main[act[1]].start) / (trF(act[0]) / P.fps), 0, 1) } : null;
@@ -1588,7 +1594,7 @@ function paint() {
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
       if (i !== act[1]) continue;
-      const cap = TR_GPU[tr.type] && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
+      const cap = (TR_GPU[tr.type] || TRX[tr.type]) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
       if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
       for (const j of [0, 1]) {
         const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
@@ -1596,7 +1602,7 @@ function paint() {
         if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
       }
       transition(ctx, layer(0), layer(1), tr.type, tr.p);
-    } else drawMedia(ctx, lane, c, m, el, t - c.start, k);
+    } else if (!(layers.length === 1 && (fxDone = fxCap(ctx, lane, c, m, el, t, k)))) drawMedia(ctx, lane, c, m, el, t - c.start, k);
   }
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
@@ -1616,7 +1622,7 @@ function paint() {
   }
   for (const v of pool.values()) if (!live.has(v) && !v.paused) v.pause();
   S.live = live;
-  fxPixels(ctx, t);
+  if (!fxDone) fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
@@ -1653,7 +1659,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0 || a.pix > 0, sk = strengthAt(c, lt);
+  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!lookLutOf(c) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0 || a.pix > 0, sk = strengthAt(c, lt);
   if (cap) { // trGPU asks: a plain picture in a box? then where it goes (nothing drawn); anything more keeps the canvas path
     if (lane !== 'main' || rad || c.flip || c.glow || c.fit === 'blur' || pr.opacity < 1 || f < 1 || filt || graded || c.key || c.mask || a.vig > 0 || mbN(c) > 1) return false;
     return Object.assign(cap, { el, src: [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], dst: [g.x * k, g.y * k, g.w * k, g.h * k], hit: { lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: 0 } });
@@ -1733,29 +1739,29 @@ function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small
   boxBlurRGB(tx, tw, th, rr);
   x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(t, 0, 0, W, H); x.restore();
 }
-function hblurInPlace(x, W, H, sigma) { // the export's gblur sigmaV=0 (sideways only), close to it, on 2D canvases only (3 box passes through
+function hblurInPlace(x, W, H, sigma, vert = false) { // vert: up and down only (gblur sigma=0:sigmaV), for the vertical whips // the export's gblur sigmaV=0 (sideways only), close to it, on 2D canvases only (3 box passes through
   // fxGPU matched as well but cost 9 ms a frame in WebKit, the canvas upload and read-back: whips dropped to 45 fps). Halved k times (an
   // exact 2:1 shrink averages pixel pairs; WebKit's one-step shrink skips pixels), stretched back (bilinear: a tent), variance f²/4 with
   // f = 2^k; what is still missing comes from a 1/4 1/2 1/4 smear of the narrow copy (variance d²/2)
   const k = Math.floor(Math.log2(2 * sigma));
   if (k < 1) return; // under a pixel or so
   const cv = [scratch(W, H, 'hblurA'), scratch(W, H, 'hblurB')]; // fixed canvases, drawn into their left part (one per width churned the scratch cache)
-  let src = x.canvas, w = W;
-  for (let i = 0; i < k && w > 2; i++) {
-    const nw = Math.round(w / 2), s = cv[i % 2], sx = s.getContext('2d');
-    sx.globalCompositeOperation = 'copy'; sx.imageSmoothingQuality = 'low'; sx.drawImage(src, 0, 0, w, H, 0, 0, nw, H);
-    src = s; w = nw;
+  let src = x.canvas, w = W, h = H;
+  for (let i = 0; i < k && (vert ? h : w) > 2; i++) {
+    const nw = vert ? w : Math.round(w / 2), nh = vert ? Math.round(h / 2) : h, s = cv[i % 2], sx = s.getContext('2d');
+    sx.globalCompositeOperation = 'copy'; sx.imageSmoothingQuality = 'low'; sx.drawImage(src, 0, 0, w, h, 0, 0, nw, nh);
+    src = s; w = nw; h = nh;
   }
-  const f = W / w, d = Math.sqrt(Math.max(0, 2 * (sigma * sigma - (f * f) / 4))) / f; // the rest, in narrow pixels
+  const f = vert ? H / h : W / w, d = Math.sqrt(Math.max(0, 2 * (sigma * sigma - (f * f) / 4))) / f; // the rest, in narrow pixels
   if (d > 0.05) {
     const s = src === cv[0] ? cv[1] : cv[0], sx = s.getContext('2d');
-    sx.globalCompositeOperation = 'copy'; sx.globalAlpha = 1; sx.drawImage(src, 0, 0, w, H, 0, 0, w, H);
-    sx.globalCompositeOperation = 'source-over'; sx.globalAlpha = 1 / 3; sx.drawImage(src, 0, 0, w, H, -d, 0, w, H);
-    sx.globalAlpha = 1 / 4; sx.drawImage(src, 0, 0, w, H, d, 0, w, H); sx.globalAlpha = 1;
+    sx.globalCompositeOperation = 'copy'; sx.globalAlpha = 1; sx.drawImage(src, 0, 0, w, h, 0, 0, w, h);
+    sx.globalCompositeOperation = 'source-over'; sx.globalAlpha = 1 / 3; sx.drawImage(src, 0, 0, w, h, vert ? 0 : -d, vert ? -d : 0, w, h);
+    sx.globalAlpha = 1 / 4; sx.drawImage(src, 0, 0, w, h, vert ? 0 : d, vert ? d : 0, w, h); sx.globalAlpha = 1;
     src = s;
   }
   x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'copy'; x.imageSmoothingQuality = 'low';
-  x.drawImage(src, 0, 0, w, H, 0, 0, W, H);
+  x.drawImage(src, 0, 0, w, h, 0, 0, W, H);
   x.restore();
 }
 function zblurInPlace(x, W, H, z) { // zoom blur, like the server's zoom_blur(): ZB_K copies zoomed 1 .. 1+z about the centre, averaged
@@ -1856,11 +1862,11 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
     if (late) { g.globalCompositeOperation = 'destination-in'; g.drawImage(maskCanvas(mk, W, H), 0, 0); g.globalCompositeOperation = 'source-over'; }
     return keyCvG;
   }
-  x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
+  x.filter = gradeOn(c.grade) || lookLutOf(c) || c.lkf?.length ? 'none' : filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
   x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none';
-  if ((filt && !CANVAS_FILTER) || gradeOn(c.grade) || c.lkf?.length) colorPass(x, W, H, c, sk);
+  if ((filt && !CANVAS_FILTER) || gradeOn(c.grade) || lookLutOf(c) || c.lkf?.length) colorPass(x, W, H, c, sk);
   if (c.key) { // alpha *= clip((dist - similarity) / blend)
     const img = x.getImageData(0, 0, W, H), d = img.data, [kr, kg, kb] = hexRgb(c.key.color), sim = c.key.sim, bl = c.key.blend;
     for (let i = 0; i < d.length; i += 4) {
@@ -1987,11 +1993,19 @@ function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect 
   const t = f.start + lt, b = f.gallery ? [] : beatTimes().filter(x => x <= t + 1e-6 && x >= f.start - 0.6);
   return b.length ? t - b.at(-1) : lt % 0.5;
 }
-function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (video and overlays)
-  if (P.mute.fx) return;
-  const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
-  // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
-  runOps(ctx, W, H, shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f))));
+function fxOps(W, H, t) { // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
+  const u = Math.min(W, H) / 1080;
+  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
+}
+function fxPixels(ctx, t) { runOps(ctx, ctx.canvas.width, ctx.canvas.height, fxOps(ctx.canvas.width, ctx.canvas.height, t)); } // effect steps on what is on the canvas so far (video and overlays)
+function fxCap(ctx, lane, c, m, el, t, k) { // one plain picture under GPU-only effects: composed and processed straight from its <video> on the GPU
+  const W = ctx.canvas.width, H = ctx.canvas.height, ops = P.alpha ? [] : fxOps(W, H, t), cap = {};
+  if (!ops.length || !ops.every(o => FX_GPU[o.op]) || !drawMedia(null, lane, c, m, el, t - c.start, k, cap)) return false;
+  const g = fxGPU({ cap, bg: P.bg }, W, H, ops.flatMap(o => FX_GPU[o.op](o)));
+  if (!g) return false;
+  ctx.save(); ctx.globalCompositeOperation = 'copy'; ctx.drawImage(g[0], 0, g[1], W, H, 0, 0, W, H); ctx.restore();
+  hits.push(cap.hit);
+  return true;
 }
 function blurred(C, W, H, sigma) { // Gaussian blur of a canvas (ctx.filter where there is one; WebKit: down- and up-scaling, close to it)
   const B = scratch(W, H, 'fxb'), b = B.getContext('2d');
@@ -2074,6 +2088,7 @@ function fxPlan(w, h) { // the effect steps for the export, sampled at every fra
     for (let i = a; i < b; i++) per.push(d.px(w, h, u, i / P.fps - f.start, f));
     per[0].forEach((o, j) => {
       const step = { op: o.op, a, b };
+      if (o.op === 'expr') return out.push(Object.assign(step, fxGeq(o.k, o.amt))); // geq r, g, b (fxpack.js); its frame count is the server's LF
       for (const key of Object.keys(o)) if (key !== 'op') { const vals = per.map(s => s[j][key]), one = JSON.stringify(vals[0]); step[key] = vals.every(v => JSON.stringify(v) === one) ? vals[0] : vals; }
       out.push(step);
     });
@@ -2090,7 +2105,7 @@ function fxPanel(c) {
 }
 function adjustPanel(c) { // an adjustment layer: the clip colour controls that bake into one table (no vignette, blur or keying)
   const a = c.adj || {};
-  const look = `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`
+  const look = `<h4>Filter</h4><div class="presets small">${['none', ...LOOK_NAMES()].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${lookLabel(n)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`
     + `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
     + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
     + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%') + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%');
@@ -2268,17 +2283,17 @@ function frameThumb(W, H, clips) { // the frame at the playhead as rendered (no 
 function renderFilters() {
   const tg = lookTargets(), cur = tg.list[0]?.look?.name || 'none';
   $('#lookTarget').textContent = tg.sel ? 'Applies to the selected clip.' : tg.list.length ? 'No clip selected: applies to every clip on the main track.' : 'Add a clip first: filters change its colours.';
-  $('#lookGrid').innerHTML = ['none', ...Object.keys(LOOKS)].map(n => `<button class="tile${cur === n ? ' on' : ''}" data-lookset="${n}">${tileCv()}<span>${n === 'none' ? 'None' : cap1(n)}</span></button>`).join('');
+  $('#lookGrid').innerHTML = ['none', ...LOOK_NAMES()].map(n => `<button class="tile${cur === n ? ' on' : ''}" data-lookset="${n}">${tileCv()}<span>${lookLabel(n)}</span></button>`).join('');
   let src = frameThumb(TILE_W, TILE_H, tg.list);
   { const d = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, TILE_W, TILE_H).data; let y = 0; for (let i = 0; i < d.length; i += 4) y += d[i] + d[i + 1] + d[i + 2];
     if (y / (d.length / 4) / 3 < 28) src = sampleScene(TILE_W, TILE_H, 0); } // a near-black frame (night footage) shows no filter's difference: the sample scene does
-  for (const b of $$('#lookGrid .tile')) { const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0); if (b.dataset.lookset !== 'none') matrixPass(x, TILE_W, TILE_H, LOOKS[b.dataset.lookset]); }
+  for (const b of $$('#lookGrid .tile')) { const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0); const n = b.dataset.lookset; if (LOOKS[n]) matrixPass(x, TILE_W, TILE_H, LOOKS[n]); else if (LOOK_LUT[n]) lutPass(x, TILE_W, TILE_H, gradeLUT({ look: { name: n, amount: 1 } })); } // the clip's own frame through the very table it would get
 }
 function applyLook(name) {
   const tg = lookTargets(), amt = +$('#lookAmt').value;
   if (!tg.list.length) return toast('Add a clip first');
   change(() => { for (const c of tg.list) { if (name === 'none') delete c.look; else c.look = { name, amount: amt }; } });
-  toast(name === 'none' ? 'Filter removed' : `${cap1(name)} on ${tg.sel ? 'the selected clip' : `${tg.list.length} clip${tg.list.length > 1 ? 's' : ''}`}`);
+  toast(name === 'none' ? 'Filter removed' : `${lookLabel(name)} on ${tg.sel ? 'the selected clip' : `${tg.list.length} clip${tg.list.length > 1 ? 's' : ''}`}`);
   renderPane();
 }
 function renderStickers() {
@@ -4015,7 +4030,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       const tn = toneLUT(c);
       if (tn) o.tone = tn;
     }
-    if (lane === 'main' && trF(i)) o.tr = { type: c.tr.type, frames: trF(i) };
+    if (lane === 'main' && trF(i)) o.tr = trPlan(c.tr.type, trF(i));
     if (c.vkf?.length) o.vkf = c.vkf;
     if (c.au) o.au = c.au;
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
@@ -5325,7 +5340,7 @@ async function waitFrame() { // the preview shows the frame at S.t: every elemen
 const REMOTE = {
   async status() { packMain(); return { project: { id: P.id, name: P.name, w: P.w, h: P.h, fps: P.fps, duration: r3(total()) }, playhead: r3(S.t), playing: S.playing, selected: S.sel, clips: Object.fromEntries(LANES.map(L => [L.key, P[L.key].length])) }; },
   async options() {
-    return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
+    return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: LOOK_NAMES(), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
       textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), exportPresets: Object.keys(EX_PRESETS), exportFps: EXPORT_FPS, voices: [...$('#ttsVoice').options].map(o => o.value),
       effects: { ...Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), adjust: `${ADJUST.n}: its adj, look and grade colour everything under it` }, sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
