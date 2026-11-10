@@ -32,7 +32,7 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
     check("typing 'pod' in search leaves only podcast-episode", n.length === 1 && n[0] === 'podcast-episode.mp4', n.join(', '));
     await page.fill('#mediaSearch', 'DJI_0482_001');
     n = await names();
-    check('searching DJI_0482_001 finds its card', n.length === 1 && n[0] === 'DJI_0482_001.MP4', n.join(', '));
+    check('searching DJI_0482_001 finds its card (and only names with it)', n.includes('DJI_0482_001.MP4') && n.every(x => x.includes('DJI_0482_001')), n.join(', ')); // freeze-frame stills of it match too
 
     // hover skim
     const tl0 = await ev(() => JSON.stringify([P, S.t]));
