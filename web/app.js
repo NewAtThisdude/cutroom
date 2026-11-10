@@ -4095,7 +4095,7 @@ async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n,
     res.flat().forEach(([f, key, ...bb], j) => { // spans on the frame grid: the export can't put a change between two frames
       let i = seen.get(key);
       if (i === undefined) {
-        seen.set(key, (i = items.length)); items.push([i, f, key]);
+        seen.set(key, (i = items.length)); items.push([i, f, key, bb[0] !== null]);
         if (bb[0] !== null) { x0 = Math.min(x0, bb[0]); y0 = Math.min(y0, bb[1]); x1 = Math.max(x1, bb[2]); y1 = Math.max(y1, bb[3]); }
       }
       const last = spans.at(-1), b = fr[j + 1] / fps;
@@ -4119,7 +4119,11 @@ async function textLayer(w, h, k, fr, fonts) {
   S.layerStats = {};
   if (!why) try { pool = await layerPool(snap, w, h, k, n, fonts); } catch (e) { why = e.message; }
   const t1 = performance.now();
-  if (pool) try { const r = await layerRun(pool, fr, snap.fps); S.layerMode = 'workers'; S.layerStats = { ...S.layerStats, n, startMs: Math.round(t1 - t0), ms: Math.round(performance.now() - t0) }; return r; } catch (e) { why = e.message; }
+  if (pool) try {
+    const r = await layerRun(pool, fr, snap.fps);
+    if (!r) throw new Error('the workers drew no text'); // nothing ever shows: the page checks (a broken worker canvas would drop the text silently)
+    S.layerMode = 'workers'; S.layerStats = { ...S.layerStats, n, startMs: Math.round(t1 - t0), ms: Math.round(performance.now() - t0) }; return r;
+  } catch (e) { why = e.message; }
   console.warn('layer: page fallback', why);
   const r = await layerRun(layerPage(w, h, k), fr, snap.fps);
   S.layerMode = 'page'; S.layerStats = { ...S.layerStats, n: 1, why, ms: Math.round(performance.now() - t0) };

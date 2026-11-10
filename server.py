@@ -9,7 +9,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile
+import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2927,6 +2927,25 @@ def fnum(v, lo, hi):
     return x
 
 
+def png_size(b):
+    """(width, height) of a whole, undamaged PNG (every chunk's CRC right, IEND last), else None: a half-written or cut-off
+    upload starts with the PNG signature too."""
+    if not b.startswith(b'\x89PNG\r\n\x1a\n'):
+        return None
+    i, wh = 8, None
+    while i + 12 <= len(b):
+        n = int.from_bytes(b[i:i + 4], 'big')
+        end = i + 12 + n
+        if end > len(b) or zlib.crc32(b[i + 4:end - 4]) != int.from_bytes(b[end - 4:end], 'big'):
+            return None
+        if b[i + 4:i + 8] == b'IHDR':
+            wh = (int.from_bytes(b[i + 8:i + 12], 'big'), int.from_bytes(b[i + 12:i + 16], 'big'))
+        elif b[i + 4:i + 8] == b'IEND':
+            return wh if end == len(b) else None
+        i = end
+    return None
+
+
 def clean_plan(p):
     """Validate the client's render plan; media ids resolve to files server-side (the client never sends paths)."""
     W, H = int(fnum(p['w'], 16, 8192)), int(fnum(p['h'], 16, 8192))
@@ -3040,15 +3059,22 @@ def clean_plan(p):
     if t.get('layer'):  # uploaded before the plan (POST /api/layer/<id>/<i>): PNGs of one crop box, laid at its corner
         if not re.fullmatch(r'[0-9a-f]{12}', str(t['layer'])) or len(t.get('box') or []) != 4:
             raise ValueError('bad text layer')
-        d = CACHE / 'layers' / t['layer']
-        out['pngs'] = [d / f't{i}.png' for i in range(int(fnum(t['n'], 1, 200000)))]
-        if not all(f.is_file() for f in out['pngs']):
-            raise ValueError('text layer upload incomplete')
         out['box'] = [int(fnum(v, 0, 8192)) for v in t['box']]
+        d = CACHE / 'layers' / f"{t['layer']}.{uuid.uuid4().hex[:8]}"
+        try:  # claimed: from here on the files are this plan's alone (a second plan naming the same upload, a late upload or the cleanup of another export can't touch what it renders)
+            (CACHE / 'layers' / t['layer']).rename(d)
+        except OSError:
+            raise ValueError('text layer upload missing (or used by another export already)') from None
+        os.utime(d)  # main() leaves day-young layers alone (another server on this library may be exporting this one)
         out['layer_dir'] = d
+        out['pngs'] = [d / f't{i}.png' for i in range(int(fnum(t['n'], 1, 200000)))]
+        bad = [f.name for f in out['pngs'] if not f.is_file() or png_size(f.read_bytes()) != tuple(out['box'][2:])]
+        if bad:  # ffmpeg skips a missing or damaged picture without an error: the text from there on would just not be in the export
+            shutil.rmtree(d, ignore_errors=True)
+            raise ValueError(f"text layer upload incomplete: {len(bad)} of {len(out['pngs'])} pictures missing or damaged ({', '.join(bad[:3])})")
     else:
         out['pngs'] = [base64.b64decode(s.split(',')[-1]) for s in t.get('pngs', [])]
-    if any(not isinstance(b, Path) and not b.startswith(b'\x89PNG') for b in out['pngs']):
+    if any(not isinstance(b, Path) and not png_size(b) for b in out['pngs']):
         raise ValueError('text layer must be PNG')
     out['frames'] = [{'i': int(fnum(f['i'], 0, len(out['pngs']) - 1)), 'start': fnum(f['start'], 0, 1e6), 'end': fnum(f['end'], 0, 1e6)}
                      for f in t.get('frames', [])]
@@ -3967,7 +3993,12 @@ def run_ffmpeg(cmd, dur, report, what='Rendering', job=None):
         raise RuntimeError('cancelled')
     if proc.wait():
         raise RuntimeError(plain(what, ''.join(err), proc.returncode))
-    return ''.join(err)
+    e = ''.join(err)
+    if re.search(r'^\[(in#\d+/concat|vist#\d+:\d+/png) @', e, re.M):  # a text-layer / mask picture that didn't open or decode: ffmpeg
+        # ends that stream, the overlay passes the video through and it exits 0 - the text was simply gone from there on
+        print(f'{what}: picture input failed: {e[-1500:]}', file=sys.stderr, flush=True)
+        raise RuntimeError(f'{what} failed: a text layer picture could not be read')
+    return e
 
 
 def unique(path):
@@ -4319,11 +4350,13 @@ class App(BaseHTTPRequestHandler):
                 if n > 300 << 20:
                     raise ValueError('request too large')
                 data = self.rfile.read(n)
-                if not data.startswith(b'\x89PNG'):
-                    raise ValueError('text layer must be PNG')
+                if len(data) != n or not png_size(data):  # a cut-off body is refused here (the export fails), never stored
+                    raise ValueError('text layer picture is not a whole PNG')
                 d = CACHE / 'layers' / m[1]
                 d.mkdir(parents=True, exist_ok=True)
-                (d / f't{int(m[2])}.png').write_bytes(data)
+                tmp = d / f'.t{int(m[2])}.{uuid.uuid4().hex[:6]}'
+                tmp.write_bytes(data)
+                tmp.replace(d / f't{int(m[2])}.png')  # whole or not there: a plan checked mid-write saw a file that was still being written
                 return self.reply({'ok': True})
             body = self.body()
             if u.path == '/api/transcribe':
@@ -4713,6 +4746,21 @@ def selftest():
         assert max(pixel(out, 8.0, 30, 50)) < 40 and max(pixel(out, 8.0, 80, 70)) < 40, 'uploaded layer drawn outside its box'
         assert not ld.exists(), 'uploaded layer left behind'
         print(f'uploaded layer ok (chunk={chunk})')
+    # a picture gone after the plan was checked (another export's cleanup, a second server's start): ffmpeg drops it and exits 0,
+    # the text was just missing from the export. It must fail instead (tests/layer_race.mjs tries each way through the server)
+    ld = CACHE / 'layers' / ('ab' * 6)
+    ld.mkdir(parents=True)
+    for i in (0, 1):
+        sh(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=red:s=32x24', '-frames:v', '1', str(ld / f't{i}.png')])
+    red = (ld / 't0.png').read_bytes()
+    assert png_size(red) == (32, 24) and png_size(red[:-1]) is None and png_size(red[:40] + red[41:]) is None
+    p = clean_plan({**plan, 'text': {'layer': 'ab' * 6, 'n': 2, 'box': [40, 60, 32, 24], 'frames': [{'i': 0, 'start': 0, 'end': 4}, {'i': 1, 'start': 4, 'end': 9}]}})
+    assert not ld.exists(), 'a plan claims its upload'
+    (p['layer_dir'] / 't1.png').unlink()
+    JOBS['t'] = {'state': 'running'}
+    export('t', p)
+    assert JOBS['t']['state'] == 'error' and 'text layer' in JOBS['t']['error'], JOBS['t']
+    print('text layer picture gone mid-export: the export fails')
     def imp(f):
         with open(HOME / f, 'rb') as fh:
             return import_file(f, fh, (HOME / f).stat().st_size, background=False)
@@ -5328,7 +5376,10 @@ def main():
         return
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
         d.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(CACHE / 'layers', ignore_errors=True)  # ponytail: uploads of a plan that never ran stay until the next start
+    for d in (CACHE / 'layers').glob('*'):  # uploads of a plan that never ran (ponytail: kept until a start a day later). Not
+        # younger ones: another server on this library (a second port, the app's restart) may be exporting with them right now
+        if time.time() - d.stat().st_mtime > 86400:
+            shutil.rmtree(d, ignore_errors=True)
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
