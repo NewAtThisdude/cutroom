@@ -2730,6 +2730,18 @@ class App(BaseHTTPRequestHandler):
                 if f := poster(m[1]):
                     return self.file(f)
                 return self.reply({'error': 'nothing to show yet'}, 404)
+            if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/uses', path):  # the projects a library item is in (asked before removing it)
+                out = []
+                for f in PROJ.glob('*.json'):
+                    t = f.read_text()
+                    if m[1] in t:
+                        try:
+                            j = json.loads(t)
+                        except ValueError:
+                            continue
+                        if any(c.get('media') == m[1] for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):
+                            out.append({'id': f.stem, 'name': j.get('name', 'Untitled')})
+                return self.reply(out)
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
                 return self.reply(JOBS.get(m[1], {'state': 'missing'}))
             if m := re.fullmatch(r'/media/([a-f0-9]{12})', path):
@@ -2962,6 +2974,8 @@ class App(BaseHTTPRequestHandler):
                 raise ValueError('expected an object')
             folder = PROJ if m[1] == 'projects' else HOME / 'templates'
             folder.mkdir(exist_ok=True)
+            if m[1] == 'projects' and not (folder / f'{m[2]}.json').exists() and next((HOME / 'trash').glob(f'{m[2]}*.json'), None):
+                return self.reply({'ok': True, 'trashed': True})  # a save still on its way for a project just put in the trash: it stays there
             tmp = folder / f'.{m[2]}.tmp'
             tmp.write_text(json.dumps(body))
             tmp.replace(folder / f'{m[2]}.json')  # atomic: a crash mid-save never truncates the file

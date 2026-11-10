@@ -3876,7 +3876,9 @@ function wire() {
     if (!rm) return;
     const m = M.get(rm.dataset.rm), used = LANES.some(L => P[L.key].some(c => c.media === m.id));
     if (used) return toast(`"${m.name}" is used in this project; delete those clips first`);
-    if (!confirm(`Remove "${m.name}" from the library? It moves to Movies/Cutroom/trash.`)) return;
+    const others = await api(`/api/media/${m.id}/uses`).then(l => l.filter(x => x.id !== P.id)).catch(() => []); // other projects that would lose it
+    const also = others.length ? `\n\nIt's used in ${others.length} other project${others.length > 1 ? 's' : ''} (${others.slice(0, 3).map(x => x.name).join(', ')}${others.length > 3 ? ', …' : ''}): there it will show as missing until you put it back from the trash.` : '';
+    if (!confirm(`Remove "${m.name}" from the library? It moves to Movies/Cutroom/trash.${also}`)) return;
     try { await api(`/api/media/${m.id}/trash`, {}); await loadMedia(); } catch (err) { toast(err.message); }
   });
   $('#mediaList').addEventListener('dragstart', e => {
