@@ -5,9 +5,9 @@
 //  1. preview == export: the preview canvas vs the export renderer (/api/still_frame) on the same frame, both shrunk to
 //     320x180: mean |difference| and the worst 10x10 block, in 0-255 levels. Transitions at 25 / 50 / 75 %, effects at two
 //     moments, looks on sharp synthetic footage and on real iPhone footage (HLG, when the scratchpad has it).
-//  2. playback at 1080p60: one paused frame's paint with its GPU work (synced; <= 12 ms to pass, room for 60 fps) and frames
-//     painted per second playing through each new transition and effect, beside what was there before (cut, dissolve,
-//     whip, shake, RGB split, B&W). Wall clock on a shared Mac: the load average is printed with them.
+//  2. playback at 1080p60: frames painted per second playing through each new transition and effect (pass: the median of
+//     3 plays in a fresh page >= 55 fps), beside what was there before (cut, dissolve, whip, shake, RGB split, B&W), with
+//     one paused frame's synced paint time. Wall clock on a shared Mac: the load average is printed with them.
 //  3. gallery tiles, in both motion modes: every new tile drawn (not blank, not just one scene), hovered tiles animate,
 //     the film-look tiles show the selected clip's own frame through their table.
 //  4. what the export pays: seconds for a 1080p30 export with the heaviest new transitions / effects vs a dissolve.
@@ -24,9 +24,9 @@ fs.mkdirSync(OUT, { recursive: true });
 const NEW_TR = ['blurfade', 'whipup', 'whipdown', 'flashwhite', 'flashblack', 'lightleak', 'filmburn', 'cube', 'flip', 'punchin', 'zoomout', 'spin', 'glitchcut', 'rgbsplit',
   'lumafade', 'stretch', 'ink', 'heart', 'star', 'diamond', 'pagecurl', 'wave', 'tiles'];
 const NEW_FX = ['handheld', 'beatshake', 'leaks', 'flare', 'edges', 'dust', 'halftone', 'posterize', 'oldtv', 'nightvision', 'thermal', 'chroma', 'kaleido', 'tunnel', 'datamosh'];
-// documented approximations (x2.5 the limits): the preview's box-blur stand-ins, camera moves (sub-pixel offsets a pixel apart),
+// documented approximations (x2.5 the limits): camera moves (sub-pixel offsets a pixel apart),
 // detail in whole pixels at the export size drawn at the preview's size (dots, scan lines, edge taps). NOISY: random grain, by block averages
-const APPROX = /^(tr (blurfade|whipup|whipdown))|^fx (handheld|beatshake|halftone|edges|oldtv|nightvision|kaleido|posterize)/, NOISY = /^fx (oldtv|nightvision|halftone)/; // (halftone's dots shrunk to 320 px make moiré: block averages too)
+const APPROX = /^fx (handheld|beatshake|halftone|edges|oldtv|nightvision|kaleido|posterize)/, NOISY = /^fx (oldtv|nightvision|halftone)/; // (halftone's dots shrunk to 320 px make moiré: block averages too)
 const MEAN = 4, BLOCK = 28;
 const res = [], check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `  ${detail}` : ''}`); };
 
@@ -57,6 +57,7 @@ const build = `(ids, c) => {
   let T;
   if (c.tr) { main(ids.A).tr = { type: c.tr, d: 1 }; main(ids.B); packMain(); T = P.main[1].start + c.p - 0.5 / P.fps; }
   else if (c.fx) { main(ids.A); P.fx.push({ id: hex12(), fx: c.fx, start: 0, dur: 4, amt: 1 }); T = c.t; }
+  else if (c.adj) { main(ids.A); P.fx.push({ id: hex12(), fx: 'adjust', start: 0, dur: 4, amt: 1, look: { name: c.adj, amount: 1 } }); T = 1.5; } // a film look on an adjustment layer (no grade object)
   else { main(ids[c.media]).look = { name: c.look, amount: c.amount }; T = c.media === 'R' ? 3 : 1.5; }
   if (c.fps) P.fps = c.fps;
   if (c.len) P.main.forEach(x => { x.out = x.in + c.len; });
@@ -72,6 +73,7 @@ if (parts.includes('parity')) {
   for (const fx of NEW_FX) for (const t of [0.5, 1.7]) cases.push([`fx ${fx} at ${t}s`, { fx, t }]);
   for (const look of await page.evaluate(() => Object.keys(LOOK_LUT))) {
     cases.push([`look ${look}`, { look, media: 'A', amount: 1 }]);
+    if (['tealorange', 'bleach'].includes(look)) cases.push([`look ${look} on an adjustment layer`, { adj: look }]);
     if (ids.R) cases.push([`look ${look} (iPhone HLG)`, { look, media: 'R', amount: 0.8 }]);
   }
   console.log(`-- preview vs export: ${cases.length} frames (320x180, 10x10 blocks)`);
@@ -137,12 +139,15 @@ if (parts.includes('exact')) { // the compiled expressions alone: the same input
 }
 
 if (parts.includes('perf')) { // like trperf.mjs: a 60 fps edit, the preview at 2x (Retina), frames painted per second inside the 4 s window
-  const page = await open('no-preference', 2);
-  const size = await page.evaluate(() => `${$('#cv').width}x${$('#cv').height}`);
-  console.log(`-- playback, 1080p60 sources, preview canvas ${size}, ${os.cpus().length} cores, load average ${os.loadavg()[0].toFixed(1)}`);
-  const pid = await page.evaluate(([A, Bm]) => { setProject(newProject('16:9')); P.name = 'Effects pack perf (scratch)'; P.fps = 60; addMedia(A, 'main'); addMedia(Bm, 'main'); S.sel = null; renderAll(); return P.id; }, [ids.A, ids.B]);
-  pids.add(pid);
-  const play = (kind, k) => page.evaluate(async ([kind, k]) => {
+  // Each item gets its own page: after a canvas-path blur transition (whip left, already in main, and the new blur ones) has played,
+  // every later canvas-drawn effect in that page runs ~47 fps until a reload (plain playback stays 60; cause not found, in WebKit).
+  // Three plays per page; the MEDIAN is the item's rate (a blur transition plays 60 once, then ~47), one fresh page more if short.
+  const fresh = async () => {
+    const page = await open('no-preference', 2);
+    pids.add(await page.evaluate(([A, Bm]) => { setProject(newProject('16:9')); P.name = 'Effects pack perf (scratch)'; P.fps = 60; addMedia(A, 'main'); addMedia(Bm, 'main'); S.sel = null; renderAll(); return P.id; }, [ids.A, ids.B]));
+    return page;
+  };
+  const play = (page, kind, k) => page.evaluate(async ([kind, k]) => {
     P.fx = []; delete P.main[0].tr;
     if (kind === 'tr' && k !== 'cut') P.main[0].tr = { type: k, d: 4 };
     packMain();
@@ -159,19 +164,33 @@ if (parts.includes('perf')) { // like trperf.mjs: a 60 fps edit, the preview at 
     paint = () => { op(); if (S.playing && S.t > t0 + 0.2 && S.t < t0 + 3.8) { const now = performance.now(); if (last) worst = Math.max(worst, now - last); last = now; n++; } };
     play(); await sleep(5000); pause();
     paint = op; trGPU = og;
-    return { fps: n / 3.6, worst, gpu, ms: ms[7] };
+    return { fps: n / 3.6, worst, gpu, ms: ms[7], size: `${$('#cv').width}x${$('#cv').height}` };
   }, [kind, k]);
+  const item = async (kind, k) => {
+    const page = await fresh(), rs = [];
+    for (let i = 0; i < 3; i++) rs.push(await play(page, kind, k));
+    if (page.errs.length) errs.push(...page.errs);
+    await page.context().close();
+    rs.sort((a, b) => a.fps - b.fps);
+    return { ...rs[1], all: rs.map(r => r.fps.toFixed(0)).join('/') };
+  };
+  const errs = [];
+  console.log(`-- playback, 1080p60 sources, preview at 2x, ${os.cpus().length} cores, load average ${os.loadavg()[0].toFixed(1)}; pass = median of 3 plays >= 55 fps`);
   const BASE = ['tr cut', 'tr fade', 'tr dissolve', 'tr whipleft', 'fx shake', 'fx rgb', 'fx bw']; // what was there before: the same paths under the same load
-  for (const [kind, k] of [...BASE.map(x => x.split(' ')), ...NEW_TR.map(x => ['tr', x]), ...NEW_FX.map(x => ['fx', x])]) {
-    let r = await play(kind, k);
-    if (r.fps < 55) r = await play(kind, k); // a busy moment on a shared Mac: once more
+  for (const [kind, k] of [...BASE.map(x => x.split(' ')), ...NEW_TR.map(x => ['tr', x]), ...NEW_FX.map(x => ['fx', x])].filter(([kind, k]) => !process.env.ONLY || new RegExp(process.env.ONLY).test(`${kind} ${k}`))) { // ONLY=<regex>: some of them
+    let r = await item(kind, k);
+    if (r.fps < 55) r = await item(kind, k); // a busy moment on a shared Mac: one fresh page more
     const base = BASE.includes(`${kind} ${k}`);
-    // pass: one paused frame, GPU work included, fits 60 fps with room for decoding (<= 12 ms); the playing rate is reported as
-    // measured: on a Mac loaded by other jobs it swings 25-60 fps for the baselines too (the frame waits on the compositor, not on this)
-    check(`${kind} ${k}`.padEnd(22), base || r.ms <= 12, `paint ${r.ms.toFixed(1)} ms, playing ${r.fps.toFixed(1)} fps${r.fps >= 55 ? '' : ' (< 55)'}, worst gap ${r.worst.toFixed(0)} ms${kind === 'tr' && !base ? (r.gpu ? ', GPU' : ', canvas path') : ''}${base ? '  (baseline)' : ''}`);
+    check(`${kind} ${k}`.padEnd(22), base || r.fps >= 55, `playing ${r.fps.toFixed(1)} fps (plays ${r.all}), paint ${r.ms.toFixed(1)} ms, worst gap ${r.worst.toFixed(0)} ms, canvas ${r.size}${kind === 'tr' && !base ? (r.gpu ? ', GPU' : ', canvas path') : ''}${base ? `  (baseline${r.fps < 55 ? ', < 55' : ''})` : ''}`);
   }
-  check('perf: no page errors or GPU warnings', !page.errs.length, page.errs.slice(0, 3).join(' | '));
-  await page.context().close();
+  if (!process.env.ONLY) { // the page stays fast after the blur transitions (on the canvas path they left later canvas effects at ~47 fps)
+    const page = await fresh(), rs = [];
+    for (const [kind, k] of [['tr', 'whipleft'], ['tr', 'blurfade'], ['tr', 'whipup'], ['fx', 'dust'], ['fx', 'bw']]) rs.push([k, (await play(page, kind, k)).fps]);
+    await page.context().close();
+    const after = rs.slice(3);
+    check('perf: dust and B&W after 3 blur transitions', after.every(([, f]) => f >= 55), rs.map(([k, f]) => `${k} ${f.toFixed(0)}`).join(', '));
+  }
+  check('perf: no page errors or GPU warnings', !errs.length, errs.slice(0, 3).join(' | '));
 }
 
 if (parts.includes('tiles')) {
@@ -233,5 +252,5 @@ if (parts.includes('export')) {
 await b.close();
 for (const pid of pids) await fetch(`${B}/api/projects/${pid}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
 for (const id of Object.values(ids)) await fetch(`${B}/api/media/${id}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
-console.log(`\n${res.filter(Boolean).length}/${res.length} passed (mean <= ${MEAN}, worst block <= ${BLOCK} levels; approximations x2.5; paint <= 12 ms)`);
+console.log(`\n${res.filter(Boolean).length}/${res.length} passed (mean <= ${MEAN}, worst block <= ${BLOCK} levels; approximations x2.5; playback >= 55 fps)`);
 process.exit(res.includes(false) ? 1 : 0);

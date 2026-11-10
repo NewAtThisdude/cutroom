@@ -380,7 +380,7 @@ function trGPU(ctx, sides, type, P1, bg) {
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, Q.t[0]);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, Q.t[1]);
     gl.uniform2f(U.wh, W, H);
-    if (TRX[type]) { Q.sz = sz; trxPass(gl, Q, type, bg, W, H, 1 - P1); } else {
+    if (TRX[type]) { Q.sz = sz; trxPass(gl, Q, type, bg, W, H, 1 - P1); } else if (blurTrGPU(type)) { Q.sz = sz; blurTrPass(gl, Q, type, W, H, P1); } else {
     if (type === 'hblur') {
       const nb = Math.ceil(W / 32);
       gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.bs);
@@ -401,6 +401,54 @@ function trGPU(ctx, sides, type, P1, bg) {
   } catch (e) { console.warn('GPU transition:', e.message); return false; } finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
   ctx.drawImage(cv, 0, cv.height - H, W, H, 0, 0, W, H);
   return true;
+}
+
+// blur transitions (app.js TR_BLUR, zoom blur aside) on trGPU's two layers: the slide or dissolve, then a Gaussian along x or y (the export's
+// gblur steps=3; blur dissolve's 3-pass boxblur of radius r as the Gaussian of the same variance, r(r+1), sideways then up-down).
+// The canvas path (hblurInPlace) left WebKit drawing every later canvas effect at ~47 fps until a reload; this one reads the <video>s.
+const BLUR_K = { fade: 0, slideleft: 1, slideright: 2, slideup: 3, slidedown: 4 }, blurTrGPU = type => type !== 'zoomblur' && TR_BLUR[type] in BLUR_K;
+function blurTrPass(gl, Q, type, W, H, P1) { // units 4, 5: the layers (row 0 = the top) -> the default framebuffer
+  const X = Q.bl ??= (() => {
+    const pg = xshader(gl, gl.getAttribLocation(GPU.pg, 'p'), `${GLHEAD}uniform sampler2D ta, tb; uniform vec2 wh; uniform float P, sig; uniform int kind, fin; uniform ivec2 dir; out vec4 o;
+vec3 A(ivec2 q) { return texelFetch(ta, clamp(q, ivec2(0), ivec2(wh) - 1), 0).rgb * 255.0; }
+vec3 B(ivec2 q) { return texelFetch(tb, clamp(q, ivec2(0), ivec2(wh) - 1), 0).rgb * 255.0; }
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy), S = ivec2(wh); if (fin == 1) q.y = S.y - 1 - q.y;
+  vec3 c; int zx = int(P * wh.x), zy = int(P * wh.y);
+  if (kind == 0) c = A(q) * P + B(q) * (1.0 - P); // as transition(): a*P + b*(1-P), the slides as drawn there
+  else if (kind == 1) c = q.x < zx ? A(ivec2(q.x - zx + S.x, q.y)) : B(ivec2(q.x - zx, q.y));
+  else if (kind == 2) c = q.x < S.x - zx ? B(ivec2(q.x + zx, q.y)) : A(ivec2(q.x - S.x + zx, q.y));
+  else if (kind == 3) c = q.y < zy ? A(ivec2(q.x, q.y - zy + S.y)) : B(ivec2(q.x, q.y - zy));
+  else if (kind == 4) c = q.y < S.y - zy ? B(ivec2(q.x, q.y + zy)) : A(ivec2(q.x, q.y - S.y + zy));
+  else { int R = min(int(ceil(3.0 * sig)), 400); vec3 s = vec3(0.0); float ws = 0.0; // 5: a Gaussian of ta along dir, edges clamped
+    for (int i = -R; i <= R; i++) { float w = exp(-float(i * i) / (2.0 * sig * sig)); s += w * A(q + dir * i); ws += w; }
+    c = s / ws; }
+  o = vec4(clamp(floor(c + 0.5), 0.0, 255.0) / 255.0, 1.0);
+}`);
+    gl.useProgram(pg); gl.uniform1i(gl.getUniformLocation(pg, 'ta'), 4); gl.uniform1i(gl.getUniformLocation(pg, 'tb'), 5);
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t);
+    for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v);
+    const U = {}; for (const n of ['wh', 'P', 'sig', 'kind', 'fin', 'dir']) U[n] = gl.getUniformLocation(pg, n);
+    return { pg, U, t, fb: gl.createFramebuffer(), sz: '' };
+  })();
+  const { U } = X, s = Math.sin(Math.PI * clamp(1 - P1, 0, 1)), r = Math.round(BLURF * H * s), g = Math.sqrt(r * (r + 1));
+  const blurs = (type === 'blurfade' ? (r >= 1 ? [[g, 1, 0], [g, 0, 1]] : []) : type === 'whipup' || type === 'whipdown' ? [[WHIP * H * s, 0, 1]] : [[WHIP * W * s, 1, 0]]).filter(b => b[0] >= 0.5);
+  gl.useProgram(X.pg); gl.uniform2f(U.wh, W, H); gl.uniform1f(U.P, P1); gl.viewport(0, 0, W, H);
+  const into = (tex, fb) => { // a W x H target (unit 7 holds it while it is drawn), or the screen
+    if (!tex) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.uniform1i(U.fin, 1); return; }
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (tex === X.t && X.sz !== `${W}x${H}`) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); X.sz = `${W}x${H}`; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0); gl.uniform1i(U.fin, 0);
+  };
+  into(blurs.length ? X.t : null, X.fb); gl.uniform1i(U.kind, BLUR_K[TR_BLUR[type]]); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // the slide or dissolve
+  let src = X.t;
+  blurs.forEach(([sig, dx, dy], i) => { // then each blur: from src (on unit 4) into layer a's texture (free now) or the screen
+    const last = i === blurs.length - 1, dst = src === X.t ? Q.t[0] : X.t;
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, src);
+    into(last ? null : dst, dst === X.t ? X.fb : Q.fb[0]); gl.uniform1i(U.kind, 5); gl.uniform1f(U.sig, sig); gl.uniform2i(U.dir, dx, dy);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    src = dst;
+  });
 }
 
 // ---------- scopes: waveform, histogram, vectorscope of the preview ----------
@@ -467,6 +515,12 @@ void main() {
   else if (mode == 7) c = texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0; // an adjustment layer's table (gpuPass's lookup)
   else if (mode == 5) { vec3 sum = vec3(0.0); for (int i = -32; i <= 32; i++) if (i >= -r && i <= r) sum += at(q + dir * i); c = sum / float(2 * r + 1); } // one box pass (boxblur), edges clamped
   else if (mode == 8) { vec2 f = gl_FragCoord.xy; c = bgc; if (all(greaterThanEqual(f, box.xy)) && all(lessThan(f, box.xy + box.zw))) c = floor(texture(vid, crop.xy + (f - box.xy) / box.zw * crop.zw).rgb * 255.0 + 0.5); s0.a = 1.0; } // a plain picture in its box on the canvas colour (trGPU's layer)
+  else if (mode == 9) { // transform: scaled by s about the centre, moved by box.xy, bilinear (runOps' drawImage); outside it the frame stays
+    vec2 S = vec2(2.0 * trunc(float(size.x) * s / 2.0), 0.0); S.y = S.x * float(size.y) / float(size.x);
+    vec2 u = (vec2(q) + 0.5 - (vec2(size) - S) / 2.0 - box.xy) / S * vec2(size) - 0.5;
+    if (all(greaterThanEqual(u, vec2(-0.5))) && all(lessThan(u, vec2(size) - 0.5))) { ivec2 i = ivec2(floor(u)); vec2 t = u - floor(u);
+      c = mix(mix(at(i), at(i + ivec2(1, 0)), t.x), mix(at(i + ivec2(0, 1)), at(i + ivec2(1, 1)), t.x), t.y); }
+  }
   o = vec4(clamp(floor(c + 0.5), 0.0, 255.0) / 255.0, s0.a);
 }`));
     gl.linkProgram(pg);
@@ -522,6 +576,7 @@ function fxGPU(src, W, H, steps) {
     if (st.M) gl.uniformMatrix3fv(U.M, false, colMajor(st.M));
     if (st.shift) gl.uniform2i(U.shift, ...st.shift);
     if (st.dir) gl.uniform2i(U.dir, ...st.dir);
+    if (st.box) gl.uniform4f(U.box, ...st.box);
     if (st.G && FXG.lutKey !== st.G.key) { gl.activeTexture(gl.TEXTURE1); gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, GN, GN, GN, 0, gl.RGB, gl.FLOAT, st.G.d); gl.activeTexture(gl.TEXTURE0); FXG.lutKey = st.G.key; gl.bindTexture(gl.TEXTURE_2D, tex[cur]); }
     if (st.G) gl.uniform1f(U.lutN, GN);
     gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0);
@@ -537,7 +592,7 @@ function fxGPU(src, W, H, steps) {
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return [cv, cv.height - H];
 }
-const FX_GPU = { lut: o => [{ mode: 7, G: o.G }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }] };
+const FX_GPU = { lut: o => [{ mode: 7, G: o.G }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }], transform: o => [{ mode: 9, s: o.z, box: [o.x, o.y, 0, 0] }] };
 
 // ---------- adjustment layer: an Effects-track clip (fx 'adjust') whose colour stage grades the composite under it ----------
 // Its brightness/contrast/saturation, temperature/tint, exposure/highlights/shadows/fade, filter and grade (wheels, curves,
@@ -547,7 +602,7 @@ const ADJUST = { n: 'Adjustment layer', d: 5 };
 function adjustLUT(f) { // -> { key, d } or null (nothing to do)
   const a = f.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, T = toneLUT(f), L = lookMatrix(f), lk = lookLutOf(f), gr = gradeOn(f.grade) || !!lk;
   if (b === 1 && k === 1 && s === 1 && !T && !L && !gr) return null;
-  const lid = gr && f.grade.lut?.id;
+  const lid = gr && f.grade?.lut?.id;
   if (lid && !lutLib.has(lid)) loadLut(lid);
   const key = 'adj' + JSON.stringify([b, k, s, T && T.join(), L, gr && f.grade, lk && f.look]) + (lid && !(lutLib.get(lid) instanceof Promise) ? '+' : '');
   if (!gradeCache.has(key)) { // (loadLut clears gradeCache when a LUT arrives, so this table is remade with it)

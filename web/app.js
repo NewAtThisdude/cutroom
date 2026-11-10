@@ -1448,7 +1448,7 @@ function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, w
     transition(ctx, A, B, TR_BLUR[type], p);
     const s = Math.sin(Math.PI * clamp(p, 0, 1));
     if (type === 'zoomblur') zblurInPlace(ctx, W, H, ZOOMB * s);
-    else if (type === 'blurfade') { if (Math.round(BLURF * H * s) >= 1) blurInPlace(ctx, W, H, BLURF * H * s); } // the export's boxblur, 3 passes (radius rounded there)
+    else if (type === 'blurfade') { const r = Math.round(BLURF * H * s), g = Math.sqrt(r * (r + 1)); if (r >= 1) { hblurInPlace(ctx, W, H, g); hblurInPlace(ctx, W, H, g, true); } } // (playback runs on the GPU: grade.js blurTrPass) the export's boxblur, 3 passes of radius r (variance r(r+1)), as a sideways then up-down Gaussian: drawImage only (blurInPlace's GPU upload cost 18 ms a frame)
     else if (type === 'whipup' || type === 'whipdown') hblurInPlace(ctx, W, H, WHIP * H * s, true);
     else hblurInPlace(ctx, W, H, WHIP * W * s);
     return;
@@ -1594,7 +1594,7 @@ function paint() {
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
       if (i !== act[1]) continue;
-      const cap = (TR_GPU[tr.type] || TRX[tr.type]) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
+      const cap = (TR_GPU[tr.type] || TRX[tr.type] || blurTrGPU(tr.type)) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
       if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
       for (const j of [0, 1]) {
         const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
@@ -2030,7 +2030,7 @@ function matrixPass(x, W, H, m) { // a 3x3 colour matrix, like colorchannelmixer
 function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same order, same numbers
   for (let i = 0; i < ops.length; i++) {
     const o = ops[i];
-    if (FX_GPU[o.op]) { // a run of per-pixel steps in one go on the GPU (fxGPU), drawn back once
+    if (FX_GPU[o.op] && (o.op !== 'transform' || FX_GPU[ops[i + 1]?.op])) { // a run of per-pixel steps in one go on the GPU (fxGPU), drawn back once (a lone move stays a drawImage: cheaper than the upload)
       let j = i;
       while (FX_GPU[ops[j + 1]?.op]) j++;
       const g = fxGPU(x.canvas, W, H, ops.slice(i, j + 1).flatMap(q => FX_GPU[q.op](q)));
