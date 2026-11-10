@@ -2373,12 +2373,22 @@ function toggleTheater(on = !document.body.classList.contains('theater')) { // t
 // ---------- edit by script: the main track's words; delete words or pauses to cut the video ----------
 const SC = { words: null, sel: null, anchor: null, drag: false, now: -1, busy: false };
 const wordCache = new Map(); // `${media}:${lang}` -> words in source time
+const wordHave = new Map(); // same key -> the source [in, out] spans asked for: only the parts in use are transcribed
+const usedSpans = (id, clips) => clips.filter(c => c.media === id).map(c => [c.in, c.out]);
+const hasWords = (id, lang, rs) => rs.every(([a, b]) => (wordHave.get(`${id}:${lang}`) || []).some(([x, y]) => x <= a && b <= y));
+async function fetchWords(id, lang, ranges, say) { // whisper on those spans of one file (the server keeps what it heard), its progress meanwhile
+  const k = `${id}:${lang}`, tick = say && setInterval(() => api('/api/transcribe/progress', { media: id }).then(r => { if (r.p != null) say(` ${Math.round(r.p * 100)} %`); }).catch(() => {}), 800);
+  try { wordCache.set(k, (await api('/api/transcribe', { media: id, lang, ranges })).words); } finally { clearInterval(tick); }
+  wordHave.set(k, [...(wordHave.get(k) || []), ...ranges]);
+  return wordCache.get(k);
+}
 async function loadWords(ids, status) {
   const lang = $('#capLang').value;
   for (const [i, id] of ids.entries()) {
-    if (wordCache.has(`${id}:${lang}`)) continue;
-    if (status) status(`Transcribing ${i + 1}/${ids.length} on this Mac: ${M.get(id)?.name}…`);
-    wordCache.set(`${id}:${lang}`, (await api('/api/transcribe', { media: id, lang })).words);
+    const rs = usedSpans(id, P.main), msg = `Transcribing ${i + 1}/${ids.length} on this Mac: ${M.get(id)?.name}…`;
+    if (hasWords(id, lang, rs)) continue;
+    if (status) status(msg);
+    await fetchWords(id, lang, rs, status && (p => status(msg + p)));
   }
 }
 function scriptWords() { // the main track's words on the timeline, each with its clip and source times
@@ -2399,7 +2409,7 @@ async function renderScript(load = true) {
   const body = $('#scriptBody'), st = t => { $('#scriptStatus').textContent = t; };
   const ids = [...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))];
   if (!ids.length) { SC.words = null; body.innerHTML = '<p class="hint">Put a clip with speech on the main track: its words show up here, and deleting words cuts them out of the video.</p>'; st(''); return; }
-  const lang = $('#capLang').value, missing = ids.filter(id => !wordCache.has(`${id}:${lang}`));
+  const lang = $('#capLang').value, missing = ids.filter(id => !hasWords(id, lang, usedSpans(id, P.main)));
   if (missing.length) {
     if (!load || SC.busy) return;
     SC.busy = true;
@@ -2938,7 +2948,7 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
     const rm = new Map();
     for (const [i, id] of ids.entries()) {
       toast(`Listening for filler words ${i + 1}/${ids.length}…`);
-      rm.set(id, (await api('/api/fillers', { media: id, lang: $('#capLang').value })).fillers.map(f => [f.s, f.e]));
+      rm.set(id, (await api('/api/fillers', { media: id, lang: $('#capLang').value, ranges: usedSpans(id, P.main) })).fillers.map(f => [f.s, f.e]));
     }
     packMain();
     const hit = P.main.reduce((n, c) => n + (rm.get(c.media) || []).filter(([a, b]) => b > c.in && a < c.out).length, 0), before = packMain(), next = cutMain(rm);
@@ -3363,8 +3373,11 @@ async function tintMask(b64) { // the grey outline PNG as a pink see-through ove
   return cv;
 }
 async function maskPreview(c, lane, rect, T, mode, points = []) { // SAM 2's outlines of the box on this frame (part ... whole), the best fit tinted on the preview
-  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T), points });
-  S.maskPreview = { id: c.id, c, lane, rect, T, mode, points, b64: r.masks, areas: r.areas, pick: r.pick, imgs: await Promise.all(r.masks.map(tintMask)) };
+  const seq = S.mpSeq = (S.mpSeq || 0) + 1; // only the latest ask is shown: an older answer arriving after it is dropped
+  const r = await api('/api/mask_preview', { media: c.media, t: c.in + (T - c.start) * c.speed, box: srcBox(c, rect, T), points, mode });
+  const imgs = await Promise.all(r.masks.map(tintMask));
+  if (seq !== S.mpSeq) return null;
+  S.maskPreview = { id: c.id, c, lane, rect, T, mode, points, b64: r.masks, areas: r.areas, pick: r.pick, unsure: r.unsure, imgs };
   Object.defineProperty(S.maskPreview, 'img', { get() { return this.imgs[this.pick]; } });
   S.dirty = true;
   markPreview();
@@ -3374,9 +3387,10 @@ function previewFor(c, r) { // the outline previewed for this clip and (about) t
   const m = S.maskPreview, near = (k, d) => Math.abs(m.rect[k] - r[k]) < 0.02 * d;
   return m?.id === c.id && near('x', P.w) && near('w', P.w) && near('y', P.h) && near('h', P.h) ? m : null;
 }
-function markPreview() { // the confirm bar's Smaller / Bigger follow the candidates
+function markPreview() { // the confirm bar's question and its Smaller / Bigger follow the candidates
   const mp = S.maskPreview, bar = $('#confirmBar');
   if (!mp || !bar) return;
+  bar.querySelector('span').textContent = mp.unsure ? 'Not sure what you boxed: click on it (⌥-click leaves a spot out)' : mp.mode === 'cutout' ? 'Keep only the pink part?' : 'Remove the pink part from the whole clip?';
   bar.querySelector('[data-smaller]').disabled = mp.pick <= 0;
   bar.querySelector('[data-bigger]').disabled = mp.pick >= mp.imgs.length - 1;
 }
@@ -3385,7 +3399,8 @@ async function refinePreview(cx, cy, keep) { // a click on the frame: include th
   const mp = S.maskPreview, [sx, sy] = canvasToSrc(mp.c, mp.T)(cx, cy);
   if (sx < 0 || sx > 1 || sy < 0 || sy > 1) return;
   setStatus(keep ? 'Adding that spot…' : 'Leaving that spot out…');
-  try { await maskPreview(mp.c, mp.lane, mp.rect, mp.T, mp.mode, [...mp.points, [sx, sy, keep ? 1 : 0]]); setStatus(''); } catch (e) { setStatus(e.message); }
+  mp.points = [...mp.points, [sx, sy, keep ? 1 : 0]]; // a second quick click builds on this one, not on the last answer
+  try { if (await maskPreview(mp.c, mp.lane, mp.rect, mp.T, mp.mode, mp.points)) setStatus(''); } catch (e) { setStatus(e.message); }
 }
 function overlayMask(ctx, mp, h) { // the tinted outline over the clip's rect h ({x0, y0, x1, y1, rot}, canvas pixels): crop, mirror and rotation as drawn
   const cr = mp.c.crop || {}, b = selBox(h), W = mp.img.width, H = mp.img.height;
@@ -3425,10 +3440,11 @@ async function finishRemove(rect) { // Best and cutouts: show SAM 2's outline fi
   try {
     const r = await maskPreview(c, lane, rect, T, mode);
     setStatus('');
+    if (!r) return;
     if (r.areas.at(-1) < 0.0004) { S.maskPreview = null; S.dirty = true; toast('Nothing found in that box: draw it around the object'); return startRemove(c, lane, mode); }
   } catch (e) { setStatus(''); return removeObject(c, lane, rect, T, q, mode).catch(err => setStatus(err.message)); } // no SAM 2 here: straight on, with the box
   const bar = $('#confirmBar');
-  bar.querySelector('span').textContent = mode === 'cutout' ? 'Keep only the pink part?' : 'Remove the pink part from the whole clip?';
+  markPreview();
   bar.title = 'Smaller / Bigger: a part of it, or more of it.';
   bar.querySelector('[data-ok]').textContent = mode === 'cutout' ? 'Cut it out' : 'Remove it';
   bar.hidden = false;
@@ -3467,8 +3483,8 @@ async function autoCaptions(force) { // words come back in source time; map them
   try {
     const ids = [...new Set(src.map(c => c.media))], words = new Map();
     for (const [i, id] of ids.entries()) {
-      status.textContent = `Transcribing ${i + 1}/${ids.length}: ${M.get(id).name}…`;
-      words.set(id, (await api('/api/transcribe', { media: id, lang })).words);
+      const msg = status.textContent = `Transcribing ${i + 1}/${ids.length}: ${M.get(id).name}…`;
+      words.set(id, await fetchWords(id, lang, usedSpans(id, src), p => { status.textContent = msg + p; }));
     }
     // placed on the timeline as it is NOW (edits while it listened move the words with them), in the project it was asked in
     if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
@@ -4967,13 +4983,14 @@ const REMOTE = {
     seekTo(T);
     const toSrc = canvasToSrc(c, S.t), pts = (Array.isArray(points) ? points : []).map(q => [...toSrc(q[0] * P.w, q[1] * P.h), q[2] ? 1 : 0]); // canvas fractions -> source
     const r = await maskPreview(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, mode, pts);
+    if (!r) throw new Error('another outline was asked for meanwhile');
     if (Number.isInteger(candidate)) { S.maskPreview.pick = clamp(candidate, 0, r.masks.length - 1); markPreview(); }
     const snap = await REMOTE.snapshot({ max: 720 }); // the export renderer's frame: right even while the window is covered (no video decoding then)
     const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = `data:image/png;base64,${snap.image}`; });
     const cv = document.createElement('canvas'), x = cv.getContext('2d'), k = im.width / P.w, pr = propsAt(c, S.t - c.start), g = geom(M.get(c.media), c, P.w, P.h, pr);
     cv.width = im.width; cv.height = im.height; x.drawImage(im, 0, 0);
     overlayMask(x, S.maskPreview, { x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
-    return { t: r3(S.t), candidates: r.areas.map(a => +a.toFixed(4)), candidate: S.maskPreview.pick, image: cv.toDataURL('image/png').split(',')[1],
+    return { t: r3(S.t), candidates: r.areas.map(a => +a.toFixed(4)), candidate: S.maskPreview.pick, unsure: !!r.unsure, image: cv.toDataURL('image/png').split(',')[1],
       note: 'pink = what will be taken (candidates: area of each outline, smallest first; pass candidate to show another). remove_object / cut_out_object with the same box then take exactly this outline' };
   },
   async cut_out_object({ id, box, t }) { // keep only what's in the box (any subject, SAM 2): the clip becomes it on transparency
