@@ -1401,10 +1401,16 @@ function paint() {
     else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
     if (lane === 'overlay' && P.mute.overlay) continue;
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
-      const L = layer(i === act[0] ? 0 : 1), lx = L.getContext('2d');
-      lx.fillStyle = P.bg; lx.fillRect(0, 0, L.width, L.height);
-      drawMedia(lx, lane, c, m, el, t - c.start, k);
-      if (i === act[1]) transition(ctx, layer(0), L, tr.type, tr.p);
+      (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
+      if (i !== act[1]) continue;
+      const cap = TR_GPU[tr.type] && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases
+      if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
+      for (const j of [0, 1]) {
+        const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
+        lx.fillStyle = P.bg; lx.fillRect(0, 0, L.width, L.height);
+        if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
+      }
+      transition(ctx, layer(0), layer(1), tr.type, tr.p);
     } else drawMedia(ctx, lane, c, m, el, t - c.start, k);
   }
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
@@ -1453,7 +1459,7 @@ function paint() {
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
 }
-function drawMedia(ctx, lane, c, m, el, lt, k) {
+function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   if (el.tagName === 'VIDEO' ? el.readyState < 2 : !(el.complete && el.naturalWidth)) return;
   const d = tdur(c, lane), pr = clipAnim(c, lt, d, propsAt(c, lt)), g = geom(m, c, P.w, P.h, pr), a = c.adj || {}, cr = c.crop || {};
   const f = fadeAt(c, lt, d);
@@ -1462,6 +1468,10 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
   const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0, sk = strengthAt(c, lt);
+  if (cap) { // trGPU asks: a plain picture in a box? then where it goes (nothing drawn); anything more keeps the canvas path
+    if (lane !== 'main' || rad || c.flip || c.glow || c.fit === 'blur' || pr.opacity < 1 || f < 1 || filt || graded || c.key || c.mask || a.vig > 0 || mbN(c) > 1) return false;
+    return Object.assign(cap, { el, src: [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], dst: [g.x * k, g.y * k, g.w * k, g.h * k], hit: { lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: 0 } });
+  }
   const draw = (x, y, w, h, fgr = true) => { // crop = source rect; mirror flips inside the rect; rotation spins about its centre
     ctx.save();
     if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
