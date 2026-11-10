@@ -48,8 +48,10 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
-# Voice clone + dubbing: Chatterbox multilingual v3 (Resemble AI, MIT; 23 languages, 2.7 GB) with its S3 tokenizer, and WavLM
-# speaker verification (Microsoft, CC BY-SA 3.0 per its model card -> UniSpeech LICENSE, attribution required; 0.4 GB) to measure how close a clone sounds. Pinned revisions; the big files' SHA-256 checked.
+# Voice clone + dubbing: Chatterbox multilingual v3 (Resemble AI, MIT; 23 languages, 2.7 GB) with its S3 tokenizer
+# (mlx-community/S3TokenizerV2, converted from FunAudioLLM/CosyVoice2-0.5B: Apache-2.0; 0.5 GB), and WavLM speaker verification
+# (microsoft/wavlm-base-plus-sv: CC BY-SA 3.0 via microsoft/UniSpeech's LICENSE, attribution required; 0.4 GB) to measure how close
+# a clone sounds. Pinned revisions, the weight files' SHA-256 checked (ai/worker.py checks them again and runs offline, HF_HUB_OFFLINE=1).
 env -u PYTHONPATH .venv/bin/python -I -c "
 import hashlib
 from huggingface_hub import snapshot_download
@@ -63,5 +65,5 @@ for repo, rev, f, sha in [('mlx-community/chatterbox-multilingual-v3', '03565773
             h.update(b)
     assert h.hexdigest() == sha, (repo, f, h.hexdigest())
     print('ok', repo)"
-# Talking photos and lip sync run on the RTX 4090 PC: ai/gpu_setup.sh (Wan 2.2 S2V into its ComfyUI, ~18 GB).
+# Lip sync (LatentSync 1.6) and talking photos (Wan 2.2 S2V) run on the RTX 4090 PC: ai/gpu_setup.sh (licences listed there).
 echo "On-device AI ready."

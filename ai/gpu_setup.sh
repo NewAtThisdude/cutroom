@@ -1,6 +1,7 @@
 #!/bin/sh
-# Talking photos and lip sync run on the RTX 4090 PC (CUTROOM_GPU_HOST, an ~/.ssh/config alias, default win4090) in its ComfyUI.
-# This copies ai/gpu_setup.ps1 there and runs it: the Wan 2.2 S2V weights (~18 GB, SHA-256 checked).
+# Lip sync and talking photos run on the RTX 4090 PC (CUTROOM_GPU_HOST, an ~/.ssh/config alias, default win4090).
+# This copies ai/gpu_setup.ps1 there and runs it: LatentSync 1.6 in its own venv (lip sync of real footage) and the Wan 2.2 S2V
+# weights in its ComfyUI (talking photos); ~30 GB, every weight SHA-256 checked, licences listed in gpu_setup.ps1.
 set -eu
 cd "$(dirname "$0")"
 H=${CUTROOM_GPU_HOST:-win4090}

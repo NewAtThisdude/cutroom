@@ -5243,7 +5243,7 @@ async function translateCaptions({ to, say = sayIn('#trStatus') }) { // whole se
   return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text),
     items: groups.map((g, i) => ({ s: g[0].start, e: g.at(-1).start + g.at(-1).dur, text: String(texts[i] || '') })) }; // the sentences' times (dubbing fits speech to them)
 }
-// ---------- voice clone + dubbing on this Mac (Chatterbox); lip sync and talking photos on the 4090 PC (Wan 2.2 S2V) ----------
+// ---------- voice clone + dubbing on this Mac (Chatterbox); on the 4090 PC: lip sync of real footage (LatentSync), talking photos (Wan 2.2 S2V) ----------
 const CONSENT = 'cloning a voice needs the speaker\'s consent: tick "The speaker agreed to be cloned" first';
 function pickClip(clip) { // the clip a tool works on: given, selected, or the main clip under the playhead
   packMain();
@@ -5281,21 +5281,22 @@ async function dubVideo({ lang = 'es', voice, original = 'duck', say = sayIn('#d
   say(`Dubbed ${j.items.length} sentences into ${name}${j.items.some(i => i.shorter) ? ' (some said shorter to fit)' : ''}${over ? `; ${over} still run past their slot even at 1.25x` : ''}.`);
   return { media: j.media, clip: brief(d, 'audio'), sentences: j.items };
 }
-function swapInVideo(c, id, keep) { // the clip shows the new video from its start; the timeline's audio keeps the sound
-  const m = M.get(id);
-  change(() => Object.assign(c, { media: id, in: 0, out: Math.min(m.duration, keep), speed: 1, volume: 0 }));
+function swapInVideo(c, id) { // the clip shows the new video, made exactly as long as the clip: its length and every other clip stay put
+  const keep = len(c);
+  change(() => { Object.assign(c, { media: id, in: 0, out: keep, speed: 1, volume: 0 }); delete c.ramp; });
   return brief(...cfind(c.id));
 }
-async function lipSync({ clip, seed, say = sayIn('#lsStatus') } = {}) {
+async function lipSync({ clip, say = sayIn('#lsStatus') } = {}) { // real footage: only the mouth is re-made (LatentSync on the 4090), the shot stays
   const c = pickClip(clip), m = c && M.get(c.media);
   if (m?.kind !== 'video' || cfind(c.id)[1] !== 'main') throw new Error('select a video clip on the main track (the face to re-sync)');
+  if (c.mc) throw new Error('lip sync works on one camera: cut the multicam into its own clips first');
   const d = P.audio.find(a => a.dub && a.start <= c.start + 0.05 && a.start + len(a) > c.start);
   if (!d) throw new Error('dub the video first: lip sync follows the dub under the clip');
-  const st = await api('/api/still', { media: m.id, t: c.in }), a0 = d.in + (c.start - d.start) * d.speed;
-  const j = await job('/api/ai/talk', { image: st.id, audio: d.media, a0, a1: a0 + len(c) * d.speed, seed }, 'Lip-syncing on the GPU PC', say);
+  const a0 = d.in + (c.start - d.start) * d.speed;
+  const j = await job('/api/ai/lipsync', { media: m.id, t0: c.in, t1: c.out, speed: c.speed, audio: d.media, a0 }, 'Lip-syncing on the GPU PC', say);
   await loadMedia();
-  say('Lip-synced: the clip now plays the re-animated shot.');
-  return { media: j.media, seed: j.seed, clip: swapInVideo(c, j.media, len(c)) };
+  say(`Lip-synced: the mouth follows the dub; the rest of the shot is the original (${j.pieces > 1 ? `${j.pieces} pieces, ` : ''}a face in ${Math.round(100 * j.faces / j.frames)}% of the frames).`);
+  return { media: j.media, faces: j.faces, frames: j.frames, pieces: j.pieces, clip: swapInVideo(c, j.media) };
 }
 async function talkingPhoto({ image, audio, clip, prompt, at = S.t, seed, say = sayIn('#lsStatus') } = {}) {
   let c = null, img = image ? mediaBy(image) : null, au = audio ? mediaBy(audio) : null, a0 = 0, a1;
@@ -5307,10 +5308,11 @@ async function talkingPhoto({ image, audio, clip, prompt, at = S.t, seed, say = 
     au = M.get(a.media); a0 = a.in + Math.max(0, t - a.start) * a.speed; a1 = a.out;
   }
   if (!au?.hasAudio) throw new Error('that audio has no sound');
-  const j = await job('/api/ai/talk', { image: img.id, audio: au.id, a0, a1, prompt, seed }, 'Making it talk on the GPU PC', say);
+  if (c && len(c) > 30) throw new Error(`a talking photo is 30 s at most and this photo clip is ${len(c).toFixed(1)} s: split it (or shorten it) first`);
+  const j = await job('/api/ai/talk', { image: img.id, audio: au.id, a0, a1, prompt, seed, length: c ? len(c) : undefined }, 'Making it talk on the GPU PC', say);
   await loadMedia();
-  say('Done: the photo talks.');
-  if (c) return { media: j.media, seed: j.seed, clip: swapInVideo(c, j.media, M.get(j.media).duration) };
+  say('Done: the photo talks (re-animated from the still).');
+  if (c) return { media: j.media, seed: j.seed, clip: swapInVideo(c, j.media) };
   addMedia(j.media, 'main', at);
   return { media: j.media, seed: j.seed, clip: brief(...cfind(S.sel.id)) };
 }

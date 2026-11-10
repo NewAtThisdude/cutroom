@@ -38,18 +38,42 @@ def voice(req):
     return {}
 
 
-CLONE = ('mlx-community/chatterbox-multilingual-v3', '03565773edd72e949572557597af8063bb49a18a')  # Resemble AI Chatterbox, MIT
-WAVLM = ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e')  # speaker verification x-vectors, CC BY-SA 3.0 (UniSpeech LICENSE; attribution)
+# The clone/embed models, pinned (repo, revision, file, SHA-256: the same as ai/setup.sh). The server runs this worker with
+# HF_HUB_OFFLINE=1, so nothing is downloaded at run time; mlx-audio asks for the S3 tokenizer without a revision (the hub's
+# "main" ref), so pinned() checks that "main" is our revision and every weight file's checksum before a model loads.
+CLONE = ('mlx-community/chatterbox-multilingual-v3', '03565773edd72e949572557597af8063bb49a18a', 'model.safetensors',
+         'e702f2c441e040bd360e59a86c85d462539759d665e41cfd1938adadd74187a3')  # Resemble AI Chatterbox, MIT
+S3TOK = ('mlx-community/S3TokenizerV2', 'e0c9886f0e1c35ae85b1f27277416fb19fc72bec', 'model.safetensors',
+         '928726bc1f206a613d36b8f49e297eae9c5593a21bf9b92ddfe2c23f85eb92cc')  # from FunAudioLLM/CosyVoice2-0.5B, Apache-2.0
+WAVLM = ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', 'pytorch_model.bin',
+         'e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad')  # speaker verification x-vectors, CC BY-SA 3.0 (UniSpeech LICENSE; attribution)
+
+
+def pinned(repo, rev, f, sha, main=False):
+    """The local snapshot of repo at rev, its weight file checksummed (once per process); main=True: the hub's unrevisioned
+    lookup must land on it too (for code that asks without a revision)."""
+    import hashlib
+    from huggingface_hub import snapshot_download
+    d = snapshot_download(repo, revision=rev)  # offline: the cached copy or an error, never a download
+    if main and os.path.realpath(snapshot_download(repo)) != os.path.realpath(d):
+        raise RuntimeError(f'{repo}: the cached "main" is not the pinned revision {rev[:10]}; run ai/setup.sh')
+    h = hashlib.sha256()
+    with open(os.path.join(d, f), 'rb') as fh:
+        for b in iter(lambda: fh.read(1 << 24), b''):
+            h.update(b)
+    if h.hexdigest() != sha:
+        raise RuntimeError(f'{repo}/{f} does not match its pinned checksum; run ai/setup.sh')
+    return d
 
 
 def clone(req):
     """Zero-shot voice clone (Chatterbox multilingual, 23 languages): speak text in the voice of the reference WAV."""
     import wave
     import numpy as np
-    from huggingface_hub import snapshot_download
     from mlx_audio.tts.utils import load_model
     if 'clone' not in models:
-        models['clone'] = load_model(model_path=snapshot_download(CLONE[0], revision=CLONE[1]))
+        pinned(*S3TOK, main=True)  # mlx-audio loads it as snapshot_download('mlx-community/S3TokenizerV2'): no revision
+        models['clone'] = load_model(model_path=pinned(*CLONE))
     m = models['clone']
     a = np.concatenate([np.array(r.audio) for r in m.generate(req['text'], ref_audio=req['ref'], lang_code=req['lang'], verbose=False,
                                                               cfg_weight=req.get('cfg', 0.5), exaggeration=req.get('exag', 0.1))])
@@ -67,9 +91,10 @@ def embed(req):
     import torch
     from transformers import AutoFeatureExtractor, WavLMForXVector
     if 'wavlm' not in models:
-        net = WavLMForXVector.from_pretrained(WAVLM[0], revision=WAVLM[1])
+        d = pinned(*WAVLM)
+        net = WavLMForXVector.from_pretrained(d)
         net.train(False)
-        models['wavlm'] = (AutoFeatureExtractor.from_pretrained(WAVLM[0], revision=WAVLM[1]), net)
+        models['wavlm'] = (AutoFeatureExtractor.from_pretrained(d), net)
     fe, net = models['wavlm']
     es = []
     for f in req['files']:

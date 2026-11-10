@@ -1307,7 +1307,8 @@ def ai_worker(op, timeout=180, **req):
             if p is None or p.poll() is not None:
                 with open(CACHE / 'ai-worker.log', 'w') as log:
                     p = WORKER['proc'] = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'worker.py'), '300' if RAM_GB >= 16 else '0'],
-                                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, env=AI_ENV)
+                                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True,
+                                                          env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # only the pinned, checksummed weights (ai/worker.py pinned())
             WORKER['n'] += 1
             hung = []
             kill = threading.Timer(timeout, lambda: (hung.append(1), p.kill()))
@@ -1922,18 +1923,19 @@ def comfy_upload(f, name):
         return json.loads(r.read()).get('name', name)
 
 
-def ai_talk(st, image, audio, a0=0.0, a1=None, prompt='', seed=None):
+def ai_talk(st, image, audio, a0=0.0, a1=None, prompt='', seed=None, length=None):
     try:
-        return ai_talk_(st, image, audio, a0, a1, prompt, seed)
+        return ai_talk_(st, image, audio, a0, a1, prompt, seed, length)
     finally:
         comfy_idle()
 
 
-def ai_talk_(st, image, audio, a0, a1, prompt, seed):
+def ai_talk_(st, image, audio, a0, a1, prompt, seed, length=None):
     """A picture speaks the audio's [a0, a1] (up to 30 s): Wan 2.2 S2V 14B (Apache-2.0) + lightx2v 4 steps on the 4090 PC,
     in 77-frame (4.8 s) pieces chained by WanSoundImageToVideoExtend, 16 fps, ~480p, the audio muxed in -> a library item.
     Its first frame comes out washed out (the reference frame): it is replaced by the second.
-    Talking photos use a portrait; lip sync uses the clip's first frame (the shot is re-animated to the dubbed speech)."""
+    This RE-ANIMATES a still picture (head, face and all): real footage is lip-synced by ai_lipsync instead, which keeps it.
+    length: the video comes out exactly that long (a photo clip keeps its length; speech that ends early = silence)."""
     im, au = meta(image), meta(audio)
     if im['kind'] != 'image':
         raise ValueError('start from a picture of a face')
@@ -1941,6 +1943,11 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed):
         raise ValueError(f"{au['name']} has no sound")
     a0 = fnum(a0, 0, 1e6)
     a1 = min(fnum(a1 if a1 is not None else au.get('duration') or 0, 0, 1e6), au.get('duration') or 1e6, a0 + 30)
+    if length is not None:
+        length = fnum(length, 0, 1e6)
+        if length > 30.001:
+            raise ValueError(f'a talking photo is 30 s at most and this photo clip is {length:.1f} s: split it (or shorten it) first')
+        a1 = a0 + length
     if a1 - a0 < 0.5:
         raise ValueError('the speech is too short (at least half a second)')
     dur, seed = a1 - a0, int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 2 ** 31
@@ -1954,7 +1961,7 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed):
     name = f'cutroom_{uuid.uuid4().hex[:8]}'
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         wav = Path(td) / f'{name}.wav'
-        r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{a0:.3f}', '-t', f'{dur:.3f}', '-i', str(MEDIA / au['file']), '-vn', '-ac', '1', '-ar', '16000', str(wav)])
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{a0:.3f}', '-t', f'{dur:.3f}', '-i', str(MEDIA / au['file']), '-vn', '-ac', '1', '-ar', '16000', '-af', 'apad', '-t', f'{dur:.3f}', str(wav)])
         if r.returncode:
             raise RuntimeError(plain('Reading the speech', r.stderr, r.returncode))
         img_name, wav_name = comfy_upload(MEDIA / im['file'], name + Path(im['file']).suffix), comfy_upload(wav, wav.name)
@@ -2002,7 +2009,8 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed):
             with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
                 f, g = Path(td) / 'v.mp4', Path(td) / 'talk.mp4'
                 f.write_bytes(vid)
-                r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(f), '-t', f'{dur:.3f}', '-vf', 'trim=start_frame=1,setpts=PTS-STARTPTS,tpad=start=1:start_mode=clone', '-c:v', 'libx264', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', str(g)])
+                r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(f), '-t', f'{dur:.3f}', '-vf', 'trim=start_frame=1,setpts=PTS-STARTPTS,tpad=start=1:start_mode=clone:stop=-1:stop_mode=clone',
+                        '-af', 'apad', '-c:v', 'libx264', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', str(g)])  # padded to exactly dur
                 if r.returncode:
                     raise RuntimeError(plain('Saving the talking video', r.stderr, r.returncode))
                 with open(g, 'rb') as fh:
@@ -2011,6 +2019,108 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed):
         st['progress'] = 0.1 + 0.85 * min(1, (time.time() - t0) / guess)
         time.sleep(3)
     raise RuntimeError('the GPU PC took over an hour')
+
+
+LS_DIR = 'B:/AI/LatentSync'  # ai/gpu_setup.ps1: LatentSync 1.6 at a pinned commit, its own venv, SHA-256-checked weights
+LS_MEM = 3.0e9  # bytes of frames per piece the PC holds (twice over, input + output): 20 s of 720p30, ~4 s of 4K60
+
+
+def win(p):
+    return p.replace('/', '\\')
+
+
+def gpu_run(cmd, timeout):
+    return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', GPU_HOST, cmd], capture_output=True, text=True, errors='replace', timeout=timeout)
+
+
+def ai_lipsync(st, media, t0, t1, speed, audio, a0):
+    """Lip sync REAL footage to new speech (a dub): LatentSync 1.6 on the 4090 PC (ai/lipsync_gpu.py) re-makes only the mouth
+    region of each frame and pastes it back, so the shot, its motion and everything outside the face stay the footage's own.
+    The clip's source [t0, t1] as it plays at `speed` (timeline time) against the audio from a0 -> a library video of exactly
+    that length (frames rounded up), so the clip keeps its length. Clips of any length: it runs in pieces of LS_MEM bytes of
+    frames (one model load); frames without a face come back unchanged."""
+    m, au = meta(media), meta(audio)
+    if m['kind'] != 'video':
+        raise ValueError('lip sync works on a video clip with a face')
+    if not au.get('hasAudio'):
+        raise ValueError(f"{au['name']} has no sound")
+    t0, t1, speed, a0 = fnum(t0, 0, 1e6), fnum(t1, 0, 1e6), fnum(speed, 0.05, 20), fnum(a0, 0, 1e6)
+    from fractions import Fraction
+    fps = Fraction(m.get('fps') or 30).limit_denominator(1001)
+    W, H, dur = int(m['w']) // 2 * 2, int(m['h']) // 2 * 2, (t1 - t0) / speed
+    n = math.ceil(dur * fps - 1e-6)
+    if n < 8:
+        raise ValueError('the clip is too short to lip sync (a third of a second at least)')
+    per = max(int(fps * 2), min(int(fps * 20), int(LS_MEM / (W * H * 3))))
+    k = math.ceil(n / per)
+    per = math.ceil(n / k)  # even pieces
+    gpu_reachable()
+    comfy_down()  # Cutroom's own ComfyUI (an AI video a minute ago) holds the GPU memory this needs
+    jid = uuid.uuid4().hex[:10]
+    rd = f'B:/AI/cutroom_ls/{jid}'
+    dec, vf = hdr_decode(m)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        td = Path(td)
+        src = td / 'src.mp4'  # the clip as it plays: its source span at its speed, the clip's own frame rate, BT.709
+        r = sh(['ffmpeg', '-v', 'error', '-y', *dec, '-ss', f'{t0:.4f}', '-i', str(MEDIA / m['file']), '-an', '-sws_flags', 'accurate_rnd+full_chroma_int',
+                '-vf', f'{vf}setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps},tpad=stop=-1:stop_mode=clone,scale={W}:{H},format=yuv420p', '-frames:v', str(n),
+                '-c:v', 'libx264', '-crf', '8', '-preset', 'fast', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', str(src)])
+        if r.returncode:
+            raise RuntimeError(plain('Reading the clip', r.stderr, r.returncode))
+        pieces = []
+        for i in range(k):
+            f0, f1 = i * per, min(n, (i + 1) * per)
+            v, a = td / f'p{i}.mp4', td / f'p{i}.wav'
+            r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vf', f"select='between(n,{f0},{f1 - 1})',setpts=N/FRAME_RATE/TB", '-c:v', 'libx264', '-crf', '8',
+                    '-preset', 'fast', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', str(v)])
+            # the speech of those frames, +0.5 s (LatentSync cuts its speech features per frame and wants them all; silence past the dub)
+            r2 = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{a0 + f0 / fps:.4f}', '-i', str(MEDIA / au['file']), '-vn', '-ac', '1', '-ar', '16000',
+                     '-af', 'apad', '-t', f'{(f1 - f0) / fps + 0.5:.4f}', str(a)])
+            if r.returncode or r2.returncode:
+                raise RuntimeError(plain('Cutting the clip into pieces', r.stderr + r2.stderr, r.returncode or r2.returncode))
+            pieces.append({'video': f'{rd}/p{i}.mp4', 'audio': f'{rd}/p{i}.wav', 'out': f'{rd}/o{i}.mp4', 'n': f1 - f0})
+        src.unlink()
+        shutil.copy(AI_DIR / 'lipsync_gpu.py', td)  # this checkout's copy, so the PC never runs a stale one
+        (td / 'job.json').write_text(json.dumps({'pieces': pieces, 'w': W, 'h': H, 'fps': str(fps), 'steps': 20, 'guidance': 1.5, 'seed': 1247}))
+        st['progress'] = 0.05
+        try:
+            gpu_run(f'cmd /c mkdir "{win(rd)}"', 30)
+            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[str(f) for f in sorted(td.iterdir())], f'{GPU_HOST}:{rd}/'], capture_output=True, text=True, timeout=1800)
+            if r.returncode:
+                raise RuntimeError('could not copy the clip to the GPU PC: ' + r.stderr.strip()[-200:])
+            run = f'cd /d {win(LS_DIR)} && .venv\\Scripts\\python.exe -E -s {win(rd)}\\lipsync_gpu.py {win(rd)}\\job.json'
+            p = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', GPU_HOST, f'cmd /c "{run} 2>&1"'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            log, done, faces, t_start = [], 0, 0, time.time()
+            for line in p.stdout:
+                log.append(line)
+                if mm := re.match(r'piece (\d+) (\d+) (\d+)', line):
+                    done += 1
+                    faces += int(mm[3])
+                st['progress'] = 0.05 + 0.85 * min(1, (done + min(0.95, (time.time() - t_start) / (20 + 6 * per / fps))) / k)  # ~6 s per second of 720p + model load
+            if p.wait() or done < k:
+                tail = ''.join(log[-8:]).strip()
+                raise RuntimeError('the GPU PC could not lip sync: ' + (re.findall(r'[^\r\n]+', tail) or ['no output'])[-1][-300:])
+            if not faces:
+                raise ValueError('no face found in the clip: lip sync needs a face turned towards the camera')
+            outs = [td / f'o{i}.mp4' for i in range(k)]
+            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[f'{GPU_HOST}:{rd}/o{i}.mp4' for i in range(k)], str(td)], capture_output=True, text=True, timeout=1800)
+            if r.returncode or not all(f.exists() for f in outs):
+                raise RuntimeError('could not copy the lip-synced video back from the GPU PC: ' + r.stderr.strip()[-200:])
+        finally:
+            try:
+                gpu_run(f'cmd /c rmdir /s /q "{win(rd)}"', 60)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        (td / 'list.txt').write_text(''.join(f"file '{f}'\n" for f in outs))
+        g = td / 'synced.mp4'  # the pieces joined as they are (same encoder settings), with the speech it was synced to
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(td / 'list.txt'), '-ss', f'{a0:.4f}', '-i', str(MEDIA / au['file']),
+                '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-af', 'apad', '-t', f'{n / fps:.4f}', str(g)])
+        if r.returncode:
+            raise RuntimeError(plain('Joining the lip-synced pieces', r.stderr, r.returncode))
+        with open(g, 'rb') as fh:
+            cut = import_file(f"Lip-synced - {Path(m['name']).stem[:40]}.mp4", fh, g.stat().st_size, background=False)
+    return {'media': cut['id'], 'frames': n, 'faces': faces, 'pieces': k}
 
 
 def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
@@ -3888,7 +3998,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(ai_dub, str(body.get('voice', '')), str(body.get('lang', '')), list(body.get('items') or []))})
             if u.path == '/api/ai/talk':
                 return self.reply({'job': run_job(ai_talk, str(body.get('image', '')), str(body.get('audio', '')), body.get('a0', 0), body.get('a1'),
-                                                  body.get('prompt', ''), body.get('seed'))})
+                                                  body.get('prompt', ''), body.get('seed'), body.get('length'))})
+            if u.path == '/api/ai/lipsync':
+                return self.reply({'job': run_job(ai_lipsync, str(body.get('media', '')), body.get('t0', 0), body.get('t1', 0), body.get('speed', 1),
+                                                  str(body.get('audio', '')), body.get('a0', 0))})
             if m := re.fullmatch(r'/api/ai/clones/([a-f0-9]{12})/trash', u.path):  # reversible, like media: voices/<id>.* -> trash/voices
                 (HOME / 'trash' / 'voices').mkdir(parents=True, exist_ok=True)
                 for f in VOICES.glob(f'{m[1]}.*'):

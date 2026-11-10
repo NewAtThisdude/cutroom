@@ -204,11 +204,13 @@ TOOLS = [
                   'time (0.8-1.25x; too long = said shorter), as a new audio clip; the clips\' own sound is ducked (original=duck) or muted (mute). '
                   'lang = a code from voices (es, fr, de, ...); voice = a cloned voice id (default: the one picked in the AI tab). The captions become the translation.',
      S({'lang': txt, 'voice': txt, 'original': {'type': 'string', 'enum': ['duck', 'mute']}}, ['lang']), 'dub_video'),
-    ('lip_sync', "Lip sync a main-track video clip to the dub under it, on the user's RTX 4090 PC (Wan 2.2 S2V: the shot is re-animated from its first frame "
-                 'to the dubbed speech, ~1 min per 5 s, 30 s at most). The clip switches to the new video (muted: the dub plays the sound). Fails clearly when the PC is off.',
-     S({'clip': txt, 'seed': {'type': 'integer'}}), 'lip_sync'),
-    ('talking_photo', "Make a portrait photo talk, on the user's RTX 4090 PC (Wan 2.2 S2V, ~1 min per 5 s, 30 s at most): image + audio (library ids or names), "
-                      'or clip = a photo clip on the timeline, which speaks the audio clip under it and becomes the talking video. prompt = how they move.',
+    ('lip_sync', "Lip sync a main-track video clip to the dub under it, on the user's RTX 4090 PC (LatentSync 1.6): only the mouth region of the ORIGINAL "
+                 'footage is re-made and pasted back, so the shot, its motion and everything outside the face stay as filmed. Any length (long clips run in '
+                 'pieces); the clip keeps its length and switches to the new video (muted: the dub plays the sound). Fails clearly when the PC is off.',
+     S({'clip': txt}), 'lip_sync'),
+    ('talking_photo', "Make a portrait photo talk, on the user's RTX 4090 PC (Wan 2.2 S2V re-animates the still: head, face and all; ~1 min per 5 s, 30 s at most): "
+                      'image + audio (library ids or names), or clip = a photo clip on the timeline (30 s at most, it keeps its length), which speaks the audio '
+                      'clip under it and becomes the talking video. prompt = how they move.',
      S({'image': txt, 'audio': txt, 'clip': txt, 'prompt': txt, 'at': num, 'seed': {'type': 'integer'}}), 'talking_photo'),
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),

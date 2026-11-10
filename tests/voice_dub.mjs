@@ -1,12 +1,14 @@
 // Voice clone, AI dubbing, lip sync and talking photo, end to end in headless WebKit with the real models:
 // Chatterbox (clone + Spanish dub, this Mac), WavLM (speaker similarity), whisper (captions), the local LLM (translation),
-// Wan 2.2 S2V on the RTX 4090 PC (talking photo, lip sync). Acceptance, measured on the files, not on what the server says:
+// LatentSync 1.6 (lip sync of real footage) and Wan 2.2 S2V (talking photo) on the RTX 4090 PC. Acceptance, measured on the files:
 //   clone: speaker-embedding cosine to the reference above the closest stock voice; consent is required
-//   dub: a 30 s English clip into Spanish, every sentence's speech inside its slot +-150 ms (energy of the dub WAV)
-//   talking photo / lip sync: imported, decodes, plays (export-engine frame of a face, the playhead moves); how well the
-//     mouth follows the speech is measured and printed (Vision inner-lip height vs the audio envelope), not gated: too noisy on 8 s
+//   dub: a 30 s English clip into Spanish, every sentence's speech inside its slot +-150 ms (energy of the dub WAV), tempo 0.8-1.25x
+//   lip sync: two 40 s clips of a real face (podcast-episode) dubbed into Spanish: each keeps its length and place; the mouth
+//     (Vision inner-lip opening) follows the new speech's envelope: r above the 90th percentile of 40 controls (the same speech
+//     circularly shifted 1-38 s) and 0.1 above the original mouth's r; outside the face, PSNR > 40 dB against the original frames
+//   talking photo: imported, decodes, plays; a photo clip keeps its length; past 30 s it is refused and nothing moves
 //   the 4090 unreachable: a plain refusal within seconds (a second server pointed at a host that does not exist)
-// Needs: ai/setup.sh, Ollama, the PC on (ai/gpu_setup.sh). ~12 min.   CUTROOM_HOME=<lib> B=http://127.0.0.1:<port> node voice_dub.mjs [section]
+// Needs: ai/setup.sh, Ollama, the PC on (ai/gpu_setup.sh). ~30 min.   CUTROOM_HOME=<lib> B=http://127.0.0.1:<port> node voice_dub.mjs [section]
 import { webkit } from 'playwright';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -30,12 +32,31 @@ const mouth = f => { // inner-lip opening / face height per frame (Vision, tools
   return out.map(r => { const fc = r.faces[0], p = fc?.pts?.ilips; if (!p) return { t: r.t, o: NaN }; const ys = p.filter((_, i) => i % 2); return { t: r.t, o: (Math.max(...ys) - Math.min(...ys)) / fc.box[3] }; });
 };
 const env = (a, ts, w = 1 / 16) => ts.map(t => { const i0 = Math.max(0, Math.round((t - w / 2) * 16000)), i1 = Math.min(a.length, Math.round((t + w / 2) * 16000)); let s = 0; for (let i = i0; i < i1; i++) s += a[i] * a[i]; return Math.sqrt(s / Math.max(1, i1 - i0)); });
-const lipScore = (vid, wav, a0, dur) => { // correlation of the mouth with the speech, best over lags -0.25..+0.15 s, next to the same with the speech
-  // shifted 0.6-12 s (20 controls: what chance gives). Reported only: on 8 s (128 frames) this measure is too noisy to gate on.
-  const m = mouth(vid).filter(x => Number.isFinite(x.o) && x.t < dur), ts = m.map(x => x.t), o = m.map(x => x.o), a = pcm(wav, a0, dur + 13);
-  const best = off => Math.max(...[-0.25, -0.2, -0.15, -0.1, -0.05, 0, 0.05, 0.1, 0.15].map(l => corr(o, env(a, ts.map(t => t + off + l)))));
-  const ctl = Array.from({ length: 20 }, (_, k) => best((k + 1) * 0.6)).sort((x, y) => x - y);
-  return { r: +best(0).toFixed(3), med: +ctl[10].toFixed(3), p90: +ctl[18].toFixed(3), frames: m.length };
+// how well a mouth follows a speech: correlation of the inner-lip opening with the speech envelope (best over lags -0.25..+0.15 s),
+// next to the same with the speech circularly shifted by 1 s .. dur-1 s (controls = what chance gives on THIS footage and speech)
+const lipScore = (vid, wav, a0, dur, nctl = 40) => {
+  const m = mouth(vid).filter(x => Number.isFinite(x.o) && x.t < dur), ts = m.map(x => x.t), o = m.map(x => x.o), a = pcm(wav, a0, dur);
+  const E = env(a, Array.from({ length: Math.ceil(dur * 100) }, (_, i) => i / 100)), at = t => E[Math.round((((t % dur) + dur) % dur) * 100) % E.length];
+  const best = off => Math.max(...[-0.25, -0.2, -0.15, -0.1, -0.05, 0, 0.05, 0.1, 0.15].map(l => corr(o, ts.map(t => at(t + off + l)))));
+  const ctl = Array.from({ length: nctl }, (_, k) => best(1 + k * (dur - 2) / (nctl - 1))).sort((x, y) => x - y), q = p => ctl[Math.min(nctl - 1, Math.floor(p * nctl))];
+  return { r: +best(0).toFixed(3), med: +q(0.5).toFixed(3), p90: +q(0.9).toFixed(3), max: +ctl.at(-1).toFixed(3), frames: m.length, controls: nctl };
+};
+// PSNR of the frames OUTSIDE the face (Vision's face box grown to forehead..neck) between two videos, on frames sampled every `step` s
+const outsidePSNR = (a, b, dur, step = 1) => {
+  const faces = execFileSync(`${ROOT}tools/retouch`, [a, '0', `${dur}`], { maxBuffer: 1 << 28 }).toString().trim().split('\n').map(l => JSON.parse(l));
+  const [w, h] = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', a]).toString().trim().split(',').map(Number);
+  const grab = (f, t) => execFileSync('ffmpeg', ['-v', 'error', '-ss', `${t}`, '-i', f, '-frames:v', '1', '-sws_flags', 'accurate_rnd+full_chroma_int', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 28 });
+  const out = [];
+  for (let t = 0.5; t < dur - 0.2; t += step) {
+    const fr = faces.reduce((p, x) => Math.abs(x.t - t) < Math.abs(p.t - t) ? x : p), f = fr.faces[0];
+    if (!f) continue;
+    const [bx, by, bw, bh] = f.box, x0 = (bx - 0.4 * bw) * w, x1 = (bx + 1.4 * bw) * w, y0 = (by - 0.4 * bh) * h, y1 = (by + 1.5 * bh) * h;
+    const A = grab(a, fr.t + 0.001), Bb = grab(b, fr.t + 0.001);
+    let se = 0, n = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { if (x >= x0 && x < x1 && y >= y0 && y < y1) continue; const i = 3 * (y * w + x); for (let c = 0; c < 3; c++) { const d = A[i + c] - Bb[i + c]; se += d * d; } n += 3; }
+    out.push(10 * Math.log10(255 * 255 / Math.max(se / n, 1e-9)));
+  }
+  return { min: +Math.min(...out).toFixed(1), median: +out.sort((x, y) => x - y)[out.length >> 1].toFixed(1), frames: out.length };
 };
 const SCRIPT = 'Welcome back to the workshop. Today we are swapping the turbochargers on this engine. First, we drain the coolant and take off the intake pipes. ' +
   'Then the downpipes come off, which is the hardest part of the whole job. The old turbos are worn out, and you can see the damaged blades on both of them. ' +
@@ -152,26 +173,63 @@ if (dub && (run('talk') || run('lip'))) {
     check('...it plays in the edit (export-engine frame at 4 s is a picture, not blank)', im > 20, `luma spread ${im.toFixed(1)}`);
     const played = await ev(async () => { S.t = 1; play(); await sleep(1500); const t = S.t; pause(); return t; }).catch(e => 'ERR ' + e.message);
     check('...and the preview plays it (the playhead moves)', typeof played === 'number' && played > 1.5, played);
-    const ls = lipScore(f, await file(dub.media), 0, 8);
-    console.log(`   measured, not gated: mouth opening vs its speech r = ${ls.r}; vs the same speech shifted 1-12 s: median ${ls.med}, 90th percentile ${ls.p90}`);
     const log = await ev(() => window.SAID['#lsStatus']);
     check('...it showed progress on the GPU PC', log.some(x => /on the GPU PC… \d+ ?(%|s)/.test(x)), log.filter(x => /GPU/.test(x)).slice(-1).join(''));
   }
+  // past 30 s: refused in words, before any GPU work, and nothing on the timeline moves
+  const long = await ev(async ([img, d]) => {
+    setProject(newProject('16:9')); P.name = 'Talking photo 40 s (scratch)';
+    addMedia(img, 'main'); P.main[0].out = 40; addMedia(img, 'main'); P.main[1].out = 5; addMedia(d, 'audio', 0); packMain(); renderAll();
+    const was = JSON.stringify(P.main.map(c => [c.media, c.start, c.in, c.out]));
+    const r = await REMOTE.talking_photo({ clip: P.main[0].id }).then(() => 'made', e => e.message);
+    return { r, same: JSON.stringify(P.main.map(c => [c.media, c.start, c.in, c.out])) === was };
+  }, [PORTRAIT.id, dub.media]);
+  check('Talking photo on a 40 s photo clip: refused in words (30 s at most), the timeline untouched', /30 s at most/.test(long.r) && long.same, JSON.stringify(long));
 }
 
-// ---------- lip sync (4090): the talking video (it says the dub's first 8 s) re-synced to the dub's next 8 s ----------
-if (talk && run('lip')) {
-  await fresh('Lip sync');
-  const cid = await ev(([v, d]) => { addMedia(v, 'main'); const c = P.main[0].id; addMedia(d, 'audio', 0); Object.assign(P.audio[0], { in: 8, out: 16, dub: 'es' }); S.sel = { lane: 'main', id: c }; renderAll(); return c; }, [talk, dub.media]);
-  const t0 = Date.now();
-  const r = await ev(id => REMOTE.lip_sync({ clip: id }).then(x => x, e => ({ err: e.message })), cid);
-  check('Lip sync clip: the clip switched to a re-synced video', !r.err && r.media && r.media !== talk && r.clip?.volume === 0, r.err || `${JSON.stringify(r.clip).slice(0, 200)}, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  if (!r.err) {
-    const f = await file(r.media), now = lipScore(f, await file(dub.media), 8, 8), old = lipScore(f, await file(dub.media), 0, 8);
-    execFileSync('ffmpeg', ['-v', 'error', '-i', f, '-f', 'null', '-']);
-    const im = await ev(async () => { const r = await REMOTE.snapshot({ t: 4, max: 320 }); const i = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(i.width, i.height), g = c.getContext('2d'); g.drawImage(i, 0, 0); const d = g.getImageData(0, 0, i.width, i.height).data; let s = 0, s2 = 0; for (let k = 0; k < d.length; k += 4) { s += d[k]; s2 += d[k] * d[k]; } const n = d.length / 4; return Math.sqrt(s2 / n - (s / n) ** 2); });
-    check('...the re-synced video decodes and plays in the edit (export-engine frame at 4 s is a picture)', im > 20, `luma spread ${im.toFixed(1)}`);
-    console.log(`   measured, not gated: mouth vs the new speech (dub 8-16 s) r = ${now.r} (controls median ${now.med}, p90 ${now.p90}); vs the old speech (0-8 s) r = ${old.r}`);
+// ---------- lip sync (4090, LatentSync) on real footage: two 40 s clips of a face (podcast-episode) dubbed into Spanish ----------
+// both clips are past the 30 s that one GPU piece holds: each must keep its length, and nothing else on the timeline may move.
+// Acceptance, on the files: the new mouth follows the Spanish speech (r above the 90th percentile of 40 time-shifted controls,
+// and above the original mouth's r), and the frames outside the face are the original's (PSNR > 40 dB)
+if (voice && run('lip')) {
+  const POD = (await get('/api/media')).find(m => m.name === 'podcast-episode.mp4');
+  check('the podcast-episode fixture (a face talking, 94 s) is in the library', POD && POD.duration > 85, POD?.duration);
+  if (POD) {
+    await fresh('Lip sync');
+    await ev(id => { addMedia(id, 'main', 0, [0, 40]); addMedia(id, 'main', 40, [40, 80]); packMain(); S.t = 0; renderAll(); }, POD.id);
+    const d = await ev(() => dubVideo({ lang: 'es', original: 'mute' }).then(x => x, e => ({ err: e.message })));
+    check('...dubbed into Spanish (80 s of it)', !d.err && d.sentences?.length >= 8, d.err || `${d.sentences.length} sentences`);
+    if (!d.err) {
+      const shape = () => ev(() => ({ main: P.main.map(c => ({ id: c.id, media: c.media, start: +c.start.toFixed(4), len: +len(c).toFixed(4) })), total: +total().toFixed(4) }));
+      const before = await shape(), runs = [];
+      for (const k of [0, 1]) {
+        const t0 = Date.now();
+        const r = await ev(id => REMOTE.lip_sync({ clip: id }).then(x => x, e => ({ err: e.message })), before.main[k].id);
+        runs.push({ ...r, secs: (Date.now() - t0) / 1000 });
+        check(`Lip sync clip ${k + 1} (40 s): done, in pieces, a face in most frames`, !r.err && r.pieces >= 2 && r.faces > 0.9 * r.frames,
+          r.err || `${r.pieces} pieces, faces in ${r.faces}/${r.frames} frames, ${runs.at(-1).secs.toFixed(0)} s`);
+      }
+      const after = await shape();
+      check('...both clips kept their 40 s and their places, the edit its length (only the media changed)', after.main.length === 2 && after.total === before.total
+        && after.main.every((c, i) => c.id === before.main[i].id && c.start === before.main[i].start && c.len === before.main[i].len && c.media !== POD.id),
+        JSON.stringify({ before, after }));
+      const dubf = await file(d.media), orig = await file(POD.id);
+      for (const [k, r] of runs.entries()) {
+        if (r.err) continue;
+        const f = await file(r.media), a0 = 40 * k;
+        const pr = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames,width,height,r_frame_rate', '-of', 'json', f]).toString()).streams[0];
+        check(`...clip ${k + 1}: a whole 1280x720 30 fps video of 1200 frames`, pr.width === 1280 && pr.height === 720 && pr.r_frame_rate === '30/1' && +pr.nb_read_frames === 1200, JSON.stringify(pr));
+        const now = lipScore(f, dubf, a0, 40);
+        const cut = `${tmp}/src${k}.mp4`; // the original span, near-lossless: its mouth against the same Spanish speech (the pauses line up), and its frames
+        execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', `${a0}`, '-i', orig, '-t', '40', '-an', '-c:v', 'libx264', '-crf', '4', cut]);
+        const base = lipScore(cut, dubf, a0, 40);
+        console.log(`   clip ${k + 1}: mouth vs the Spanish speech r = ${now.r} over ${now.frames} frames; ${now.controls} shifted controls: median ${now.med}, p90 ${now.p90}, max ${now.max}; the original mouth r = ${base.r}`);
+        check(`...clip ${k + 1}: the mouth follows the new speech (r above the controls' 90th percentile and the original's)`, now.frames >= 1100 && now.r > now.p90 && now.r > base.r + 0.1,
+          `r ${now.r}, p90 ${now.p90}, original ${base.r}, n ${now.frames}`);
+        const q = outsidePSNR(cut, f, 40, 2);
+        check(`...clip ${k + 1}: outside the face the frames are the original's (PSNR > 40 dB)`, q.frames >= 15 && q.min > 40, JSON.stringify(q));
+      }
+    }
   }
 }
 
