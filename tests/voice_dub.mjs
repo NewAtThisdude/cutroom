@@ -8,6 +8,8 @@
 //     circularly shifted 1-38 s) and 0.1 above the original mouth's r; outside the face, PSNR > 40 dB against the original frames
 //   talking photo: imported, decodes, plays; a photo clip keeps its length; past 30 s it is refused and nothing moves
 //   the 4090 unreachable: a plain refusal within seconds (a second server pointed at a host that does not exist)
+//   gating: lip sync / talking photo (buttons and MCP tools) show only while the GPU PC is set up and answering; when it is
+//     not, their sections print SKIP and the hidden state, the hint and the MCP refusal are checked instead
 // Needs: ai/setup.sh, Ollama, the PC on (ai/gpu_setup.sh). ~30 min.   CUTROOM_HOME=<lib> B=http://127.0.0.1:<port> node voice_dub.mjs [section]
 import { webkit } from 'playwright';
 import { execFileSync, spawn } from 'node:child_process';
@@ -77,19 +79,28 @@ const run = name => !only || name.includes(only);
 const ready = ids => page.waitForFunction(ids => { loadMedia(); return ids.every(id => M.get(id)?.ready); }, ids, { timeout: 120000, polling: 2000 });
 
 let ORIG = null, PORTRAIT = null;
+const skip = (name, why) => console.log(`SKIP ${name}  [${why}]`);
+let GPU = (await get('/api/ai/status')).gpu; // the server's cached check of the GPU PC (its first one runs at start, ~3 s when the PC is off)
+for (let i = 0; i < 20 && GPU.configured && !GPU.checked; i++) { await new Promise(r => setTimeout(r, 500)); GPU = (await get('/api/ai/status')).gpu; }
+const GPU_ON = !!GPU.reachable;
 try {
 // ---------- fixtures: a 30 s English talk (a Kokoro voice that is not one of the stock baselines) on a video ----------
-ORIG = (await get('/api/media')).find(m => m.name === 'voice-dub-30s-v2.mp4');
-if (!ORIG) {
-  const v = await job('/api/ai/voice', { text: SCRIPT, voice: 'am_eric', speed: 1 });
-  const f = `${tmp}/voice-dub-30s-v2.mp4`;
-  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30', '-i', await file(v.media), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', f]);
-  ORIG = await (await fetch(`${B}/api/import?name=voice-dub-30s-v2.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
-  await fetch(`${B}/api/media/${v.media}/trash`, { method: 'POST', headers: H, body: '{}' });
+ORIG = (await get('/api/media')).find(m => m.name === 'voice-dub-30s-v3.mp4');
+if (!ORIG) { // one Kokoro take per sentence, its silences trimmed, 0.6 s apart: one take of the whole script came out with whisper hearing commas for most full stops
+  // (Kokoro is not bit-exact run to run), so the dub had 3 sentence slots instead of 10; separate takes end each sentence clearly, so
+  // whisper hears the full stops (its word times often run on over the 0.6 s pauses, so they alone do not split the slots)
+  const parts = [];
+  for (const text of SCRIPT.split(/(?<=\.)\s+/)) parts.push((await job('/api/ai/voice', { text, voice: 'am_eric', speed: 1 })).media);
+  const f = `${tmp}/voice-dub-30s-v3.mp4`, ins = [];
+  for (const id of parts) ins.push('-i', await file(id));
+  const fc = parts.map((_, i) => `[${i + 1}:a]aresample=24000,silenceremove=start_periods=1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_threshold=-50dB,areverse,apad=pad_dur=0.6[a${i}]`).join(';') + ';' + parts.map((_, i) => `[a${i}]`).join('') + `concat=n=${parts.length}:v=0:a=1[a]`;
+  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30', ...ins, '-filter_complex', fc, '-map', '0:v', '-map', '[a]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', f]);
+  ORIG = await (await fetch(`${B}/api/import?name=voice-dub-30s-v3.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+  for (const id of parts) await fetch(`${B}/api/media/${id}/trash`, { method: 'POST', headers: H, body: '{}' });
 }
 await ready([ORIG.id]);
 await ev(() => loadMedia());
-check('the English test clip is about 30 s', ORIG.duration > 26 && ORIG.duration < 36, ORIG.duration);
+check('the English test clip is 26-40 s (10 sentences)', ORIG.duration > 26 && ORIG.duration < 40, ORIG.duration);
 let voice = null, dub = null, talk = null;
 
 // ---------- clone ----------
@@ -148,7 +159,28 @@ if (voice && (run('dub') || run('lip'))) {
 
 // ---------- talking photo (4090) ----------
 PORTRAIT = (await get('/api/media')).find(m => m.name.startsWith('AI image - studio portrait, voice-dub test'));
-if (dub && (run('talk') || run('lip'))) {
+// ---------- the GPU PC's tools are gated: shown only while it is set up and answering ----------
+if (run('gpu') || run('lip') || run('talk') || !only) {
+  const t0 = Date.now(), st = await get('/api/ai/status'), ms = Date.now() - t0;
+  check('the AI status answers at once whatever the GPU PC does (cached check)', ms < 1000 && 'reachable' in st.gpu, `${ms} ms, ${JSON.stringify(st.gpu)}`);
+  await ev(() => loadAI());
+  await page.click('.rail [data-tab="ai"]');
+  const ui = await ev(() => ({ tools: !$('#gpuTools').hidden, hint: $('#gpuHint').hidden ? '' : $('#gpuHint').textContent, lip: $('#btnLipSync').getBoundingClientRect().width > 0 }));
+  check(`the AI tab: lip sync / talking photo ${GPU_ON ? 'shown (the PC answers)' : 'hidden, with a hint (the PC does not answer)'}`,
+    GPU_ON ? ui.tools && ui.lip && !ui.hint : !ui.tools && !ui.lip && /needs the 4090 PC/i.test(ui.hint), JSON.stringify(ui));
+  if (!GPU_ON) {
+    const r = await ev(() => Promise.all([REMOTE.lip_sync({}), REMOTE.talking_photo({})].map(p => p.then(() => 'ran', e => e.message))));
+    check('...and the MCP commands refuse in words, at once', r.every(x => /needs the 4090 PC/i.test(x)), r.join(' | '));
+  }
+  const mcp = spawn('python3', ['-I', `${ROOT}mcp/cutroom_mcp.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_PORT: new URL(B).port }, stdio: ['pipe', 'pipe', 'ignore'] });
+  const listed = await new Promise((res, rej) => { let buf = ''; mcp.stdout.on('data', d => { buf += d; const l = buf.split('\n').find(x => x.includes('"id": 2') || x.includes('"id":2')); if (l) res(JSON.parse(l).result.tools.map(t => t.name)); }); setTimeout(() => rej(new Error('no MCP answer')), 15000);
+    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n' + JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n'); }).finally(() => mcp.kill());
+  const has = ['lip_sync', 'talking_photo'].filter(n => listed.includes(n));
+  check(`the MCP tool list ${GPU_ON ? 'has' : 'leaves out'} lip_sync / talking_photo (clone_voice and dub_video always there)`,
+    (GPU_ON ? has.length === 2 : !has.length) && listed.includes('clone_voice') && listed.includes('dub_video'), `${listed.length} tools; GPU tools listed: ${has.join(', ') || 'none'}`);
+}
+if (!GPU_ON && (run('talk') || run('lip'))) skip('talking photo and lip sync on the GPU PC', `${GPU.host} is ${GPU.configured ? 'not answering' : 'not set up'}`);
+if (GPU_ON && dub && (run('talk') || run('lip'))) {
   if (!PORTRAIT) {
     const j = await job('/api/ai/image', { prompt: 'studio portrait, voice-dub test: a friendly man in his thirties looking straight at the camera, head and shoulders, mouth closed, soft light, plain grey background', w: 832, h: 1216, seed: 7 });
     PORTRAIT = { id: j.media };
@@ -191,7 +223,7 @@ if (dub && (run('talk') || run('lip'))) {
 // both clips are past the 30 s that one GPU piece holds: each must keep its length, and nothing else on the timeline may move.
 // Acceptance, on the files: the new mouth follows the Spanish speech (r above the 90th percentile of 40 time-shifted controls,
 // and above the original mouth's r), and the frames outside the face are the original's (PSNR > 40 dB)
-if (voice && run('lip')) {
+if (GPU_ON && voice && run('lip')) {
   const POD = (await get('/api/media')).find(m => m.name === 'podcast-episode.mp4');
   check('the podcast-episode fixture (a face talking, 94 s) is in the library', POD && POD.duration > 85, POD?.duration);
   if (POD) {
@@ -235,14 +267,22 @@ if (voice && run('lip')) {
 
 // ---------- the 4090 unreachable: a second server pointed at a host that does not exist, its own tunnel port ----------
 if (run('offline')) {
+  let img = PORTRAIT?.id || (await get('/api/media')).find(m => m.kind === 'image')?.id;
+  if (!img) { // a fresh library has no picture (the portrait is only made with the PC on): any still will do, the job must refuse before using it
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=512x512', '-frames:v', '1', `${tmp}/still.png`]);
+    img = (await (await fetch(`${B}/api/import?name=voice-dub-still.png`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${tmp}/still.png`) })).json()).id;
+  }
   const port = await new Promise(r => { const q = net.createServer().listen(0, '127.0.0.1', () => { const p = q.address().port; q.close(() => r(p)); }); }); // a free port (another agent's server may hold any fixed one)
   const srv = spawn('python3', ['-I', `${ROOT}server.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_HOME: LIB, CUTROOM_PORT: `${port}`, CUTROOM_GPU_HOST: 'cutroom-no-such-pc.invalid', CUTROOM_COMFY_PORT: '18199' }, stdio: 'ignore' });
   const B2 = `http://127.0.0.1:${port}`;
   try {
     for (let i = 0; i < 40; i++) { try { if ('cloneReady' in await (await fetch(`${B2}/api/ai/status`)).json()) break; } catch { await new Promise(r => setTimeout(r, 250)); } }
-    const img = PORTRAIT?.id || (await get('/api/media')).find(m => m.kind === 'image')?.id, aud = dub?.media || (await get('/api/media')).find(m => m.kind === 'audio')?.id;
+    const aud =dub?.media || (await get('/api/media')).find(m => m.kind === 'audio')?.id;
     const t0 = Date.now(), j = await job('/api/ai/talk', { image: img, audio: aud, a0: 0, a1: 3 }, B2), secs = (Date.now() - t0) / 1000;
     check('PC off: the talking photo / lip sync job refuses in a plain sentence, fast', j.state === 'error' && /not reachable/.test(j.error) && secs < 30, `${secs.toFixed(1)} s: ${j.error}`);
+    let g2 = {};
+    for (let i = 0; i < 20 && !g2.checked; i++) { await new Promise(r => setTimeout(r, 500)); g2 = (await (await fetch(`${B2}/api/ai/status`)).json()).gpu; }
+    check('...and its AI status says configured, not reachable (so the tools stay hidden)', g2.configured && g2.checked && !g2.reachable, JSON.stringify(g2));
   } finally { srv.kill(); }
 }
 } catch (e) { check('the suite ran to the end', false, String(e.message).split('\n')[0]); }
@@ -254,7 +294,7 @@ await p2.goto(`${B}/`, { waitUntil: 'load' });
 await p2.waitForFunction(() => typeof G !== 'undefined' && G.ai, null, { timeout: 30000 });
 await p2.click('.rail [data-tab="ai"]');
 await p2.locator('#btnDub').scrollIntoViewIfNeeded();
-const fit = await p2.evaluate(() => { const pane = $('#tab-ai'), r = pane.getBoundingClientRect(); return ['#btnClone', '#btnVcDel', '#vcVoice', '#dubLang', '#btnDub', '#btnLipSync', '#btnTalk'].every(s => { const q = $(s).getBoundingClientRect(); return q.width > 20 && q.left >= r.left - 1 && q.right <= r.right + 1; }) && pane.scrollWidth <= pane.clientWidth + 1; });
+const fit = await p2.evaluate(() => { const pane = $('#tab-ai'), r = pane.getBoundingClientRect(); return ['#btnClone', '#btnVcDel', '#vcVoice', '#dubLang', '#btnDub', ...($('#gpuTools').hidden ? ['#gpuHint'] : ['#btnLipSync', '#btnTalk'])].every(s => { const q = $(s).getBoundingClientRect(); return q.width > 20 && q.left >= r.left - 1 && q.right <= r.right + 1; }) && pane.scrollWidth <= pane.clientWidth + 1; });
 check('reduced motion off too: the clone / dub / lip sync controls show and fit the pane', fit);
 await ctx2.close();
 

@@ -185,9 +185,12 @@
       <button id="btnDub" class="primary wide">Dub the video</button>
       <p id="dubStatus" class="muted"></p>
       <h4>Lip sync and talking photo</h4>
+      <p id="gpuHint" class="hint">Needs the 4090 PC.</p>
+      <div id="gpuTools" hidden>
       <p class="hint">On your RTX 4090 PC. Lip sync re-makes only the mouth in the selected clip to follow the dub under it (LatentSync): the shot, its motion and everything around the face stay as filmed, any length. Talking photo re-animates the selected portrait to say the audio under it (Wan 2.2 S2V, up to 30 s, about a minute per 5 s).</p>
       <div class="actions"><button id="btnLipSync">Lip sync clip</button><button id="btnTalk">Talking photo</button></div>
       <p id="lsStatus" class="muted"></p>
+      </div>
       <h4>Animate a picture (AI video)</h4>
       <p class="hint">The selected photo, or the selected video's frame at the playhead, comes to life for about 5 s. Made on your RTX 4090 PC (Wan 2.2), so this Mac stays cool; about 2 minutes, plus a minute the first time.</p>
       <textarea id="aivPrompt" rows="2" placeholder="What happens: the camera slowly pushes in, she turns and smiles" spellcheck="true"></textarea>

@@ -51,6 +51,16 @@ def http(path, body=None, timeout=30):
         return json.loads(r.read() or b'{}')
 
 
+GPU_TOOLS = ('lip_sync', 'talking_photo')  # run on the GPU PC only: listed while it is set up and answering
+
+
+def gpu_up():  # the server's cached check (never a wait on a sleeping PC); no server = not listed
+    try:
+        return bool(http('/api/ai/status', timeout=3).get('gpu', {}).get('reachable'))
+    except (OSError, ValueError):
+        return False
+
+
 def connected():
     try:
         return bool(http('/api/remote/status', timeout=3).get('connected'))
@@ -283,7 +293,7 @@ def handle(msg):
         return send({'jsonrpc': '2.0', 'id': mid, 'result': {'protocolVersion': params.get('protocolVersion', '2025-06-18'), 'capabilities': {'tools': {}},
                                                               'serverInfo': {'name': 'cutroom', 'version': '1.0'}, 'instructions': INSTRUCTIONS}})
     if method == 'tools/list':
-        return send({'jsonrpc': '2.0', 'id': mid, 'result': {'tools': SCHEMAS}})
+        return send({'jsonrpc': '2.0', 'id': mid, 'result': {'tools': [t for t in SCHEMAS if t['name'] not in GPU_TOOLS or gpu_up()]}})
     if method == 'tools/call':
         try:
             content, err = call_tool(params.get('name'), params.get('arguments') or {}), False

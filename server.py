@@ -1899,6 +1899,49 @@ S2V = {'unet': 'wan2.2_s2v_14B_fp8_scaled.safetensors', 'audio': 'wav2vec2_large
 TALK_PROMPT = 'a person talking naturally to the camera, lips moving clearly with the speech, subtle head movement, natural blinking, steady camera'
 
 
+GPU = {'t': 0.0, 'reachable': False, 'busy': threading.Lock()}  # the last reachability check of the GPU PC (gpu_status)
+GPU_TTL = 60
+
+
+def gpu_configured():
+    """A GPU PC is set up: CUTROOM_GPU_HOST is set, or the default alias is a Host in ~/.ssh/config."""
+    if os.environ.get('CUTROOM_GPU_HOST'):
+        return True
+    try:
+        return any(GPU_HOST in ln.split()[1:] for ln in (Path.home() / '.ssh' / 'config').read_text(errors='replace').splitlines()
+                   if ln.strip().lower().startswith('host '))
+    except OSError:
+        return False
+
+
+def gpu_probe():
+    """One check, at most ~4 s: a TCP connect to the PC's ssh port (no login, so a sleeping PC costs the connect timeout)."""
+    import socket
+    if not GPU['busy'].acquire(blocking=False):
+        return
+    try:
+        ok = False
+        if gpu_configured():
+            try:
+                g = dict(ln.split(' ', 1) for ln in subprocess.run(['ssh', '-G', GPU_HOST], capture_output=True, text=True, timeout=3).stdout.splitlines() if ' ' in ln)
+                socket.create_connection((g.get('hostname', GPU_HOST), int(g.get('port', 22))), timeout=3).close()
+                ok = True
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
+        GPU.update(t=time.time(), reachable=ok)
+    finally:
+        GPU['busy'].release()
+
+
+def gpu_status():
+    """For the AI tab and the MCP tool list: answers at once from the cache; a check older than GPU_TTL runs again in the
+    background (the page asks again when the first one is still out). Lip sync and talking photo show only when reachable."""
+    c = gpu_configured()
+    if c and time.time() - GPU['t'] > GPU_TTL and not GPU['busy'].locked():
+        threading.Thread(target=gpu_probe, daemon=True).start()
+    return {'host': GPU_HOST, 'configured': c, 'reachable': c and GPU['reachable'], 'checked': GPU['t'] > 0 or not c}
+
+
 def gpu_reachable():
     """Fail fast, in a plain sentence, when the 4090 PC is off or asleep (instead of a 4-minute wait for ComfyUI)."""
     try:
@@ -1910,6 +1953,7 @@ def gpu_reachable():
         ok = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=6', GPU_HOST, 'exit'], capture_output=True, timeout=20).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         ok = False
+    GPU.update(t=time.time(), reachable=ok)  # the AI tab follows what a job just found
     if not ok:
         raise RuntimeError(f'the RTX 4090 PC ({GPU_HOST}) is not reachable, so this runs nowhere right now: turn it on or wake it, then try again')
 
@@ -3778,7 +3822,7 @@ class App(BaseHTTPRequestHandler):
                     threading.Timer(5, remote_reoffer, (m,)).start()
                 return self.reply(m)
             if path == '/api/ai/status':
-                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS})
+                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
             if path == '/api/remote/status':
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
@@ -4868,6 +4912,7 @@ def main():
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
     threading.Thread(target=resume_prepare, daemon=True).start()
+    threading.Thread(target=gpu_probe, daemon=True).start()  # the AI tab knows at once whether the GPU PC's tools can show
     import signal
     signal.signal(signal.SIGTERM, lambda *_: (comfy_down(), os._exit(0)))  # the app quitting: the PC's ComfyUI goes too
     try:

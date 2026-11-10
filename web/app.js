@@ -2204,6 +2204,7 @@ function openTab(tab) {
   G.tab = tab;
   $$('.rail button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
   $$('.pane').forEach(p => p.classList.toggle('on', p.id === `tab-${tab}`));
+  if (tab === 'ai' && G.ai?.gpu?.configured) loadAI(); // the GPU PC may have come on (or gone off) since
   renderPane();
 }
 function renderPane() { // the open gallery, refreshed (cheap: called on tab change and edits)
@@ -5281,6 +5282,10 @@ async function dubVideo({ lang = 'es', voice, original = 'duck', say = sayIn('#d
   say(`Dubbed ${j.items.length} sentences into ${name}${j.items.some(i => i.shorter) ? ' (some said shorter to fit)' : ''}${over ? `; ${over} still run past their slot even at 1.25x` : ''}.`);
   return { media: j.media, clip: brief(d, 'audio'), sentences: j.items };
 }
+async function gpuOn() { // the GPU PC's tools: a plain refusal while it is off (the buttons are hidden then)
+  await loadAI();
+  if (!G.ai.gpu?.reachable) throw new Error($('#gpuHint').textContent);
+}
 function swapInVideo(c, id) { // the clip shows the new video, made exactly as long as the clip: its length and every other clip stay put
   const keep = len(c);
   change(() => { Object.assign(c, { media: id, in: 0, out: keep, speed: 1, volume: 0 }); delete c.ramp; });
@@ -5354,6 +5359,10 @@ async function loadAI() { // fill the AI tab from what is installed
   for (const id of ['btnClone', 'btnDub']) $(`#${id}`).disabled = !s.cloneReady;
   $('#btnVcDel').disabled = !s.clones?.length;
   if (!s.cloneReady) $('#dubStatus').textContent = 'The voice-clone model is not installed (README: On-device AI).';
+  const gpu = s.gpu || {}; // lip sync and talking photo run on the GPU PC only: shown while it is set up and answering (cached on the server)
+  $('#gpuTools').hidden = !gpu.reachable; $('#gpuHint').hidden = !!gpu.reachable;
+  $('#gpuHint').textContent = gpu.configured ? `Needs the 4090 PC (${gpu.host}): it is off or not answering right now.` : 'Needs the 4090 PC (set up with ai/gpu_setup.sh; see README).';
+  if (gpu.configured && !gpu.checked) setTimeout(loadAI, 4500); // the server's first check is still out
   G.ai = s; $('#btnMusic').disabled = !s.music;
   if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
   renderMediaList();
@@ -5686,8 +5695,8 @@ const REMOTE = {
   async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
   async clone_voice(args) { return cloneVoice(args); },
   async dub_video(args) { await loadAI(); return dubVideo(args); },
-  async lip_sync(args) { return lipSync(args); },
-  async talking_photo(args) { return talkingPhoto(args); },
+  async lip_sync(args) { await gpuOn(); return lipSync(args); },
+  async talking_photo(args) { await gpuOn(); return talkingPhoto(args); },
   async voices() { await loadAI(); return { clones: G.ai.clones, dubLangs: G.ai.dubLangs }; },
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
   async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
