@@ -10,6 +10,9 @@ const TEXT_BASE = { font: 'Montserrat', weight: 800, size: 72, color: '#ffffff',
 const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.anim) === 'type' ? 1.2 : ANIM_T); // text in/out length; typing takes longer
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
 const ANIM_T = 0.3; // default text in/out animation length, seconds
+const WORD_T = 0.22; // a caption word's own entrance (pop, bounce, rise...), seconds
+const SPK_C = ['#ffd400', '#4fd8ff', '#ff6fa8', '#7dff8b', '#c79bff', '#ff9f43']; // speaker colours, in order
+const capLive = st => !!(st.kar || st.wanim || st.reveal === 'char' || st.emoji); // a caption style that changes every frame (the export draws each one)
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
 const ss3 = x => x * x * (3 - 2 * x);
 // keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
@@ -181,6 +184,19 @@ function scratch(W, H, tag) { // reusable offscreen canvases, one per size and p
   return c;
 }
 
+// emoji are pictures: colour-emoji text drawn in a layer worker came out differently draw after draw (WebKit), so the page
+// draws each one once (256 px, the glyph at 200 px) and the workers get those pixels in the snapshot (P.emoji: ImageData)
+const emojiCv = new Map();
+function emojiPic(e) {
+  let c = emojiCv.get(e);
+  if (c) return c;
+  c = new OffscreenCanvas(256, 256);
+  const x = c.getContext('2d');
+  if (P.emoji?.[e]) x.putImageData(P.emoji[e], 0, 0);
+  else { x.font = '200px "Apple Color Emoji", "Noto Color Emoji", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(e, 128, 136); }
+  emojiCv.set(e, c);
+  return c;
+}
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? { ...P.capStyle, ...it.style } : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
   drawFxLayers(ctx, t, k);
@@ -191,9 +207,11 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
   const u = (Math.min(P.w, P.h) / 1080) * k * pr.scale, size = st.size * u;
   const timed = it.words?.length ? it.words : null;
-  const paras = timed ? [timed.map(w => w.w)] : String(it.text ?? '').split('\n').map(p => p.split(/\s+/).filter(Boolean));
-  let active = -1;
-  if (timed && st.hl) timed.forEach((w, i) => { if (lt >= w.s) active = i; });
+  let active = -1, now = 0; // now: the word being said (the last one started), whatever the highlight
+  if (timed) timed.forEach((w, i) => { if (lt >= w.s) now = i; });
+  if (timed && st.hl) active = timed.findLastIndex(w => lt >= w.s);
+  // words as [text, index into the timed words]; one-word captions show only the word being said
+  const paras = timed ? [(st.one ? [now] : timed.map((_, i) => i)).map(i => [timed[i].w, i])] : String(it.text ?? '').split('\n').map(p => p.split(/\s+/).filter(Boolean).map(w => [w, -1]));
   ctx.save();
   ctx.font = `${st.italic ? 'italic ' : ''}${st.weight} ${size}px "${st.font}", system-ui, sans-serif`;
   ctx.textBaseline = 'middle';
@@ -205,18 +223,18 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     let xx = x0;
     for (const ch of w) { if (stroke) ctx.strokeText(ch, xx, y0); else ctx.fillText(ch, xx, y0); xx += ctx.measureText(ch).width + LS; }
   };
-  const cjk = /[぀-ヿ㐀-鿿＀-￯　-〿]/.test(paras.flat().join('')); // Chinese / Japanese words are characters: no gaps
+  const cjk = /[぀-ヿ㐀-鿿＀-￯　-〿]/.test(paras.map(q => q.map(x => x[0]).join('')).join('')); // Chinese / Japanese words are characters: no gaps
   const sp = (cjk ? 0 : ctx.measureText(' ').width) + LS, maxW = st.maxW * P.w * k, lines = [];
-  const grow = timed && st.pop ? 1.12 : 1; // every word reserves its popped width: no overlap, and the line doesn't jitter
+  const grow = timed && st.wanim === 'scale' ? 1.25 : timed && st.pop ? 1.12 : 1; // every word reserves its popped width: no overlap, and the line doesn't jitter
   let idx = 0;
   for (const para of paras) {
     let ln = { ws: [], w: 0 };
-    for (let w of para) {
+    for (let [w, ti] of para) {
       if (st.upper) w = w.toUpperCase();
       const ww = meas(w);
       if (ln.ws.length && ln.w + sp + ww * grow > maxW) { lines.push(ln); ln = { ws: [], w: 0 }; }
       ln.w += (ln.ws.length ? sp : 0) + ww * grow;
-      ln.ws.push({ w, ww, i: idx++ });
+      ln.ws.push({ w, ww, i: idx++, ti });
     }
     lines.push(ln);
   }
@@ -261,28 +279,85 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     ctx.fillStyle = hexA(st.boxColor, st.boxAlpha);
     for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) { ctx.beginPath(); ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18))); ctx.fill(); }
   }
+  const spkC = st.spk && it.spk != null ? st.spkc?.[it.spk] || SPK_C[it.spk % SPK_C.length] : null, baseC = spkC || st.color; // a speaker's captions in their colour
+  const kwC = st.kwc || (st.hl && st.hl !== st.color ? st.hl : '#ffd400');
+  if (spkC) gradFill = null;
   for (const [li, ln] of lines.entries()) {
     let cx = lx(ln);
     const cy = top + li * lh + lh / 2;
     for (const w of ln.ws) {
-      const on = w.i === active, wx = cx + (w.ww * grow - w.ww) / 2, chars = [...w.w], vis = left >= chars.length ? w.w : chars.slice(0, Math.max(0, left)).join('');
+      const tw = timed?.[w.ti], on = tw && w.ti === active, wx = cx + (w.ww * grow - w.ww) / 2, chars = [...w.w];
+      let vis = left >= chars.length ? w.w : chars.slice(0, Math.max(0, left)).join('');
       left -= chars.length;
+      if (tw && lt < tw.s && (st.reveal || (st.wanim && st.wanim !== 'scale'))) vis = ''; // revealed as it is said
+      if (vis && tw && st.reveal === 'char') vis = chars.slice(0, Math.ceil(clamp((lt - tw.s) / Math.max(0.05, tw.e - tw.s), 0, 1) * chars.length)).join(''); // typed over its own time
       if (!vis) { cx += w.ww * grow + sp; continue; } // not typed yet: its place stays reserved
       ctx.save();
-      if (on && st.pop) { ctx.translate(wx + w.ww / 2, cy); ctx.scale(grow, grow); ctx.translate(-(wx + w.ww / 2), -cy); }
+      const mx = wx + w.ww / 2, around = s => { ctx.translate(mx, cy); ctx.scale(s, s); ctx.translate(-mx, -cy); };
+      if (on && st.pop && st.wanim !== 'scale') around(grow);
+      if (tw && st.wanim) { // each word's own entrance, from the moment it is said
+        const wu = clamp((lt - tw.s) / WORD_T, 0, 1), A = st.wanim;
+        if (A === 'pop') { around(0.45 + 0.55 * easeOutBack(wu)); ctx.globalAlpha *= Math.min(1, wu * 2.5); }
+        else if (A === 'bounce') { ctx.translate(0, -Math.sin(Math.PI * wu) * 0.35 * size); ctx.globalAlpha *= Math.min(1, wu * 4); }
+        else if (A === 'rise') { ctx.translate(0, (1 - ss3(wu)) * 0.55 * size); ctx.globalAlpha *= wu; }
+        else if (A === 'fade') ctx.globalAlpha *= wu;
+        else if (A === 'slam') { around(1 + 1.3 * (1 - wu) ** 2); ctx.globalAlpha *= Math.min(1, wu * 3); }
+        else if (A === 'scale' && on) around(1 + (grow - 1) * ss3(clamp((lt - tw.s) / 0.15, 0, 1)));
+      }
+      let fill = gradFill || baseC; // two-tone: every other word in the second colour; keywords in the highlight
+      if (st.color2 && (w.ti >= 0 ? w.ti : w.i) % 2) fill = st.color2;
+      if (st.kw && tw && it.kw?.includes(w.ti)) fill = kwC;
+      if (on && !st.wbox && !st.kar) fill = st.hl;
+      if (on && st.wbox) { ctx.fillStyle = st.hl; ctx.beginPath(); ctx.roundRect(wx - size * 0.16, cy - size * 0.62, w.ww + size * 0.32, size * 1.24, size * 0.2); ctx.fill(); }
+      if (st.stack > 0) { // shadow stack: hard copies stepping down-right, the furthest first
+        ctx.fillStyle = ctx.strokeStyle = st.shc || '#000000'; ctx.lineWidth = st.strokeW * u * 2;
+        for (let j = Math.round(st.stack); j > 0; j--) { const o = j * size * 0.03; if (st.strokeW > 0) put(true, vis, wx + o, cy + o); put(false, vis, wx + o, cy + o); }
+      }
       if (st.shadow) { ctx.shadowColor = hexA(st.shc || '#000000', st.sha ?? 0.55); ctx.shadowBlur = size * (st.shb ?? 0.18); ctx.shadowOffsetX = size * (st.shx || 0); ctx.shadowOffsetY = size * (st.shy ?? 0.04); }
       if (st.strokeW > 0) { ctx.lineWidth = st.strokeW * u * 2; ctx.strokeStyle = st.stroke; put(true, vis, wx, cy); ctx.shadowColor = 'transparent'; }
-      ctx.fillStyle = on ? st.hl : gradFill || st.color;
+      ctx.fillStyle = fill;
       put(false, vis, wx, cy);
+      const kp = st.kar && tw ? clamp((lt - tw.s) / Math.max(0.05, tw.e - tw.s), 0, 1) : 0; // karaoke: the highlight sweeps through the word as it is said
+      if (kp > 0) {
+        ctx.shadowColor = 'transparent'; ctx.beginPath(); ctx.rect(wx - size, cy - size * 1.5, size + w.ww * kp, size * 3); ctx.clip();
+        ctx.fillStyle = st.hl; put(false, vis, wx, cy);
+      }
       ctx.restore();
       cx += w.ww * grow + sp;
     }
+  }
+  let yTop = top, yBot = top + lines.length * lh; // extras around the block: speaker name and emoji above, the translation below
+  if (st.bi && it.tr) {
+    let bs = size * (st.biSize ?? 0.6);
+    const bf = s => `${st.italic ? 'italic ' : ''}${Math.min(st.weight, 700)} ${s}px "${st.biFont || st.font}", system-ui, sans-serif`;
+    ctx.font = bf(bs);
+    const tw2 = ctx.measureText(it.tr).width;
+    if (tw2 > maxW) { bs *= maxW / tw2; ctx.font = bf(bs); } // one line: shrunk to fit
+    const bw2 = Math.min(maxW, tw2), by = yBot + bs * 0.75, bx = st.align === 'left' ? x - BW / 2 : st.align === 'right' ? x + BW / 2 - bw2 : x - bw2 / 2;
+    if (st.box) { ctx.fillStyle = hexA(st.boxColor, st.boxAlpha); ctx.beginPath(); ctx.roundRect(bx - padX * 0.7, by - bs * 0.7, bw2 + padX * 1.4, bs * 1.4, bs * 0.3); ctx.fill(); }
+    if (st.strokeW > 0) { ctx.lineWidth = st.strokeW * u * 2 * (st.biSize ?? 0.6); ctx.strokeStyle = st.stroke; ctx.strokeText(it.tr, bx, by); }
+    ctx.fillStyle = st.biColor || '#ffe27a'; ctx.fillText(it.tr, bx, by);
+    yBot = by + bs * 0.75;
+  }
+  if (st.spk && it.spk != null) {
+    const ls = size * 0.42;
+    ctx.font = `700 ${ls}px "${st.font}", system-ui, sans-serif`;
+    const name = st.spkNames?.[it.spk] || `Speaker ${it.spk + 1}`, nw = ctx.measureText(name).width, ny = yTop - ls * 0.8;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect(x - nw / 2 - ls * 0.45, ny - ls * 0.68, nw + ls * 0.9, ls * 1.36, ls * 0.68); ctx.fill();
+    ctx.fillStyle = baseC; ctx.fillText(name, x - nw / 2, ny);
+    yTop = ny - ls * 0.8;
+  }
+  if (st.emoji && it.emoji) { // the caption's emoji pops in above it
+    const es = size * 1.05, eu = clamp(lt / 0.25, 0, 1), ey = yTop - es * 0.62;
+    const s = (es / 200) * (0.3 + 0.7 * easeOutBack(eu));
+    ctx.save(); ctx.translate(x, ey); ctx.scale(s, s); ctx.rotate(-0.12 * (1 - eu)); ctx.drawImage(emojiPic(it.emoji), -128, -128); ctx.restore();
+    yTop = ey - es * 0.6;
   }
   if (ctx !== main) { main.setTransform(1, 0, 0, 1, 0, 0); main.globalAlpha = fade; main.drawImage(ctx.canvas, 0, 0); ctx = main; }
   ctx.restore();
   if (preview) {
     const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;
-    hits.push({ lane, id: it.id, x0: x - bw, y0: top, x1: x + bw, y1: top + lines.length * lh, rot: pr.rot || 0 });
+    hits.push({ lane, id: it.id, x0: x - bw, y0: yTop, x1: x + bw, y1: yBot, rot: pr.rot || 0 });
   }
 }
 
