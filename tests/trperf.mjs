@@ -68,6 +68,20 @@ for (const type of TYPES) {
   if (!ok) bad++;
   console.log(`${''.padEnd(10)} GPU vs JS: mean ${mean.toFixed(2)} levels, ${(100 * big / g.length).toFixed(2)} % of values off by more than 2${ok ? '' : '  FAIL'}`);
 }
+{ // a lost WebGL context (GPU process reset, sleep/wake) must rebuild trGPU's program, not draw with the dead one's
+  const r = await ev(async () => {
+    P.main[0].tr = { type: 'dissolve', d: 4 }; packMain(); renderAll(); S.t = P.main[1].start + 1.2; await waitFrame();
+    const cv = $('#cv'), cx = cv.getContext('2d'), grab = () => cx.getImageData(0, 0, cv.width, cv.height).data;
+    GPU.trOff = true; paint(); const j = grab(); GPU.trOff = false;
+    GPU.gl.getExtension('WEBGL_lose_context').loseContext(); await sleep(300);
+    let used = false; const og = trGPU; trGPU = (...a) => (used = og(...a)); paint(); trGPU = og;
+    const g = grab(); let s = 0; for (let i = 0; i < g.length; i++) s += Math.abs(g[i] - j[i]);
+    return { used, mean: s / g.length, err: GPU.gl ? GPU.gl.getError() : -1 };
+  });
+  const ok = r.used && r.mean < 2 && r.err === 0;
+  if (!ok) bad++;
+  console.log(`after a lost context: GPU path ${r.used ? 'used' : 'not used'}, vs JS mean ${r.mean.toFixed(2)} levels, GL error ${r.err}${ok ? '' : '  FAIL'}`);
+}
 if (errs.length) console.log('page errors:', errs.slice(0, 5));
 await b.close();
 await fetch(`${B}/api/projects/${pid}/trash`, { method: 'POST', headers: H, body: '{}' });

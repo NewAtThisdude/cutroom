@@ -204,7 +204,7 @@ void main() {
     Object.assign(GPU, { gl, cv, U, pg, srcT: t2(0, gl.LINEAR), toneT: t2(1, gl.NEAREST), maskT: t2(3, gl.LINEAR), lutT, toneKey: '', lutKey: '', maskKey: null });
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; GPU.mb = null; MB.clear(); });
+    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; GPU.mb = null; GPU.tr = null; MB.clear(); });
     return gl;
   } catch (e) { GPU.failed = true; console.warn('GPU colour pass off:', e.message); return null; }
 }
