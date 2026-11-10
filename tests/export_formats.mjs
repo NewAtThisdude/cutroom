@@ -65,7 +65,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const st = await build();
   check(`${rm}: 10 s mixed project at 60 fps`, Math.abs(st.project.duration - 10) < 0.02 && st.project.fps === 60 && st.clips.main === 2 && st.clips.overlay === 1 && st.clips.captions === 3, JSON.stringify(st.clips) + ` ${st.project.duration} s`);
   await page.click('#btnExport'); await page.waitForSelector('#exPreset');
-  const val = () => ev(() => ({ res: exportSizes()[+$('#exRes').value][0], fmt: $('#exFmt').value, q: $('#exQ').value, fps: +$('#exFps').value, rate: $('#exRate').value, mbps: +$('#exMbps').value, loud: $('#exLoud').checked, hint: $('#exHint').textContent, mbpsShown: getComputedStyle($('#exMbpsRow')).display !== 'none', cancelShown: getComputedStyle($('#exCancel')).display !== 'none' }));
+  const val = () => ev(() => ({ res: exportSizes()[+$('#exRes').value][0], fmt: $('#exFmt').value, q: $('#exQ').value, fps: +$('#exFps').value, rate: $('#exRate').value, mbps: +$('#exMbps').value, loud: $('#exLoud').value !== 'off', hint: $('#exHint').textContent, mbpsShown: getComputedStyle($('#exMbpsRow')).display !== 'none', cancelShown: getComputedStyle($('#exCancel')).display !== 'none' }));
   let v;
   const want = { tiktok: ['1080p', 'mp4', 60, 15, true], reels: ['1080p', 'mp4', 60, 12, true], shorts: ['1080p', 'mp4', 60, 12, true], yt1080: ['1080p', 'mp4', 60, 12, true], yt4k: ['4K', 'mp4', 60, 68, true], master: ['4K', 'prores', 0, null, false] };
   for (const [k, [r, f, fps, mbps, loud]] of Object.entries(want)) {
@@ -113,7 +113,7 @@ const run = async (o, label) => { // o: {fmt, res, fps, mbps}
   if (o.res) await page.selectOption('#exRes', String(await ev(r => exportSizes().findIndex(x => x[0] === r), o.res)));
   if (o.fps !== undefined) await page.selectOption('#exFps', String(o.fps));
   if (o.mbps) { await page.selectOption('#exRate', 'custom'); await page.fill('#exMbps', String(o.mbps)); } else await ev(() => { $('#exRate').value = '1'; $('#exRate').dispatchEvent(new Event('change')); });
-  await ev(() => { $('#exLoud').checked = false; });
+  await ev(() => { $('#exLoud').value = 'off'; });
   await page.fill('#exName', `fmt ${label}`);
   const t0 = Date.now();
   await page.click('#exGo');

@@ -34,6 +34,8 @@ git -C vendor/sam2 checkout -q 2b90b9f5ceec907a1c18123530e92e794ad901a4
 [ -d vendor/ProPainter ] || git clone -q https://github.com/sczhou/ProPainter.git vendor/ProPainter
 git -C vendor/ProPainter checkout -q 326782529a63d997cab80ab21439b92ed422b3d3
 env -u PYTHONPATH uv pip install --python .venv/bin/python torchvision einops matplotlib imageio imageio-ffmpeg demucs
+# voice characters elf / giant / monster / alien (ai/voicefx.py): WORLD vocoder, pyworld 0.3.5 (MIT; WORLD itself modified BSD)
+env -u PYTHONPATH uv pip install --python .venv/bin/python pyworld==0.3.5
 SAM2_BUILD_CUDA=0 SAM2_BUILD_ALLOW_ERRORS=1 env -u PYTHONPATH uv pip install --python .venv/bin/python -e vendor/sam2  # the PyPI "sam2" is a fork
 fetch() { [ -f "$2" ] || curl -sSfL -o "$2" "$1"; echo "$3  $2" | shasum -a 256 -c -; }
 fetch https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt vendor/sam2/checkpoints/sam2.1_hiera_small.pt \
@@ -66,4 +68,7 @@ import hashlib
 from huggingface_hub import snapshot_download
 p = snapshot_download('depth-anything/Depth-Anything-V2-Small-hf', revision='5426e4f0f36572d16453bbda7a8389317b1bef99', allow_patterns=['*.json', 'model.safetensors'])
 assert hashlib.sha256(open(p + '/model.safetensors', 'rb').read()).hexdigest() == '3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70'"
+# the CC0 sound and music library (packs.json: Kenney sound packs + CC0 music from archive.org, ~100 MB, each SHA-256 and licence
+# checked) into the library's packs folder. Not AI, but the same one-time setup; the Audio rail can also download it
+env -u PYTHONPATH python3 -I ../server.py --packs
 echo "On-device AI ready."

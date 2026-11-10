@@ -866,9 +866,24 @@ function tabbed(sections) { // inspector tabs; empty tabs are hidden and the ope
     + live.map(([n, h]) => `<div class="isec${n === cur ? ' on' : ''}" data-sec="${n}">${h}</div>`).join('');
 }
 const dB = v => (v > 0 ? Math.max(-60, 20 * Math.log10(v)) : -60);
-const VOICES = [['none', 'None'], ['chipmunk', 'Chipmunk'], ['deep', 'Deep'], ['robot', 'Robot'], ['echo', 'Echo'], ['hall', 'Hall'], ['telephone', 'Telephone']];
+const VOICES = [['none', 'None'], ['chipmunk', 'Chipmunk'], ['deep', 'Deep'], ['robot', 'Robot'], ['echo', 'Echo'], ['hall', 'Hall'], ['telephone', 'Telephone'],
+  ['elf', 'Elf'], ['giant', 'Giant'], ['monster', 'Monster'], ['alien', 'Alien'], ['radio', 'Radio'], ['megaphone', 'Megaphone'], ['cave', 'Cave'], ['underwater', 'Underwater']];
+// characters are made on the server into the clip's sound file (pitch and formants apart: WORLD vocoder; the rest ffmpeg filters):
+// the preview plays that file and the export reads it. sndFx(c) is the file's key, the server's clip_fx()
+const VCHARS = ['elf', 'giant', 'monster', 'alien', 'radio', 'megaphone', 'cave', 'underwater'];
+const sndFx = c => [c.studio === 'music' ? 'svm' : c.studio ? 'sv' : c.denoise ? 'dn' : '', VCHARS.includes(c.au?.voice) ? c.au.voice : ''].filter(Boolean).join('+');
+async function soundPrep(c, patch, label) { // make the processed sound first (a job with progress), then switch the clip to it
+  const fx = sndFx({ ...c, ...patch, au: { ...c.au, ...patch.au } });
+  if (fx && M.get(c.media)?.hasAudio) {
+    try { await job('/api/sound_prep', { media: c.media, fx }, label); } catch (e) { setStatus(e.message); throw e; }
+    setStatus('');
+  }
+  change(() => { Object.assign(c, { ...patch, au: patch.au ? { ...AU0, ...c.au, ...patch.au } : c.au }); if (!c.au) delete c.au; if (!c.studio) delete c.studio; });
+  renderInspector();
+}
 const voiceOf = a => (a.voice !== 'none' ? a.voice : a.semi === 6 ? 'chipmunk' : a.semi === -5 ? 'deep' : 'none'); // chipmunk / deep are pitch presets
 function setVoice(c, k) {
+  if (VCHARS.includes(k)) return soundPrep(c, { au: { voice: k, semi: 0 } }, `Making the ${k} voice`);
   change(() => {
     const a = { ...AU0, ...c.au };
     if (k === 'chipmunk' || k === 'deep') Object.assign(a, { voice: 'none', semi: k === 'chipmunk' ? 6 : -5 });
@@ -971,6 +986,8 @@ function mediaPanel(c, lane) {
   if (m.hasAudio) {
     audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise', c.denoise)
       + `<p class="hint">RNNoise on this Mac, heard in the preview too. For the strongest cut, Isolate voice below keeps only the voice.</p>`
+      + `<h4>Studio voice</h4><div class="seg wrap voices">${[['off', 'Off'], ['on', 'Studio voice'], ['music', 'Studio + remove music']].map(([k, n]) => `<button data-studio="${k}" class="${(c.studio === 'music' ? 'music' : c.studio ? 'on' : 'off') === k ? 'on' : ''}"${k === 'music' ? ' title="Demucs takes the music and ambience out first (about the clip&#39;s length to make)"' : ''}>${n}</button>`).join('')}</div>`
+      + `<p class="hint">Noise removal, de-ess, compressor, presence and −16 LUFS loudness, made on this Mac; the preview plays the same sound the export gets.</p>`
       + `<h4>Separate</h4><div class="actions">${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac): the strongest noise reduction">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button><button data-act="stems" title="Vocals, drums, bass and the rest as four audio clips (Demucs, on this Mac)">Split into stems</button></div>`;
   }
   if (m.hasAudio) { // CapCut's voice effects, pitch, equalizer, pan; volume points; stems
@@ -1098,7 +1115,7 @@ async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person 
     change(() => {
       packMain();
       cut = { ...structuredClone(c), id: hex12(), media: j.media, in: 0, out: c.out - c.in, start: c.start, volume: 0, body: kind };
-      for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'duck', 'compound', 'mc', 'track']) delete cut[k];
+      for (const k of ['tr', 'vkf', 'mask', 'mkf', 'key', 'blend', 'au', 'denoise', 'studio', 'duck', 'compound', 'mc', 'track']) delete cut[k];
       if (cut.adj) delete cut.adj.blur;
       if (lane === 'overlay') P.overlay.splice(P.overlay.indexOf(c) + 1, 0, cut); else P.overlay.push(cut);
       if (kind === 'blur') c.adj = { ...c.adj, blur: 0.45 };
@@ -1340,14 +1357,14 @@ const PCM_S = 4, PCM_BYTES = PCM_S * 48000 * 4, pcmBufs = new Map(), voices = ne
 let pcmBusy = 0;
 const pcmSlot = () => new Promise(go => { const run = () => { pcmBusy++; go(() => { pcmBusy--; pcmWait.shift()?.(); }); }; if (pcmBusy < 2) run(); else pcmWait.push(run); });
 const pcmSpan = (c, tempo) => (tempo === 1 ? [0, 0] : [Math.floor(c.in), Math.ceil(c.out)]); // a kept-pitch speed's PCM covers the clip's whole seconds
-function pcmChunk(id, tempo, k, [a, b] = [0, 0], dn = false) { // a promise with .buf once loaded (null: no sound there); the last 24 kept (~37 MB)
-  dn = !!dn; // Reduce noise: the server's denoised copy, the same file the export reads
-  const key = `${id}|${tempo}|${a}-${b}|${k}|${dn}`;
+function pcmChunk(id, tempo, k, [a, b] = [0, 0], fx = '') { // a promise with .buf once loaded (null: no sound there); the last 24 kept (~37 MB)
+  fx ||= ''; // the clip's processed sound (sndFx: Reduce noise, Studio voice, a character): the same file the export reads
+  const key = `${id}|${tempo}|${a}-${b}|${k}|${fx}`;
   let p = pcmBufs.get(key);
   if (p) { pcmBufs.delete(key); pcmBufs.set(key, p); return p; }
   // two at a time: WebKit has 6 connections to the server, and a first play of a long file waits for its PCM to be made
   // (seconds): unthrottled, those waits filled every connection and the projects list or a save queued behind them
-  p = pcmSlot().then(release => fetch(`/media/${id}?pcm=${tempo}${tempo === 1 ? '' : `&a=${a}&b=${b}`}${dn ? '&dn=1' : ''}`, { headers: { Range: `bytes=${k * PCM_BYTES}-${(k + 1) * PCM_BYTES - 1}` } })
+  p = pcmSlot().then(release => fetch(`/media/${id}?pcm=${tempo}${tempo === 1 ? '' : `&a=${a}&b=${b}`}${fx ? `&fx=${encodeURIComponent(fx)}` : ''}`, { headers: { Range: `bytes=${k * PCM_BYTES}-${(k + 1) * PCM_BYTES - 1}` } })
     .then(r => (r.status === 206 || r.status === 200 ? r.arrayBuffer() : null)).finally(release)).then(b => {
       const n = b ? b.byteLength >> 2 : 0;
       if (!n) return (p.buf = null);
@@ -1377,7 +1394,7 @@ function audioStop() { // stops what's scheduled, 5 ms down rather than a click;
 }
 function joined(a, b) { // b carries on a's sound (a split): it plays straight through, no edge fades (the export's joined())
   return !!a && !!b && a.media === b.media && a.speed === b.speed && a.volume === b.volume && !a.vkf?.length && !b.vkf?.length && !!a.pitch === !!b.pitch
-    && !!a.denoise === !!b.denoise && JSON.stringify(a.au || {}) === JSON.stringify(b.au || {}) && !trF(P.main.indexOf(a))
+    && !!a.denoise === !!b.denoise && (a.studio || false) === (b.studio || false) && JSON.stringify(a.au || {}) === JSON.stringify(b.au || {}) && !trF(P.main.indexOf(a))
     && Math.abs(a.in + tdur(a, 'main') * a.speed - b.in) < 0.5 / P.fps;
 }
 function audioTick(wall) { // while playing: (re)anchor timeline to audio clock, schedule the next second of every sounding clip
@@ -1400,10 +1417,10 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
     const tempo = c.pitch || Math.abs(c.speed - 1) < 1e-6 ? 1 : +c.speed.toFixed(4), pbr = c.speed / tempo;
     const sp = pcmSpan(c, tempo), f = t => (c.in - sp[0] + (t - c.start) * c.speed) / tempo, tl = x => c.start + (x * tempo + sp[0] - c.in) / c.speed; // timeline <-> PCM seconds
     const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d), i = lane === 'main' ? P.main.indexOf(c) : -1;
-    for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp, c.denoise); // fetched 3 s ahead
+    for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp, sndFx(c)); // fetched 3 s ahead
     for (let k = Math.floor(f(a) / PCM_S); k * PCM_S < f(b); k++) {
       if (v.srcs.has(k)) continue;
-      const p = pcmChunk(c.media, tempo, k, sp, c.denoise);
+      const p = pcmChunk(c.media, tempo, k, sp, sndFx(c));
       if (p.buf === undefined) continue; // loading: picked up by a later frame
       if (!p.buf) { v.srcs.set(k, null); continue; }
       let s0 = Math.max(tl(k * PCM_S), c.start, S.t), when = S.aA0 + (s0 - S.aT0);
@@ -1426,13 +1443,13 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
 function warmTempo(c) { // a kept-pitch speed's sound (its own copy of the clip's seconds), from the playhead on
   if (!c?.media || c.pitch || Math.abs(c.speed - 1) < 1e-6 || !M.get(c.media)?.hasAudio) return;
   const tempo = +c.speed.toFixed(4), sp = pcmSpan(c, tempo), at = (c.in - sp[0] + Math.max(0, S.t - c.start) * c.speed) / tempo;
-  pcmChunk(c.media, tempo, Math.floor(at / PCM_S), sp, c.denoise);
+  pcmChunk(c.media, tempo, Math.floor(at / PCM_S), sp, sndFx(c));
 }
 function audioWarm() { // paused: the chunks at the playhead, so play starts with sound at once
   for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
     const m = M.get(c.media);
     // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
-    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, c.denoise);
+    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
   }
 }
 const layerCv = [];
@@ -2185,7 +2202,7 @@ function pixelTr(ctx, A, B, type, P1) { // the transitions that need every pixel
 }
 
 // ---------- the library panel: galleries of effects, transitions, filters, text styles, stickers and sounds ----------
-const G = { tab: 'media', fxCat: 'all', stCat: 'Smileys', mfilter: 'all', hover: null, raf: 0, frame: 0, sfx: [], audio: null };
+const G = { tab: 'media', fxCat: 'all', stCat: 'Smileys', mfilter: 'all', hover: null, raf: 0, frame: 0, sfx: [], audio: null, snd: null, sndCat: 'all', sndN: 60 };
 const EMOJI = {
   Smileys: '😀😂🤣😊😍🥰😘😎🤩🥳😇🙂😉😜🤪🤔🙄😴🤤😭😡🤯😱🥶🤡👻💀👽🤖😺',
   Hands: '👍👎👏🙌🙏💪✌️🤞👌🤙👋☝️👉👈👆👇✊👊🤝🫶✍️💅',
@@ -2299,10 +2316,21 @@ function renderStickers() {
   $('#stCats').innerHTML = Object.keys(EMOJI).map(k => `<button data-stcat="${k}" class="${G.stCat === k ? 'on' : ''}">${k}</button>`).join('');
   $('#stGrid').innerHTML = graphemes(EMOJI[G.stCat]).map(e => `<button data-emoji="${e}" title="Add ${e} at the playhead">${e}</button>`).join('');
 }
-async function renderAudio() {
+async function renderAudio() { // the synthesized sounds (Basics) + the CC0 packs (Kenney sound effects, music by mood), searchable
   if (!G.sfx.length) G.sfx = await api('/api/sfx').catch(() => []);
-  $('#sfxList').innerHTML = G.sfx.map(s => `<div class="sfxrow"><button class="pl" data-sfxplay="${s.id}" title="Listen" aria-label="Listen to ${esc(s.name)}">${ICON.play}</button><b>${esc(s.name)}</b><span class="muted">${s.dur.toFixed(1)} s</span><button class="add" data-sfx="${s.id}" title="Add at the playhead" aria-label="Add ${esc(s.name)} at the playhead">+</button></div>`).join('');
-  const aud = [...M.values()].filter(m => m.kind === 'audio' && !m.sfx);
+  G.snd ??= await api('/api/packs').catch(() => ({ installed: false }));
+  const rows = [...G.sfx.map(s => ({ id: s.id, name: s.name, cat: 'Basics', kind: 'sfx', dur: s.dur, synth: true })), ...(G.snd.items || [])];
+  const cats = ['all', ...(G.snd.installed ? ['Music'] : []), ...new Set(rows.filter(r => r.kind === 'sfx').map(r => r.cat))];
+  if (!cats.includes(G.sndCat)) G.sndCat = 'all';
+  $('#sndCats').innerHTML = cats.map(k => `<button data-sndcat="${esc(k)}" class="${G.sndCat === k ? 'on' : ''}">${k === 'all' ? 'All' : esc(k)}</button>`).join('');
+  const q = $('#sndSearch').value.trim().toLowerCase();
+  const hit = rows.filter(r => (G.sndCat === 'all' || (G.sndCat === 'Music' ? r.kind === 'music' : r.kind === 'sfx' && r.cat === G.sndCat)) && (!q || `${r.name} ${r.cat} ${r.artist || ''} ${r.kind === 'music' ? 'music song track' : ''}`.toLowerCase().includes(q)));
+  const about = r => (r.synth ? `${r.name}: made on this Mac` : `${r.name}${r.artist ? ` by ${r.artist}` : ''} · ${r.cat} · ${r.licence} · ${r.src}`);
+  $('#sfxList').innerHTML = hit.slice(0, G.sndN).map(r => `<div class="sfxrow"><button class="pl" ${r.synth ? `data-sfxplay="${r.id}"` : `data-sndplay="${esc(r.file)}"`} title="Listen" aria-label="Listen to ${esc(r.name)}">${ICON.play}</button><b title="${esc(about(r))}">${esc(r.name)}${r.kind === 'music' ? ` <i class="muted">${esc(r.cat)}</i>` : ''}</b><span class="muted">${r.dur < 60 ? `${r.dur.toFixed(r.dur < 1 ? 2 : 1)} s` : fmtDur(r.dur)}</span><button class="add" ${r.synth ? `data-sfx="${r.id}"` : `data-pack="${esc(r.id)}"`} title="Add at the playhead" aria-label="Add ${esc(r.name)} at the playhead">+</button></div>`).join('')
+    + (hit.length > G.sndN ? `<button class="wide ghostline" data-sndmore="1">Show ${Math.min(60, hit.length - G.sndN)} more (${hit.length - G.sndN} left)</button>` : '')
+    + (hit.length ? '' : '<p class="hint">Nothing matches.</p>')
+    + (G.snd.installed ? '' : `<button id="btnPacks" class="wide" title="Kenney's CC0 sound packs and CC0 music (Komiku, Loyalty Freak Music) from archive.org, each checked by SHA-256 and licence">Download the free library: ${G.snd.packs || 8} sound packs, ${G.snd.tracks || 22} music tracks (CC0, ${G.snd.mb || 100} MB)</button>`);
+  const aud = [...M.values()].filter(m => m.kind === 'audio' && !m.sfx && !m.pack); // library sounds are listed above
   $('#audioList').innerHTML = aud.map(m => `<div class="sfxrow"><button class="pl" data-mplay="${m.id}" title="Listen" aria-label="Listen to ${esc(m.name)}">${ICON.play}</button><b title="${esc(m.name)}">${esc(m.name)}</b><span class="muted">${fmtDur(m.duration)}</span><button class="add" data-addaudio="${m.id}" title="Add at the playhead" aria-label="Add ${esc(m.name)} at the playhead">+</button></div>`).join('')
     || '<p class="hint">Import music or drop audio files anywhere; it shows up here.</p>';
 }
@@ -2313,6 +2341,19 @@ function listen(src, btn) { // one preview player for the whole panel; clicking 
   a.dataset.src = src; a.src = src; a.currentTime = 0; a.play().catch(() => {});
   btn.classList.add('on'); btn.innerHTML = ICON.pause;
   a.onended = () => { btn.classList.remove('on'); btn.innerHTML = ICON.play; };
+}
+async function addPack(id, at = S.t) { // a pack sound or track: imported into the library once (its source and licence kept), then on the audio track
+  const m = await api('/api/packs/add', { id });
+  if (!M.has(m.id)) await loadMedia();
+  addMedia(m.id, 'audio', at);
+  toast(`${m.name.replace(/\.(wav|mp3)$/, '')} added at ${mss(at)}`);
+  return brief(...cfind(S.sel.id));
+}
+async function installPacks() {
+  try { await job('/api/packs/install', {}, 'Downloading the sound library', toast); } catch (e) { toast(e.message); throw e; }
+  G.snd = null;
+  await renderAudio();
+  toast(`Sound library ready: ${G.snd.items?.length || 0} sounds and tracks${G.snd.skipped?.length ? ` (left out: ${G.snd.skipped.join('; ')})` : ''}`);
 }
 async function addSfx(id, at = S.t) {
   const m = await api('/api/sfx/add', { id });
@@ -4032,7 +4073,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     const m = M.get(c.media);
     if (!m) throw new Error('a clip points at missing media; delete it first');
     const o = { media: c.media, start: c.start, in: c.in, out: c.out, speed: c.speed, volume: c.volume, frames: frames(c), fadeIn: c.fadeIn, fadeOut: c.fadeOut,
-      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, look: lookMatrix(c), key: c.key, angle: c.rot ?? 0, blend: lane === 'overlay' && c.blend !== 'normal' ? c.blend : undefined };
+      fit: c.fit, opacity: c.opacity, adj: c.adj, crop: c.crop, flip: c.flip, denoise: c.denoise, studio: c.studio, look: lookMatrix(c), key: c.key, angle: c.rot ?? 0, blend: lane === 'overlay' && c.blend !== 'normal' ? c.blend : undefined };
     if (m.kind !== 'audio') {
       const g = geom(m, c, P.w, P.h);
       o.geom = { x: g.x * k, y: g.y * k, w: g.w * k, h: g.h * k };
@@ -4086,7 +4127,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if (layerFx.some(f => f.fx === 'vhs' || f.fx === 'rec')) fonts.push('700 64px Menlo, monospace', '600 64px Menlo, monospace');
     text = await textLayer(w, h, k, fr, fonts);
   }
-  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
+  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
     audio: P.mute.audio ? [] : await Promise.all(shown('audio').map(c => clip(c, 'audio'))) };
 }
@@ -4100,7 +4141,7 @@ function openExport() {
     <label class="row"><span>Encoder</span><select id="exQ"><option value="fast">Fast (Apple hardware)</option><option value="best">Best quality (x264, slower)</option></select></label>
     <label class="row"><span>Bitrate</span><select id="exRate"><option value="1">Standard</option><option value="1.6">High</option><option value="2.5">Very high</option><option value="custom">Custom (Mbps)</option></select></label>
     <label class="row" id="exMbpsRow" hidden><span>Mbps</span><input id="exMbps" type="number" min="0.5" max="400" step="0.5" value="10"></label>
-    <label class="row chk"><span>Loudness −14 LUFS</span><input id="exLoud" type="checkbox"></label>
+    <label class="row" title="One gain for the whole edit, measured first (true peak held at −1.5 dBTP)"><span>Loudness</span><select id="exLoud"><option value="off">Off (as mixed)</option><option value="-14">−14 LUFS · social</option><option value="-16">−16 LUFS · podcast</option><option value="-23">−23 LUFS · broadcast (EBU)</option></select></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -4143,7 +4184,7 @@ function openExport() {
     if (!k) return hint();
     const v = presetFields(k);
     $('#exRes').value = String(Math.max(0, exportSizes().findIndex(x => x[0] === v.res))); $('#exFmt').value = v.fmt; $('#exQ').value = v.q; $('#exFps').value = String(v.fps);
-    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').checked = v.loud;
+    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? '-14' : 'off';
     hint();
   };
   for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
@@ -4173,7 +4214,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       exportUI(100, `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
       return;
     }
-    const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').checked, fmt);
+    const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await api('/api/export', plan);
@@ -4315,7 +4356,7 @@ function scrubSound() { // 70 ms of what is under the playhead, at most every 40
   S.scrubAt = now;
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
     if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
-    const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, c.denoise), g0 = clipGain(c, lane, S.t);
+    const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, sndFx(c)), g0 = clipGain(c, lane, S.t);
     if (!p.buf || !g0) continue; // loading: the next move has it
     const n = actx.createBufferSource(), g = actx.createGain();
     n.buffer = p.buf; n.playbackRate.value = c.speed; n.connect(g).connect(actx.destination);
@@ -4591,6 +4632,11 @@ function wire() {
     else if (d.emoji) addText('Sticker', { text: d.emoji });
     else if (d.sfx) addSfx(d.sfx).catch(err => toast(err.message));
     else if (d.sfxplay) listen(`/sfx/${d.sfxplay}.wav`, b);
+    else if (d.sndplay) listen(`/packs/${d.sndplay}`, b);
+    else if (d.pack) addPack(d.pack).catch(err => toast(err.message));
+    else if (d.sndcat) { G.sndCat = d.sndcat; G.sndN = 60; renderAudio(); }
+    else if (d.sndmore) { G.sndN += 60; renderAudio(); }
+    else if (b.id === 'btnPacks') quiet(installPacks());
     else if (d.mplay) listen(`/media/${d.mplay}`, b);
     else if (d.addaudio) addMedia(d.addaudio, 'audio', S.t);
     else if (d.aitool) quiet((async () => aiTool(d.aitool))());
@@ -4672,6 +4718,7 @@ function wire() {
   $('#mediaList').addEventListener('pointermove', skimAt);
   $('#mediaList').addEventListener('pointerleave', skimEnd);
   $('#mediaSearch').addEventListener('input', renderMediaList);
+  $('#sndSearch').addEventListener('input', () => { G.sndN = 60; renderAudio(); });
   $('#mediaSort').addEventListener('change', renderMediaList);
   $('#srcPos').addEventListener('input', e => { fill(e.target); srcSeek(+e.target.value); });
   $('#srcBar').addEventListener('click', e => {
@@ -4942,10 +4989,11 @@ function wire() {
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
-    else if (d.voice) setVoice(c, d.voice);
+    else if (d.voice) quiet(setVoice(c, d.voice));
+    else if (d.studio) quiet(soundPrep(c, { studio: d.studio === 'music' ? 'music' : d.studio === 'on' }, d.studio === 'music' ? 'Studio voice (removing the music first)' : 'Studio voice'));
     else if (d.animk) pickAnim(d.animk, d.animv);
     else if (d.act === 'dup') dup();
-    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.duck; delete c.anim; delete c.pitch; delete c.au; });
+    else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.duck; delete c.anim; delete c.pitch; delete c.au; delete c.studio; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
@@ -4992,7 +5040,7 @@ function wire() {
       if (t !== undefined) seekTo(c.start + t);
     }
     else if (d.act === 'vkfclear' || d.act === 'unduck') change(() => { delete c.vkf; delete c.duck; });
-    else if (d.act === 'soundreset') { change(() => { delete c.au; }); renderInspector(); }
+    else if (d.act === 'soundreset') { change(() => { delete c.au; delete c.studio; }); renderInspector(); }
     else if (d.act === 'stems') quiet(splitStems(c, S.sel.lane));
     else if (d.act === 'vkprev' || d.act === 'vknext') {
       const lt = S.t - c.start, ts = (c.vkf || []).map(f => f.t), t = d.act === 'vkprev' ? ts.filter(x => x < lt - 1e-3).at(-1) : ts.find(x => x > lt + 1e-3);
@@ -5326,7 +5374,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   else if (c.fx) Object.assign(o, { fx: c.fx, effect: FX[c.fx]?.n || ADJUST.n, strength: c.amt });
   else o.text = c.text;
   const def = { speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: lane === 'text' ? 0.5 : 0, y: lane === 'text' ? 0.42 : 0, rot: 0, opacity: 1, fadeIn: 0, fadeOut: 0 };
-  for (const k of ['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch']) {
+  for (const k of ['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch']) {
     const v = c[k];
     if (v !== undefined && v !== def[k] && v !== false && v !== 'normal') o[k] = typeof v === 'number' ? r3(v) : v;
   }
@@ -5345,7 +5393,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.duck) o.duck = c.duck;
   return o;
 }
-const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -5623,11 +5671,23 @@ const REMOTE = {
       timed: ws.map(w => [w.w, r3(w.t0), r3(w.t1)]) };
   },
   async add_effect({ type, start = S.t, duration, strength = 1 }) { return brief(addEffect(type, start, duration, strength), 'fx'); },
-  async add_sound({ name, at = S.t }) {
+  async add_sound({ name, at = S.t }) { // a synthesized sound by name, else a library pack sound / track by id or name
     if (!G.sfx.length) G.sfx = await api('/api/sfx');
     const q = String(name || '').toLowerCase(), s = G.sfx.find(x => x.id === q || x.name.toLowerCase() === q) || G.sfx.find(x => x.name.toLowerCase().includes(q) || x.id.includes(q));
-    if (!s) throw new Error(`name must be one of ${G.sfx.map(x => x.name).join(', ')}`);
-    return addSfx(s.id, at);
+    if (s) return addSfx(s.id, at);
+    G.snd ??= await api('/api/packs');
+    const it = G.snd.items || [], p = it.find(x => x.id.toLowerCase() === q || x.name.toLowerCase() === q) || it.find(x => x.name.toLowerCase().includes(q));
+    if (!p) throw new Error(`no sound called ${name}: synthesized ones are ${G.sfx.map(x => x.name).join(', ')}${G.snd.installed ? '; sound_library lists the rest' : '; sound_library with install=true downloads 600+ more'}`);
+    return addPack(p.id, at);
+  },
+  async sound_library({ query = '', category = '', install = false }) { // search the CC0 packs (and the synthesized sounds)
+    G.snd ??= await api('/api/packs');
+    if (!G.snd.installed && install) await installPacks();
+    const q = String(query).toLowerCase(), cat = String(category).toLowerCase();
+    const rows = [...G.sfx.map(s => ({ id: s.id, name: s.name, category: 'Basics', kind: 'sfx', dur: s.dur, licence: 'made on this Mac' })),
+      ...(G.snd.items || []).map(x => ({ id: x.id, name: x.name, category: x.cat, kind: x.kind, dur: x.dur, artist: x.artist, licence: x.licence }))];
+    const hit = rows.filter(r => (!cat || r.category.toLowerCase() === cat || r.kind === cat) && (!q || `${r.name} ${r.category} ${r.artist || ''}`.toLowerCase().includes(q)));
+    return { installed: !!G.snd.installed, categories: [...new Set(rows.map(r => r.category))], total: hit.length, results: hit.slice(0, 60).map(r => ({ ...r, dur: r3(r.dur) })) };
   },
   async ai_image(args) { if (!args.prompt) throw new Error('prompt is required'); return aiImage(args); },
   async generate_music(args) { if (!args.prompt) throw new Error('prompt is required (or a style: ' + Object.keys(MUSIC_STYLES).join(', ') + ')'); return aiMusic({ ...args, prompt: MUSIC_STYLES[args.prompt] || args.prompt }); },
@@ -5675,7 +5735,7 @@ const REMOTE = {
     if (SUB_FMT.includes(format)) { const file = await saveSRT(name, format); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
     S.exporting = true;
     try {
-      const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, !!loudness, format);
+      const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS
       plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
       const jb = await job('/api/export', plan, 'Exporting');
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click

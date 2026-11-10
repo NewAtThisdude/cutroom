@@ -38,6 +38,9 @@ const audit = async (name, root) => {
     const leaf = texty.map(e => { // the text as drawn: cut to its box when the box clips (an ellipsis hides the rest)
       const rg = document.createRange(); rg.selectNodeContents(e); let q = rg.getBoundingClientRect();
       if (getComputedStyle(e).overflowX !== 'visible') { const er = e.getBoundingClientRect(), l = Math.max(q.left, er.left), r = Math.min(q.right, er.right); q = new DOMRect(l, q.top, Math.max(0, r - l), q.height); }
+      for (let a = e.parentElement; a && a !== scope; a = a.parentElement) if (getComputedStyle(a).overflowY !== 'visible') { // a scrolling list inside the panel hides what is scrolled out
+        const ar = a.getBoundingClientRect(), t = Math.max(q.top, ar.top), bo = Math.min(q.bottom, ar.bottom); q = new DOMRect(q.left, t, bo > t ? q.width : 0, Math.max(0, bo - t));
+      }
       return [e, q];
     }).filter(([, q]) => q.width > 0);
     for (let i = 0; i < leaf.length; i++) for (let j = i + 1; j < leaf.length; j++) {

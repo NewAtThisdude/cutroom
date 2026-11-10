@@ -292,32 +292,139 @@ def rnn_model():
     return RNN_OK[0]
 
 
-def pcm(m, tempo=1.0, a=0, b=0, dn=False):
+NOISE_FX = ('dn', 'sv', 'svm')  # Reduce noise (RNNoise) | Studio voice | Studio voice, the music taken out first (Demucs)
+AI_CHARS = ('elf', 'giant', 'monster', 'alien')  # ai/voicefx.py: WORLD vocoder, the pitch and the formants moved apart
+FF_CHARS = {  # voice characters as ffmpeg filters (n: the length in samples, for the reverb's tail); the drive before the band (no vibrato: its delay line made the voice 4 ms late)
+    'radio': lambda n: 'acompressor=threshold=0.08:ratio=6:attack=1:release=60:makeup=3,asoftclip=type=tanh,'
+                       'highpass=f=350:p=2,highpass=f=350:p=2,lowpass=f=3200:p=2,lowpass=f=3200:p=2,lowpass=f=3200:p=2,equalizer=f=1500:t=q:w=1:g=4',
+    'megaphone': lambda n: 'volume=4,asoftclip=type=atan,highpass=f=700:p=2,highpass=f=700:p=2,lowpass=f=3800:p=2,lowpass=f=3800:p=2,lowpass=f=3800:p=2,'
+                           'equalizer=f=2000:t=q:w=1.4:g=10',
+    'cave': lambda n: (f"asplit=2[cd][cw];amovie={hall_ir('cave')},aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[ci];"
+                       f"[cw][ci]afir=irnorm=-1:gtype=none,lowpass=f=3000[cx];[cd][cx]amix=inputs=2:normalize=0:weights=0.8 1,atrim=end_sample={n}"),
+    'underwater': lambda n: 'lowpass=f=500:p=2,lowpass=f=500:p=2,aphaser=type=t:speed=0.6:decay=0.5,chorus=0.7:0.9:55|70:0.4|0.32:0.25|0.4:2|1.3,tremolo=f=5:d=0.25'}
+VOICE_CHARS = (*AI_CHARS, *FF_CHARS)
+# Studio voice after RNNoise: rumble cut, less mud, de-ess, a downward expander for the gaps (at most -14 dB), a gentle
+# compressor, presence and air, then one gain to -16 LUFS
+# (podcast loudness). None of these looks ahead: the voice is not delayed (the onset stays within 2 ms)
+STUDIO = ('highpass=f=80:p=2,equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,agate=threshold=0.025:ratio=2:range=0.2:attack=3:release=250,'
+          'acompressor=threshold=0.1:ratio=3:attack=5:release=150:makeup=2,'
+          'equalizer=f=3500:t=q:w=1.2:g=3,equalizer=f=10000:t=q:w=1:g=1.5')
+
+
+def fx_ok(fx):
+    """A clip's sound processing as the PCM file's key: '', a noise step, a character, or 'noise+character'."""
+    p = fx.split('+') if fx else []
+    return len(p) <= 2 and len(set(p)) == len(p) and all(x in NOISE_FX or x in VOICE_CHARS for x in p) and not (len(p) == 2 and (p[0] not in NOISE_FX or p[1] in NOISE_FX))
+
+
+def clip_fx(c, m):
+    """The same key as the page's sndFx(c): Studio voice wins over Reduce noise; a character from c.au.voice."""
+    if not m.get('hasAudio') or m.get('kind') == 'image':
+        return ''
+    v = (c.get('au') or {}).get('voice') if isinstance(c.get('au'), dict) else None
+    return '+'.join(x for x in ('svm' if c.get('studio') == 'music' else 'sv' if c.get('studio') else 'dn' if c.get('denoise') else '',
+                                v if v in VOICE_CHARS else '') if x)
+
+
+def pcm_lufs(f, fmt='s16le'):
+    """Integrated loudness (LUFS) and true peak (dBTP) of a raw PCM file, from loudnorm's meter; (-99, -99) for silence."""
+    r = sh(['ffmpeg', '-v', 'info', '-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f), '-af', 'loudnorm=print_format=json', '-f', 'null', '-'])
+    try:
+        j = json.loads(r.stderr[r.stderr.rindex('{'):r.stderr.rindex('}') + 1])
+        i, tp = float(j['input_i']), float(j['input_tp'])
+    except ValueError:
+        return -99.0, -99.0
+    return (i, tp) if math.isfinite(i) and math.isfinite(tp) else (-99.0, -99.0)
+
+
+def fx_pcm(m, fx, tmp, st=None):
+    """The 1x PCM through a clip's sound processing, its last step on the PCM of the steps before it (each one cached):
+    the preview plays this file and the export reads it, so both hear the same samples. Same length as the source.
+    Each step renders in float, then ONE gain sets its level (Studio voice -16 LUFS; a character the loudness it came
+    in at) with the true peak under -1.5 dBTP: a clipped file played clipped in the preview while the export's limiter
+    (at -1 dBFS) changed it (the cave's reverb: 22 dB apart)."""
+    *pre, step = fx.split('+')
+    raw = pcm(m)
+    if not raw:
+        return False
+    n = raw.stat().st_size // 4
+    if step == 'svm':  # Demucs keeps the voice only (cached as the clip's "Isolate voice" item); same length as the source
+        base = pcm(meta(isolate(st if st is not None else {}, m['id'], 'voice')['media']))
+    else:
+        base = pcm(m, fx='+'.join(pre))
+    if not base:
+        return False
+    raw_in = lambda f, fmt='s16le': ['-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f)]
+    run = lambda af, src, dst, fmt='s16le': not sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)]).returncode
+    rnn = f"apad=whole_len={n + RNN_LAG},arnndn=m='{rnn_model()}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
+    if step == 'dn':  # (afftdn was 25 ms late and took only 1-5 dB)
+        return run(rnn, raw_in(base), tmp)
+    mid, i0 = tmp.with_suffix('.f32'), pcm_lufs(base)[0]
+    try:
+        if step in NOISE_FX:  # first to -20 LUFS: RNNoise and the expander's threshold then see a known level
+            ok, want = run(f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn},{STUDIO}', raw_in(base), mid, 'f32le'), -16
+        elif step in FF_CHARS:
+            ok, want = run(f'aformat=sample_fmts=flt,{FF_CHARS[step](n)},apad=whole_len={n},atrim=end_sample={n}', raw_in(base), mid, 'f32le'), i0
+        else:
+            if not (AI_BIN / 'python').exists():
+                raise RuntimeError('the voice characters elf, giant, monster and alien need the on-device AI tools (README: On-device AI)')
+            r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'voicefx.py'), step, str(base), str(mid)], capture_output=True, text=True, env=AI_ENV)
+            if r.returncode:
+                raise RuntimeError(f'the {step} voice failed: ' + (r.stderr.strip().splitlines() or ['no output'])[-1][-300:])
+            ok, want = True, i0
+        if not ok:
+            return False
+        i, tp = pcm_lufs(mid, 'f32le')
+        g = min(want - i if i > -70 and want > -70 else 0.0, -1.5 - tp)
+        return run(f'volume={g:.3f}dB', raw_in(mid, 'f32le'), tmp)
+    finally:
+        mid.unlink(missing_ok=True)
+
+
+def sound_prep(st, mid, fx):
+    m = meta(mid)
+    if not m.get('hasAudio') or not pcm(m, fx=fx, st=st):
+        raise RuntimeError('this clip has no sound to process')
+    return {'ok': True}
+
+
+def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
     """The preview's sound: raw 16-bit 48 kHz stereo, decoded once from the start (sample-exact). The page reads byte
     ranges of it into Web Audio buffers. A <video>'s own sound routed through Web Audio started ~0.3 s late in WebKit and
     held the picture meanwhile: a stall at every cut. A clip that keeps its pitch at another speed gets the export's
     atempo over just its source seconds [a, b] (whole seconds, cut by atrim on decoded samples, so exact): a whole-file
     copy per speed made 3.5 GB from one 5-minute clip whose speed slider was swept. The 4 newest per file are kept.
-    dn: Reduce noise, the 1x copy through RNNoise with its 10 ms lag taken back out (the export reads this same file:
-    afftdn was 25 ms late, took 1-5 dB of the noise and played only in the export)."""
+    fx: the clip's sound processing (fx_ok: Reduce noise, Studio voice, a voice character), made by fx_pcm() on the 1x
+    copy; the export reads this same file (dn=True is fx='dn')."""
+    fx = fx or ('dn' if dn else '')
+    if not fx_ok(fx):
+        raise ValueError(f'unknown sound processing {fx!r}')
     one = abs(tempo - 1) < 1e-6
-    out = CACHE / (f"{m['id']}{'.dn' if dn else ''}.pcm" if one else f"{m['id']}{'.dn' if dn else ''}.{tempo:g}.{a}-{b}.pcm")
+    out = CACHE / (f"{m['id']}{'.' + fx if fx else ''}.pcm" if one else f"{m['id']}{'.' + fx if fx else ''}.{tempo:g}.{a}-{b}.pcm")
     with PCM_LOCKS_LOCK:
         lock = PCM_LOCKS.setdefault(out.name, threading.Lock())
     with lock:
         if not out.exists():
             src = exact_audio(m) if m.get('kind') == 'audio' else MEDIA / m['file']
             tmp = out.with_suffix('.tmp')
+            if one and fx:
+                try:
+                    ok = fx_pcm(m, fx, tmp, st)
+                except Exception:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                if not ok or not tmp.exists():
+                    tmp.unlink(missing_ok=True)
+                    return None
+                tmp.replace(out)
+                return out
             trim = '' if one else f"atrim=start={a}{f':end={b}' if b > a else ''},asetpts=PTS-STARTPTS,"
             # a span at another speed is cut from the 1x copy (raw samples: the seek is exact and instant); from the source
             # it decoded everything before the span first: 1.6 s of silence on a sped-up clip 5 minutes in
-            base = None if one and not dn else pcm(m, dn=dn and not one)
-            if dn and not base:
+            base = None if one else pcm(m, fx=fx)
+            if fx and not base:
                 return None
-            n = base.stat().st_size // 4 if base else 0
-            af = (f"apad=pad_len={RNN_LAG},arnndn=m='{rnn_model()}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}" if dn and one
-                  else atempo(tempo))
-            cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', af]
+            cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', atempo(tempo)]
                    if base else ['-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}'])
             if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp)], low=not base).returncode:
                 tmp.unlink(missing_ok=True)
@@ -598,27 +705,46 @@ def beats(mid):
     if cache.exists():
         return json.loads(cache.read_text())
     sr, hop = 8000, 128  # 62.5 onset frames per second
-    raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(MEDIA / m['file']), '-vn', '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
+    # the preview's 48 kHz PCM when it exists: raw samples resample in a third of an MP3/AAC decode (which was ~2/3 of the time).
+    # Same BPM on all 22 pack songs; 2 of them had 2 beats each 2-3 frames off the grid read from the file itself
+    f = CACHE / f'{mid}.pcm'
+    src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
+    # numpy in the AI venv (ai/beats.py, the same grid) starts first: Python and numpy load while ffmpeg decodes, then ~8 ms
+    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not (AI_BIN / 'python').exists() else subprocess.Popen(
+        [str(AI_BIN / 'python'), '-I', str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
+    raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
+    if fast:
+        try:
+            out = json.loads(fast.communicate(raw)[0])
+        except (ValueError, OSError):
+            out = None  # a broken venv: the stdlib loops below
+        if out and out.get('error'):
+            raise ValueError(out['error'])
+        if out:
+            cache.write_text(json.dumps(out))
+            return out
     x = array('h')
     x.frombytes(raw[:len(raw) // 2 * 2])
     n, fps = len(x) // hop, sr / hop
     if n < fps * 4:
         raise ValueError('need at least 4 seconds of audio')
-    env = [math.log1p(sum(v * v for v in x[i * hop:(i + 1) * hop]) / hop / 1e4) for i in range(n)]
-    on = [0.0] + [max(0.0, env[i] - env[i - 1]) for i in range(1, n)]
+    # no venv: the loops run in C (map/sum over slices, max/index), the same sums in the same order: the grid is identical
+    # to the per-sample Python loops they replaced (CUTROOM_BEATS_STDLIB=1 forces this path; tests/audio_packs.mjs times both)
+    from operator import mul, sub
+    env = [math.log1p(sum(map(mul, b, b)) / hop / 1e4) for b in (x[i * hop:(i + 1) * hop] for i in range(n))]
+    on = [0.0] + [max(0.0, e - d) for d, e in zip(env, env[1:])]
     sd = statistics.pstdev(on) or 1.0
     on = [v / sd for v in on]
     prior = lambda L: math.exp(-0.5 * math.log2(60 * fps / L / 120) ** 2)
-    period = max(range(int(60 * fps / 180), int(60 * fps / 60) + 1), key=lambda L: prior(L) * sum(on[i] * on[i - L] for i in range(L, n)))
+    period = max(range(int(60 * fps / 180), int(60 * fps / 60) + 1), key=lambda L: prior(L) * sum(map(mul, on[L:], on)))
     score, back = on[:], [-1] * n
+    pen = [100 * math.log(d / period) ** 2 for d in range(2 * period, period // 2, -1)]  # pen[j]: a jump of 2 * period - j frames
     for t in range(n):
-        best, arg = -1e9, -1
-        for prev in range(max(0, t - 2 * period), max(0, t - period // 2)):
-            v = score[prev] - 100 * math.log((t - prev) / period) ** 2
-            if v > best:
-                best, arg = v, prev
-        if arg >= 0:
-            score[t], back[t] = on[t] + best, arg
+        lo, hi = max(0, t - 2 * period), max(0, t - period // 2)
+        if hi > lo:  # the best previous beat: the first maximum, as the loop's strict > kept
+            v = list(map(sub, score[lo:hi], pen[2 * period - t + lo:]))
+            best = max(v)
+            score[t], back[t] = on[t] + best, lo + v.index(best)
     t = max(range(max(0, n - period), n), key=lambda i: score[i])
     grid = []
     while t >= 0:
@@ -1608,6 +1734,128 @@ def sfx_media(sid):
     return m
 
 
+# ---------- sound and music library: CC0 packs downloaded once (packs.json pins each source, licence and SHA-256) ----------
+PACKS_SRC = Path(__file__).resolve().parent / 'packs.json'
+CC0_URL = 'creativecommons.org/publicdomain/zero/1.0'
+PACKS_LOCK = threading.Lock()  # one download at a time (a second click waits, then finds it installed)
+
+
+def packs_index():
+    f = HOME / 'packs' / 'index.json'
+    return json.loads(f.read_text()) if f.exists() else None
+
+
+def pack_name(stem):
+    """'impactWood_medium_003' -> 'Impact wood medium 3'."""
+    words = re.sub(r'([a-z])([A-Z0-9])', r'\1 \2', stem).replace('_', ' ').replace('-', ' ').split()
+    words = [str(int(w)) if w.isdigit() else w.lower() for w in words]
+    return ' '.join(words)[:1].upper() + ' '.join(words)[1:]
+
+
+def install_packs(st):
+    """Download the packs.json sources into <library>/packs (sound effects as 48 kHz WAV, music as the MP3 it came as) and
+    write packs/index.json: one row per file with its source URL and licence. A source whose hash or licence no longer
+    matches is left out (and named in 'skipped'), the rest still install. Already installed: the index as it is."""
+    with PACKS_LOCK:
+        if (idx := packs_index()) and idx.get('items'):
+            return {'items': len(idx['items']), 'skipped': idx.get('skipped', [])}
+        return install_packs_(st)
+
+
+def install_packs_(st):
+    import hashlib, http.cookiejar, io, wave
+    from urllib.parse import quote
+    src, d = json.loads(PACKS_SRC.read_text()), HOME / 'packs'
+    d.mkdir(parents=True, exist_ok=True)
+    jar = http.cookiejar.CookieJar()
+    web = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    web.addheaders = [('User-Agent', 'Mozilla/5.0 (Macintosh) Cutroom')]
+    get = lambda url, ref=None: web.open(urllib.request.Request(url, headers={'Referer': ref} if ref else {}), timeout=120).read()
+    items, skipped, todo = [], [], len(src['sfx']) + len(src['music'])
+    for k, p in enumerate(src['sfx']):
+        st['progress'] = k / todo
+        page = f"https://kenney.nl/assets/{p['pack']}"
+        try:  # Kenney hands out a signed link per visit: the asset page first (its cookie), then the link, then the zip
+            get(page)
+            link = json.loads(get(f"https://kenney.nl/download-link/{('assets/' + p['pack']).encode().hex()}", page))['url']
+            data = get(link, page)
+        except (OSError, ValueError, KeyError) as e:
+            skipped.append(f"{p['title']}: download failed ({e})")
+            continue
+        if hashlib.sha256(data).hexdigest() != p['sha256']:
+            skipped.append(f"{p['title']}: the zip changed upstream (SHA-256 differs from packs.json)")
+            continue
+        z = zipfile.ZipFile(io.BytesIO(data))
+        lic = next((n for n in z.namelist() if n.lower().endswith('license.txt')), None)
+        if not lic or CC0_URL not in z.read(lic).decode(errors='replace'):
+            skipped.append(f"{p['title']}: no CC0 licence in the zip")
+            continue
+        out = d / 'sfx' / p['pack']
+        out.mkdir(parents=True, exist_ok=True)
+        (out / 'License.txt').write_bytes(z.read(lic))
+        for n in sorted(z.namelist()):
+            if not n.lower().endswith(('.ogg', '.wav')) or not n.startswith('Audio/'):  # Preview.ogg: the pack's demo reel
+                continue
+            stem = Path(n).stem
+            f = out / f'{re.sub(r"[^A-Za-z0-9_-]", "_", stem)}.wav'
+            r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', 'pipe:0', '-ar', '48000', '-c:a', 'pcm_s16le', str(f)], input=z.read(n), capture_output=True)
+            if r.returncode:
+                continue
+            with wave.open(str(f)) as w:
+                dur = w.getnframes() / w.getframerate()
+            sub = Path(n).parent.name if Path(n).parent.name != 'Audio' else ''  # music-jingles: '8-Bit jingles/jingles_NES00.ogg' -> '8-Bit jingle 1'
+            num = int(re.sub(r'\D', '', stem) or 0) + 1
+            cat = next(c for pre, c in p['cats'] if stem.lower().startswith(pre))
+            items.append({'id': f"{p['pack']}/{f.stem}", 'name': f'{sub[:-1]} {num}' if sub else pack_name(stem), 'cat': cat,
+                          'kind': 'sfx', 'dur': round(dur, 3), 'file': f'sfx/{p["pack"]}/{f.name}', 'author': 'Kenney (kenney.nl)',
+                          'licence': 'CC0 1.0', 'src': f'{page} ({p["title"]}: {n})', 'sha256': p['sha256']})
+    meta_cache = {}
+    for k, t in enumerate(src['music']):
+        st['progress'] = (len(src['sfx']) + k) / todo
+        try:
+            md = meta_cache.get(t['item']) or meta_cache.setdefault(t['item'], json.loads(get(f"https://archive.org/metadata/{t['item']}")))
+            if CC0_URL not in str(md.get('metadata', {}).get('licenseurl', '')):
+                skipped.append(f"{t['title']}: archive.org no longer lists it as CC0")
+                continue
+            url = f"https://archive.org/download/{t['item']}/{quote(t['file'])}"
+            data = get(url)
+        except (OSError, ValueError) as e:
+            skipped.append(f"{t['title']}: download failed ({e})")
+            continue
+        if hashlib.sha256(data).hexdigest() != t['sha256']:
+            skipped.append(f"{t['title']}: the file changed upstream (SHA-256 differs from packs.json)")
+            continue
+        f = d / 'music' / f"{re.sub(r'[^A-Za-z0-9]+', '-', t['artist'] + ' ' + t['title']).strip('-').lower()}.mp3"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(data)
+        dur = float(sh(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(f)]).stdout.strip() or 0)
+        items.append({'id': f'music/{f.stem}', 'name': t['title'], 'artist': t['artist'], 'cat': t['mood'], 'kind': 'music', 'dur': round(dur, 2),
+                      'file': f'music/{f.name}', 'licence': 'CC0 1.0', 'src': url, 'sha256': t['sha256']})
+    if not items:
+        raise RuntimeError('nothing could be downloaded: ' + '; '.join(skipped)[:400])
+    tmp = d / 'index.tmp'
+    tmp.write_text(json.dumps({'items': items, 'skipped': skipped, 'installed': time.time()}))
+    tmp.replace(d / 'index.json')
+    return {'items': len(items), 'skipped': skipped}
+
+
+def pack_media(pid):
+    """A pack sound or track in the media library (imported once, then reused), its source and licence in its metadata."""
+    it = next((x for x in (packs_index() or {}).get('items', []) if x['id'] == pid), None)
+    if not it:
+        raise ValueError('no such sound in the library packs')
+    for j in MEDIA.glob('*.json'):
+        m = json.loads(j.read_text())
+        if m.get('pack') == pid and (MEDIA / m['file']).exists():
+            return m
+    f = HOME / 'packs' / it['file']
+    with open(f, 'rb') as fh:
+        m = import_file(f"{it['name']}{f.suffix}", fh, f.stat().st_size)
+    m.update(pack=pid, licence=it['licence'], src=it['src'])
+    save_meta(m)
+    return m
+
+
 def ai_status():
     """Which on-device generators are installed (weights already on disk: a status call never starts a download)."""
     venv = (AI_BIN / 'python').exists()
@@ -2244,7 +2492,7 @@ def clean_plan(p):
         raise ValueError(f'an export above 4K needs a Mac with 16 GB of memory (this one has {RAM_GB:.0f} GB): choose 4K')
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
-           'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
+           'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')), 'lufs': p.get('lufs') if p.get('lufs') in LUFS else -14,
            'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'hdr': p.get('hdr') if p.get('hdr') in ('hlg', 'pq') else None, 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'efps': p['efps'] if p.get('efps') in EXPORT_FPS else 0, 'mbps': fnum(p.get('mbps') or 0, 0, 400),  # 0 = the project's fps / bitrate from the preset
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
@@ -2269,9 +2517,10 @@ def clean_plan(p):
                  trc=m.get('hdr') and (m.get('trc') or sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
                                                           '-of', 'csv=p=0', k['path']]).stdout.strip()),  # HLG / PQ (items imported before 'trc' was kept: read from the file)
                  flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')), heavy=heavy(m))
-        if k['denoise'] and m['hasAudio'] and m['kind'] != 'image':  # the sound the preview plays: the same denoised PCM file
-            if not (f := pcm(m, dn=True)):
-                raise ValueError(f"{m.get('name') or 'A clip'}: reducing its noise failed")
+        k['studio'] = c.get('studio') if c.get('studio') in (True, 'music') else False
+        if fx := clip_fx(c, m):  # the sound the preview plays: the same processed PCM file (Reduce noise, Studio voice, a character)
+            if not (f := pcm(m, fx=fx)):
+                raise ValueError(f"{m.get('name') or 'A clip'}: processing its sound failed")
             k['dn'] = str(f)
         au = c.get('au') if isinstance(c.get('au'), dict) else {}
         k['au'] = {'voice': au.get('voice') if au.get('voice') in VOICE_FX else 'none', 'semi': round(fnum(au.get('semi', 0), -12, 12)),
@@ -2529,7 +2778,7 @@ def overlap(a, b):
     return min(a['trf'], a['frames'] // 2, b['frames'] // 2) if a['tr'] else 0
 
 
-VOICE_FX = ('none', 'robot', 'echo', 'hall', 'telephone')
+VOICE_FX = ('none', 'robot', 'echo', 'hall', 'telephone', *VOICE_CHARS)  # characters are in the clip's PCM (fx_pcm), not afx()
 AFX_N = __import__('itertools').count()  # unique filter labels (a hall reverb needs a few)
 
 
@@ -2538,7 +2787,7 @@ def afx(au, n):
     pitch in semitones keeping the length, 3-band EQ (RBJ shelves / peak, like BiquadFilterNode), a voice effect, and an
     equal-power pan (StereoPannerNode's formula for stereo input). Empty when the clip is untouched."""
     au = au or {}
-    if not (au.get('semi') or au.get('bass') or au.get('mid') or au.get('treb') or au.get('pan') or au.get('voice', 'none') != 'none'):
+    if not (au.get('semi') or au.get('bass') or au.get('mid') or au.get('treb') or au.get('pan') or au.get('voice', 'none') not in ('none', *VOICE_CHARS)):
         return ''
     f = ['aresample=48000', 'aformat=channel_layouts=stereo']  # the preview's chain runs in stereo too (mono doubled)
     if au.get('semi'):
@@ -2585,18 +2834,26 @@ def shelf(f0, g, low, sr=48000):
     return 'biquad=' + ':'.join(f'{n}={v / a[0]:.10f}' for n, v in zip(('b0', 'b1', 'b2', 'a0', 'a1', 'a2'), b + a))
 
 
-def hall_ir():
+IRS = {'hall': (2.2, 1.8, 7, 0.035, ()),  # seconds, RT60, seed, level, early echoes (s, level)
+       'cave': (3.2, 3.0, 11, 0.03, ((0.06, 0.45), (0.11, 0.3), (0.19, 0.22), (0.29, 0.15)))}
+
+
+def hall_ir(kind='hall'):
     """The hall reverb's impulse response: 2.2 s of seeded noise per channel under an exponential decay (RT60 ~1.8 s),
-    5 ms pre-delay, 48 kHz stereo WAV in the cache. Deterministic, so the preview (ConvolverNode) and export (afir) match."""
-    out = CACHE / 'hall_ir.wav'
+    5 ms pre-delay, 48 kHz stereo WAV in the cache. Deterministic, so the preview (ConvolverNode) and export (afir) match.
+    'cave' (the voice character): longer, with four discrete early echoes off the walls."""
+    length, rt, seed, level, taps = IRS[kind]
+    out = CACHE / f'{kind}_ir.wav'
     if not out.exists():
         import math, random, struct, wave
-        rnd, sr, n = random.Random(7), 48000, int(2.2 * 48000)
+        rnd, sr, n = random.Random(seed), 48000, int(length * 48000)
         fr = bytearray()
         for i in range(n):
             t = i / sr
-            env = 0 if t < 0.005 else math.exp(-6.9 * (t - 0.005) / 1.8) * min(1, (t - 0.005) / 0.01)
-            fr += struct.pack('<hh', *(int(max(-1, min(1, rnd.gauss(0, 1) * env * 0.035)) * 32767) for _ in range(2)))
+            env = 0 if t < 0.005 else math.exp(-6.9 * (t - 0.005) / rt) * min(1, (t - 0.005) / 0.01)
+            fr += struct.pack('<hh', *(int(max(-1, min(1, rnd.gauss(0, 1) * env * level)) * 32767) for _ in range(2)))
+        for at, g in taps:
+            struct.pack_into('<hh', fr, 4 * int(at * sr), int(g * 32767), int(g * 32767))
         tmp = out.with_suffix('.tmp')
         with wave.open(str(tmp), 'wb') as w:
             w.setnchannels(2), w.setsampwidth(2), w.setframerate(sr), w.writeframes(bytes(fr))
@@ -2856,7 +3113,7 @@ def graph(p, td):
         return f',scale={sw}:{sh}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
 
     def joined(a, b):  # b carries on a's sound: same file, speed and level, from where a stops, with no transition between
-        return (all(a.get(x) == b.get(x) for x in ('path', 'speed', 'volume', 'au', 'pitch', 'denoise')) and not a.get('vkf') and not b.get('vkf')
+        return (all(a.get(x) == b.get(x) for x in ('path', 'speed', 'volume', 'au', 'pitch', 'denoise', 'studio')) and not a.get('vkf') and not b.get('vkf')
                 and not overlap(a, b) and abs(a['in'] + a['frames'] / F * a['speed'] - b['in']) < 0.5 / F)
 
     ao = p.get('format') in SOUND  # sound only: no picture is built (a WAV of 30 s took 13 s and 139 CPU-s doing it)
@@ -3052,7 +3309,7 @@ def graph(p, td):
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
         over('tx', *p.get('box', (0, 0))[:2])  # a crop: everything outside its box is transparent in every frame
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
-    # loudness (-14 LUFS, the reels/YouTube target): export() measures the whole mix first ('measure'), then sets ONE gain
+    # loudness (p['lufs']: -14 LUFS reels/YouTube, -16 podcast, -23 EBU broadcast): export() measures the whole mix first ('measure'), then sets ONE gain
     # in dB for all of it (two-pass, linear: single-pass loudnorm rode the gain and pumped up the quiet parts). Otherwise a
     # look-ahead limiter at -1 dBFS (it changes nothing below that): the sound effects at their default level, or music at
     # +6 dB, clipped the file
@@ -3272,15 +3529,19 @@ def still_cut(p):
             'still': still, 'duration': still + 2 / F}
 
 
+LUFS = (-14, -16, -23)  # export loudness targets: social (reels, YouTube), podcast, EBU R128 broadcast
+
+
 def loud_gain(p, td, job):
-    """Loudness pass one: the mix alone through loudnorm's meter. One gain to -14 LUFS for the whole edit, held down so the
-    true peak stays at -1.5 dBTP (what loudnorm's linear mode does; past that it would ride the gain)."""
+    """Loudness pass one: the mix alone through loudnorm's meter. One gain to the target (p['lufs']: -14 / -16 / -23 LUFS)
+    for the whole edit, held down so the true peak stays at -1.5 dBTP (what loudnorm's linear mode does; past that it would
+    ride the gain)."""
     cmd = ffmpeg_cmd({**p, 'format': 'wav', 'loud': 'measure'}, td, 'x')
     cmd[cmd.index('-loglevel') + 1] = 'info'  # loudnorm prints its numbers at info level
     err = run_ffmpeg(cmd[:-1] + ['-f', 'null', '-'], p['duration'], lambda _x: None, 'Measuring loudness', job)
     j = json.loads(err[err.rindex('{'):err.rindex('}') + 1])
     i, tp = float(j['input_i']), float(j['input_tp'])
-    return 0.0 if not (math.isfinite(i) and math.isfinite(tp)) or i < -70 else round(min(-14 - i, -1.5 - tp), 3)  # silence: as it is
+    return 0.0 if not (math.isfinite(i) and math.isfinite(tp)) or i < -70 else round(min(p.get('lufs', -14) - i, -1.5 - tp), 3)  # silence: as it is
 
 
 def export(job, p):
@@ -3510,7 +3771,7 @@ class App(BaseHTTPRequestHandler):
                 if q.get('pcm') and mm.get('hasAudio'):
                     tempo = fnum(q['pcm'][0], 0.1, 100)
                     a, b = (int(fnum(q.get(k, ['0'])[0], 0, 1e7)) for k in ('a', 'b'))
-                    if f := pcm(mm, tempo, a, b, dn=q.get('dn') == ['1']):
+                    if f := pcm(mm, tempo, a, b, dn=q.get('dn') == ['1'], fx=q.get('fx', [''])[0]):
                         return self.file(f)
                     return self.reply({'error': 'no sound in this file'}, 404)
                 if 'hevc' in q.get('alpha', []) and mm.get('kind') == 'video' and (mm.get('alpha') or mm.get('trans')):
@@ -3524,6 +3785,17 @@ class App(BaseHTTPRequestHandler):
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
             if path == '/api/sfx':
                 return self.reply([{'id': k, 'name': v[0], 'dur': v[1]} for k, v in SFX.items()])
+            if path == '/api/packs':  # the sound and music library (installed: its rows; else what a download would bring)
+                idx = packs_index()
+                if idx:
+                    return self.reply({'installed': True, 'items': idx['items'], 'skipped': idx.get('skipped', [])})
+                src = json.loads(PACKS_SRC.read_text())
+                return self.reply({'installed': False, 'mb': round(sum(x['size'] for x in src['sfx'] + src['music']) / 1e6), 'tracks': len(src['music']), 'packs': len(src['sfx'])})
+            if path.startswith('/packs/'):
+                root = (HOME / 'packs').resolve()
+                f = (root / unquote(path[7:])).resolve()
+                if f.is_relative_to(root) and f.is_file() and f.suffix in ('.wav', '.mp3'):
+                    return self.file(f)
             if path == '/ir/hall.wav':  # the hall reverb's impulse response (the preview's ConvolverNode reads it)
                 return self.file(hall_ir())
             if m := re.fullmatch(r'/sfx/([a-z]+)\.wav', path):
@@ -3641,6 +3913,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'file': f.name})
             if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
                 return self.reply(sfx_media(str(body.get('id', ''))))
+            if u.path == '/api/packs/add':  # a pack sound or track into the media library
+                return self.reply(pack_media(str(body.get('id', ''))))
+            if u.path == '/api/packs/install':
+                return self.reply({'job': run_job(install_packs)})
             if u.path == '/api/remote/ack':  # the editor page got the command
                 REMOTE_SENT.pop(str(body.get('id')), None)
                 return self.reply({'ok': True})
@@ -3667,6 +3943,8 @@ class App(BaseHTTPRequestHandler):
                                                   body.get('steps', 8), bool(body.get('sticker')))})
             if u.path == '/api/lift':
                 return self.reply(lift(body['media']))
+            if u.path == '/api/sound_prep':  # a clip's processed sound made before the clip uses it (Studio voice, characters): a job
+                return self.reply({'job': run_job(sound_prep, body['media'], str(body.get('fx', '')))})
             if u.path == '/api/isolate':
                 return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
             if u.path == '/api/retouch':
@@ -3814,6 +4092,11 @@ class App(BaseHTTPRequestHandler):
 def selftest():
     """Render synthetic projects end-to-end (single graph + chunked path) and check timing, layers, audio."""
     global HOME, MEDIA, PROJ, EXPORTS, CACHE, CHUNK
+    # sound processing keys (noise step first, one character last) and pack names; tests/audio_packs.mjs checks the sound
+    assert fx_ok('') and fx_ok('dn') and fx_ok('svm') and fx_ok('sv+elf') and fx_ok('cave') and fx_ok('dn+underwater')
+    assert not (fx_ok('elf+sv') or fx_ok('dn+sv') or fx_ok('elf+cave') or fx_ok('sv+sv') or fx_ok('x') or fx_ok('dn+'))
+    assert clip_fx({'studio': True, 'denoise': True, 'au': {'voice': 'giant'}}, {'hasAudio': True}) == 'sv+giant'
+    assert clip_fx({'au': {'voice': 'robot'}}, {'hasAudio': True}) == '' and pack_name('impactWood_medium_003') == 'Impact wood medium 3'
     # language-model features with a stub model: picks snap to sentence edges, padding stops halfway into a pause,
     # overlapping / malformed picks are dropped, two-clause titles keep the first clause, translations keep the line count
     keep = {k: globals()[k] for k in ('transcribe', 'meta', 'llm', 'shots')}
@@ -4528,6 +4811,10 @@ def resume_prepare():
 def main():
     if '--selftest' in sys.argv:
         return selftest()
+    if '--packs' in sys.argv:  # ai/setup.sh: the CC0 sound and music library, downloaded once into this library
+        r = install_packs({})
+        print(f"{r['items']} sounds and tracks in {HOME / 'packs'}" + ''.join(f'\n  left out: {s}' for s in r['skipped']))
+        return
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
         d.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(CACHE / 'layers', ignore_errors=True)  # ponytail: uploads of a plan that never ran stay until the next start
