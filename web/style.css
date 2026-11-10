@@ -28,7 +28,7 @@ button, label.btn {
   background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; cursor: pointer; white-space: nowrap;
   transition: background .12s, border-color .12s, color .12s;
 }
-button:hover, label.btn:hover { background: var(--hover); border-color: var(--line2); }
+button:hover:not(:disabled), label.btn:hover { background: var(--hover); border-color: var(--line2); } /* a disabled button doesn't react */
 button:active { transform: translateY(.5px); }
 button.primary { background: var(--grad); border-color: transparent; color: #fff; font-weight: 650; box-shadow: 0 8px 22px -10px rgba(192, 38, 211, .8); }
 button.primary:hover { filter: brightness(1.08); }
@@ -212,7 +212,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .transport { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; height: 52px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--panel); }
 .tside { display: flex; align-items: center; min-width: 0; }
 .tside.end { justify-content: flex-end; }
-.tc { font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc { font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; flex: none; } /* the total length stays readable in a narrow window */
 .tbtns { display: flex; align-items: center; gap: 6px; }
 .tbtns button { width: 32px; height: 32px; padding: 0; border-radius: 8px; background: transparent; border-color: transparent; color: var(--muted); }
 .tbtns button:hover { color: var(--text); background: var(--raised); }

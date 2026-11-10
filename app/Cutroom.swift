@@ -186,7 +186,11 @@ final class EditorView: WKWebView {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: ["path": u.path])
             let res = try? await URLSession.shared.data(for: req)
-            if let (_, r) = res, (r as? HTTPURLResponse)?.statusCode == 200 { n += 1; continue }
+            if let (_, r) = res, (r as? HTTPURLResponse)?.statusCode == 200 {
+                n += 1
+                if files.count > 1 { _ = try? await web.evaluateJavaScript("loadMedia().then(() => toast('Imported \(n) of \(files.count)…'))") } // each card shows as it lands
+                continue
+            }
             if why.isEmpty, let (data, _) = res {
                 why = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? ""
             }

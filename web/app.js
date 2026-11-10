@@ -326,21 +326,28 @@ function anchors() {
   const out = [];
   for (const L of LANES) if (L.key !== 'main') for (const x of P[L.key]) {
     const h = P.main.find(m => x.start >= m.start - 1e-6 && x.start < m.start + tdur(m, 'main') - 1e-6);
-    if (h) out.push([x, x.start, h.id, h.media, h.in + (x.start - h.start) * h.speed]);
+    if (h) out.push([x, x.start, h.id, h.media, h.in + (x.start - h.start) * h.speed, L.key]);
   }
+  out.ids = new Set(P.main.map(m => m.id)); // the main clips before the edit: a part split off one is new, another copy of the file is not
   return out;
 }
 function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved stays where it was put
   if (!list.length) return;
   packMain();
-  for (const [x, s, hid, media, src] of list) {
+  const gone = new Set();
+  for (const [x, s, hid, media, src, lane] of list) {
     if (keepMoved && Math.abs(x.start - s) > 1e-9) continue;
     const has = m => m.media === media && src >= m.in - 1e-6 && src < m.out - 1e-6; // that picture is still there (a split, a reorder)
-    const h = P.main.find(m => m.id === hid && has(m)) || P.main.filter(has).sort((a, b) => Math.abs(a.start - s) - Math.abs(b.start - s))[0];
-    if (h) x.start = snap(Math.max(0, h.start + (src - h.in) / h.speed)); // else (that picture was cut out) it stays where it is
+    const at = m => m.start + (src - m.in) / m.speed;
+    const h = P.main.find(m => m.id === hid && has(m)) || P.main.filter(m => !list.ids?.has(m.id) && has(m)).sort((a, b) => Math.abs(at(a) - s) - Math.abs(at(b) - s))[0];
+    if (h) x.start = snap(Math.max(0, at(h)));
+    else if (lane === 'captions' && keepMoved) gone.add(x); // the words it showed were cut out with their picture (an edit, not mid-drag)
+    // else (that picture was cut out) it stays where it is
   }
+  if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
 function touched() { S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) {
   if (!from.length) return;
   to.push(JSON.stringify(P));
@@ -378,6 +385,7 @@ function renderAll() {
   $('#ratioLabel').textContent = `${P.w}×${P.h} · ${+P.fps.toFixed(3)} fps`;
   if (document.activeElement !== $('#projName')) $('#projName').value = P.name;
   $('#btnLink').classList.toggle('on', !P.unlinked);
+  syncHistory();
 }
 
 function renderTimeline() {
@@ -2729,6 +2737,8 @@ async function job(path, body, label, say = setStatus) { // start a server job a
   if (running.has(key)) throw new Error(`Already ${label.toLowerCase()} this clip`);
   if (key) running.add(key);
   busy(1);
+  const t0 = performance.now();
+  let last = -1, still = t0;
   try {
     const { job: id } = await api(path, body);
     for (;;) {
@@ -2736,7 +2746,9 @@ async function job(path, body, label, say = setStatus) { // start a server job a
       const j = await api(`/api/jobs/${id}`);
       if (j.state === 'done') return j;
       if (j.state !== 'running') throw new Error(j.error || `${label} failed`); // already one plain sentence
-      say(`${label}… ${Math.round((j.progress || 0) * 100)}%`);
+      const pct = Math.round((j.progress || 0) * 100), secs = Math.round((performance.now() - t0) / 1000);
+      if (pct !== last) { last = pct; still = performance.now(); }
+      say(pct && performance.now() - still < 1000 ? `${label}… ${pct}%` : `${label}… ${secs} s`); // a step without progress steps (a model loading) still shows it's alive
     }
   } finally { busy(-1); running.delete(key); }
 }
@@ -4021,7 +4033,7 @@ function wire() {
     if ('lutin' in e.target.dataset && e.target.files[0]) { const c = selClip(); importLutFile(e.target.files[0]).then(L => change(() => { c.grade ??= {}; c.grade.lut = { id: L.id, amount: 1 }; })).catch(err => setStatus(err.message)); return; }
     if ('relink' in e.target.dataset && e.target.files[0]) { const c = selClip(), f = e.target.files[0]; setStatus(`Importing ${f.name}…`); uploadOne(f).then(m => relink(c.media, m.id)).catch(err => setStatus(err.message)); return; }
     if (!e.target.dataset.k) return;
-    if (pending) { undo.push(pending); redo = []; pending = null; }
+    if (pending) { undo.push(pending); redo = []; pending = null; syncHistory(); }
     renderTimeline();
     const k = e.target.dataset.k;
     if (k === 'c.speed' || k === 'c.pitch') warmTempo(selClip()); // the new speed's sound is made now, not when Space is pressed
