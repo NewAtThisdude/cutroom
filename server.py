@@ -407,34 +407,92 @@ def timeline_assets(m):
     return changed
 
 
-def transcribe(mid, lang='auto'):
-    """Word-level timestamps for a media file, cached. On-device whisper.cpp (CapCut uses cloud ASR)."""
+TX_LOCKS, TX_PCT = {}, {}  # one whisper run per file at a time (Captions + Script at once ran it twice); media id -> progress 0-1
+
+
+def spans(rs, dur, pad=0.0):
+    """[a, b] spans merged where they touch, each padded and kept inside [0, dur]."""
+    out = []
+    for a, b in sorted((max(0.0, a - pad), min(dur, b + pad)) for a, b in rs if b > a):
+        if out and a <= out[-1][1] + 1e-3:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def transcribe(mid, lang='auto', ranges=None):
+    """Word-level timestamps for a media file, on-device whisper.cpp (CapCut uses cloud ASR). ranges: the source [in, out]
+    spans in use; only those (+1 s) are listened to, from the preview's PCM copy, and each span heard is cached with its
+    words (a 30 s edit of 431 s of night drives listened to all 431). No ranges: the whole file."""
     lang = lang if re.fullmatch(r'auto|[a-z]{2,3}', str(lang)) else 'auto'
     m, cache = meta(mid), CACHE / f'{mid}.{lang}.words.json'
-    if cache.exists():
-        return json.loads(cache.read_text())
-    if not shutil.which(WHISPER) or not Path(MODEL).exists():
-        raise RuntimeError('whisper.cpp is not set up: brew install whisper-cpp, and point CUTROOM_MODEL at a ggml model')
+    dur = m['duration']
+    want = spans([[fnum(a, 0, dur), fnum(b, 0, dur)] for a, b in ranges] if ranges else [[0, dur]], dur, 1.0)
+    with PCM_LOCKS_LOCK:
+        lock = TX_LOCKS.setdefault(cache.name, threading.Lock())
+    with lock:
+        doc = json.loads(cache.read_text()) if cache.exists() else {'have': [], 'words': []}
+        if isinstance(doc, list):  # a cache from before spans: the whole file
+            doc = {'have': [[0, dur]], 'words': doc}
+        todo = []
+        for a, b in want:  # what is wanted and not heard yet (have: sorted, merged)
+            for x, y in doc['have']:
+                if x < b and y > a:
+                    if x - a > 0.3:
+                        todo.append([a, x])
+                    a = max(a, y)
+            if b - a > 0.3:
+                todo.append([a, b])
+        if todo:
+            if not shutil.which(WHISPER) or not Path(MODEL).exists():
+                raise RuntimeError('whisper.cpp is not set up: brew install whisper-cpp, and point CUTROOM_MODEL at a ggml model')
+            if not (f := pcm(m)):
+                raise RuntimeError('could not read audio')
+            total, done = sum(b - a for a, b in todo), 0.0
+            try:
+                for a, b in todo:
+                    ws = listen(f, a, b, lang, lambda x: TX_PCT.__setitem__(mid, round((done + x * (b - a)) / total, 3)))
+                    # ponytail: a word cut by a span's edge stays cut (the 1 s pad keeps edges out of the used part)
+                    doc['words'] = [w for w in doc['words'] if not a <= (w['s'] + w['e']) / 2 < b] + ws
+                    doc['have'] = spans(doc['have'] + [[a, b]], dur)
+                    done += b - a
+            finally:
+                TX_PCT.pop(mid, None)
+                if done:
+                    doc['words'].sort(key=lambda w: w['s'])
+                    cache.write_text(json.dumps(doc))
+    return doc['words']
+
+
+def listen(f, a, b, lang, prog):
+    """whisper.cpp on [a, b] seconds of a PCM copy (s16 48 kHz stereo): words in source time. prog(0..1) as it goes."""
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         wav, base = Path(td) / 'a.wav', Path(td) / 'out'
-        if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vn', '-ac', '1', '-ar', '16000', str(wav)]).returncode:
+        if sh(['ffmpeg', '-v', 'error', '-y', '-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', f'{a:.3f}', '-t', f'{b - a:.3f}', '-i', str(f),
+               '-ac', '1', '-ar', '16000', str(wav)]).returncode:
             raise RuntimeError('could not read audio')
         preset = re.search(r'ggml-(tiny|base|small|medium|large-v[123](?:-turbo)?)(\.en)?', Path(MODEL).name)
         dtw = ['-nfa', '-dtw', preset[1].replace('-', '.') + (preset[2] or '')] if preset else []  # DTW needs flash-attn off
-        r = sh([WHISPER, '-m', MODEL, '-f', str(wav), '-l', lang, '-ojf', '-of', str(base), '-np', *dtw])
-        if r.returncode:
-            raise RuntimeError(plain('Transcribing', r.stderr, r.returncode))
+        p = subprocess.Popen([WHISPER, '-m', MODEL, '-f', str(wav), '-l', lang, '-ojf', '-of', str(base), '-np', '-pp', *dtw],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors='replace')
+        err = []
+        for line in p.stderr:
+            err = (err + [line])[-40:]
+            if hit := re.search(r'progress =\s*(\d+)%', line):
+                prog(int(hit[1]) / 100)
+        if p.wait():
+            raise RuntimeError(plain('Transcribing', ''.join(err), p.returncode))
         # surrogateescape: non-Latin characters can be split across tokens; bytes are rejoined per word below
         segs = json.loads(base.with_suffix('.json').read_text(encoding='utf-8', errors='surrogateescape'))['transcription']
         speech = None  # Silero VAD runs separately: whisper's own --vad reports DTW times on the silence-stripped timeline
         if Path(VAD).exists() and shutil.which('whisper-vad-speech-segments'):
             v = sh(['whisper-vad-speech-segments', '-vm', VAD, '-f', str(wav)])
-            speech = [(float(a) / 100, float(b) / 100) for a, b in re.findall(r'start = ([\d.]+), end = ([\d.]+)', v.stdout)] if not v.returncode else None
-    words = words_from_tokens([t for s in segs for t in s.get('tokens', [])], m['duration'])
+            speech = [(float(x) / 100, float(y) / 100) for x, y in re.findall(r'start = ([\d.]+), end = ([\d.]+)', v.stdout)] if not v.returncode else None
+    words = words_from_tokens([t for s in segs for t in s.get('tokens', [])], b - a)
     if speech is not None:  # whisper hallucinates on music ("The end of the day..."): keep only words VAD hears as speech
-        words = [w for w in words if any(a - 0.2 <= (w['s'] + w['e']) / 2 <= b + 0.2 for a, b in speech)]
-    cache.write_text(json.dumps(words))
-    return words
+        words = [w for w in words if any(x - 0.2 <= (w['s'] + w['e']) / 2 <= y + 0.2 for x, y in speech)]
+    return [{**w, 's': round(w['s'] + a, 3), 'e': round(w['e'] + a, 3)} for w in words]
 
 
 def words_from_tokens(toks, dur):
@@ -690,8 +748,9 @@ def sync_media(ids):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-def mask_preview(mid, t, box, points=None):
-    """The exact outline (SAM 2) of what a box covers on one frame: the user checks it before Best removal runs."""
+def mask_preview(mid, t, box, points=None, purpose='remove'):
+    """The exact outline (SAM 2) of what a box covers on one frame: the user checks it before Best removal runs.
+    purpose 'remove' also offers (and picks) everything SAM 2 is sure of together; 'cutout' keeps to one outline."""
     m = meta(mid)
     if m['kind'] != 'video':
         raise ValueError('pick a video clip')
@@ -703,19 +762,14 @@ def mask_preview(mid, t, box, points=None):
     pts = [[fnum(q[0], 0, 1), fnum(q[1], 0, 1), 1 if q[2] else 0] for q in (points or [])[:20]]  # clicked spots: keep (1) / leave out (0)
     dec, vf = hdr_decode(m)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        out, jf = Path(td) / 'mask.png', Path(td) / 'job.json'
-        jf.write_text(json.dumps({'mode': 'preview', 'src': str(MEDIA / m['file']), 'out': str(out), 't': t, 'w': m['w'], 'h': m['h'],
-                                  'box': [b['x'], b['y'], b['w'], b['h']], 'points': pts, 'dec': dec, 'vf': vf}))
-        r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, errors='replace', env=AI_ENV, timeout=180)
-        areas = [float(x.split()[2]) for x in r.stdout.splitlines() if x.startswith('candidate ')]
-        pick = next((int(x.split()[1]) for x in r.stdout.splitlines() if x.startswith('pick ')), None)
-        files = [Path(td) / f'mask{i}.png' for i in range(len(areas))]
-        if r.returncode or pick is None or not all(f.exists() for f in files):
-            raise RuntimeError('finding the object failed: ' + (r.stdout.strip().splitlines() or ['no output'])[-1][-300:])
+        r = ai_worker('preview', job={'src': str(MEDIA / m['file']), 'out': str(Path(td) / 'mask.png'), 't': t, 'w': m['w'], 'h': m['h'], 'dec': dec, 'vf': vf,
+                                      'box': [b['x'], b['y'], b['w'], b['h']], 'points': pts, 'purpose': 'cutout' if purpose == 'cutout' else 'remove'})
+        files = [Path(td) / f'mask{i}.png' for i in range(len(r['areas']))]
+        if not all(f.exists() for f in files):
+            raise RuntimeError('finding the object failed')
         # every candidate outline (smallest first: part ... whole) and the one that fits the box; the client steps through them
-        return {'masks': [base64.b64encode(f.read_bytes()).decode() for f in files], 'areas': areas, 'pick': pick, 'area': areas[pick],
-                'mask': base64.b64encode(files[pick].read_bytes()).decode()}
+        masks = [base64.b64encode(f.read_bytes()).decode() for f in files]
+        return {'masks': masks, 'areas': r['areas'], 'scores': r['scores'], 'pick': r['pick'], 'area': r['areas'][r['pick']], 'mask': masks[r['pick']], 'unsure': r['unsure']}
 
 
 def isolate(st, mid, keep='voice'):
@@ -907,12 +961,22 @@ MATTE_VF = 'format=yuva444p'  # matte writes straight alpha (set to 'unpremultip
 
 
 def silences(mid, noise=-35.0, mind=0.5):
+    """Pauses (silencedetect) read from the preview's PCM copy and cached per (noise, min): on a 4 GB 4K original every
+    Remove pauses click decoded the whole file again (1.2-1.4 s)."""
     m = meta(mid)
-    r = sh(['ffmpeg', '-hide_banner', '-nostats', '-i', str(MEDIA / m['file']), '-vn', '-af', f'silencedetect=noise={noise:g}dB:d={mind:g}', '-f', 'null', '-'])
+    cache = CACHE / f'{mid}.sil{noise:g}_{mind:g}.json'
+    if cache.exists():
+        return json.loads(cache.read_text())
+    f = pcm(m) if m.get('hasAudio') else None
+    src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f else ['-i', str(MEDIA / m['file']), '-vn']
+    r = sh(['ffmpeg', '-hide_banner', '-nostats', *src, '-af', f'silencedetect=noise={noise:g}dB:d={mind:g}', '-f', 'null', '-'])
     st = [float(x) for x in re.findall(r'silence_start: (-?[\d.]+)', r.stderr)]
     en = [float(x) for x in re.findall(r'silence_end: ([\d.]+)', r.stderr)]
     en += [m['duration']] * (len(st) - len(en))  # silence running to EOF has no end line
-    return [[max(0.0, a), b] for a, b in zip(st, en)]
+    out = [[max(0.0, a), b] for a, b in zip(st, en)]
+    if f and not r.returncode:
+        cache.write_text(json.dumps(out))
+    return out
 
 
 AI_DIR = Path(__file__).resolve().parent / 'ai'
@@ -925,6 +989,45 @@ AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
 HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
 AI_LOCK = threading.Lock()  # one generation at a time: two image models at once would push the Mac into swap
+WORKER = {'proc': None, 'n': 0, 'lock': threading.Lock()}
+
+
+def ai_worker(op, timeout=180, **req):
+    """Ask the long-lived AI process (ai/worker.py), started on demand: it keeps SAM 2's image model, the frame it last
+    embedded and Kokoro loaded, so a second outline click on a frame is milliseconds instead of a 3-36 s model load.
+    It quits after 5 idle minutes, at once on a Mac under 16 GB. A worker that died (or just timed out idle) is restarted once."""
+    with WORKER['lock']:
+        for again in (False, True):
+            p = WORKER['proc']
+            if p is None or p.poll() is not None:
+                with open(CACHE / 'ai-worker.log', 'w') as log:
+                    p = WORKER['proc'] = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'worker.py'), '300' if RAM_GB >= 16 else '0'],
+                                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, env=AI_ENV)
+            WORKER['n'] += 1
+            hung = []
+            kill = threading.Timer(timeout, lambda: (hung.append(1), p.kill()))
+            kill.start()
+            try:
+                p.stdin.write(json.dumps({'id': WORKER['n'], 'op': op, **req}) + '\n')
+                p.stdin.flush()
+                while (line := p.stdout.readline()) and json.loads(line).get('id') != WORKER['n']:
+                    pass
+            except (BrokenPipeError, ValueError):
+                line = ''
+            finally:
+                kill.cancel()
+            if line:
+                r = json.loads(line)
+                if 'error' in r:
+                    raise RuntimeError(r['error'])
+                return r['result']
+            p.kill()
+            p.wait()
+            WORKER['proc'] = None
+            if again or hung:
+                break
+        log = (CACHE / 'ai-worker.log').read_text(errors='replace').strip().splitlines()
+        raise RuntimeError('the AI worker stopped: ' + (log or ['no output'])[-1][-300:])
 
 
 # ---------- sound effects: synthesized on this Mac, deterministic (no sample packs, nothing downloaded) ----------
@@ -1160,12 +1263,11 @@ def ai_voice(st, text, voice='af_heart', speed=1.0):
         raise ValueError('nothing to say')
     voice = voice if re.fullmatch(r'[a-z]{2}_[a-z]+', str(voice)) else 'af_heart'
     with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        r = subprocess.run([str(AI_BIN / 'python'), '-I', '-m', 'mlx_audio.tts.generate', '--model', KOKORO, '--text', text, '--voice', voice,
-                            '--speed', f'{fnum(speed, 0.5, 2):.2f}', '--lang_code', voice[0], '--output_path', td, '--file_prefix', 'v',
-                            '--audio_format', 'wav', '--join_audio'], env=AI_ENV, capture_output=True, text=True, errors='replace')
-        f = Path(td) / 'v.wav'
-        if r.returncode or not f.exists():
-            raise RuntimeError('voice generation failed: ' + (r.stderr or r.stdout)[-300:])
+        f = Path(td) / 'v.wav'  # Kokoro stays loaded in the AI worker between voiceovers
+        try:
+            ai_worker('voice', timeout=600, text=text, voice=voice, speed=round(fnum(speed, 0.5, 2), 2), out=str(f))
+        except RuntimeError as e:
+            raise RuntimeError(f'voice generation failed: {e}') from None
         st['progress'] = 0.9
         with open(f, 'rb') as fh:
             m = import_file(f'AI voice - {text[:40]}.wav', fh, f.stat().st_size, background=False)
@@ -1561,7 +1663,7 @@ def combine(st, mids, target=0, style='balanced', order='auto', music=None, soun
         words = {}
         for mid in {c['media'] for c in cands}:
             try:
-                words[mid] = [(w['s'], w['e'], w['w']) for w in transcribe(mid, 'auto')] if meta(mid).get('hasAudio') else []
+                words[mid] = [(w['s'], w['e'], w['w']) for w in transcribe(mid, 'auto', [[c['in'], c['out']] for c in cands if c['media'] == mid])] if meta(mid).get('hasAudio') else []
             except (RuntimeError, OSError, ValueError):
                 words[mid] = []
         def between(ws, t, lo, hi):  # t moved to the nearer edge of the word it falls in (padding at most half the gap, so
@@ -1685,7 +1787,7 @@ def hooks(st, ranges, lang='auto'):
     words = []
     for r in list(ranges)[:50]:
         a, b = fnum(r.get('in', 0), 0, 1e6), fnum(r.get('out', 0), 0, 1e6)
-        words += [w['w'] for w in transcribe(r['media'], lang) if a <= w['s'] < b]
+        words += [w['w'] for w in transcribe(r['media'], lang, [[a, b]]) if a <= w['s'] < b]
     if not words:
         raise ValueError('no speech found on the main track')
     ans = llm('You write hooks for short videos. Reply with JSON only.',
@@ -1700,10 +1802,10 @@ def hooks(st, ranges, lang='auto'):
 FILLER = re.compile(r'(u+h+m*|u+m+|e+r+m*|h+m+|a+h+|e+h+|m{2,})', re.I)
 
 
-def fillers(mid, lang='auto'):
+def fillers(mid, lang='auto', ranges=None):
     """Filler words (um, uh, er, hmm) from the on-device transcript, cut from the middle of the pause before to the
     middle of the pause after: DTW word edges are approximate, pause midpoints make clean jump cuts."""
-    words, sil = transcribe(mid, lang), silences(mid, -35, 0.08)
+    words, sil = transcribe(mid, lang, ranges), silences(mid, -35, 0.08)
     def edge(t, before):  # the pause holding t, or the nearest one within 0.25 s on the outer side
         near = [(a, b) for a, b in sil if a - (0.05 if before else 0.25) <= t <= b + (0.25 if before else 0.05)]
         if not near:
@@ -2819,7 +2921,9 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
             body = self.body()
             if u.path == '/api/transcribe':
-                return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'))})
+                return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
+            if u.path == '/api/transcribe/progress':  # how far whisper is on that file (null: not listening)
+                return self.reply({'p': TX_PCT.get(body.get('media'))})
             if u.path == '/api/remote':  # from the MCP server: hand a command to the editor page and wait for its result
                 if time.time() - REMOTE_SEEN[0] > 30:
                     return self.reply({'ok': False, 'result': 'the Cutroom editor is not open'})
@@ -2902,7 +3006,7 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/isolate':
                 return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
             if u.path == '/api/mask_preview':  # one frame's SAM 2 outline, a second or two: shown before Best removal runs
-                return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box'), body.get('points')))
+                return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box'), body.get('points'), body.get('mode', 'remove')))
             if u.path == '/api/remove_object':
                 return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'),
                                                   body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove', body.get('seed'))})
@@ -2918,7 +3022,7 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/transcript':  # timestamped sentences (the MCP transcript tool)
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
-                return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'))})
+                return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
             if u.path == '/api/sync':
                 return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
@@ -3032,7 +3136,7 @@ def selftest():
         if 'numbered line' not in user:
             return answer
         return {k: {'one': 'uno', 'two': 'dos'}[v] for k, v in json.loads(user.rsplit('\n', 1)[1]).items() if v in ('one', 'two')}
-    globals().update(transcribe=lambda mid, lang='auto': words, meta=lambda mid: {'duration': 43.0}, llm=fake_llm)
+    globals().update(transcribe=lambda mid, lang='auto', ranges=None: words, meta=lambda mid: {'duration': 43.0}, llm=fake_llm)
     try:
         got = [(c['start'], c['end'], c['title']) for c in highlights({}, 'm', count=3, lo=10, hi=30)['clips']]
         assert got == [(1.88, 20.1, 'Big claim'), (20.1, 40.3, 'Two')], got
@@ -3388,8 +3492,12 @@ def selftest():
         subprocess.run(['say', '-o', str(HOME / 'speech.aiff'), 'Cutroom makes captions automatically. [[slnc 1300]] Right on your Mac.'], check=True)
         with open(HOME / 'speech.aiff', 'rb') as fh:
             sp = import_file('speech.aiff', fh, (HOME / 'speech.aiff').stat().st_size, background=False)
+        d = sp['duration']  # first only the last words in use: whisper hears that span + 1 s, then the rest when all is asked for
+        part, have = transcribe(sp['id'], 'en', [[d - 0.6, d]]), json.loads((CACHE / f"{sp['id']}.en.words.json").read_text())['have']
+        assert part and not any('caption' in w['w'].lower() for w in part) and len(have) == 1 and abs(have[0][0] - (d - 1.6)) < 0.01, (part, have)
         words = transcribe(sp['id'], 'en')
         assert any('caption' in w['w'].lower() for w in words) and all(w['e'] > w['s'] for w in words), words
+        assert sum('mac' in w['w'].lower() for w in words) == 1, ('a span heard twice', words)
         gaps = silences(sp['id'], -35, 0.5)
         smear = max((min(w['e'], b) - max(w['s'], a) for w in words for a, b in gaps), default=0)
         assert gaps and smear < 0.3, ('word timing runs into a pause', smear, words, gaps)
@@ -3437,13 +3545,17 @@ def selftest():
             off = [a[y * 480 + x] for y in list(range(0, 90)) + list(range(170, 270)) for x in range(0, 480, 7)]
             assert min(on) > 200 and max(off) < 30, ('cutout alpha', min(on), max(off))
             print(f'cutout ok: alpha {min(on)}+ on the subject, {max(off)} or less around it')
-            pv = mask_preview(dirty['id'], 1.0, sq)  # the outline shown before Best runs: the square at t=1 is x 180-220, y 110-150
-            (HOME / 'pv.png').write_bytes(base64.b64decode(pv['mask']))
-            g = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(HOME / 'pv.png'), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], capture_output=True).stdout
-            on = [g[y * 480 + x] for y in range(115, 146) for x in range(185, 216)]
-            off = [g[y * 480 + x] for y in range(0, 270, 5) for x in range(0, 480, 5) if not (170 <= x <= 230 and 100 <= y <= 160)]
-            assert 0.008 < pv['area'] < 0.02 and min(on) == 255 and max(off) == 0, ('outline preview', pv['area'], min(on), max(off))
-            print(f"outline preview ok: {pv['area']:.4f} of the frame, exactly the square")
+            for purpose in ('cutout', 'remove'):  # the outline shown before it runs: the square at t=1 is x 180-220, y 110-150
+                t0_ = time.monotonic()
+                pv = mask_preview(dirty['id'], 1.0, sq, purpose=purpose)
+                (HOME / 'pv.png').write_bytes(base64.b64decode(pv['mask']))
+                g = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(HOME / 'pv.png'), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], capture_output=True).stdout
+                on = [g[y * 480 + x] for y in range(115, 146) for x in range(185, 216)]
+                off = [g[y * 480 + x] for y in range(0, 270, 5) for x in range(0, 480, 5) if not (170 <= x <= 230 and 100 <= y <= 160)]
+                # a cutout keeps exactly the square; a removal may also take what SAM 2 is sure of round it (filled exactly anyway)
+                assert (0.008 < pv['area'] < 0.02 if purpose == 'cutout' else pv['area'] < 0.03) and min(on) == 255 and max(off) == 0, (
+                    'outline preview', purpose, pv['area'], min(on), max(off))
+                print(f"outline preview ok ({purpose}, {time.monotonic() - t0_:.2f} s): {pv['area']:.4f} of the frame, all of the square")
         if Path(AI_BIN / 'python').exists() and subprocess.run([str(AI_BIN / 'python'), '-I', '-c', 'import demucs'], capture_output=True).returncode == 0:
             # isolate voice: speech over a loud 55 Hz hum + 220 Hz tone; the voice track must lose the music
             subprocess.run(['say', '-o', str(HOME / 'talk.aiff'), 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.'], check=True)

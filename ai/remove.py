@@ -336,22 +336,32 @@ def cutout(job, n):
     say(1)
 
 
+SAM_IMG = {}  # SAM 2's image model and the frame it last embedded: in the long-lived ai/worker.py a refine click costs only the decoder (~10 ms)
+
+
 def preview(job):
-    """The outline Best would take, on the one frame the box was drawn on (SAM 2's image model, a second or two):
-    shown to the user before the whole clip is processed. Writes a grey mask PNG (255 = the object)."""
+    """The outline Best would take, on the one frame the box was drawn on (SAM 2's image model): shown to the user before
+    the whole clip is processed. Writes grey mask PNGs (255 = the object), one per candidate, smallest first."""
     import torch
-    from sam2.build_sam import build_sam2
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
     W, H = job['w'], job['h']
     k = min(1.0, 1024 / max(W, H))
     fw, fh = max(2, int(W * k) // 2 * 2), max(2, int(H * k) // 2 * 2)
-    raw = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', *job['dec'], '-ss', f"{job['t']:.6f}", '-i', job['src'], '-frames:v', '1',
-                          '-vf', f"{job['vf']}scale={fw}:{fh}", '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
-    if len(raw) < fw * fh * 3:
-        raise RuntimeError('could not read that frame')
-    img = np.frombuffer(raw[:fw * fh * 3], np.uint8).reshape(fh, fw, 3)
     dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-    pred = SAM2ImagePredictor(build_sam2('configs/sam2.1/sam2.1_hiera_s.yaml', str(SAM2_CK), device=dev))
+    amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
+    if 'pred' not in SAM_IMG:
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        SAM_IMG['pred'] = SAM2ImagePredictor(build_sam2('configs/sam2.1/sam2.1_hiera_s.yaml', str(SAM2_CK), device=dev))
+    pred, key = SAM_IMG['pred'], json.dumps([job['src'], round(job['t'], 4), job['dec'], job['vf'], fw, fh])
+    if SAM_IMG.get('key') != key:
+        SAM_IMG.pop('key', None)
+        raw = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', *job['dec'], '-ss', f"{job['t']:.6f}", '-i', job['src'], '-frames:v', '1',
+                              '-vf', f"{job['vf']}scale={fw}:{fh}", '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+        if len(raw) < fw * fh * 3:
+            raise RuntimeError('could not read that frame')
+        with torch.inference_mode(), amp:
+            pred.set_image(np.frombuffer(raw[:fw * fh * 3], np.uint8).reshape(fh, fw, 3))
+        SAM_IMG['key'] = key
     x, y, w, h = job['box']
     bx = np.array([x * fw, y * fh, (x + w) * fw, (y + h) * fh], np.float32)
     pts = job.get('points') or []  # [x, y, 1 = keep this spot / 0 = leave it out], normalized
@@ -359,40 +369,65 @@ def preview(job):
         if keep and not (bx[0] <= px_ * fw <= bx[2] and bx[1] <= py_ * fh <= bx[3]):
             mx, my = 0.25 * (bx[2] - bx[0]), 0.25 * (bx[3] - bx[1])
             bx = np.array([min(bx[0], px_ * fw - mx), min(bx[1], py_ * fh - my), max(bx[2], px_ * fw + mx), max(bx[3], py_ * fh + my)], np.float32).clip(0, [fw, fh, fw, fh])
-    amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
+    # two prompts on the same embedding: the box (with any clicked spots), and the box plus a 'keep' point at its centre. A loose box
+    # (2 % margin round the walking fox) alone gave a block of book spines its best fit; the centre point gave the whole fox
+    prompts = [pts] + ([] if any(not q[2] for q in pts) else [pts + [[(bx[0] + bx[2]) / 2 / fw, (bx[1] + bx[3]) / 2 / fh, 1]]])
+    raw = []
     with torch.inference_mode(), amp:
-        pred.set_image(img)
-        kw = {'point_coords': np.array([[p[0] * fw, p[1] * fh] for p in pts], np.float32), 'point_labels': np.array([int(p[2]) for p in pts], np.int32)} if pts else {}
-        masks, scores, _ = pred.predict(box=bx, multimask_output=True, **kw)
-    # a box is ambiguous between parts and wholes (hair / head / head and neck): keep every candidate, smallest first, and
-    # pick the one that fills the box without spilling out of it, in one piece; with clicked spots, one that takes them all
-    # in (and leaves the ⌥-clicked ones out). Clicked on a beard below a head box: hair + face + beard, not hair + beard
+        for ps in prompts:
+            kw = {'point_coords': np.array([[p[0] * fw, p[1] * fh] for p in ps], np.float32), 'point_labels': np.array([int(p[2]) for p in ps], np.int32)} if ps else {}
+            masks, scores, _ = pred.predict(box=bx, multimask_output=True, **kw)
+            raw += [(np.asarray(m) > 0, float(sc)) for m, sc in zip(masks, scores)]
+    # a box is ambiguous between parts and wholes (hair / head / head and neck): every candidate is kept, smallest first. The pick
+    # weighs SAM's own score with how the mask sits in the box (fills it without spilling out, in one piece) and marks down masks
+    # that fill the box out to its edges (a box-shaped block of background). Neither alone: SAM's score picked hair + beard over
+    # the face on the 11-07 head test, box cover picked the book spines. With clicked spots: one that takes them all in (and
+    # leaves the ⌥-clicked ones out)
     x0, y0, x1, y1 = (int(round(v)) for v in bx)
+    x0, y0 = max(0, x0), max(0, y0)
+    rb = max(2, round(0.04 * min(x1 - x0, y1 - y0)))
+    ring = np.zeros((fh, fw), bool)
+    ring[y0:y1, x0:x1] = True
+    ring[y0 + rb:y1 - rb, x0 + rb:x1 - rb] = False
     cands = []
-    for m, sc in zip(masks, scores):
-        m = np.asarray(m) > 0
+    for m, sc in raw:
         if not m.any():
             continue
-        inside = m[max(0, y0):y1, max(0, x0):x1].sum()
+        same = next((c for c in cands if (c['m'] & m).sum() > 0.97 * (c['m'] | m).sum()), None)
+        if same:  # both prompts found it
+            same['sc'] = max(same['sc'], sc)
+            continue
+        inside = m[y0:y1, x0:x1].sum()
         cover, spill = inside / max(1, (y1 - y0) * (x1 - x0)), 1 - inside / m.sum()
+        edge = (m & ring).sum() / max(1, ring.sum())
         pieces = cv2.connectedComponents(m.astype(np.uint8))[0] - 1
         obeys = all(m[min(fh - 1, int(q[1] * fh)), min(fw - 1, int(q[0] * fw))] == bool(q[2]) for q in pts)
-        cands.append((m.mean(), m, float(sc), (obeys, cover - spill - 0.002 * pieces + 0.05 * float(sc))))
+        cands.append({'m': m, 'sc': sc, 'obeys': obeys, 'spill': spill, 'fit': cover - spill - 0.5 * max(0.0, edge - 0.5) - 0.002 * pieces})
     if not cands:
         raise RuntimeError('nothing found in that box')
-    cands.sort(key=lambda c: c[0])
-    pick = max(range(len(cands)), key=lambda i: cands[i][3])
+    best = max(cands, key=lambda c: (c['obeys'], c['sc'] + 0.5 * c['fit']))
+    if job.get('purpose') == 'remove':  # removing: every outline SAM 2 is sure of, together. Extra background is filled exactly from
+        # other frames; a part left out (the fox's dark legs, in a candidate that missed them) stays in the video
+        sure = [c for c in cands if c['obeys'] and c['sc'] >= 0.7 and c['spill'] < 0.5]
+        if len(sure) > 1:
+            u = np.logical_or.reduce([c['m'] for c in sure])
+            same = next((c for c in sure if c['m'].sum() == u.sum()), None)  # one of them already holds all the others
+            if not same:
+                same = {'m': u, 'sc': max(c['sc'] for c in sure)}
+                cands.append(same)
+            best = same
+    cands.sort(key=lambda c: c['m'].sum())
     base = job['out'][:-4]
-    for i, (area, m, _, _) in enumerate(cands):
-        cv2.imwrite(f'{base}{i}.png', m.astype(np.uint8) * 255)
-        print(f'candidate {i} {area:.5f}', flush=True)
-    print(f'pick {pick}', flush=True)
+    for i, c in enumerate(cands):
+        cv2.imwrite(f'{base}{i}.png', c['m'].astype(np.uint8) * 255)
+    return {'areas': [round(float(c['m'].mean()), 5) for c in cands], 'scores': [round(c['sc'], 3) for c in cands],
+            'pick': next(i for i, c in enumerate(cands) if c is best), 'unsure': max(c['sc'] for c in cands) < 0.7}  # low: 'not sure what you boxed: click on it'
 
 
 def main(path):
     job = json.load(open(path))
-    if job.get('mode') == 'preview':
-        return preview(job)
+    if job.get('mode') == 'preview':  # one-off; the editor asks the long-lived ai/worker.py instead
+        return print(json.dumps(preview(job)))
     W, H, fps = job['w'], job['h'], job['fps']
     n = max(1, len(job['boxes']))
     if job.get('mode') == 'cutout':
