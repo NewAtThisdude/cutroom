@@ -5378,8 +5378,11 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     for d in (CACHE / 'layers').glob('*'):  # uploads of a plan that never ran (ponytail: kept until a start a day later). Not
         # younger ones: another server on this library (a second port, the app's restart) may be exporting with them right now
-        if time.time() - d.stat().st_mtime > 86400:
-            shutil.rmtree(d, ignore_errors=True)
+        try:
+            if time.time() - d.stat().st_mtime > 86400:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:  # gone meanwhile (another server's export finished with it)
+            pass
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
