@@ -128,6 +128,12 @@ TOOLS = [
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
+    ('retouch', 'Face and body retouch of a video clip (Apple Vision face landmarks + body pose on every frame, smoothed over time; rendered on this Mac into a copy the clip plays). '
+                'Each value is a slider: smooth (skin), bright (eyes), eyes (enlarge), teeth (whiten), slim (face), lips, blush, body (slim), legs (longer): 0..1; '
+                'width, cheek (cheekbones), jaw, chin (longer), nose (bigger): -1..1 (negative = narrower / shorter / smaller). lipc, blushc = #rrggbb. '
+                'Values not given are 0. reset=true puts the original back. Check the result with snapshot.',
+     S({'id': txt, **{k: num for k in ('smooth', 'bright', 'eyes', 'teeth', 'slim', 'width', 'cheek', 'jaw', 'chin', 'nose', 'lips', 'blush', 'body', 'legs')},
+        'lipc': txt, 'blushc': txt, 'reset': boo}, ['id']), 'retouch'),
     ('main_transcript', "The main track's speech as it plays on the timeline: sentences with start/end seconds, and every word timed. "
                         'Use it to decide what to cut, then cut_timeline. Transcribes on this Mac the first time (cached).', S({'lang': txt}), 'main_transcript'),
     ('cut_timeline', 'Ripple-delete ranges from the main track: ranges = [[start, end], ...] in timeline seconds (e.g. a sentence from main_transcript). '
@@ -218,7 +224,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

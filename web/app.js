@@ -904,6 +904,7 @@ function mediaPanel(c, lane) {
       + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%')
       + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%');
     look += `<h4>Beauty</h4>${slider('c.beauty.amt', 'Smooth skin', c.beauty?.amt || 0, 0, 1, 0.01, '%')}<p class="hint">Evens out skin texture (skin-coloured areas only); edges, eyes and hair stay sharp.</p>`;
+    if (m.kind === 'video' && !m.alpha && !m.trans) look += retouchUI(c);
     if (m.alpha || m.trans) look += `<h4>Glow</h4>${segs('glowkind', 'Style', !c.glow ? 'none' : c.glow.neon ? 'neon' : 'glow', [['none', 'None'], ['glow', 'Glow'], ['neon', 'Neon']])}`
       + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
     const [L, R] = c.flip ? ['r', 'l'] : ['l', 'r']; // with Mirror on, "Left" still means the left of what you see
@@ -1111,6 +1112,7 @@ function textPanel(c, lane) {
 }
 function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" -> caption style ; "p.fps" -> project
   if (el.dataset.k === 'vk.here') { const c = selClip(); if (c) volPoint(c, +el.value); return; }
+  if (el.dataset.k.startsWith('rt.')) { const c = selClip(); if (c) rtSet(c, el.dataset.k.slice(3), el.type === 'range' ? +el.value : el.value); return; } // a retouch draft, not the project
   if (el.dataset.k === 'lk.here') { const c = selClip(); if (c) strengthPoint(c, +el.value); return; }
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
   let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : P;
@@ -1525,6 +1527,8 @@ function paint() {
     let el;
     if (m.kind === 'image') el = imgFor(m);
     else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
+    const rp = S.rtPv; // a retouch draft: the paused frame as ai/retouch.py renders it, in place of the clip's own picture
+    if (rp?.id === c.id && !S.playing && S.rtDraft?.id === c.id) { if (Math.abs(t - rp.T) < 0.5 / P.fps && rp.img.naturalWidth) el = rp.img; else rtPreviewSoon(); }
     if (lane === 'overlay' && P.mute.overlay) continue;
     if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
       (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
@@ -3356,6 +3360,62 @@ async function denoiseVideo(c, strength = 'light') { // night grain: the clip sw
     toast('Noise reduced: the clip plays the cleaned copy (undo goes back)');
   } catch (e) { setStatus(e.message); throw e; }
 }
+// Retouch (CapCut's face and body retouch): the sliders are a draft (S.rtDraft); the paused frame shows that draft rendered
+// by the same code as the copy (/api/retouch_preview, swapped in for the clip's picture); Apply renders the clip's range into
+// a library copy it plays (c.rt = {src, t0, p, copy}); Reset puts the original back.
+const RT0 = { smooth: 0, bright: 0, eyes: 0, teeth: 0, slim: 0, width: 0, cheek: 0, jaw: 0, chin: 0, nose: 0, lips: 0, lipc: '#b8283f', blush: 0, blushc: '#f2647a', body: 0, legs: 0 };
+const RT_UI = [['Skin and eyes', [['smooth', 'Smooth face skin'], ['bright', 'Brighten eyes'], ['eyes', 'Bigger eyes'], ['teeth', 'Whiten teeth']]],
+  ['Face shape', [['slim', 'Slim face'], ['width', 'Face width', -1], ['cheek', 'Cheekbones', -1], ['jaw', 'Jaw', -1], ['chin', 'Chin', -1], ['nose', 'Nose size', -1]]],
+  ['Makeup', [['lips', 'Lipstick'], ['blush', 'Blush']]], ['Body', [['body', 'Slim body'], ['legs', 'Longer legs']]]];
+const rtOn = c => (c.rt && c.media === c.rt.copy && M.get(c.rt.src) ? c.rt : null);
+const rtSame = (a, b) => Object.keys(RT0).every(k => (a?.[k] ?? RT0[k]) === (b?.[k] ?? RT0[k]));
+const unretouch = c => { const r = c.rt; c.in += r.t0; c.out += r.t0; c.media = r.src; delete c.rt; };
+function rtDraft(c) { if (S.rtDraft?.id !== c.id) S.rtDraft = { id: c.id, p: { ...RT0, ...rtOn(c)?.p } }; return S.rtDraft.p; }
+function retouchUI(c) {
+  const p = rtDraft(c), on = rtOn(c), dirty = !rtSame(p, on?.p);
+  return '<h4>Retouch</h4>' + RT_UI.map(([g, rows]) => `<p class="muted">${g}</p>` + rows.map(([k, n, lo = 0]) => slider(`rt.${k}`, n, p[k], lo, 1, 0.01, '%')).join('')
+    + (g === 'Makeup' ? colour('rt.lipc', 'Lip colour', p.lipc) + colour('rt.blushc', 'Blush colour', p.blushc) : '')).join('')
+    + `<div class="actions"><button data-act="retouch"${dirty ? '' : ' disabled'}>Apply retouch</button>${on || dirty ? '<button data-act="rtreset">Reset</button>' : ''}</div>`
+    + `<p class="hint">${on ? 'The clip plays its retouched copy. ' : ''}The face and body are found on every frame, on this Mac. The paused frame previews the sliders; Apply renders the clip (undo goes back).</p>`;
+}
+function rtSet(c, k, v) {
+  rtDraft(c)[k] = v;
+  $('#inspector [data-act="retouch"]')?.toggleAttribute('disabled', rtSame(S.rtDraft.p, rtOn(c)?.p));
+  rtPreviewSoon();
+}
+function rtPreviewSoon() { clearTimeout(rtPreviewSoon.h); rtPreviewSoon.h = setTimeout(() => rtPreview().catch(e => setStatus(e.message)), 120); }
+async function rtPreview() { // the draft on the paused frame, rendered by ai/retouch.py (the copy's own code)
+  const c = selClip(), d = S.rtDraft;
+  if (!c || d?.id !== c.id || S.playing) return;
+  const on = rtOn(c), p = { ...d.p }, key = JSON.stringify(p), T = S.t;
+  if (rtSame(p, on?.p) || T < c.start || T >= c.start + len(c)) { if (S.rtPv) { S.rtPv = null; S.dirty = true; } return; }
+  const m = M.get(on ? on.src : c.media), fps = m?.fps || P.fps, st = (on ? on.t0 : 0) + c.in + (T - c.start) * c.speed;
+  if (S.rtPv?.id === c.id && S.rtPv.T === T && S.rtPv.key === key) return;
+  const seq = rtPreview.seq = (rtPreview.seq || 0) + 1; // only the latest ask is shown
+  const r = await api('/api/retouch_preview', { media: on ? on.src : c.media, t: Math.max(0, (Math.floor(st * fps + 1e-6) - 0.25) / fps), p }); // the frame the preview shows
+  const img = new Image();
+  await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = `data:image/png;base64,${r.png}`; });
+  if (seq !== rtPreview.seq) return;
+  S.rtPv = { id: c.id, T, key, img };
+  S.dirty = true;
+  setStatus(r.faces || r.bodies ? '' : 'No face or body found on this frame');
+}
+async function applyRetouch(c, p = rtDraft(c)) { // the range rendered into a retouched copy the clip plays (from the original, each time)
+  try {
+    const on = rtOn(c), src = on ? on.src : c.media, off = on ? on.t0 : 0, m = M.get(src), pid = P.id, was = c.media, pp = { ...RT0, ...p };
+    if (m?.kind !== 'video') throw new Error('Retouch works on video clips');
+    if (rtSame(pp, RT0)) { if (on) change(() => unretouch(c)); S.rtPv = null; return c; }
+    const fps = m.fps || P.fps, t0 = Math.floor((c.in + off) * fps + 1e-6) / fps; // from the frame the preview shows at the in point
+    const j = await job('/api/retouch', { media: src, t0, t1: c.out + off, p: pp }, 'Retouching');
+    await loadMedia();
+    c = live(c, pid, was);
+    const d = M.get(j.media)?.duration ?? Infinity;
+    change(() => { const a = c.in + off, b = c.out + off; c.in = clamp(a - t0, 0, d); c.out = clamp(b - t0, c.in + 1 / P.fps, d); c.media = j.media; c.rt = { src, t0, p: pp, copy: j.media }; });
+    S.rtDraft = { id: c.id, p: { ...pp } }; S.rtPv = null; S.dirty = true;
+    toast(j.found === undefined || j.found >= 0.95 * j.frames ? 'Retouched: the clip plays the retouched copy (Reset or undo goes back)' : `Retouched; a face or body was found on ${j.found} of ${j.frames} frames`);
+    return c;
+  } catch (e) { setStatus(e.message); throw e; }
+}
 async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
   const m = M.get(c.media);
   try {
@@ -3453,6 +3513,7 @@ async function saveTemplate(name = prompt('Template name', P.name)) { // media b
   for (const L of LANES) for (const c of t[L.key]) {
     if (!c.media) continue;
     if (c.ramp) { if (c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c); delete c.ramp; } // a ramp's copy belongs to its own footage: the slot gets the original range
+    if (c.rt) { if (rtOn(c)) unretouch(c); delete c.rt; } // so does a retouched copy
     if (!idx.has(c.media)) { const m = M.get(c.media); idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', need: 0 }); }
     const s = idx.get(c.media);
     slots[s].need = Math.max(slots[s].need, c.out);
@@ -4698,6 +4759,7 @@ function wire() {
   insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
   insp.addEventListener('input', e => {
     if (!e.target.dataset.k) return;
+    if (e.target.dataset.k.startsWith('rt.')) { apply(e.target); if (e.target.type === 'range') fill(e.target); const o = e.target.parentElement.querySelector('output'); if (o) o.textContent = fmt(+e.target.value, e.target.dataset.unit); return; }
     pending ??= JSON.stringify(P); // one undo step per gesture, committed on 'change'
     apply(e.target);
     if (e.target.type === 'range') fill(e.target);
@@ -4713,6 +4775,7 @@ function wire() {
     if ('lutin' in e.target.dataset && e.target.files[0]) { const c = selClip(); importLutFile(e.target.files[0]).then(L => change(() => { c.grade ??= {}; c.grade.lut = { id: L.id, amount: 1 }; })).catch(err => setStatus(err.message)); return; }
     if ('relink' in e.target.dataset && e.target.files[0]) { const c = selClip(), f = e.target.files[0]; setStatus(`Importing ${f.name}…`); uploadOne(f).then(m => relink(c.media, m.id)).catch(err => setStatus(err.message)); return; }
     if (!e.target.dataset.k) return;
+    if (e.target.dataset.k.startsWith('rt.')) return renderInspector(); // Apply / Reset follow the draft
     if (pending) { undo.push(pending); redo = []; pending = null; syncHistory(); }
     renderTimeline();
     const k = e.target.dataset.k;
@@ -4762,6 +4825,8 @@ function wire() {
     else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
     else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
     else if (d.act === 'denoise') quiet(denoiseVideo(c, $('#dnStrength')?.value));
+    else if (d.act === 'retouch') quiet(applyRetouch(c));
+    else if (d.act === 'rtreset') { S.rtDraft = S.rtPv = null; S.dirty = true; if (rtOn(c)) change(() => unretouch(c)); else renderInspector(); }
     else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
     else if (d.act === 'reframe') quiet(autoReframe(c));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
@@ -5120,6 +5185,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.mc) o.multicam = { angle: c.mc.a + 1, angles: c.mc.angles.length };
   if (c.compound) o.compound = Object.values(c.compound).filter(Array.isArray).reduce((n, a) => n + a.length, 0);
   if (c.ramp) o.ramp = c.ramp.pts;
+  if (c.rt) o.retouch = Object.fromEntries(Object.entries(c.rt.p).filter(([k, v]) => v !== RT0[k]));
   if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
@@ -5294,6 +5360,21 @@ const REMOTE = {
     if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
+  },
+  async retouch({ id, reset, ...v }) { // face and body retouch: values not given are 0 (the original); rendered into a copy the clip plays
+    const [c, L] = cfind(id);
+    if (M.get(rtOn(c)?.src || c.media)?.kind !== 'video') throw new Error('retouch works on video clips');
+    S.sel = { lane: L, id };
+    if (reset) { S.rtDraft = S.rtPv = null; if (rtOn(c)) change(() => unretouch(c)); return brief(c, L); }
+    const p = { ...RT0 };
+    for (const [k, x] of Object.entries(v)) {
+      if (!(k in RT0)) throw new Error(`unknown retouch value ${k}; known: ${Object.keys(RT0).join(', ')}`);
+      if (typeof RT0[k] === 'string') { if (!/^#[0-9a-f]{6}$/i.test(x)) throw new Error(`${k} must be #rrggbb`); p[k] = x; continue; }
+      if (!Number.isFinite(+x)) throw new Error(`${k} must be a number`);
+      p[k] = clamp(+x, ['width', 'cheek', 'jaw', 'chin', 'nose'].includes(k) ? -1 : 0, 1);
+    }
+    const r = await applyRetouch(c, p);
+    return { ...brief(r, L), retouch: r.rt?.p || null };
   },
   async remove_object({ id, box, t, quality = 'best' }) { // box = where it is on the canvas (snapshot), as fractions {x, y, w, h}
     const [c, L] = cfind(id);
