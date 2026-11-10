@@ -4886,7 +4886,8 @@ def selftest():
         for t, x, y in ((0.5, 135, 240), (0.5, 135, 20), (1.5, 135, 240), (3.0, 135, 240), (5.0, 135, 240), (5.0, 10, 240), (6.5, 135, 240), (8.5, 135, 240)):
             # tagged 709, letterbox, untagged HD, untagged SD, tall, pillarbox, picture, past the end
             a, b = pixel(outs['rgb'], t, x, y), pixel(outs[k], t, x, y)
-            assert max(abs(u - v) for u, v in zip(a, b)) <= 10, (k, t, x, y, a, b)  # two lossy encodes: a chroma edge moved 3-9 levels between runs (a 601/709 mix-up moves this one ~16)
+            lim = 10 if (t, x) == (5.0, 135) else 6  # the tall picture's chroma edge moved 3-9 levels between two lossy encodes; elsewhere +-6 (an untagged-SD 601/709 mix-up moves its point ~5-8)
+            assert max(abs(u - v) for u, v in zip(a, b)) <= lim, (k, t, x, y, a, b)
         assert max(abs(u - v) for u, v in zip(pixel(outs[k], 8.5, 135, 240), (0x20, 0x40, 0x60))) <= 4, 'background past the main track'
         print(f'4:2:0 path ok ({k}): luma {ps:.1f} dB vs the RGB path, BT.709 tags, background padded')
     # video effects: steps on exact frame ranges of the composite; per-frame values through sendcmd / expressions
