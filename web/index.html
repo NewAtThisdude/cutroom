@@ -92,6 +92,7 @@
       <p id="stStatus" class="muted"></p>
     </section>
     <section id="tab-effects" class="pane">
+      <button id="btnAdjust" class="wide first" title="A clip on the Effects track whose filter, adjustments and grade colour everything under it">Add adjustment layer</button>
       <div id="fxCats" class="chips"></div>
       <div id="fxGrid" class="tiles"></div>
       <p class="hint">An effect sits on the Effects track and changes everything under it for as long as it lasts. Drag its edges to make it longer.</p>
@@ -196,6 +197,7 @@
   </aside>
 
   <section class="center">
+    <div class="gut" data-gut="lw" title="Drag to resize · double-click resets"></div><div class="gut" data-gut="rw" title="Drag to resize · double-click resets"></div>
     <div id="stage" class="stage"><canvas id="cv"></canvas>
       <div id="scope" class="scope" hidden><div class="seg"><button data-scope="wave" class="on">Waveform</button><button data-scope="hist">Histogram</button><button data-scope="vec">Vector</button></div><canvas id="scopeCv" width="256" height="150"></canvas></div>
       <div id="srcBar" class="confirm srcbar" role="group" aria-label="Source viewer" hidden><div class="q"><span id="srcName"></span><small id="srcRange"></small></div><input id="srcPos" type="range" min="0" step="0.01" value="0" aria-label="Position in the source"><button data-src="i" title="Mark in (I)">In</button><button data-src="o" title="Mark out (O)">Out</button><button class="primary" data-src="add" title="Add the marked range at the playhead">Add</button><button data-src="close" title="Back to the timeline (Esc)" aria-label="Back to the timeline">×</button></div>
@@ -218,6 +220,7 @@
 </main>
 
 <footer class="timeline">
+  <div class="gut" data-gut="th" title="Drag to resize · double-click resets"></div>
   <div class="toolbar">
     <button id="btnUndo" title="Undo (⌘Z)" aria-label="Undo"><svg class="i" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
     <button id="btnRedo" title="Redo (⇧⌘Z)" aria-label="Redo"><svg class="i" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
