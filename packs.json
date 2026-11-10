@@ -1,0 +1,305 @@
+{
+ "note": "CC0 / public-domain sound packs Cutroom downloads once (server.py --packs, or the Audio rail). Each source is re-checked at install: the Kenney zip must hash to sha256 and carry a CC0 License.txt; each archive.org item must still say licenseurl creativecommons.org/publicdomain/zero/1.0 and the file must hash to sha256. Anything else is left out.",
+ "sfx": [
+  {
+   "pack": "impact-sounds",
+   "title": "Impact Sounds",
+   "sha256": "029d734af1582474edf3a694d1b0cebc97c1c152f2f39fa34d4c2bafc5de77f8",
+   "size": 800850,
+   "cats": [
+    [
+     "footstep",
+     "Footsteps"
+    ],
+    [
+     "",
+     "Impacts"
+    ]
+   ]
+  },
+  {
+   "pack": "interface-sounds",
+   "title": "Interface Sounds",
+   "sha256": "f2193d072726d6758a5f7871b2dcc54dcce0d5c35c6f0a62f92549b327c81232",
+   "size": 834536,
+   "cats": [
+    [
+     "",
+     "Interface"
+    ]
+   ]
+  },
+  {
+   "pack": "ui-audio",
+   "title": "UI Audio",
+   "sha256": "946fc23a63d535d693eb31b2eabb80c8c28d6351e2186b344ceb71b2cb1d5eb6",
+   "size": 411949,
+   "cats": [
+    [
+     "",
+     "Clicks"
+    ]
+   ]
+  },
+  {
+   "pack": "digital-audio",
+   "title": "Digital Audio",
+   "sha256": "24e6ce28b76a6d8c89cff4d331e0965ff5c3de8a73c612028e9d363cc64e4f06",
+   "size": 990367,
+   "cats": [
+    [
+     "",
+     "Game"
+    ]
+   ]
+  },
+  {
+   "pack": "sci-fi-sounds",
+   "title": "Sci-Fi Sounds",
+   "sha256": "119340f351a5098ad814f78719438c0da355a9ce8a4c8a3af6a8d48aa3d49e04",
+   "size": 5875104,
+   "cats": [
+    [
+     "",
+     "Sci-fi"
+    ]
+   ]
+  },
+  {
+   "pack": "casino-audio",
+   "title": "Casino Audio",
+   "sha256": "f36250766ac5bc378c13708ddf12a23a8e54a3251f8d482c7536e51b5dbafa18",
+   "size": 876839,
+   "cats": [
+    [
+     "",
+     "Casino"
+    ]
+   ]
+  },
+  {
+   "pack": "rpg-audio",
+   "title": "RPG Audio",
+   "sha256": "6dbeaf8544da958d8f2adcb4a4a4b76c1ade34a05f8ab9edccd327da7375f38b",
+   "size": 964837,
+   "cats": [
+    [
+     "",
+     "Foley"
+    ]
+   ]
+  },
+  {
+   "pack": "music-jingles",
+   "title": "Music Jingles",
+   "sha256": "b729ba57959bd58793d2c5cafa348aaf2655d354f3da35ec4729e03ec77197b8",
+   "size": 1239525,
+   "cats": [
+    [
+     "",
+     "Jingles"
+    ]
+   ]
+  }
+ ],
+ "music": [
+  {
+   "title": "Sunglasses",
+   "artist": "Loyalty Freak Music",
+   "mood": "Hip-hop",
+   "item": "LoyaltyFreakMusic-INSTRUMENTALRBBEATSTOSINGORRAPON",
+   "file": "Loyalty Freak Music - INSTRUMENTAL R&B BEATS TO SING OR RAP ON - 01 Sunglasses.mp3",
+   "size": 4125530,
+   "sha256": "36bd3388cc3809fa04a32008e684bde8fb116e6d92ba02283a5158dee2baa0e2"
+  },
+  {
+   "title": "Walking Shoes",
+   "artist": "Loyalty Freak Music",
+   "mood": "Hip-hop",
+   "item": "LoyaltyFreakMusic-INSTRUMENTALRBBEATSTOSINGORRAPON",
+   "file": "Loyalty Freak Music - INSTRUMENTAL R&B BEATS TO SING OR RAP ON - 15 Walking Shoes.mp3",
+   "size": 4492515,
+   "sha256": "c196aca56bf3149664e4734fea6a1133af2e041971e6f75d5d250159ad46fad3"
+  },
+  {
+   "title": "Summer Pride",
+   "artist": "Loyalty Freak Music",
+   "mood": "Hip-hop",
+   "item": "LoyaltyFreakMusic-INSTRUMENTALRBBEATSTOSINGORRAPON",
+   "file": "Loyalty Freak Music - INSTRUMENTAL R&B BEATS TO SING OR RAP ON - 17 Summer Pride.mp3",
+   "size": 4203315,
+   "sha256": "fd304b950c21149fdd950de8b3d1f48ff25f1987beeb22b25bafa02cf98c765e"
+  },
+  {
+   "title": "Sugar and coffee",
+   "artist": "Loyalty Freak Music",
+   "mood": "Lo-fi",
+   "item": "loyalty-freak-music-lofi-ambient-songs",
+   "file": "Loyalty Freak Music - LOFI AMBIENT SONGS ! - 08 Lack of Color - Sugar and coffee.mp3",
+   "size": 4352548,
+   "sha256": "e78b083a8bb3a81e86c7a294b44c1ce60b4edf9e3d81061f67d14eb72901e025"
+  },
+  {
+   "title": "Aeroplane",
+   "artist": "Loyalty Freak Music",
+   "mood": "Lo-fi",
+   "item": "loyalty-freak-music-lofi-ambient-songs",
+   "file": "Loyalty Freak Music - LOFI AMBIENT SONGS ! - 03 Lack of Color - Aeroplane.mp3",
+   "size": 5456004,
+   "sha256": "eeabd714c524b4f8b206463ab4b836aaf5d2a17fca36578c9f179cb3026d3acb"
+  },
+  {
+   "title": "One Cool Minute",
+   "artist": "Loyalty Freak Music",
+   "mood": "Chill",
+   "item": "MINIMALAMBIENTBOUNCE",
+   "file": "Loyalty Freak Music - MINIMAL AMBIENT BOUNCE - 02 One Cool Minute.mp3",
+   "size": 4783264,
+   "sha256": "4b269a25f02c4b7ef9cc4b1cff6a6304ee1c2e2747df8ed06a20004a8171ba26"
+  },
+  {
+   "title": "Old Key",
+   "artist": "Loyalty Freak Music",
+   "mood": "Chill",
+   "item": "MINIMALAMBIENTBOUNCE",
+   "file": "Loyalty Freak Music - MINIMAL AMBIENT BOUNCE - 03 Old Key.mp3",
+   "size": 3466078,
+   "sha256": "63f3647fe58184256a57492b47d6f817362a85cb672fb9ca254d274c90fde0f3"
+  },
+  {
+   "title": "After Party",
+   "artist": "Loyalty Freak Music",
+   "mood": "Electronic",
+   "item": "ROBOTDANCE",
+   "file": "Loyalty Freak Music - ROBOT DANCE ! - 03 After Party.mp3",
+   "size": 3832649,
+   "sha256": "c24792c1aebdeca30778a700c84dd4940d331a94178ec8240a12274bef7def0b"
+  },
+  {
+   "title": "High Technologic Beat Explosion",
+   "artist": "Loyalty Freak Music",
+   "mood": "Electronic",
+   "item": "ROBOTDANCE",
+   "file": "Loyalty Freak Music - ROBOT DANCE ! - 02 High Technologic Beat Explosion.mp3",
+   "size": 5214317,
+   "sha256": "f1a972408dac64fcddb6fae6d4e54febe65a569d6a4f6d8a3360080f68da539b"
+  },
+  {
+   "title": "Roller Fever",
+   "artist": "Loyalty Freak Music",
+   "mood": "Upbeat",
+   "item": "LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+   "file": "Loyalty Freak Music - ROLLER DISCO DANCE DANCE - 01 Roller Fever.mp3",
+   "size": 3503816,
+   "sha256": "ad9521d17db4733ddbe4691d4810cc2a337c087ecc465ba4704af253511fadad"
+  },
+  {
+   "title": "Sweat Time!",
+   "artist": "Loyalty Freak Music",
+   "mood": "Upbeat",
+   "item": "LoyaltyFreakMusic-ROLLERDISCODANCEDANCE",
+   "file": "Loyalty Freak Music - ROLLER DISCO DANCE DANCE - 07 Sweat Time !.mp3",
+   "size": 3134609,
+   "sha256": "13f29d44ec1c203ac14ad797b41e8e21661e1bab5d3dbcff661a9302449f74c9"
+  },
+  {
+   "title": "Go to the Picnic",
+   "artist": "Loyalty Freak Music",
+   "mood": "Happy",
+   "item": "LoyaltyFreakMusicPOSITIVEATTITUDE20170920175908839",
+   "file": "Loyalty_Freak_Music_-_01_-_Go_to_the_Picnic.mp3",
+   "size": 7544987,
+   "sha256": "dbeaad7bb137f39f5d3e7ee5c83b2ac53f4963cc92f3d3fe6321c490e1760cf1"
+  },
+  {
+   "title": "Sweet Sun",
+   "artist": "Loyalty Freak Music",
+   "mood": "Happy",
+   "item": "LoyaltyFreakMusicPOSITIVEATTITUDE20170920175908839",
+   "file": "Loyalty_Freak_Music_-_04_-_Sweet_Sun.mp3",
+   "size": 4843926,
+   "sha256": "0e78c97159d005e5727fb8c406c1613047f17bfe74450d37e941dafbfe0975fa"
+  },
+  {
+   "title": "Yippee!",
+   "artist": "Loyalty Freak Music",
+   "mood": "Happy",
+   "item": "LoyaltyFreakMusicPOSITIVEATTITUDE20170920175908839",
+   "file": "Loyalty_Freak_Music_-_08_-_Yippee_.mp3",
+   "size": 5270244,
+   "sha256": "6e227853ce8ef7094aa3847f62e8c032794ff45a46d5e3d510d69eccc8b6d564"
+  },
+  {
+   "title": "The calling",
+   "artist": "Komiku",
+   "mood": "Cinematic",
+   "item": "komiku-the-adventure-goes-on-vol.-1",
+   "file": "Komiku - The adventure goes on, vol.1 - 01 The calling.mp3",
+   "size": 3483207,
+   "sha256": "f2e75b1631a0cdc21bfe0220cf5ec994d46cccbcf1cbc7bc766229d39fcc82d7"
+  },
+  {
+   "title": "Fight for your life",
+   "artist": "Komiku",
+   "mood": "Cinematic",
+   "item": "komiku-the-adventure-goes-on-vol.-1",
+   "file": "Komiku - The adventure goes on, vol.1 - 09 Fight for your life.mp3",
+   "size": 4617759,
+   "sha256": "f177a691511f8964e050f28f8b690ac395ee72c0d9e254247f3b44f4d3e2636f"
+  },
+  {
+   "title": "The Wind",
+   "artist": "Komiku",
+   "mood": "Emotional",
+   "item": "Komiku-TaleOnTheLate",
+   "file": "Komiku - Tale on the Late - 13 The Wind.mp3",
+   "size": 2607660,
+   "sha256": "c97be76683a4c627a99fdb2c18b629b84fbb3cebaffb2aaa0594c8ea3eb9a7fb"
+  },
+  {
+   "title": "Remember the time we use to play",
+   "artist": "Komiku",
+   "mood": "Emotional",
+   "item": "Komiku-TaleOnTheLate",
+   "file": "Komiku - Tale on the Late - 02 Remember the time we use to play.mp3",
+   "size": 2089928,
+   "sha256": "1808355b9350ea60b137aa854d30d08af382073655fd2f735a90d5a1956d25d7"
+  },
+  {
+   "title": "Rupture",
+   "artist": "Komiku",
+   "mood": "Tense",
+   "item": "Komiku-TaleOnTheLate",
+   "file": "Komiku - Tale on the Late - 08 Rupture.mp3",
+   "size": 2129906,
+   "sha256": "35c66d6352c98600f4933d44f77ac5a446ee9a170ee6d96b2fed0f2285144267"
+  },
+  {
+   "title": "You can't beat the machine",
+   "artist": "Komiku",
+   "mood": "Tense",
+   "item": "Komiku-TaleOnTheLate",
+   "file": "Komiku - Tale on the Late - 15 You can't beat the machine.mp3",
+   "size": 5183883,
+   "sha256": "0920af9f33fafc54ff2c8756cf5c36201dccf444f382d9de65b8ebc7c0ba46cd"
+  },
+  {
+   "title": "Time for the walk of the day",
+   "artist": "Komiku",
+   "mood": "Playful",
+   "item": "Komiku-Poupis_incredible_adventures",
+   "file": "Komiku-PoupisIncredibleAdventures-03TimeForTheWalkOfTheDay.mp3",
+   "size": 2770025,
+   "sha256": "2eda6b23791f3ae15d10670e15c81d8608514201bd3f0989cb88d26ad4005d48"
+  },
+  {
+   "title": "Surfing",
+   "artist": "Komiku",
+   "mood": "Playful",
+   "item": "Komiku-Poupis_incredible_adventures",
+   "file": "Komiku-PoupisIncredibleAdventures-05Surfing.mp3",
+   "size": 2695736,
+   "sha256": "9bdc82201d68762b0d5f6da271a77cc12662be27a25061d6725a8ac8b2421239"
+  }
+ ]
+}

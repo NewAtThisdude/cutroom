@@ -27,7 +27,8 @@ speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit 
 scale (1 = fitted size) | x, y: offset in canvas fractions, 0 = centred (text clips: 0..1 position, 0.5 = centre) | rot degrees | opacity 0-1
 blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|color-burn|hard-light|soft-light|difference|exclusion
 fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (RNNoise, heard in preview and export)
-au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
+studio: false | true (Studio voice: RNNoise, de-ess, compressor, presence EQ, -16 LUFS) | 'music' (the same after Demucs takes the music out); wins over denoise
+au: {voice none|robot|echo|hall|telephone|elf|giant|monster|alien|radio|megaphone|cave|underwater (elf..alien move pitch and formants apart, WORLD vocoder), semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
 adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
 look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
@@ -113,9 +114,15 @@ TOOLS = [
                    'pixelate, blur, invert, mirror, split4, snow, rain, sparkle, hearts, confetti, bubbles, bars (cinema bars), rec (camcorder frame), vignette, film (film strip). '
                    'strength 0.1-2 (1 = default). Change it later with update_clip (fx, amt, start, dur).',
      S({'type': txt, 'start': num, 'duration': num, 'strength': num}, ['type']), 'add_effect'),
-    ('add_sound_effect', 'Add a sound effect (synthesized on this Mac) on the audio track at `at` (default: playhead): whoosh, swish, riser, boom, bass drop, pop, click, ding, '
-                         'notification, correct, wrong buzzer, camera shutter, typing, heartbeat, glitch, cash register, drum roll, applause, tick tock.',
+    ('add_sound_effect', 'Add a sound effect or library music track on the audio track at `at` (default: playhead). Synthesized on this Mac: whoosh, swish, riser, boom, '
+                         'bass drop, pop, click, ding, notification, correct, wrong buzzer, camera shutter, typing, heartbeat, glitch, cash register, drum roll, applause, '
+                         'tick tock. Any other name or id is looked up in the CC0 sound library (see sound_library).',
      S({'name': txt, 'at': num}, ['name']), 'add_sound'),
+    ('sound_library', 'Search the CC0 sound and music library: 600+ sound effects (Kenney packs: impacts, footsteps, interface, clicks, game, sci-fi, casino, foley, '
+                      'jingles) and 22 music tracks by mood (hip-hop, lo-fi, chill, electronic, upbeat, happy, cinematic, emotional, tense, playful), each CC0 with its '
+                      'source recorded. category = one of the returned categories, or sfx / music. install=true downloads the library first (~100 MB, once). '
+                      'Add a result with add_sound_effect(name=<id>).',
+     S({'query': txt, 'category': txt, 'install': boo}), 'sound_library'),
     ('auto_captions', 'Transcribe speech on this Mac (whisper.cpp) and lay word-timed captions on the captions track (replaces existing ones).',
      S({'lang': {**txt, 'description': 'auto or a 2-letter code'}, 'words': {'type': 'integer', 'description': 'words per caption (1-6)'}, 'style': {**txt, 'description': 'a caption preset'}, 'audio': {**boo, 'description': 'include the audio track'}}),
      'auto_captions'),
@@ -192,8 +199,10 @@ TOOLS = [
                'resolution 720p|1080p|1440p|4K|8K (8K needs 16 GB of memory); quality fast|best; bitrate 1|1.6|2.5, or mbps = a custom bitrate in Mbps; '
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
+               'loudness: false | true (-14 LUFS) | -14 (social) | -16 (podcast) | -23 (EBU broadcast): one gain for the whole edit. '
                'show=true opens the result in the Mac\'s player when it is done.',
-     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt, 'loudness': boo, 'at': num, 'show': boo}), 'export'),
+     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt,
+        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo}), 'export'),
 ]
 SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]
 CMD = {n: c for n, _, _, c in TOOLS}

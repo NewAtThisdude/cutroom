@@ -1,0 +1,336 @@
+// Audio round 2026-11-10, end to end on a scratch server: (1) the CC0 sound + music library (download, licences, the
+// Audio rail: search, categories, listen, add), (2) Studio voice (speech-band SNR on talk-with-music and podcast-episode,
+// onset delay, preview == export), (3) the 8 voice characters (pitch / formant / band checks, preview == export),
+// (4) export loudness targets -14 / -16 / -23 / off, (5) beats() on a 3 minute song (time, same grid as before).
+//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4751 node audio_packs.mjs [packs|studio|voices|loud|beats]
+import { webkit } from 'playwright';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], SR = 48000;
+if (/:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), not on 4610');
+const res = [];
+const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };
+const get = async p => (await fetch(B + p)).json();
+const post = async (p, body) => (await fetch(B + p, { method: 'POST', headers: H, body: JSON.stringify(body) })).json();
+const run = name => !only || name === only;
+const ROOT = new URL('..', import.meta.url).pathname;
+
+// ---------- signal helpers ----------
+const mono = buf => { const x = new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), n = x.length >> 1, y = new Float32Array(n); for (let i = 0; i < n; i++) y[i] = (x[2 * i] + x[2 * i + 1]) / 65536; return y; };
+const pcmOf = async (id, fx = '') => { const r = await fetch(`${B}/media/${id}?pcm=1${fx ? `&fx=${encodeURIComponent(fx)}` : ''}`); if (!r.ok) throw new Error(`pcm ${fx}: ${r.status} ${await r.text()}`); return mono(Buffer.from(await r.arrayBuffer())); };
+const fileMono = f => mono(execFileSync('ffmpeg', ['-v', 'error', '-i', f, '-f', 's16le', '-ac', '2', '-ar', `${SR}`, '-'], { maxBuffer: 1 << 30 }));
+const biquad = (x, type, f0, q = Math.SQRT1_2) => { // RBJ cookbook high / low pass
+  const w = 2 * Math.PI * f0 / SR, c = Math.cos(w), al = Math.sin(w) / (2 * q);
+  const [b0, b1, b2] = type === 'lp' ? [(1 - c) / 2, 1 - c, (1 - c) / 2] : [(1 + c) / 2, -(1 + c), (1 + c) / 2], a0 = 1 + al, a1 = -2 * c, a2 = 1 - al;
+  const y = new Float32Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let i = 0; i < x.length; i++) { const v = (b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0; x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v; }
+  return y;
+};
+const band = (x, lo, hi) => biquad(biquad(biquad(biquad(x, 'hp', lo), 'hp', lo), 'lp', hi), 'lp', hi);
+const frames = (x, fr = 960) => { const e = []; for (let i = 0; i + fr <= x.length; i += fr) { let s = 0; for (let k = i; k < i + fr; k++) s += x[k] * x[k]; e.push(s / fr); } return e; };
+const energy = x => { let s = 0; for (const v of x) s += v * v; return s / x.length; };
+const dB = v => 10 * Math.log10(v + 1e-20);
+const mean = a => a.reduce((s, v) => s + v, 0) / Math.max(1, a.length);
+const median = a => { const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; };
+const speechGap = (x, sp) => { // speech-band (300-3400 Hz) energy in the VAD's speech frames over the gaps between them (80 ms guard)
+  const e = frames(band(x, 300, 3400)), act = [], gap = [];
+  e.forEach((v, i) => { const t = (i + 0.5) * 0.02; if (sp.some(([a, b]) => t > a && t < b)) act.push(v); else if (!sp.some(([a, b]) => t > a - 0.08 && t < b + 0.08)) gap.push(v); });
+  return { db: dB(mean(act)) - dB(mean(gap)), act: act.length, gap: gap.length };
+};
+const xlag = (a, b, max = 480) => { // the shift of b against a (samples) at the loudest 2 s of a
+  let best = 0, at = 0;
+  for (let i = 0; i + 96000 < a.length; i += 4800) { let s = 0; for (let k = i; k < i + 96000; k += 8) s += a[k] * a[k]; if (s > best) { best = s; at = i; } }
+  let bl = 0, bv = -Infinity;
+  for (let L = -max; L <= max; L++) { let s = 0; for (let k = at + max; k < at + 96000 - max; k += 2) s += a[k] * b[k + L]; if (s > bv) { bv = s; bl = L; } }
+  return bl;
+};
+const snr = (a, b, from, to) => { let s = 0, e = 0; for (let i = from; i < to; i++) { s += a[i] * a[i]; e += (a[i] - b[i]) ** 2; } return 10 * Math.log10(s / (e + 1e-15)); };
+const pitch = x => { // median f0 (Hz) of the louder voiced 40 ms frames: normalised autocorrelation at 12 kHz, 50-700 Hz
+  const d = [], y = biquad(biquad(x, 'lp', 4000), 'lp', 4000);
+  for (let i = 0; i < y.length; i += 4) d.push(y[i]);
+  const sr = SR / 4, N = 480, f = [], es = [];
+  for (let i = 0; i + 2 * N < d.length; i += N) es.push(energy(d.slice(i, i + N)));
+  const loud = median(es);
+  for (let j = 0, i = 0; i + 2 * N < d.length; i += N, j++) {
+    if (es[j] < loud) continue;
+    let bl = 0, bv = 0;
+    for (let L = Math.floor(sr / 700); L <= Math.ceil(sr / 50); L++) { let s = 0, p = 0, q = 0; for (let k = i; k < i + N; k++) { s += d[k] * d[k + L]; p += d[k] * d[k]; q += d[k + L] * d[k + L]; } const r = s / Math.sqrt(p * q + 1e-20); if (r > bv) { bv = r; bl = L; } }
+    if (bv > 0.7) f.push(sr / bl);
+  }
+  return { f0: median(f), n: f.length };
+};
+const fft = (re, im) => { // in place, radix 2
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+  for (let len = 2; len <= n; len <<= 1) { const a = -2 * Math.PI / len; for (let i = 0; i < n; i += len) for (let k = 0; k < len / 2; k++) { const c = Math.cos(a * k), s = Math.sin(a * k), xr = re[i + k + len / 2] * c - im[i + k + len / 2] * s, xi = re[i + k + len / 2] * s + im[i + k + len / 2] * c; re[i + k + len / 2] = re[i + k] - xr; im[i + k + len / 2] = im[i + k] - xi; re[i + k] += xr; im[i + k] += xi; } }
+};
+const ltas = x => { // long-term average spectrum (dB) of the louder half of 2048-point frames: the spectral envelope (harmonics smear out)
+  const N = 2048, es = [], p = new Float64Array(N / 2);
+  for (let i = 0; i + N <= x.length; i += N / 2) es.push(energy(x.subarray(i, i + N)));
+  const loud = median(es);
+  for (let j = 0, i = 0; i + N <= x.length; i += N / 2, j++) {
+    if (es[j] < loud) continue;
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let k = 0; k < N; k++) re[k] = x[i + k] * (0.5 - 0.5 * Math.cos(2 * Math.PI * k / N));
+    fft(re, im);
+    for (let k = 0; k < N / 2; k++) p[k] += re[k] * re[k] + im[k] * im[k];
+  }
+  const hz = SR / N, sm = []; // smoothed over a third of an octave
+  for (let k = 0; k < N / 2; k++) { const lo = Math.max(1, Math.floor(k / 1.12)), hi = Math.min(N / 2 - 1, Math.ceil(k * 1.12)); let s = 0; for (let q = lo; q <= hi; q++) s += p[q]; sm.push(10 * Math.log10(s / (hi - lo + 1) + 1e-20)); }
+  return f => { const b = f / hz, k = Math.floor(b), w = b - k; return sm[k] * (1 - w) + sm[k + 1] * w; };
+};
+const warp = (a, b) => { // the envelope stretch: alpha for which b(f) best matches a(f / alpha), 400 Hz - 4 kHz (log-spaced)
+  const A = ltas(a), Bf = ltas(b), fs = []; for (let f = 400; f < 4000; f *= 1.02) fs.push(f);
+  let best = 1, bv = -Infinity;
+  for (let al = 0.6; al <= 1.6; al += 0.01) {
+    const u = fs.map(f => A(f / al)), v = fs.map(f => Bf(f)), mu = mean(u), mv = mean(v);
+    const c = u.reduce((s, x, i) => s + (x - mu) * (v[i] - mv), 0) / Math.sqrt(u.reduce((s, x) => s + (x - mu) ** 2, 0) * v.reduce((s, x) => s + (x - mv) ** 2, 0));
+    if (c > bv) { bv = c; best = al; }
+  }
+  return best;
+};
+const envLag = (a, b) => { // the shift (samples, 1 ms steps) of b's loudness envelope against a's: timing, whatever the pitch
+  const env = x => { const y = biquad(biquad(x.map(Math.abs), 'lp', 40), 'lp', 40), d = []; for (let i = 0; i < y.length; i += 48) d.push(y[i]); return d; };
+  const p = env(a), q = env(b), m = mean(p), n = mean(q);
+  let bl = 0, bv = -Infinity;
+  for (let L = -50; L <= 50; L++) { let s = 0; for (let k = 50; k < p.length - 50; k++) s += (p[k] - m) * (q[k + L] - n); if (s > bv) { bv = s; bl = L; } }
+  return bl * 48;
+};
+const lufs = f => { const r = spawnSync('ffmpeg', ['-v', 'info', '-i', f, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'], { encoding: 'utf8' }).stderr; const j = JSON.parse(r.slice(r.lastIndexOf('{'), r.lastIndexOf('}') + 1)); return { i: +j.input_i, tp: +j.input_tp }; };
+
+// ---------- the page ----------
+const b = await webkit.launch();
+const open = async rm => {
+  const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
+  page.errs = []; page.on('pageerror', e => page.errs.push(e.message)); page.on('dialog', d => d.accept());
+  await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
+  await page.goto(`${B}/`, { waitUntil: 'load' });
+  await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
+  return page;
+};
+const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
+const media = await get('/api/media'), byName = n => media.find(m => m.name === n);
+const TALK = byName('talk.mp4'), TWM = byName('talk-with-music.mp4'), POD = byName('podcast-episode.mp4');
+const made = [];
+const fresh = name => ev(name => { setProject(newProject('16:9')); P.name = `${name} (scratch)`; S.t = 0; renderAll(); return P.id; }, name).then(id => (made.push(id), id));
+const exportWav = name => ev(async name => (await REMOTE.export({ format: 'wav', name })).file, name).then(f => `${LIB}/exports/${f}`);
+const select = async (lane, id) => { await ev(([lane, id]) => { S.sel = { lane, id }; renderAll(); }, [lane, id]); const t = page.locator('[data-itab="Audio"]'); if (await t.count()) await t.first().click(); };
+const rows = p => p.evaluate(() => [...document.querySelectorAll('#sfxList .sfxrow')].map(r => [r.querySelector('b').textContent, r.querySelector('span').textContent, r.querySelector('b').title]));
+
+// ---------- 1. the CC0 library ----------
+if (run('packs')) {
+  let idx = await get('/api/packs');
+  if (!idx.installed) { // the button in the Audio rail, as Marat would
+    await page.click('[data-tab="audio"]');
+    const t0 = Date.now();
+    await page.click('#btnPacks');
+    await page.waitForFunction(() => G.snd?.installed, null, { timeout: 900000 });
+    check('library downloads from the Audio rail button', true, `${((Date.now() - t0) / 1000).toFixed(0)} s`);
+    idx = await get('/api/packs');
+  }
+  const src = JSON.parse(fs.readFileSync(`${ROOT}packs.json`, 'utf8'));
+  const sfx = idx.items.filter(x => x.kind === 'sfx'), mus = idx.items.filter(x => x.kind === 'music');
+  const cats = new Set(sfx.map(x => x.cat)), moods = new Set(mus.map(x => x.cat));
+  check('>= 150 CC0 sound effects in categories', sfx.length >= 150 && cats.size >= 6, `${sfx.length} sounds in ${cats.size} categories: ${[...cats].map(c => `${c} ${sfx.filter(x => x.cat === c).length}`).join(', ')}`);
+  check('>= 20 CC0 music tracks across moods', mus.length >= 20 && moods.size >= 6, `${mus.length} tracks, ${moods.size} moods: ${[...moods].join(', ')}; ${(mus.reduce((s, x) => s + x.dur, 0) / 60).toFixed(0)} min`);
+  check('every file records its source and a CC0 licence', idx.items.every(x => x.licence === 'CC0 1.0' && /^https:\/\/(kenney\.nl|archive\.org)\//.test(x.src) && /^[0-9a-f]{64}$/.test(x.sha256)), `${idx.items.length} rows; skipped: ${idx.skipped.join('; ') || 'none'}`);
+  const pins = new Set([...src.sfx, ...src.music].map(x => x.sha256));
+  check('each row\'s SHA-256 is a pinned source in packs.json', idx.items.every(x => pins.has(x.sha256)));
+  check('every file is on disk with its duration', idx.items.every(x => fs.existsSync(`${LIB}/packs/${x.file}`) && x.dur > 0), `${(idx.items.reduce((s, x) => s + fs.statSync(`${LIB}/packs/${x.file}`).size, 0) / 1e6).toFixed(0)} MB`);
+  const lic = fs.readdirSync(`${LIB}/packs/sfx`).every(d => /publicdomain\/zero\/1\.0/.test(fs.readFileSync(`${LIB}/packs/sfx/${d}/License.txt`, 'utf8')));
+  check('each Kenney pack keeps its CC0 License.txt', lic);
+  for (const rm of ['no-preference', 'reduce']) {
+    const p = rm === 'reduce' ? await open('reduce') : page;
+    await p.click('[data-tab="audio"]');
+    await p.waitForFunction(() => G.snd?.installed && document.querySelectorAll('#sfxList .sfxrow').length > 0);
+    const s = await p.evaluate(() => ({ chips: [...document.querySelectorAll('#sndCats button')].map(b => b.textContent), rows: document.querySelectorAll('#sfxList .sfxrow').length, basics: G.sfx.length }));
+    check(`[${rm}] rail: chips All, Music, Basics + the pack categories; the 19 synthesized sounds kept`, s.chips[0] === 'All' && s.chips.includes('Music') && s.chips.includes('Basics') && s.basics === 19 && s.chips.length >= 9, `${s.chips.join(' | ')}; ${s.rows} rows shown`);
+    await p.fill('#sndSearch', 'footstep');
+    const f = await rows(p);
+    check(`[${rm}] search "footstep" lists only footsteps`, f.length > 10 && f.every(([n]) => /footstep/i.test(n)), `${f.length} rows`);
+    await p.fill('#sndSearch', '');
+    await p.click('#sndCats button:text-is("Music")');
+    const m = await rows(p);
+    check(`[${rm}] Music: every track with mood, duration and its licence + source on hover`, m.length === mus.length && m.every(([, d, t]) => /\d:\d\d|\d s/.test(d) && /CC0 1\.0 · https:\/\/archive\.org/.test(t)), m.slice(0, 2).map(x => x.slice(0, 2).join(' ')).join('; '));
+    await p.click('#sndCats button:text-is("Sci-fi")');
+    const sc = await p.evaluate(() => [document.querySelectorAll('#sfxList .sfxrow').length, G.snd.items.filter(x => x.cat === 'Sci-fi').length]);
+    check(`[${rm}] Sci-fi category`, sc[0] === Math.min(60, sc[1]), `${sc[0]} of ${sc[1]}`);
+    if (sc[1] > 60) { await p.click('[data-sndmore]'); check(`[${rm}] "Show more" pages through the rest`, (await p.evaluate(() => document.querySelectorAll('#sfxList .sfxrow').length)) === sc[1]); }
+    await p.click('#sfxList .sfxrow .pl >> nth=0');
+    const pl = await p.waitForFunction(() => G.audio && G.audio.dataset.src.startsWith('/packs/') && !G.audio.paused && G.audio.currentTime > 0, null, { timeout: 10000 }).then(() => true, () => false);
+    check(`[${rm}] the play button previews the sound`, pl, await p.evaluate(() => G.audio?.dataset.src));
+    const box = await p.evaluate(() => { const l = document.querySelector('#sfxList').getBoundingClientRect(), pane = document.querySelector('#tab-audio').getBoundingClientRect(); return { l: [l.left, l.right, l.height], pane: [pane.left, pane.right], over: [...document.querySelectorAll('#sfxList .sfxrow')].filter(r => r.scrollWidth > r.clientWidth + 1).length }; });
+    check(`[${rm}] the list stays inside the panel (capped height, no row overflow)`, box.l[0] >= box.pane[0] && box.l[1] <= box.pane[1] && box.l[2] <= 341 && !box.over, JSON.stringify(box));
+    if (rm === 'reduce') await p.context().close();
+  }
+  // add: a pack sound and a music track onto the audio track, imported once
+  await fresh('Packs add');
+  await page.click('#sndCats button:text-is("Impacts")');
+  await page.click('#sfxList .sfxrow .add >> nth=0');
+  await page.waitForFunction(() => P.audio.length === 1, null, { timeout: 20000 });
+  const a1 = await ev(() => { const c = P.audio[0], m = M.get(c.media); return { media: c.media, pack: m.pack, licence: m.licence, src: m.src }; });
+  await page.click('#sfxList .sfxrow .add >> nth=0');
+  await page.waitForFunction(() => P.audio.length === 2, null, { timeout: 20000 });
+  const a2 = await ev(() => P.audio[1].media);
+  check('+ adds a pack sound; its library item keeps source + licence; added twice = one import', a1.pack && a1.licence === 'CC0 1.0' && /kenney\.nl/.test(a1.src) && a2 === a1.media, JSON.stringify(a1).slice(0, 200));
+  await page.click('#sndCats button:text-is("Music")');
+  await page.click('#sfxList .sfxrow .add >> nth=0');
+  await page.waitForFunction(() => P.audio.length === 3, null, { timeout: 30000 });
+  const tr = await ev(() => { const c = P.audio[2]; return { len: tdur(c, 'audio'), m: M.get(c.media) }; });
+  const want = idx.items.find(x => x.id === tr.m.pack);
+  check('a music track goes on the audio track at its full length', want?.kind === 'music' && Math.abs(tr.len - want.dur) < 0.1, `${tr.m.name}: ${tr.len.toFixed(2)} s vs ${want?.dur} s`);
+  const lib = await ev(() => REMOTE.sound_library({ query: 'laser' }));
+  check('MCP sound_library searches the packs', lib.installed && lib.total > 0 && lib.results.every(r => /laser/i.test(r.name)), `${lib.total} lasers`);
+  const added = await ev(id => REMOTE.add_sound({ name: id, at: 5 }), lib.results[0].id);
+  check('add_sound_effect(<pack id>) adds it', added?.lane === 'audio' && Math.abs(added.start - 5) < 1e-6, JSON.stringify(added).slice(0, 160));
+  const tools = spawnSync('python3', ['-I', `${ROOT}mcp/cutroom_mcp.py`], { input: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n', encoding: 'utf8', timeout: 10000 }).stdout;
+  check('MCP lists sound_library; export takes a loudness target', /"sound_library"/.test(tools) && /-23 \(EBU broadcast\)/.test(tools));
+}
+
+// ---------- 2. Studio voice ----------
+if (run('studio')) {
+  const out = {};
+  for (const m of [TWM, POD]) {
+    const sp = (await post('/api/speech', { media: m.id })).speech, raw = await pcmOf(m.id), r0 = speechGap(raw, sp);
+    out[m.name] = { raw: r0.db };
+    for (const fx of ['dn', 'sv', 'svm']) {
+      const t0 = Date.now(), y = await pcmOf(m.id, fx), r = speechGap(y, sp);
+      out[m.name][fx] = { db: r.db, gain: r.db - r0.db, s: (Date.now() - t0) / 1000, len: y.length === raw.length, lag: xlag(raw, y) };
+    }
+    const o = out[m.name];
+    console.log(`     ${m.name}: speech/gap ${o.raw.toFixed(1)} dB; ` + ['dn', 'sv', 'svm'].map(k => `${k} ${o[k].db.toFixed(1)} (+${o[k].gain.toFixed(1)}) lag ${o[k].lag} made ${o[k].s.toFixed(1)} s`).join('; ') + ` (VAD: ${r0.act} speech / ${r0.gap} gap frames)`);
+  }
+  const pod = out['podcast-episode.mp4'], twm = out['talk-with-music.mp4'];
+  check('podcast-episode: Studio voice raises the speech-band SNR (speech over gaps) by > 3 dB', pod.sv.gain > 3, `+${pod.sv.gain.toFixed(2)} dB (Reduce noise alone +${pod.dn.gain.toFixed(2)})`);
+  check('talk-with-music: Studio + remove music raises it by > 10 dB', twm.svm.gain > 10, `+${twm.svm.gain.toFixed(2)} dB (Studio voice without Demucs +${twm.sv.gain.toFixed(2)}: RNNoise leaves music)`);
+  check('talk-with-music: Studio voice alone still improves it', twm.sv.gain > 0.3, `+${twm.sv.gain.toFixed(2)} dB`);
+  check('processed sound keeps the source length (sample exact)', Object.values(out).every(o => o.dn.len && o.sv.len && o.svm.len));
+  check('podcast: no delay (cross-correlation lag within 2 ms) for dn / sv / svm', ['dn', 'sv', 'svm'].every(k => Math.abs(pod[k].lag) <= 96), ['dn', 'sv', 'svm'].map(k => `${k} ${pod[k].lag}`).join(', ') + ' samples');
+  // onset: speech-like bursts (sharp starts) over a noise floor; each start through Studio voice, against the input
+  const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-sv-`), f = `${tmp}/studio-onsets.wav`;
+  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'aevalsrc=0.004*(random(0)-0.5)+if(lt(mod(t\\,1.5)\\,0.6)*gt(t\\,0.5)\\,0.5*(random(1)-0.5)*(1+0.6*sin(2*PI*180*t))*(0.6+0.4*sin(2*PI*4*t))\\,0):s=48000:d=9', '-ac', '2', f]);
+  const burst = await (await fetch(`${B}/api/import?name=studio-onsets.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+  const x = await pcmOf(burst.id), y = await pcmOf(burst.id, 'sv');
+  const onsets = s => { // first sample over 20 % of the peak in each burst
+    const k = 48, e = []; for (let i = 0; i + k < s.length; i += k) { let m = 0; for (let j = i; j < i + k; j++) m = Math.max(m, Math.abs(s[j])); e.push(m); }
+    const pk = Math.max(...e), on = [];
+    for (let i = 1; i < e.length; i++) if (e[i] > 0.2 * pk && e[i - 1] <= 0.2 * pk && (!on.length || i * k - on.at(-1) > SR)) { let j = (i - 1) * k; while (Math.abs(s[j]) < 0.2 * pk) j++; on.push(j); }
+    return on;
+  };
+  const lagAt = (a, b, o) => { let bl = 0, bv = -Infinity; for (let L = -480; L <= 480; L++) { let s = 0; for (let k = o; k < o + 2400; k++) s += a[k] * b[k + L]; if (s > bv) { bv = s; bl = L; } } return bl; }; // its first 50 ms
+  const o1 = onsets(x), d = o1.map(o => lagAt(x, y, o));
+  check('Studio voice: every burst starts within 2 ms of the input (no look-ahead)', o1.length >= 5 && d.every(v => Math.abs(v) <= 96), `${o1.length} bursts at ${o1.map(o => (o / SR).toFixed(2)).join(', ')} s; shift of each burst's first 50 ms: ${d.join(', ')} samples`);
+  await post(`/api/media/${burst.id}/trash`, {});
+  // preview == export, through the inspector's button
+  await fresh('Studio voice parity');
+  await ev(id => { addMedia(id, 'main', 0); const c = P.main[0]; c.out = Math.min(c.out, 20); renderAll(); }, POD.id);
+  await select('main', await ev(() => P.main[0].id));
+  await page.click('[data-studio="on"]');
+  await page.waitForFunction(() => P.main[0].studio === true, null, { timeout: 120000 });
+  const on = await ev(() => document.querySelector('[data-studio="on"]').classList.contains('on'));
+  const ex = fileMono(await exportWav(`Studio voice parity ${Date.now()}`)), ref = await pcmOf(POD.id, 'sv');
+  const s = snr(ref, ex, 0.1 * SR, 19.9 * SR);
+  check('Studio voice: the export is the sound the preview plays (inspector button)', s > 40 && on, `${s.toFixed(1)} dB SNR, export vs the preview's PCM; button on ${on}`);
+  await page.click('[data-studio="off"]');
+  check('Studio voice off again', await ev(() => !P.main[0].studio));
+}
+
+// ---------- 3. voice characters ----------
+if (run('voices')) {
+  const raw = await pcmOf(TALK.id), p0 = pitch(raw);
+  const hp = x => biquad(biquad(x, 'hp', 1200), 'hp', 1200), out = {}, AI = ['elf', 'giant', 'monster', 'alien'];
+  for (const v of ['elf', 'giant', 'monster', 'alien', 'radio', 'megaphone', 'cave', 'underwater']) {
+    const t0 = Date.now(), y = await pcmOf(TALK.id, v);
+    out[v] = { y, s: (Date.now() - t0) / 1000, len: y.length === raw.length, rms: dB(energy(y)) - dB(energy(raw)), p: pitch(y), warp: warp(raw, y), lag: AI.includes(v) ? envLag(raw, y) : xlag(band(raw, 100, 1000), band(y, 100, 1000), 960),
+      high: dB(energy(band(y, 6000, 12000))) - dB(energy(band(y, 300, 3000))) - dB(energy(band(raw, 6000, 12000))) + dB(energy(band(raw, 300, 3000))), above: dB(energy(hp(y))) - dB(energy(hp(raw))) };
+    const o = out[v];
+    console.log(`     ${v}: made in ${o.s.toFixed(1)} s, level ${o.rms.toFixed(1)} dB, f0 ${o.p.f0?.toFixed(0)} Hz vs ${p0.f0.toFixed(0)} (x${(o.p.f0 / p0.f0).toFixed(2)}, ${o.p.n} frames), envelope x${o.warp.toFixed(2)}, 6-12 kHz ${o.high.toFixed(1)} dB, >1.2 kHz ${o.above.toFixed(1)} dB, lag ${o.lag}`);
+  }
+  check('all 8 characters keep the length', Object.values(out).every(o => o.len));
+  const r = v => out[v].p.f0 / p0.f0;
+  const ok = (v, f0, fr) => Math.abs(r(v) / f0 - 1) < 0.15 && Math.abs(out[v].warp / fr - 1) < 0.1, say = v => `pitch x${r(v).toFixed(2)}, spectral envelope x${out[v].warp.toFixed(2)}`;
+  check('elf: pitch x1.65 and formants x1.2 (pitch +-15 %, envelope +-10 %)', ok('elf', 1.65, 1.2), say('elf'));
+  check('giant: pitch x0.6 and formants x0.8', ok('giant', 0.6, 0.8), say('giant'));
+  check('monster: pitch x0.5 and formants x0.72', ok('monster', 0.5, 0.72), say('monster'));
+  check('alien: pitch x1.25 (with vibrato) and formants x1.12', ok('alien', 1.25, 1.12), say('alien'));
+  check('formant-aware: a reverb (cave) leaves the envelope where it was (x1 +-5 %)', Math.abs(out.cave.warp - 1) <= 0.05, `cave x${out.cave.warp.toFixed(2)}`);
+  const peak = y => y.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  check('no character clips: peaks under -1.5 dBFS (the export limiter at -1 dBFS then changes nothing)', Object.values(out).every(o => peak(o.y) < 0.85), Object.entries(out).map(([k, o]) => `${k} ${(20 * Math.log10(peak(o.y))).toFixed(1)}`).join(', ') + ' dBFS');
+  check('band-limited against the voice band (300 Hz - 3 kHz): radio 6-12 kHz down > 25 dB, megaphone (3.8 kHz horn) > 18 dB', out.radio.high < -25 && out.megaphone.high < -18, `radio ${out.radio.high.toFixed(1)}, megaphone ${out.megaphone.high.toFixed(1)} dB`);
+  check('underwater: muffled (energy above 1.2 kHz down > 20 dB)', out.underwater.above < -20, `${out.underwater.above.toFixed(1)} dB`);
+  const tail = x => { let e = 0; for (let i = Math.round(10.55 * SR); i < Math.min(x.length, Math.round(10.85 * SR)); i++) e += x[i] * x[i]; return e; };
+  const cave = dB(tail(out.cave.y)) - dB(tail(raw));
+  check('cave: a reverb tail where the voice has stopped', cave > 10, `${cave.toFixed(1)} dB more in 10.55-10.85 s`);
+  check('characters are not delayed: within 2 ms (waveform; WORLD ones by their loudness envelope, 1 ms steps)', Object.values(out).every(o => Math.abs(o.lag) <= 96), Object.entries(out).map(([k, o]) => `${k} ${o.lag}`).join(', ') + ' samples');
+  // preview == export through the inspector's voice buttons; a character on top of Studio voice too
+  for (const [v, studio] of [['elf', false], ['cave', false], ['giant', true]]) {
+    await fresh(`Voice ${v} parity`);
+    await ev(id => addMedia(id, 'main', 0), TALK.id);
+    await select('main', await ev(() => P.main[0].id));
+    if (studio) { await page.click('[data-studio="on"]'); await page.waitForFunction(() => P.main[0].studio === true, null, { timeout: 120000 }); }
+    await page.click(`[data-voice="${v}"]`);
+    await page.waitForFunction(v => P.main[0].au?.voice === v, v, { timeout: 120000 });
+    const on = await ev(v => document.querySelector(`[data-voice="${v}"]`).classList.contains('on'), v);
+    const fx = studio ? `sv+${v}` : v, ex = fileMono(await exportWav(`Voice ${v} parity ${Date.now()}`)), ref = await pcmOf(TALK.id, fx), n = Math.min(ex.length, ref.length);
+    const s = snr(ref, ex, 0.1 * SR, n - 0.1 * SR);
+    check(`${fx}: the export is the sound the preview plays (inspector button)`, s > 40 && on, `${s.toFixed(1)} dB SNR; button on ${on}`);
+  }
+}
+
+// ---------- 4. loudness targets ----------
+if (run('loud')) {
+  // three tones under a slow swell, crest factor ~6 dB: every target is reachable under the -1.5 dBTP ceiling (the podcast's
+  // and the CC0 songs' peaks hold them at -17..-21 LUFS: loudness_gain() never pushes the true peak past -1.5 dBTP)
+  const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-loud-`), f = `${tmp}/loudness-tones.wav`;
+  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'aevalsrc=0.05*(sin(2*PI*300*t)+sin(2*PI*800*t)+sin(2*PI*2000*t))*(0.7+0.3*sin(2*PI*0.5*t)):s=48000:d=20', '-ac', '2', f]);
+  const tones = await (await fetch(`${B}/api/import?name=loudness-tones.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+  await ev(() => loadMedia());
+  await page.waitForFunction(id => M.get(id)?.ready && M.get(id).duration > 19, tones.id, { timeout: 30000 });
+  await fresh('Loudness targets');
+  await ev(id => { addMedia(id, 'audio', 0); renderAll(); }, tones.id);
+  const got = {};
+  for (const L of [false, -14, -16, -23]) {
+    const f = await ev(async L => (await REMOTE.export({ format: 'wav', name: `Loudness ${L} ${Date.now()}`, loudness: L })).file, L);
+    got[L] = lufs(`${LIB}/exports/${f}`);
+  }
+  console.log('     ' + Object.entries(got).map(([k, v]) => `${k}: ${v.i.toFixed(2)} LUFS, ${v.tp.toFixed(2)} dBTP`).join('; '));
+  for (const L of [-14, -16, -23]) check(`export loudness ${L} LUFS (within 0.5 LU)`, Math.abs(got[L].i - L) <= 0.5 && got[L].tp <= -1.4, `${got[L].i.toFixed(2)} LUFS, ${got[L].tp.toFixed(2)} dBTP`);
+  check('loudness off: the mix as it is (not moved to a target)', [-14, -16, -23].every(L => Math.abs(got.false.i - L) > 0.3), `${got.false.i.toFixed(2)} LUFS`);
+  await ev(() => openExport());
+  await page.waitForSelector('#exLoud');
+  const sel = await ev(() => [...document.querySelector('#exLoud').options].map(o => `${o.value}=${o.textContent}`));
+  await page.selectOption('#exPreset', 'tiktok');
+  const tk = await ev(() => document.querySelector('#exLoud').value);
+  await page.selectOption('#exPreset', 'master');
+  const ms = await ev(() => document.querySelector('#exLoud').value);
+  check('export dialog: loudness off / -14 social / -16 podcast / -23 broadcast; presets set it', sel.length === 4 && tk === '-14' && ms === 'off', `${sel.join(', ')}; TikTok ${tk}, Master ${ms}`);
+  await page.keyboard.press('Escape');
+  await post(`/api/media/${tones.id}/trash`, {});
+}
+
+// ---------- 5. beats on a 3 minute song ----------
+if (run('beats')) {
+  const song = (await get('/api/packs')).items?.find(x => x.name === 'Sunglasses');
+  if (!song) check('beats: the pack song Sunglasses is installed', false);
+  else {
+    const m = await post('/api/packs/add', { id: song.id });
+    for (let k = 0; k < 60 && !(await get('/api/media')).find(x => x.id === m.id)?.peaks; k++) await new Promise(r => setTimeout(r, 500)); // its preview PCM is made at import
+    const ts = [];
+    let r;
+    for (let k = 0; k < 3; k++) { fs.rmSync(`${LIB}/cache/${m.id}.beats.json`, { force: true }); const t0 = performance.now(); r = await post('/api/beats', { media: m.id }); ts.push((performance.now() - t0) / 1000); }
+    const gaps = r.beats.slice(1).map((v, i) => v - r.beats[i]), sd = Math.sqrt(mean(gaps.map(g => (g - mean(gaps)) ** 2)));
+    // 117.2 BPM / 335 beats: what the per-sample Python loops gave on this file (scratchpad bench, old vs new: identical grids)
+    check('beats on a 2:50 song: the same grid as the old loops (117.2 BPM, 335 beats)', r.bpm === 117.2 && r.beats.length === 335, `${r.bpm} BPM, ${r.beats.length} beats, gap sd ${(sd * 1000).toFixed(1)} ms`);
+    check('beats: under 0.3 s cold (the old loops took 0.37-0.72 s)', Math.min(...ts) < 0.3, `${ts.map(t => t.toFixed(3)).join(', ')} s (HTTP round trip included)`);
+  }
+}
+
+const errs = page.errs.filter(e => !/AbortError|The operation was aborted/.test(e));
+check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
+await b.close();
+for (const id of made) await post(`/api/projects/${id}/trash`, {}).catch(() => {});
+const n = res.filter(Boolean).length;
+console.log(`\n${n}/${res.length} passed`);
+process.exit(n === res.length ? 0 : 1);

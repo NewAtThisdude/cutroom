@@ -27,6 +27,7 @@ Data lives in `~/Movies/Cutroom/`:
 - `exports/`
 - `cache/`: filmstrips, waveforms, proxies, transcripts, beats
 - `sfx/`: the synthesized sound effects (made on first use)
+- `packs/`: the CC0 sound and music library (`index.json`: each file's source URL, licence and SHA-256)
 - `models/`: Silero VAD
 - `trash/`: deleted projects and media, recoverable
 - `server.log`
@@ -128,10 +129,12 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Voiceover from the Mac's voices or the microphone | `say`; MediaRecorder while the timeline plays muted |
 | | Beat detection and beat sync | Onsets, tempo and dynamic-programming beat tracking |
 | | 19 sound effects (whoosh, swish, riser, boom, bass drop, pop, click, ding, notification, correct, wrong buzzer, camera shutter, typing, heartbeat, glitch, cash register, drum roll, applause, tick tock), each with a listen button | Synthesized on this Mac by `server.py` (band-passed noise sweeps, FM bells, pitch-swept sines), deterministic, no sample packs or downloads. Added once to the library, then reused |
+| | **Sound library**: 606 CC0 sound effects in 9 categories (impacts, footsteps, interface, clicks, game, sci-fi, casino, foley, jingles) and 22 CC0 music tracks in 10 moods, with search, categories, listen and duration | Downloaded once (`server.py --packs`, `ai/setup.sh`, or the Audio rail's button; ~100 MB): Kenney's audio packs (each zip pinned by SHA-256 and its CC0 `License.txt` checked) and Komiku / Loyalty Freak Music tracks from archive.org (the item's CC0 licence re-read and each file's SHA-256 checked at install). A source that no longer matches is left out. `packs.json` pins them; the library item keeps its source and licence |
 | | **AI music** from a description or a style (upbeat pop, lo-fi, cinematic, hip hop, EDM, acoustic, corporate, ambient, funk, trap), 4-60 s; smart combine can make its own ("AI music, made to fit": the style's sound, as long as the edit) | MusicGen on this Mac, faster than real time. Detected beats drive the cuts like any song's |
 | | Volume in dB (mute to +20 dB), fades you can hear in the preview (drag the round knobs on a clip's top corners, or the Fade sliders), auto-duck from −6 to −24 dB under speech on any track | The duck envelope multiplies the clip volume, so the Volume slider keeps working after auto-duck |
-| | Remove pauses, reduce noise, loudness −14 LUFS, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
+| | Remove pauses, reduce noise, export loudness −14 (social) / −16 (podcast) / −23 LUFS (EBU) or off, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
 | | **Sound per clip**: voice effects (chipmunk, deep, robot, echo, hall, telephone), pitch in semitones that keeps the timing, 3-band EQ (bass 100 Hz, mid 1 kHz, treble 8 kHz, ±12 dB), pan, volume points you set at the playhead (drawn on the clip), **split into stems** (vocals, drums, bass, other: four clips in sync) | The preview runs the export's chain in Web Audio: the EQ shelves are the Web Audio spec's biquads, sent to ffmpeg's `biquad` as coefficients (its own `bass`/`treble` overshoot); pan is StereoPanner's equal-power formula as `pan`; the hall is one seeded impulse response for both `ConvolverNode` and `afir`. Exported WAV vs the preview's own chain rendered offline: 64-86 dB SNR for every setting (`tests/audio_e2e.mjs`). Pitch: an AudioWorklet in the preview, `asetrate`+`atempo` in the export (same note, not the same samples). Stems: Demucs htdemucs; they add back up to the original at 24 dB SNR |
+| | **Studio voice** (off / on / with the music removed first) and **8 voice characters**: elf, giant, monster, alien (pitch and formants moved apart), radio, megaphone, cave, underwater | Rendered on this Mac into the clip's sound file, which the preview plays and the export reads (export vs preview: 184-188 dB SNR, the same samples). Studio voice: RNNoise (lag taken out), rumble cut, de-ess, a downward expander, a compressor, presence EQ, one gain to −16 LUFS; nothing looks ahead (0 samples of delay). Studio + remove music runs Demucs first. Characters: the WORLD vocoder (pyworld) for elf/giant/monster/alien, ffmpeg filters for the rest; each is set back to the loudness (LUFS) it went in at, true peak under −1.5 dBTP (`tests/audio_packs.mjs`) |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three bitrates; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
 | Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
@@ -173,7 +176,8 @@ Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup
 downloads about 32 GB once; after the 4-bit copy is saved (5.5 GB in `~/Movies/Cutroom/ai`) the originals are deleted, so
 about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9b`, 6.6 GB); Cutroom starts it when needed.
 `setup.sh` also installs SAM 2 (Meta, Apache-2.0) and ProPainter (S-Lab licence: personal, non-commercial use) from their
-official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every weight file checked by SHA-256), and Demucs.
+official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every weight file checked by SHA-256), Demucs,
+pyworld 0.3.5 (MIT; the WORLD vocoder, for the voice characters) and the CC0 sound library (`server.py --packs`).
 
 | | Model | Measured here |
 |---|---|---|
@@ -348,8 +352,11 @@ once in the browser also guarantees the export matches the preview.
   previews are a close stand-in (box blurs at reduced size; there is no `ctx.filter`), and grain is random, so the preview
   and the export match in look, not pixel for pixel. Effect and transition tiles show stand-in footage (a drawn sunset
   and night sea), not your clip; the filter tiles do show your frame.
-- **Sound effects** are synthesized, not recorded foley: punchy and clean for UI-style sounds (pop, click, ding,
-  whoosh, riser, boom), plainer for applause and typing than a sample library.
+- **Sound effects**: the 19 built-in ones are synthesized: punchy and clean for UI-style sounds (pop, click, ding,
+  whoosh, riser, boom), plainer for applause and typing. The CC0 library adds recorded foley (Kenney), but no
+  ambiences, crowds or weather, and 22 music tracks is a short list next to CapCut's catalogue.
+- **Voice characters** are a vocoder's: WORLD re-synthesis is buzzier than the voice was, and it follows one voice;
+  music or two people talking at once come out garbled. Studio voice without Demucs leaves music in (RNNoise is for noise).
 - **Smart combine** judges a shot by sharpness and exposure and by what one frame of it shows; it doesn't hear speech or
   follow action, and the story order is the 9B model's call. Cuts move to the nearest beat. Transitions don't follow the
   camera's motion direction. The edit runs at the footage's frame rate (60 fps camera clips stay 60). Verified on synthetic
