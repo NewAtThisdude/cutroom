@@ -173,7 +173,8 @@ Everything runs on this Mac (M4 Max, 36 GB); nothing is uploaded. One-time setup
 downloads about 32 GB once; after the 4-bit copy is saved (5.5 GB in `~/Movies/Cutroom/ai`) the originals are deleted, so
 about 6 GB stays. The language-model features use Ollama (`ollama pull qwen3.5:9b`, 6.6 GB); Cutroom starts it when needed.
 `setup.sh` also installs SAM 2 (Meta, Apache-2.0) and ProPainter (S-Lab licence: personal, non-commercial use) from their
-official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every weight file checked by SHA-256), and Demucs.
+official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every weight file checked by SHA-256), and Demucs,
+and for AI enhance (`ai/enhance.py`) RIFE 4.25, Real-ESRGAN x4v3 and Depth Anything V2 Small (about 130 MB, also checked).
 
 | | Model | Measured here |
 |---|---|---|
@@ -186,6 +187,9 @@ official repos at pinned commits into `ai/vendor` (0.7 GB with weights, every we
 | Remove object, Fast | Apple Vision tracking + OpenCV (no model) | 4 s of 720p in about 11 s; 40-44 dB on still or planar shots, seams on real handheld pans, texture synthesis for hidden areas |
 | Cut out object | SAM 2.1 small | 4 s of 720p in about 23 s; alpha vs the true silhouette: 0.94 IoU |
 | Isolate voice | Demucs htdemucs (GPU) | 20 s of sound in about 3 s; speech under loud music went from -7.9 to 12 dB SI-SDR, the music tones down 30-44 dB |
+| Smooth slow-mo, AI (Tools tab, `clip_tool smooth_slowmo`) | RIFE 4.25 (Practical-RIFE, MIT; model file from vs-rife, MIT), half precision on the GPU; Fast = ffmpeg `minterpolate` | real iPhone 120 fps clips with every other frame dropped, the frames made back vs the dropped ones: a person walking 39.1 dB / SSIM 0.976 (minterpolate 32.4 / 0.949), a handheld portrait 44.2 / 0.985 (43.4 / 0.984); 4x of 1.5 s of 1080x1920 60 fps in 22-29 s |
+| AI upscale 2x / 4x (Tools tab, `clip_tool ai_upscale`) | Real-ESRGAN general x4v3 + its -wdn twin (BSD-3); 2x = the 4x result averaged | a GAN: sharper edges, lower fidelity than lanczos on a clean shrink (2x 40.2 vs 41.5 dB, 4x 36.8 vs 37.0 dB; fine detail 0.67x / 0.50x of the truth vs lanczos 0.54x / 0.35x); 270x480 -> 1080x1920 at 12 fps, 1080x1920 -> 4K at 1.6 fps |
+| Relight (Tools tab, `clip_tool relight`) | Depth Anything V2 Small (Apache-2.0) per frame; a point light falling off in 3D on the surfaces facing it, or brighten subject / darken background, made to follow the picture's edges (guided filter) | 1080x1920 at about 10 fps; on a still shot it adds no flicker beyond the encoder's own (32 px blocks, 4 levels worst either way). Preview frame shows one frame first |
 | Smart combine | ffmpeg picture statistics + qwen3.5:9b looking at one frame per scene | three clips (5 scenes): analysed and described in about 15 s the first time (cached after that), the edit built in about 3 s |
 | Shorts, translation, hooks | qwen3.5:9b (Q4) on Ollama, thinking off | a 94 s talk: 3 shorts picked and built in about 8 s; 6 sentences translated in about 3 s |
 

@@ -443,10 +443,15 @@ function fxgl() {
     gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
     gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
 precision highp float; precision highp int; precision highp sampler3D;
-uniform sampler2D src; uniform sampler3D lut; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN;
+uniform sampler2D src; uniform sampler3D lut; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN, sg;
 out vec4 o;
 vec3 at(ivec2 q) { return texelFetch(src, clamp(q, ivec2(0), size - 1), 0).rgb * 255.0; }
 float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
+float k1(int i) { // sharpen's blur, one axis, spread sg: a sampled Gaussian, or under 0.6 px (where sampling one loses it) [w, 1-2w, w]
+  if (sg >= 0.6) return exp(-float(i * i) / (2.0 * sg * sg)); // with the Gaussian's response at the finest detail (1 - 4w = exp(-pi^2 sg^2 / 2))
+  float w = (1.0 - exp(-4.9348 * sg * sg)) / 4.0;
+  return i == 0 ? 1.0 - 2.0 * w : abs(i) == 1 ? w : 0.0;
+}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   if (flipOut == 1) q.y = size.y - 1 - q.y; // the canvas shows row 0 at the bottom; the textures keep the picture's top in row 0
@@ -463,6 +468,12 @@ void main() {
   else if (mode == 4) c += (hash(vec2(q) + vec2(seed, seed * 1.7)) * 2.0 - 1.0) * s; // grain on brightness
   else if (mode == 7) c = texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0; // an adjustment layer's table (gpuPass's lookup)
   else if (mode == 5) { vec3 sum = vec3(0.0); for (int i = -32; i <= 32; i++) if (i >= -r && i <= r) sum += at(q + dir * i); c = sum / float(2 * r + 1); } // one box pass (boxblur), edges clamped
+  else if (mode == 8) { // sharpen like ffmpeg unsharp: c + (c - blur) * s; its binomial kernel as one of the
+    vec3 sum = vec3(0.0); float wt = 0.0; // same spread (sigma sg: the export's, in this picture's pixels), r = its reach
+    for (int j = -6; j <= 6; j++) { if (j < -r || j > r) continue;
+      for (int i = -6; i <= 6; i++) { if (i < -r || i > r) continue; float w = k1(i) * k1(j); sum += w * at(q + ivec2(i, j)); wt += w; } }
+    c += (c - sum / wt) * s; // (unrounded: at the preview's scale the correction is often under a level, which rounding would drop)
+  }
   o = vec4(clamp(floor(c + 0.5), 0.0, 255.0) / 255.0, s0.a);
 }`));
     gl.linkProgram(pg);
@@ -471,7 +482,7 @@ void main() {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const k of ['src', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed']) U[k] = gl.getUniformLocation(pg, k);
+    for (const k of ['src', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed', 'sg']) U[k] = gl.getUniformLocation(pg, k);
     const lutT = gl.createTexture(); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lutT);
     for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v);
     gl.uniform1i(U.src, 0); gl.uniform1i(U.lut, 1); gl.activeTexture(gl.TEXTURE0);
@@ -509,7 +520,7 @@ function fxGPU(src, W, H, steps) {
     if (st.dir) gl.uniform2i(U.dir, ...st.dir);
     if (st.G && FXG.lutKey !== st.G.key) { gl.activeTexture(gl.TEXTURE1); gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, GN, GN, GN, 0, gl.RGB, gl.FLOAT, st.G.d); gl.activeTexture(gl.TEXTURE0); FXG.lutKey = st.G.key; gl.bindTexture(gl.TEXTURE_2D, tex[cur]); }
     if (st.G) gl.uniform1f(U.lutN, GN);
-    gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0);
+    gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0); gl.uniform1f(U.sg, st.sg || 1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     if (small) { // pixelate, 2: back to full size from the block means
       target(out, W, H); gl.bindTexture(gl.TEXTURE_2D, tex[2]); gl.uniform1i(U.mode, 3); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

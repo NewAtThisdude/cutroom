@@ -322,7 +322,7 @@ def cutout(job, n):
         sys.exit('nothing found in that box: draw it around the subject')
     print('engine sam2', flush=True)
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuva444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
-                            '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a?',
+                            '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
                             *labels(job['tags']), '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '28', '-deadline', 'realtime', '-cpu-used', '8',
                             '-row-mt', '1', *job['tags'], '-c:a', 'libopus', '-b:a', '128k', '-shortest', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):
@@ -508,7 +508,7 @@ def main(path):
             alpha[t] = mm
     del F
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
-                            '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a?',
+                            '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
                             *labels(job['tags']), '-c:v', 'h264_videotoolbox', '-q:v', '68', '-pix_fmt', 'yuv420p', *job['tags'],  # Apple's hardware encoder (~47 dB): the CPU stays free
                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):

@@ -779,13 +779,7 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
             w, h = max(p['w'], b['w']), max(p['h'], b['h'])  # Vision's box drifts smaller; never cover less than was drawn
             boxes.append([p['x'] + p['w'] / 2 - w / 2, p['y'] + p['h'] / 2 - h / 2, w, h])
         dec, vf = hdr_decode(m)
-        tags = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] if dec else []
-        if not dec:  # keep the source's colour labels (untagged stays untagged, so it previews and exports the same)
-            probe_tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer',
-                                        '-of', 'json', src]).stdout or '{}').get('streams', [{}])[0]
-            for opt, key in (('-colorspace', 'color_space'), ('-color_primaries', 'color_primaries'), ('-color_trc', 'color_transfer')):
-                if probe_tags.get(key) not in (None, '', 'unknown', 'reserved'):
-                    tags += [opt, probe_tags[key]]
+        tags = src_tags(m, dec)
         out, jf = Path(td) / ('cut.webm' if mode == 'cutout' else 'clean.mp4'), Path(td) / 'job.json'
         seed_png = None
         if seed:  # the outline confirmed in the preview (a PNG mask of the picked frame): SAM 2 follows exactly that
@@ -997,7 +991,7 @@ def denoise(st, mid, t0, t1, strength='light'):
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'denoised.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}',
-                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a?', '-vf', f'{vf}{nr}', '-c:v', 'h264_videotoolbox', '-q:v', '72', '-c:a', 'copy',
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}{nr}', '-c:v', 'h264_videotoolbox', '-q:v', '72', '-c:a', 'copy',
                     '-movflags', '+faststart', str(out)], t1 - t0, lambda x: st.update(progress=0.95 * x), 'Reducing the noise')
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (denoised).mp4", fh, out.stat().st_size, background=False)
@@ -1021,12 +1015,103 @@ def faces(st, mid, t0, t1):
     return {'points': pts}
 
 
-def slowmo(st, mid, t0, t1, factor):
+def src_tags(m, dec):
+    """Colour labels for a copy of m's frames: BT.709 after an HDR tone map, else the source's own (untagged stays untagged,
+    so it previews and exports the same)."""
+    if dec:
+        return ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
+    p = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer',
+                       '-of', 'json', str(MEDIA / m['file'])]).stdout or '{}').get('streams', [{}])[0]
+    return [x for opt, key in (('-colorspace', 'color_space'), ('-color_primaries', 'color_primaries'), ('-color_trc', 'color_transfer'))
+            if p.get(key) not in (None, '', 'unknown', 'reserved') for x in (opt, p[key])]
+
+
+def enhance(st, mid, t0, t1, op, opt):
+    """AI enhance on this Mac's GPU (ai/enhance.py): RIFE frames between frames (Smooth slow-mo), Real-ESRGAN upscale, depth
+    relight -> a copy of the range [t0, t1] in the library, which the clip then plays (preview == export: it is a file)."""
+    m = meta(mid)
+    if m['kind'] != 'video' or m.get('alpha'):
+        raise ValueError('AI enhance works on video without transparency')
+    if not (AI_BIN / 'python').exists() or not (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():
+        raise RuntimeError('AI enhance needs the on-device AI tools (run ai/setup.sh)')
+    fps = float(m.get('fps') or 30)
+    t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
+    if t1 - t0 < 2 / fps:
+        raise ValueError('the range is too short')
+    if op == 'upscale' and max(m['w'], m['h']) * opt['scale'] > 7680:
+        raise ValueError(f"{opt['scale']}x of {m['w']}x{m['h']} is bigger than 8K")
+    dec, vf = hdr_decode(m)
+    name = {'interp': f"smooth {opt.get('factor')}x", 'upscale': f"upscaled {opt.get('scale')}x", 'relight': 'relit'}[op]
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out, jf = Path(td) / 'enhanced.mp4', Path(td) / 'job.json'
+        jf.write_text(json.dumps({'op': op, 'src': str(MEDIA / m['file']), 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': even(m['w']), 'h': even(m['h']),
+                                  'dec': dec, 'vf': vf, 'tags': src_tags(m, dec), **opt}))
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'enhance.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # one pipe, as with removal; weights come from setup.sh
+        said = []
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.97 * float(line.split()[1])
+            elif line.strip():
+                said = (said + [line.strip()])[-5:]
+        if proc.wait() or not out.exists():
+            raise RuntimeError('AI enhance failed: ' + (said[-1][-300:] if said else 'no output'))
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} ({name}).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
+def light_opts(L):
+    """A relight's light, checked (it goes into a JSON file for enhance.py): preset light | subject | background, x and y on
+    the frame (0..1, a little past the edges allowed), colour '#rrggbb', strength 0..1."""
+    L = L if isinstance(L, dict) else {}
+    col = str(L.get('color', '#ffffff'))
+    return {'preset': L.get('preset') if L.get('preset') in ('subject', 'background') else 'light', 'x': fnum(L.get('x', 0.25), -0.5, 1.5),
+            'y': fnum(L.get('y', 0.3), -0.5, 1.5), 'color': col if re.fullmatch(r'#[0-9a-fA-F]{6}', col) else '#ffffff', 'strength': fnum(L.get('strength', 0.6), 0, 1)}
+
+
+def relight_preview(mid, t, light):
+    """One frame of a relight as a PNG (base64), to place the light before the clip renders (ai/worker.py keeps the model)."""
+    m = meta(mid)
+    if m['kind'] != 'video' or m.get('alpha'):
+        raise ValueError('relight works on video without transparency')
+    if not (AI_BIN / 'python').exists():
+        raise RuntimeError('relight needs the on-device AI tools (run ai/setup.sh)')
+    dec, vf = hdr_decode(m)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        f = Path(td) / 'relit.png'
+        ai_worker('relight', job={'src': str(MEDIA / m['file']), 'out': str(f), 't': fnum(t, 0, m['duration']), 'w': even(m['w']), 'h': even(m['h']),
+                                  'dec': dec, 'vf': vf, 'light': light})
+        if not f.exists():
+            raise RuntimeError('the relight preview made no picture')
+        return {'png': base64.b64encode(f.read_bytes()).decode()}
+
+
+def deflicker(st, mid, t0, t1):
+    """A copy of the range with its frame-to-frame brightness pumping evened out (timelapses, lights on mains power, auto
+    exposure hunting): ffmpeg deflicker, each frame's brightness pulled to the power mean of 9 around it (luma only)."""
+    m = meta(mid)
+    if m['kind'] != 'video':
+        raise ValueError('only video flickers')
+    dec, vf = hdr_decode(m)
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'deflickered.mp4'
+        run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}',
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}format=yuv444p,deflicker=size=9:mode=pm', '-c:v', 'h264_videotoolbox',
+                    '-q:v', '72', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(out)], t1 - t0, lambda x: st.update(progress=0.95 * x), 'Deflickering')
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (deflickered).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
+def slowmo(st, mid, t0, t1, factor, engine='fast'):
     """Smooth slow motion (CapCut 'smooth slow-mo'): motion-interpolated copy of a range at factor x the frame rate,
-    so playing it at 1/factor speed still shows a fresh frame every frame."""
+    so playing it at 1/factor speed still shows a fresh frame every frame. engine 'ai' = RIFE (enhance), 'fast' = minterpolate."""
     m = meta(mid)
     if m['kind'] != 'video':
         raise ValueError('only video')
+    if engine == 'ai':  # whole multiples only (each real frame stays where it was), up to 240 fps
+        return enhance(st, mid, t0, t1, 'interp', {'factor': max(2, min(factor, int(240 // (m.get('fps') or 30))))})
     fps = min(240, m.get('fps', 30) * factor)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'smooth.mp4'
@@ -2050,6 +2135,8 @@ def clean_plan(p):
             raise ValueError('grade must be a 33-point 3D table')
         k['lkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 1)} for f in (c.get('lkf') or [])[:2000]] or None  # filter strength keyframes
         k['blur'] = int(fnum(c.get('blur', 0), 0, 400)) or None  # px in the source
+        sp = c.get('sharp') or {}  # sharpen: unsharp's binomial radius in source px (1-11) and its amount
+        k['sharp'] = {'r': int(fnum(sp.get('r', 2), 1, 11)), 'amt': fnum(sp.get('amt', 0), 0, 5)} if sp.get('amt') else None
         mb = int(fnum(c.get('mb', 0), 0, 9))  # motion blur: frames mixed
         k['mb'] = mb if mb > 1 and m['kind'] == 'video' else None
         b = c.get('beauty') or {}
@@ -2319,7 +2406,7 @@ def adjust(c):
 
 RGB_NEEDS = (('kf', 'keyframes'), ('alpha', 'a transparent clip'), ('trans', 'a transparent clip'), ('key', 'chroma key'), ('mask', 'a mask'),
              ('mask_seq', 'a mask'), ('vig', 'a vignette'), ('look', 'a filter'), ('tone', 'adjustments'), ('grade', 'a colour grade'),
-             ('lkf', 'filter keyframes'), ('beauty', 'beauty'), ('blur', 'blur'))
+             ('lkf', 'filter keyframes'), ('beauty', 'beauty'), ('blur', 'blur'), ('sharp', 'sharpen'))
 
 
 def rgb_need(c):
@@ -2413,6 +2500,9 @@ def graph(p, td):
                   f"[{t}o]format=yuva444p,chromakey=color=0xC89682:similarity=0.10:blend=0.12,lut=a='255-(255-val)*{b['amt']:.4f}'[{t}k];[{t}s][{t}k]overlay=format=yuv444")
         if c.get('blur'):  # the clip's own blur: boxblur, 3 passes (a Gaussian), radius in source pixels
             v += f",boxblur=luma_radius={c['blur']}:luma_power=3:chroma_radius={c['blur']}:chroma_power=3"
+        if sp := c.get('sharp'):  # sharpen: ffmpeg unsharp on R, G and B alike (the preview's fxGPU mode 8: this kernel at its own scale); alpha untouched
+            n = 2 * sp['r'] + 1
+            v += f",format={'gbrap' if c.get('alpha') or c.get('trans') else 'gbrp'},unsharp={n}:{n}:{sp['amt']:.4f}:{n}:{n}:{sp['amt']:.4f}"
         if c.get('key'):  # chroma key -> alpha (same formula as the preview's keyed())
             v += f",format=rgba,colorkey=color={c['key']['color'].replace('#', '0x')}:similarity={c['key']['sim']:.4f}:blend={c['key']['blend']:.4f}"
         if c.get('mb'):  # motion blur: each output frame the plain mean of it and the mb-1 before it (the preview mixes the same frames)
@@ -3408,7 +3498,16 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError('the ramp knots must start at 0, 0, rise in both columns and end at the range length')
                 return self.reply({'job': run_job(ramp_copy, body['media'], t0, t1, mp, fps)})
             if u.path == '/api/slowmo':
-                return self.reply({'job': run_job(slowmo, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), int(fnum(body.get('factor', 4), 2, 8)))})
+                return self.reply({'job': run_job(slowmo, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), int(fnum(body.get('factor', 4), 2, 8)),
+                                                  'ai' if body.get('engine') == 'ai' else 'fast')})
+            if u.path == '/api/deflicker':
+                return self.reply({'job': run_job(deflicker, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6))})
+            if u.path == '/api/upscale':
+                return self.reply({'job': run_job(enhance, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), 'upscale', {'scale': 4 if body.get('scale') == 4 else 2})})
+            if u.path == '/api/relight':
+                return self.reply({'job': run_job(enhance, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), 'relight', {'light': light_opts(body.get('light'))})})
+            if u.path == '/api/relight_preview':
+                return self.reply(relight_preview(body['media'], body.get('t', 0), light_opts(body.get('light'))))
             if m := re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
                 f = (PROJ if m[1] == 'projects' else HOME / 'templates') / f'{m[2]}.json'
                 if f.exists():
@@ -3813,6 +3912,11 @@ def selftest():
     assert gf['kind'] == 'video' and gf['trans'] and gf.get('proxy') and (CACHE / f"{gf['id']}.proxy.webm").exists(), gf
     sm = meta(slowmo({}, L['id'], 0, 1, 4)['media'])
     assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, sm
+    df = meta(deflicker({}, L['id'], 0, 1)['media'])
+    assert abs(df['duration'] - 1) < 0.1 and df['w'] == L['w'], df
+    if (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():  # RIFE (tests/ai_enhance.mjs measures it on real footage)
+        sm = meta(slowmo({}, L['id'], 0, 1, 4, 'ai')['media'])
+        assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, ('AI slow-mo', sm)
     rmap = [[0, 0], [0.5, 1], [1, 1.25]]  # speed ramp: 0.5x for the first half second of source, then 2x
     rp = ramp_copy({}, L['id'], 0, 1, rmap, 30)
     rm_, nm = meta(rp['media']), len(list(MEDIA.glob('*.json')))
@@ -3849,9 +3953,9 @@ def selftest():
             assert got[0] == got[1], ('a still cut to its frame differs from the whole render', base['name'], t_, got)
     print('stills: cut to their frame, the same pixels as from the whole plan')
     plan['loud'] = True
-    plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True)
+    plan['main'][0].update(crop={'l': 0.1, 'r': 0.1, 't': 0, 'b': 0.2}, flip=True, look=[.393, .769, .189, .349, .686, .168, .272, .534, .131], denoise=True, sharp={'r': 2, 'amt': 1.2})
     render(plan, 270)
-    print('smoke ok: crop + flip + look + denoise + loudness')
+    print('smoke ok: crop + flip + look + denoise + sharpen + loudness')
     # HDR: HLG clip + a portrait-rotated copy (iPhone-style). The rotated one must match the same content
     # rendered through the normal SDR autorotate path (wrong orientation would collapse the PSNR).
     hlg = ['-vf', 'format=yuv420p10le', '-c:v', 'libx265', '-x265-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error',

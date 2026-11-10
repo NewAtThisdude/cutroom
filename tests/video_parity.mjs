@@ -52,6 +52,7 @@ add('grade LUT 50%', `lutLib.set('parity', parseCube('LUT_3D_SIZE 2\\n0 0 0.2\\n
 add('grade + look + adjust', `Object.assign(main(A), { look: { name: 'teal', amount: 0.8 }, adj: { b: 1.1, c: 1.2, s: 0.8, ex: 0.3 }, grade: { gain: { x: 0.3, y: 0, l: 0.1 }, curves: { m: [[0, 0], [0.5, 0.6], [1, 1]] } } }); T = 1.5`);
 add('filter strength keyframes', `Object.assign(main(A), { look: { name: 'mono', amount: 1 }, grade: { hsl: { red: { h: 1 } } }, lkf: [{ t: 0, v: 0 }, { t: 3, v: 1 }] }); T = 1.0`);
 add('clip blur', `main(A).adj = { b: 1, c: 1, s: 1, blur: 0.4 }; T = 1.5`);
+add('clip sharpen', `main(F).adj = { b: 1, c: 1, s: 1, sharp: 0.8 }; T = 1.5`);
 add('beauty smooth skin', `main(A).beauty = { amt: 1 }; T = 1.5`);
 add('overlay glow', `main(B); Object.assign(ov(I), { fit: 'fit', scale: 0.5, glow: { color: '#00e5ff', size: 0.5 }, key: { color: '#ffffff', sim: 0.2, blend: 0.1 } }); T = 1`);
 add('crop', 'main(A).crop = { l: 0.1, r: 0.2, t: 0.1, b: 0.05 }; T = 1.5');

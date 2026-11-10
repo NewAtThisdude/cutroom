@@ -902,7 +902,8 @@ function mediaPanel(c, lane) {
       + `${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
       + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
       + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%')
-      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%');
+      + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%') + slider('c.adj.vig', 'Vignette', a.vig || 0, 0, 1, 0.01, '%') + slider('c.adj.blur', 'Blur', a.blur || 0, 0, 1, 0.01, '%')
+      + slider('c.adj.sharp', 'Sharpen', a.sharp || 0, 0, 1, 0.01, '%');
     look += `<h4>Beauty</h4>${slider('c.beauty.amt', 'Smooth skin', c.beauty?.amt || 0, 0, 1, 0.01, '%')}<p class="hint">Evens out skin texture (skin-coloured areas only); edges, eyes and hair stay sharp.</p>`;
     if (m.alpha || m.trans) look += `<h4>Glow</h4>${segs('glowkind', 'Style', !c.glow ? 'none' : c.glow.neon ? 'neon' : 'glow', [['none', 'None'], ['glow', 'Glow'], ['neon', 'Neon']])}`
       + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
@@ -945,12 +946,14 @@ function mediaPanel(c, lane) {
   }
   const acts = ['<button data-act="split">Split</button>', '<button data-act="dup">Duplicate</button>'];
   if (vid) acts.push('<button data-act="freeze">Freeze frame</button>', '<button data-act="reverse">Reverse</button>');
-  if (vid && c.speed < 1 && !c.ramp) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
+  if (vid && c.speed < 1 && !c.ramp) acts.push('<button data-act="slowmo">Smooth slow-mo</button><select id="smEngine" title="AI: RIFE on this Mac makes the frames in between (cleaner on real motion). Fast: ffmpeg\'s motion interpolation"><option value="ai">AI</option><option value="fast">Fast</option></select>');
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   if (c.compound) acts.unshift('<button data-act="breakcompound" title="Put back the clips it was made of">Break apart</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
-  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+  let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="deflicker" title="A copy of this clip's range with the brightness pumping evened out (timelapses, flickering lights, exposure hunting)">Deflicker</button><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
+    <h4>AI enhance</h4><div class="actions"><button data-act="upscale" title="Real-ESRGAN on this Mac: a bigger, sharper copy of this clip's range">AI upscale</button><select id="upScale" title="How much bigger"><option value="2">2×</option><option value="4">4×</option></select></div>
+    ${relightPanel(c)}
     <h4>Speed ramp</h4><div class="presets small rampchips">${Object.keys(RAMPS).map(n => `<button data-rampp="${n}"><svg viewBox="0 0 40 14" preserveAspectRatio="none" aria-hidden="true"><path d="${rampPath(rampPts(n), 40, 14)}"/></svg>${RAMP_NAMES[n]}</button>`).join('')}</div>
     <div class="curvebox rampbox"><svg id="rampSvg" viewBox="-16 -6 222 112" preserveAspectRatio="none"></svg></div><p class="muted ramplen" id="rampLen"></p>
     <div class="actions"><button data-act="ramp">Apply ramp</button>${c.ramp && c.media === c.ramp.copy ? `<button data-act="rampoff"${M.get(c.ramp.src) ? '' : ' disabled title="Its original file is not in the library any more"'}>Remove ramp</button>` : ''}</div>
@@ -1163,7 +1166,7 @@ function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); s
   for (const [i, c] of P.main.entries()) {
     const a = c.adj || {}, n = c.fit === 'blur' ? 'a blurred background' : (c.opacity ?? 1) < 1 ? 'opacity' : trF(i) && c.tr?.type !== 'fade' ? 'a transition other than Dissolve'
       : ['b', 'c', 's'].some(k => (a[k] ?? 1) !== 1) ? 'brightness / contrast / saturation' : c.rot ? 'rotation' : bakeKf(c, 'main') ? 'keyframes' : c.key ? 'chroma key' : c.mask ? 'a mask'
-      : a.vig > 0 ? 'a vignette' : lookMatrix(c) ? 'a filter' : toneLUT(c) ? 'adjustments' : gradeLUT(c) ? 'a colour grade' : c.lkf?.length ? 'filter keyframes' : c.beauty?.amt > 0 ? 'beauty' : a.blur > 0 ? 'blur' : '';
+      : a.vig > 0 ? 'a vignette' : lookMatrix(c) ? 'a filter' : toneLUT(c) ? 'adjustments' : gradeLUT(c) ? 'a colour grade' : c.lkf?.length ? 'filter keyframes' : c.beauty?.amt > 0 ? 'beauty' : a.blur > 0 ? 'blur' : a.sharp > 0 ? 'sharpen' : '';
     if (n) return `a clip with ${n}`;
   }
   if (P.main.some(c => !M.get(c.media)?.hdr || M.get(c.media)?.alpha)) return 'a photo or SDR clip on the main track';
@@ -1593,7 +1596,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   const lm = lookMatrix(c); // same order and math as the server's adjust() then look()
   const ab = a.b ?? 1, ac = a.c ?? 1, as = a.s ?? 1, tn = toneLUT(c); // same order as the export: adjust, tone curve, look
   const filt = [ab !== 1 || ac !== 1 || as !== 1 ? `brightness(${ab}) contrast(${ac}) saturate(${as})` : '', tn ? toneFilter(tn) : '', lm ? lookFilter(lm) : ''].filter(Boolean).join(' ');
-  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0, sk = strengthAt(c, lt);
+  const rad = ((pr.rot || 0) * Math.PI) / 180, graded = gradeOn(c.grade) || !!c.lkf?.length || c.beauty?.amt > 0 || a.blur > 0 || a.sharp > 0, sk = strengthAt(c, lt);
   if (cap) { // trGPU asks: a plain picture in a box? then where it goes (nothing drawn); anything more keeps the canvas path
     if (lane !== 'main' || rad || c.flip || c.glow || c.fit === 'blur' || pr.opacity < 1 || f < 1 || filt || graded || c.key || c.mask || a.vig > 0 || mbN(c) > 1) return false;
     return Object.assign(cap, { el, src: [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], dst: [g.x * k, g.y * k, g.w * k, g.h * k], hit: { lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: 0 } });
@@ -1655,6 +1658,16 @@ function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small
   tx.clearRect(0, 0, tw, th); tx.drawImage(x.canvas, 0, 0, tw, th);
   boxBlurRGB(tx, tw, th, rr);
   x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(t, 0, 0, W, H); x.restore();
+}
+// Sharpen = the export's unsharp on R, G and B: a binomial (2r+1)² blur of the source (r = 1 px per 720 px of its short side), then
+// c + (c - blur) x amount. The preview runs the same kernel shrunk to its own scale (a Gaussian of the binomial's spread, sigma
+// sqrt(r/2) source px x preview px per source px): what the export looks like at the preview's size, not a stronger 1-px sharpen.
+const sharpR = short => clamp(Math.round(short / 720), 1, 6), sharpAmt = a => +(1.5 * a).toFixed(4);
+function sharpenInPlace(x, W, H, c) { // on the GPU only (fxGPU mode 8), like blurInPlace's fast path
+  const m = M.get(c.media), cr = c.crop || {}, short0 = Math.min(m.w * (1 - (cr.l || 0) - (cr.r || 0)), m.h * (1 - (cr.t || 0) - (cr.b || 0)));
+  const sg = Math.sqrt(sharpR(short0) / 2) * (Math.min(W, H) / short0);
+  const g = fxGPU(x.canvas, W, H, [{ mode: 8, r: sg < 0.6 ? 1 : clamp(Math.ceil(2.5 * sg), 1, 6), s: sharpAmt(c.adj.sharp), sg }]);
+  if (g) { x.save(); x.globalCompositeOperation = 'copy'; x.drawImage(g[0], 0, g[1], W, H, 0, 0, W, H); x.restore(); }
 }
 function hblurInPlace(x, W, H, sigma) { // the export's gblur sigmaV=0 (sideways only), close to it, on 2D canvases only (3 box passes through
   // fxGPU matched as well but cost 9 ms a frame in WebKit, the canvas upload and read-back: whips dropped to 45 fps). Halved k times (an
@@ -1775,6 +1788,7 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
     const g = keyCvG.getContext('2d');
     g.setTransform(1, 0, 0, 1, 0, 0); g.filter = 'none'; g.globalCompositeOperation = 'copy'; g.drawImage(gp[0], 0, gp[1], W, H, 0, 0, W, H); g.globalCompositeOperation = 'source-over';
     if (c.adj?.blur > 0) blurInPlace(g, W, H, c.adj.blur * 0.03 * Math.min(W, H));
+    if (c.adj?.sharp > 0) sharpenInPlace(g, W, H, c);
     return keyCvG;
   }
   x.filter = gradeOn(c.grade) || c.lkf?.length ? 'none' : filt || 'none';
@@ -3345,15 +3359,39 @@ async function remake(c, kind) { // reverse / stabilize render a new library ite
     toast(kind === 'reverse' ? 'Reversed' : 'Stabilized');
   } catch (e) { setStatus(e.message); throw e; }
 }
-async function denoiseVideo(c, strength = 'light') { // night grain: the clip switches to a cleaned copy of its range
+async function rangeCopy(c, path, extra, label, done) { // a rendered copy of the clip's range (denoise, deflicker, AI upscale, relight): the clip switches to it
   try {
     const m = M.get(c.media), fps = m?.fps || P.fps, pid = P.id, was = c.media, t0 = Math.floor(c.in * fps + 1e-6) / fps; // from the frame the preview shows at the in point
-    const j = await job('/api/denoise', { media: c.media, t0, t1: c.out, strength }, strength === 'strong' ? 'Reducing the noise (strong)' : 'Reducing the noise');
+    const j = await job(path, { media: c.media, t0, t1: c.out, ...extra }, label);
     await loadMedia();
     c = live(c, pid, was);
     const d = M.get(j.media)?.duration ?? Infinity;
     change(() => { c.in = clamp(c.in - t0, 0, d); c.out = clamp(c.out - t0, c.in + 1 / P.fps, d); c.media = j.media; });
-    toast('Noise reduced: the clip plays the cleaned copy (undo goes back)');
+    toast(done);
+  } catch (e) { setStatus(e.message); throw e; }
+}
+const denoiseVideo = (c, strength = 'light') => rangeCopy(c, '/api/denoise', { strength }, strength === 'strong' ? 'Reducing the noise (strong)' : 'Reducing the noise', 'Noise reduced: the clip plays the cleaned copy (undo goes back)'); // night grain
+const deflickerVideo = c => rangeCopy(c, '/api/deflicker', {}, 'Deflickering', 'Deflickered: the clip plays the evened-out copy (undo goes back)');
+const upscaleVideo = (c, scale = 2) => rangeCopy(c, '/api/upscale', { scale: +scale === 4 ? 4 : 2 }, `AI upscaling ${+scale === 4 ? 4 : 2}×`, `Upscaled ${+scale === 4 ? 4 : 2}× (Real-ESRGAN): the clip plays the sharper copy (undo goes back)`);
+const RL0 = { preset: 'light', x: 0.25, y: 0.3, color: '#ffd8a8', strength: 0.6 }, rl = () => (S.rl ??= { ...RL0 }); // the relight panel's light (kept between clips)
+const relightVideo = (c, light = rl()) => rangeCopy(c, '/api/relight', { light }, 'Relighting', 'Relit: the clip plays the relit copy (undo goes back)');
+function relightPanel(c) { // Tools tab: a movable light from the picture's depth (Depth Anything), or the subject / background presets
+  const L = rl(), r = (k, label, min, max) => `<label class="row"><span>${label}</span><input type="range" data-rl="${k}" min="${min}" max="${max}" step="0.01" value="${L[k]}" style="--p:${((L[k] - min) / (max - min)) * 100}%"></label>`;
+  return `<h4>Relight</h4><div class="row"><span>Light</span><div class="seg">${[['light', 'Light'], ['subject', 'Brighten subject'], ['background', 'Darken background']].map(([v, n]) => `<button data-rlp="${v}" class="${L.preset === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>`
+    + `<label class="row"><span>Colour</span><input type="color" data-rl="color" value="${L.color}"></label>${r('strength', 'Strength', 0, 1)}`
+    + (L.preset === 'light' ? r('x', 'From left · right', 0, 1) + r('y', 'From top · bottom', 0, 1) : '')
+    + `<div class="actions"><button data-act="rlprev" title="This frame relit, below (a few seconds the first time)">Preview frame</button><button data-act="relight">Relight clip</button></div>`
+    + `<img id="rlImg" class="rlimg" alt="This frame relit"${S.rlPng?.id === c.id ? ` src="${S.rlPng.src}"` : ' hidden'}>`
+    + '<p class="hint">On this Mac: the depth of every frame decides what the light reaches and which way surfaces face. Rendered into a copy the clip plays; undo goes back.</p>';
+}
+async function relightPreview(c) { // one frame relit at the playhead, shown in the panel: place the light before the clip renders
+  const img = $('#rlImg'), lt = clamp(S.t - c.start, 0, len(c)), t = c.in + lt * c.speed;
+  setStatus('Relighting this frame…');
+  try {
+    const r = await api('/api/relight_preview', { media: c.media, t, light: rl() });
+    S.rlPng = { id: c.id, src: `data:image/png;base64,${r.png}` };
+    if (img) { img.src = S.rlPng.src; img.hidden = false; }
+    const s = $('#clipStatus'); if (s) s.textContent = '';
   } catch (e) { setStatus(e.message); throw e; }
 }
 async function autoReframe(c) { // keep the largest face centred (CapCut's auto reframe), as eased keyframes
@@ -3433,13 +3471,13 @@ async function autoDuck(c, depth = 0.25) { // music dips (default 12 dB) whereve
     toast(`Music ducks ${Math.round(-20 * Math.log10(depth))} dB under ${n} speech passage${n === 1 ? '' : 's'}`);
   } catch (e) { setStatus(e.message); throw e; }
 }
-async function smoothSlowmo(c) { // interpolated frames for slow clips (rendered copy of just this range)
-  const factor = clamp(Math.round(1 / c.speed), 2, 8);
+async function smoothSlowmo(c, engine = 'ai') { // interpolated frames for slow clips (rendered copy of just this range): ai = RIFE, fast = minterpolate
+  const factor = clamp(Math.round(1 / c.speed), 2, 8), fps0 = M.get(c.media)?.fps;
   try {
-    const j = await job('/api/slowmo', { media: c.media, t0: c.in, t1: c.out, factor }, 'Interpolating frames');
+    const j = await job('/api/slowmo', { media: c.media, t0: c.in, t1: c.out, factor, engine }, engine === 'ai' ? 'Making frames in between (AI)' : 'Interpolating frames');
     await loadMedia();
     change(() => { const d = c.out - c.in; c.media = j.media; c.in = 0; c.out = Math.min(d, M.get(j.media).duration); });
-    toast(`Smooth slow-mo: ${factor}× frames`);
+    toast(`Smooth slow-mo${engine === 'ai' ? ' (AI)' : ''}: ${Math.round((M.get(j.media)?.fps || 0) / (fps0 || 1)) || factor}× frames`); // (AI: whole multiples up to 240 fps)
   } catch (e) { setStatus(e.message); throw e; }
 }
 function toggleMarker() {
@@ -3870,6 +3908,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       if (mbN(c)) o.mb = mbN(c);
       const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
       if (c.adj?.blur > 0) o.blur = Math.max(1, Math.min(Math.round(c.adj.blur * 0.03 * short0), Math.floor(short0 / 4) - 1));
+      if (c.adj?.sharp > 0) o.sharp = { r: sharpR(short0), amt: sharpAmt(c.adj.sharp) };
       if (c.beauty?.amt > 0) o.beauty = { amt: c.beauty.amt, sigma: 0.008 * short0 };
       if (c.glow) o.glow = { color: c.glow.color, sigma: c.glow.size * 0.04 * ch, gain: c.glow.neon ? 2 : 1 };
       const gl3 = gradeLUT(c);
@@ -4697,6 +4736,7 @@ function wire() {
   });
   insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
   insp.addEventListener('input', e => {
+    if (e.target.dataset.rl) { rl()[e.target.dataset.rl] = e.target.type === 'range' ? +e.target.value : e.target.value; if (e.target.type === 'range') fill(e.target); return; } // the relight panel's light (not the clip)
     if (!e.target.dataset.k) return;
     pending ??= JSON.stringify(P); // one undo step per gesture, committed on 'change'
     apply(e.target);
@@ -4762,6 +4802,11 @@ function wire() {
     else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
     else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
     else if (d.act === 'denoise') quiet(denoiseVideo(c, $('#dnStrength')?.value));
+    else if (d.act === 'deflicker') quiet(deflickerVideo(c));
+    else if (d.act === 'upscale') quiet(upscaleVideo(c, $('#upScale')?.value));
+    else if (d.act === 'relight') quiet(relightVideo(c));
+    else if (d.act === 'rlprev') quiet(relightPreview(c));
+    else if (d.rlp) { rl().preset = d.rlp; renderInspector(); }
     else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
     else if (d.act === 'reframe') quiet(autoReframe(c));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
@@ -4782,7 +4827,7 @@ function wire() {
       if (t !== undefined) { seekTo(c.start + t); renderInspector(); }
     }
     else if (d.act === 'vkdel') { change(() => { const lt = S.t - c.start; delete c.duck; c.vkf = c.vkf.filter(f => Math.abs(f.t - lt) >= 0.5 / P.fps); if (!c.vkf.length) delete c.vkf; }); renderInspector(); }
-    else if (d.act === 'slowmo') quiet(smoothSlowmo(c));
+    else if (d.act === 'slowmo') quiet(smoothSlowmo(c, $('#smEngine')?.value));
     else if (d.act === 'restore') api(`/api/media/${c.media}/restore`, {}).then(loadMedia).then(() => { if (!M.get(c.media)) throw new Error('not in the trash'); touched(); toast('Restored from the trash'); }).catch(err => setStatus(`Couldn't restore it: ${err.message}. Relink it to the file instead.`));
     else if (d.act === 'relinklib') relink(c.media, $('#relinkSel').value);
     else if (d.curvech) { S.curveCh = d.curvech; renderInspector(); }
@@ -5281,17 +5326,18 @@ const REMOTE = {
     await loadMedia(); addMedia(m.id, 'audio', at);
     return brief(...cfind(S.sel.id));
   },
-  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', curve, at, ref }) {
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', curve, at, ref, engine = 'ai', scale = 2, preset, x, y, color, strength }) {
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
-      freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
+      freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c, engine === 'fast' ? 'fast' : 'ai'), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
+      deflicker: () => deflickerVideo(c), ai_upscale: () => upscaleVideo(c, scale), relight: () => relightVideo(c, { ...RL0, ...Object.fromEntries(Object.entries({ preset, x, y, color, strength }).filter(([, v]) => v !== undefined)) }),
       auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), speed_ramp: () => {
         if (curve !== undefined) { if (!Array.isArray(curve) || curve.length < 2 || curve.length > 12 || curve.some((q, i) => !Array.isArray(q) || !(q[1] >= 0.1 && q[1] <= 10) || !(q[0] >= 0 && q[0] <= 1) || (i && !(q[0] > curve[i - 1][0]))) || curve[0][0] !== 0 || curve.at(-1)[0] !== 1) throw new Error('curve must be 2-12 [u, speed] points: u rising from 0 to 1, speed 0.1-10'); }
         else if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`);
         return applyRamp(c, L, curve?.map(q => [+q[0], +q[1]]) ?? rampPts(rp));
       } }[action];
-    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
+    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, deflicker, ai_upscale, relight, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },

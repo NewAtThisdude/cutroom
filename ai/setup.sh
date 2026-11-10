@@ -48,4 +48,22 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
+# AI enhance (ai/enhance.py, PyTorch on the GPU): RIFE 4.25 frame interpolation for Smooth slow-mo (Practical-RIFE by hzwer,
+# MIT; the model file from HolyWu's vs-rife, MIT, pinned commit; weights from its release), Real-ESRGAN general x4v3 + its
+# -wdn twin for AI upscale (xinntao, BSD-3), Depth Anything V2 Small for relight (Apache-2.0, through transformers). ~130 MB.
+mkdir -p vendor/enhance/rife
+touch vendor/enhance/rife/__init__.py
+VR=https://raw.githubusercontent.com/HolyWu/vs-rife/3488617283db7c428a83ba4a19382285da698b6a
+fetch $VR/vsrife/IFNet_HDv3_v4_25.py vendor/enhance/rife/IFNet_HDv3_v4_25.py faf8e6ef4579b1049011a8e4139fb4e790ec220bd6ecab75f5acb8d01d1456b2
+fetch $VR/vsrife/warplayer.py vendor/enhance/rife/warplayer.py f17b5aea73676c059b4c155852217c954d5b4eb19cc08eff40b43edd6055ab73
+fetch $VR/LICENSE vendor/enhance/rife/LICENSE aea942caf766b16e6ef0b26e033fa92c0dea3124f6f7ad4a18ca1fb43e010d40
+fetch https://github.com/HolyWu/vs-rife/releases/download/model/flownet_v4.25.pkl vendor/enhance/flownet_v4.25.pkl 6615790efd627772917205db291f51cd392528a157ecbb2ecaeec3bff8eb6de2
+ES=https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0
+fetch $ES/realesr-general-x4v3.pth vendor/enhance/realesr-general-x4v3.pth 8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292
+fetch $ES/realesr-general-wdn-x4v3.pth vendor/enhance/realesr-general-wdn-x4v3.pth 1641f8c4464b9f097c9fdda5589273713f67cf59f3d909e0bd688f0cee269dca
+env -u PYTHONPATH .venv/bin/python -I -c "
+import hashlib
+from huggingface_hub import snapshot_download
+p = snapshot_download('depth-anything/Depth-Anything-V2-Small-hf', revision='5426e4f0f36572d16453bbda7a8389317b1bef99', allow_patterns=['*.json', 'model.safetensors'])
+assert hashlib.sha256(open(p + '/model.safetensors', 'rb').read()).hexdigest() == '3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70'"
 echo "On-device AI ready."
