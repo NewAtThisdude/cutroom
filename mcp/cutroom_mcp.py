@@ -187,9 +187,13 @@ TOOLS = [
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
-    ('export', 'Render the project. format mp4|hevc|prores|gif|mp3|wav|png|srt (png = still at `at`; srt = the captions, or the text clips, as a subtitle file); resolution 720p|1080p|1440p|4K; quality fast|best; bitrate 1|1.6|2.5. '
+    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt '
+               '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption); '
+               'resolution 720p|1080p|1440p|4K|8K (8K needs 16 GB of memory); quality fast|best; bitrate 1|1.6|2.5, or mbps = a custom bitrate in Mbps; '
+               'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
+               'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
                'show=true opens the result in the Mac\'s player when it is done.',
-     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'name': txt, 'loudness': boo, 'at': num, 'show': boo}), 'export'),
+     S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt, 'loudness': boo, 'at': num, 'show': boo}), 'export'),
 ]
 SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]
 CMD = {n: c for n, _, _, c in TOOLS}

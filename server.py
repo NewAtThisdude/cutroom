@@ -1983,10 +1983,13 @@ def fnum(v, lo, hi):
 def clean_plan(p):
     """Validate the client's render plan; media ids resolve to files server-side (the client never sends paths)."""
     W, H = int(fnum(p['w'], 16, 8192)), int(fnum(p['h'], 16, 8192))
+    if W * H > 4096 * 2304 and RAM_GB < 16 and p.get('format') not in SOUND:  # an 8K export of two 4K clips peaked at 5.8 GB (HEVC) to 9.2 GB (x264)
+        raise ValueError(f'an export above 4K needs a Mac with 16 GB of memory (this one has {RAM_GB:.0f} GB): choose 4K')
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')),
            'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
+           'efps': p['efps'] if p.get('efps') in EXPORT_FPS else 0, 'mbps': fnum(p.get('mbps') or 0, 0, 400),  # 0 = the project's fps / bitrate from the preset
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
     def clip(c, timed):
@@ -2309,7 +2312,7 @@ def yuv_ok(p):
     """Nothing in the plan needs RGB: plain cuts, dissolves and fades on the main track only, into a 4:2:0 file. Those stay
     in yuv420p from decode to encode, no base-frame overlay (1 min of 1080p60 from 4K: 245 -> 170 CPU-s, 46 dB vs the RGB path).
     p['rgb'] (selftest only) forces the RGB path."""
-    return bool(p['main']) and not (p.get('rgb') or p['overlay'] or p['frames'] or p.get('fx')) and p.get('format', 'mp4') in ('mp4', 'hevc') and all(
+    return bool(p['main']) and not (p.get('rgb') or p['overlay'] or p['frames'] or p.get('fx')) and p.get('format', 'mp4') in ('mp4', 'hevc', 'av1', 'av1webm', 'webm') and all(
         c['fit'] != 'blur' and c['opacity'] >= 1 and c.get('tr') in (None, 'fade') and not adjust(c) and not rotation(c)
         and not any(c.get(k) for k in ('kf', 'alpha', 'trans', 'key', 'mask', 'mask_seq', 'vig', 'look', 'tone', 'grade', 'lkf', 'beauty', 'blur'))
         for c in p['main'])
@@ -2504,7 +2507,7 @@ def graph(p, td):
         return (all(a.get(x) == b.get(x) for x in ('path', 'speed', 'volume', 'au', 'pitch', 'denoise')) and not a.get('vkf') and not b.get('vkf')
                 and not overlap(a, b) and abs(a['in'] + a['frames'] / F * a['speed'] - b['in']) < 0.5 / F)
 
-    ao = p.get('format') in ('mp3', 'wav')  # sound only: no picture is built (a WAV of 30 s took 13 s and 139 CPU-s doing it)
+    ao = p.get('format') in SOUND  # sound only: no picture is built (a WAV of 30 s took 13 s and 139 CPU-s doing it)
     for k, c in enumerate(p['main']):  # magnetic main track -> one concat stream
         n = c['frames']
         dur = n / F
@@ -2707,7 +2710,10 @@ def graph(p, td):
     return sum(ins, []), ';'.join(fg)
 
 
-FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'gif': '.gif', 'mp3': '.mp3', 'wav': '.wav', 'png': '.png'}
+FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'av1': '.mp4', 'av1webm': '.webm', 'webm': '.webm', 'prores': '.mov', 'gif': '.gif', 'mp3': '.mp3', 'wav': '.wav',
+           'm4a': '.m4a', 'png': '.png'}
+SOUND = ('mp3', 'wav', 'm4a')  # sound-only formats: graph() builds no picture
+EXPORT_FPS = (24, 25, 30, 50, 60, 120)  # an export frame rate apart from the project's (resampled at the end of the graph)
 
 
 def h264_level(W, H, F):
@@ -2721,8 +2727,15 @@ def h264_level(W, H, F):
 
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
-    W, H, F, fmt = p['w'], p['h'], p['fps'], 'mp4' if intermediate else p.get('format', 'mp4')
-    vmap, amap, br = ['-map', '[vout]'], ['-map', '[aout]'], f"{max(2000, round(W * H * F * 0.2 * p.get('rate', 1) / 1000))}k"  # Bitrate: Standard / High / Very high
+    W, H, fmt = p['w'], p['h'], 'mp4' if intermediate else p.get('format', 'mp4')
+    vmap, amap = ['-map', '[vout]'], ['-map', '[aout]']
+    F = p['fps'] if intermediate or fmt in ('gif', 'png', *SOUND) or not p.get('efps') else p['efps']
+    if F != p['fps']:  # the export's own frame rate: output frame k shows the project frame at or before k/F (round=up), so 60 -> 120 doubles each frame
+        fg += f";[vout]fps=fps={F:g}:round=up[vfps]"
+        vmap = ['-map', '[vfps]']
+    mb = p.get('mbps') or 0  # a custom bitrate (Mbps) replaces Standard / High / Very high
+    br = f'{round(mb * 1000)}k' if mb else f"{max(2000, round(W * H * F * 0.2 * p.get('rate', 1) / 1000))}k"
+    kb = lambda k, lo: br if mb else f'{max(lo, round(int(br[:-1]) * k))}k'  # the codecs that need fewer bits for the same look
     if intermediate:
         enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-c:a', 'pcm_s16le']
     elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
@@ -2733,17 +2746,23 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     elif fmt == 'png':  # still frame at p['still']
         fg += ';[aout]anullsink'
         amap, enc = [], ['-ss', f"{p['still']:.6f}", '-frames:v', '1', '-update', '1']  # (ffmpeg takes the frame NEAREST to it: the frame's own time)
-    elif fmt in ('mp3', 'wav'):  # graph() built no picture
-        vmap, enc = [], ['-c:a', 'libmp3lame', '-q:a', '2'] if fmt == 'mp3' else ['-c:a', 'pcm_s16le']
+    elif fmt in SOUND:  # graph() built no picture
+        vmap, enc = [], {'mp3': ['-c:a', 'libmp3lame', '-q:a', '2'], 'wav': ['-c:a', 'pcm_s16le'], 'm4a': ['-c:a', 'aac', '-b:a', '256k']}[fmt]
     elif fmt == 'prores':
         enc = ['-c:v', 'prores_ks', '-profile:v', '2', '-c:a', 'pcm_s16le']
     elif fmt == 'hevc':  # "smaller": about half H.264's bitrate for the same look
-        enc = ['-c:v', 'hevc_videotoolbox', '-b:v', f"{max(1200, round(int(br[:-1]) * 0.55))}k", '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
-    elif p['quality'] == 'best':
-        enc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac', '-b:a', '192k']
+        enc = ['-c:v', 'hevc_videotoolbox', '-b:v', kb(0.55, 1200), '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
+    elif fmt in ('av1', 'av1webm'):  # SVT-AV1 preset 8, VBR to about HEVC's bitrate
+        enc = ['-c:v', 'libsvtav1', '-preset', '8', '-b:v', f"{min(100000, int(kb(0.5, 1000)[:-1]))}k",  # (SVT-AV1 takes at most 100 Mbps)
+               *(['-c:a', 'libopus', '-b:a', '160k'] if fmt == 'av1webm' else ['-c:a', 'aac', '-b:a', '192k'])]
+    elif fmt == 'webm':  # VP9 + Opus: row-mt spreads one frame over the cores, cpu-used 4 = the usual speed / size trade
+        enc = ['-c:v', 'libvpx-vp9', '-b:v', kb(0.6, 1200), '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1', '-c:a', 'libopus', '-b:a', '160k']
+    elif p['quality'] == 'best' or max(W, H) > 4096:  # the media engine's H.264 stops at 4096 px (8K = error -12903): x264 there
+        enc = ['-c:v', 'libx264', '-preset', 'medium' if p['quality'] == 'best' else 'veryfast', *(['-threads', '8'] if max(W, H) > 4096 else []),  # 8K: 12.5 -> 9.2 GB, 8 % slower
+               *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
         enc = ['-c:v', 'h264_videotoolbox', '-b:v', br, '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
-    video = fmt not in ('mp3', 'wav')
+    video = fmt not in SOUND
     pix = (['-pix_fmt', 'yuv422p10le' if fmt == 'prores' else 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
            if video and fmt not in ('gif', 'png') else [])
     rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
@@ -2751,7 +2770,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     gf.write_text(fg)
     return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *ins, '-/filter_complex', str(gf),
              *vmap, *amap, *enc, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
-            + (['-movflags', '+faststart'] if fmt in ('mp4', 'hevc') and not intermediate else []) + [str(out)])
+            + (['-movflags', '+faststart'] if FORMATS[fmt] in ('.mp4', '.m4a') and not intermediate else []) + [str(out)])
 
 
 def plain(what, err, code=0):
@@ -3098,7 +3117,7 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
                 return self.file(CACHE / m[1])
-            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|gif|mp3|wav|png|srt))', path):
+            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|gif|mp3|wav|m4a|png|srt|vtt|txt))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
             if WEB in f.parents and f.is_file():
@@ -3169,13 +3188,13 @@ class App(BaseHTTPRequestHandler):
                 tmp.write_bytes(jpg)
                 tmp.replace(CACHE / f'poster_{m[1]}.jpg')
                 return self.reply({'ok': True})
-            if u.path == '/api/save_subs':  # subtitles (SRT text made by the editor) into the exports folder
+            if u.path == '/api/save_subs':  # subtitles (SRT / WebVTT / timed TXT made by the editor) into the exports folder
                 text = str(body.get('text', ''))
                 if not text.strip() or len(text) > 20 << 20:
                     raise ValueError('nothing to save')
                 stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(body.get('name') or 'subtitles')).strip(' .')[:120] or 'subtitles'
                 EXPORTS.mkdir(parents=True, exist_ok=True)
-                f = unique(EXPORTS / f'{stem}.srt')
+                f = unique(EXPORTS / f"{stem}.{body.get('ext') if body.get('ext') in ('vtt', 'txt') else 'srt'}")
                 f.write_text(text, encoding='utf-8')
                 return self.reply({'file': f.name})
             if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
@@ -3460,6 +3479,55 @@ def selftest():
         assert got == frames, (plan['name'], got, frames)
         return out
 
+    # more formats on the mixed project: AV1 (MP4, WebM), VP9 WebM, AAC M4A; tags, frames, length, picture vs H.264 (PSNR)
+    probe = lambda f: json.loads(sh(['ffprobe', '-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', str(f)]).stdout)
+    ref = render({**plan, 'quality': 'best', 'name': 'ref h264'}, 270)
+    for fmt, vc, ac in (('av1', 'av1', 'aac'), ('av1webm', 'av1', 'opus'), ('webm', 'vp9', 'opus'), ('m4a', None, 'aac')):
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**plan, 'format': fmt, 'name': f'fmt {fmt}'}))
+        assert JOBS['t']['state'] == 'done', (fmt, JOBS['t'])
+        out = EXPORTS / JOBS['t']['file']
+        j = probe(out)
+        st = {s['codec_type']: s for s in j['streams']}
+        assert out.suffix == FORMATS[fmt] and st['audio']['codec_name'] == ac and abs(float(j['format']['duration']) - 9) < 0.1, (fmt, out.name, st['audio']['codec_name'], j['format']['duration'])
+        if not vc:
+            assert set(st) == {'audio'} and int(st['audio']['bit_rate']) > 200e3, (fmt, st['audio'].get('bit_rate'))  # AAC 256k, no picture
+            continue
+        v = st['video']
+        got = (v['codec_name'], v['pix_fmt'], v.get('color_space'), v.get('color_primaries'), v.get('color_transfer'), int(v['nb_read_frames']), v['avg_frame_rate'])
+        assert got == (vc, 'yuv420p', 'bt709', 'bt709', 'bt709', 270, '30/1'), (fmt, got)
+        e = sh(['ffmpeg', '-hide_banner', '-i', str(out), '-i', str(ref), '-lavfi', '[0]settb=1/30,setpts=N[a];[1]settb=1/30,setpts=N[b];[a][b]psnr', '-f', 'null', '-']).stderr  # by frame number: WebM's 1 ms clock rounds 1/30 s down
+        db = float(re.search(r'average:([\d.]+|inf)', e)[1].replace('inf', '99'))
+        assert db > 38, (fmt, 'PSNR vs H.264', db)
+        print(f'{fmt}: {vc}+{ac} yuv420p bt709 270 frames 9 s, {db:.1f} dB vs H.264')
+    # export fps apart from the project: frame k shows the project frame at or before k/fps (60 doubles, 24 drops 1 in 5)
+    small = lambda f: subprocess.run(['ffmpeg', '-v', 'error', '-i', str(f), '-vf', 'scale=48:84,format=gray', '-f', 'rawvideo', '-'], capture_output=True, check=True).stdout
+    n_ = 48 * 84
+    fr_ = lambda raw: [raw[i:i + n_] for i in range(0, len(raw), n_)]
+    d_ = lambda a, b: sum(abs(x - y) for x, y in zip(a, b)) / n_
+    rf = fr_(small(ref))
+    assert sum(d_(rf[k], rf[k + 1]) for k in range(60)) / 60 > 2, 'the first 2 s must move (else the fps check proves nothing)'
+    for e in (60, 24):
+        of = fr_(small(render({**plan, 'quality': 'best', 'efps': e, 'name': f'fps {e}'}, 9 * e)))
+        worst = max(d_(of[k], rf[math.floor(k * 30 / e + 1e-9)]) for k in range(len(of)))
+        assert worst < 1.5, (e, 'fps resample: a frame shows the wrong project frame', worst)
+        print(f'export at {e} fps from a 30 fps project: {9 * e} frames, each the project frame at or before its time (worst {worst:.2f}/255)')
+    out = render({**plan, 'quality': 'best', 'mbps': 0.1, 'name': 'custom bitrate'}, 270)  # mostly still pictures: x264's ABR stays under it, never over
+    kbps = int(next(s for s in probe(out)['streams'] if s['codec_type'] == 'video')['bit_rate']) / 1000
+    with tempfile.TemporaryDirectory() as td_:
+        vt, big = ffmpeg_cmd(clean_plan({**plan, 'mbps': 0.1}), td_, 'x.mp4'), ffmpeg_cmd(clean_plan({**plan, 'w': 7680, 'h': 4320}), td_, 'x.mp4')
+    assert kbps < 130 and vt[vt.index('-b:v') + 1] == '100k', ('custom bitrate 0.1 Mbps', kbps)
+    assert big[big.index('-c:v') + 1] == 'libx264', '8K H.264 must use x264 (VideoToolbox H.264 stops at 4096 px)'
+    ram, globals()['RAM_GB'] = RAM_GB, 8
+    try:
+        clean_plan({**plan, 'w': 7680, 'h': 4320})
+        raise AssertionError('8K on an 8 GB Mac must be refused')
+    except ValueError as e:
+        assert '16 GB' in str(e), e
+    finally:
+        globals()['RAM_GB'] = ram
+    assert clean_plan({**plan, 'w': 3840, 'h': 2160, 'format': 'webm'})['w'] == 3840  # 4K stays allowed
+    print(f'custom bitrate {kbps:.0f} kb/s for 0.1 Mbps; 8K H.264 goes to x264')
     for name, col in (('red', 'red'), ('blue', 'blue')):
         gen('-f', 'lavfi', '-i', f'color=c={col}:s=320x320', '-frames:v', '1', str(HOME / f'{name}.png'))
     R, B = imp('red.png'), imp('blue.png')

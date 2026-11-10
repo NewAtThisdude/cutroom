@@ -88,7 +88,25 @@ const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.a
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
-const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['gif', 'GIF'], ['mp3', 'Audio · MP3'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'], ['srt', 'Subtitles · SRT (captions)']];
+const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'], ['webm', 'WebM · VP9 + Opus'],
+  ['prores', 'MOV · ProRes 422 (for editing)'], ['gif', 'GIF'], ['mp3', 'Audio · MP3'], ['m4a', 'Audio · AAC (M4A)'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'],
+  ['srt', 'Subtitles · SRT (captions)'], ['vtt', 'Subtitles · WebVTT'], ['txt', 'Transcript · TXT with times']];
+const SOUND_FMT = ['mp3', 'm4a', 'wav'], SUB_FMT = ['srt', 'vtt', 'txt'], EXPORT_FPS = [24, 25, 30, 50, 60, 120];
+// platform presets: they fill the dialog's fields, which stay editable. Bitrates (Mbps at 30 / 60 fps) are YouTube's published
+// SDR upload numbers and the usual range for TikTok / Reels (they re-encode everything anyway); vertical ones want a 9:16 canvas
+const EX_PRESETS = {
+  tiktok: { name: 'TikTok', res: '1080p', fmt: 'mp4', mbps: [10, 15], loud: true, tall: true },
+  reels: { name: 'Instagram Reels', res: '1080p', fmt: 'mp4', mbps: [8, 12], loud: true, tall: true },
+  shorts: { name: 'YouTube Shorts', res: '1080p', fmt: 'mp4', mbps: [8, 12], loud: true, tall: true },
+  yt1080: { name: 'YouTube 1080p', res: '1080p', fmt: 'mp4', mbps: [8, 12], loud: true },
+  yt4k: { name: 'YouTube 4K', res: '4K', fmt: 'mp4', mbps: [45, 68], loud: true },
+  master: { name: 'Master (ProRes)', fmt: 'prores', loud: false, master: true },
+};
+function presetFields(k) { // -> the dialog's values for preset k on this project
+  const x = EX_PRESETS[k], hi = P.fps > 30.5, src = sourceSize(), sizes = exportSizes();
+  const res = x.master ? (sizes.filter(([, w, h]) => !src || w * h <= src[0] * src[1]).at(-1) || sizes[1])[0] : x.res;
+  return { res, fmt: x.fmt, q: 'fast', fps: x.master ? 0 : hi ? 60 : 30, mbps: x.mbps ? x.mbps[hi ? 1 : 0] : 0, loud: x.loud };
+}
 const ANIM_T = 0.3; // default text in/out animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror']];
@@ -3739,19 +3757,23 @@ async function loadMedia() {
 }
 // ---------- subtitles: SRT / WebVTT in and out ----------
 const srtTime = t => { const ms = Math.max(0, Math.round(t * 1000)), p2 = (v, n = 2) => String(v).padStart(n, '0'); return `${p2(Math.floor(ms / 3600000))}:${p2(Math.floor(ms / 60000) % 60)}:${p2(Math.floor(ms / 1000) % 60)},${p2(ms % 1000, 3)}`; };
-function toSRT() { // the captions (or, with none, the text clips) as SubRip
+function toSRT(kind = 'srt') { // the captions (or, with none, the text clips) as SubRip, WebVTT or a timed transcript (one "[a --> b] text" per cue)
   const src = (P.captions.length ? P.captions : P.text).filter(c => String(c.text || '').trim()).sort((a, b) => a.start - b.start);
   if (!src.length) throw new Error('no captions or text to save as subtitles');
-  return src.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.start + c.dur)}\n${String(c.text).trim()}\n`).join('\n');
+  const tm = t => kind === 'srt' ? srtTime(t) : srtTime(t).replace(',', '.');
+  if (kind === 'txt') return src.map(c => `[${tm(c.start)} --> ${tm(c.start + c.dur)}] ${String(c.text).trim().replace(/\s*\n\s*/g, ' ')}\n`).join('');
+  return (kind === 'vtt' ? 'WEBVTT\n\n' : '') + src.map((c, i) => `${i + 1}\n${tm(c.start)} --> ${tm(c.start + c.dur)}\n${String(c.text).trim()}\n`).join('\n');
 }
 function parseSubs(txt) { // SubRip or WebVTT cues -> [{start, dur, text}]
   const sec = x => { const m = x.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})$/); return m ? (+m[1] || 0) * 3600 + +m[2] * 60 + +m[3] + +m[4].padEnd(3, '0') / 1000 : NaN; };
   const out = [];
-  for (const blk of String(txt).replace(/\r/g, '').split(/\n\s*\n/)) {
+  const t = String(txt).replace(/\r/g, '');
+  for (const blk of /^\[[^\]\n]*-->[^\]\n]*\]/m.test(t) ? t.split('\n') : t.split(/\n\s*\n/)) { // a timed transcript: every line is a cue
     const lines = blk.split('\n'), i = lines.findIndex(l => l.includes('-->'));
     if (i < 0) continue;
-    const [a, b] = lines[i].split('-->').map(x => sec(x.trim().split(/\s+/)[0]));
-    const text = lines.slice(i + 1).join('\n').replace(/<[^>]*>/g, '').replace(/\{\\[^}]*\}/g, '').trim();
+    const br = lines[i].match(/^\[([^\]]*)\]\s*(.*)$/);
+    const [a, b] = (br ? br[1] : lines[i]).split('-->').map(x => sec(x.trim().split(/\s+/)[0]));
+    const text = [...(br ? [br[2]] : []), ...lines.slice(i + 1)].join('\n').replace(/<[^>]*>/g, '').replace(/\{\\[^}]*\}/g, '').trim();
     if (Number.isFinite(a) && b > a && text) out.push({ start: a, dur: b - a, text });
   }
   return out.sort((x, y) => x.start - y.start);
@@ -3766,10 +3788,10 @@ function importSubs(txt, name = 'subtitles') { // onto the captions track (repla
   toast(`${cues.length} subtitles from ${name} on the captions track`);
   return cues.length;
 }
-async function saveSRT(name) { const r = await api('/api/save_subs', { name: name || P.name, text: toSRT() }); return r.file; }
+async function saveSRT(name, kind = 'srt') { const r = await api('/api/save_subs', { name: name || P.name, text: toSRT(kind), ext: kind }); return r.file; }
 function importFiles(files) {
-  for (const f of [...files].filter(x => /\.(srt|vtt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
-  files = [...files].filter(x => !/\.(srt|vtt)$/i.test(x.name));
+  for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt|txt)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -3785,9 +3807,14 @@ function importFiles(files) {
 }
 
 // ---------- export ----------
-function exportSizes() {
-  const s = Math.min(P.w, P.h);
-  return [['720p', 720], ['1080p', 1080], ['1440p', 1440], ['4K', 2160]].map(([l, short]) => [l, even((P.w * short) / s), even((P.h * short) / s)]);
+function exportSizes() { // by the short side; 8K stops at 8192 px on the long side (the encoders' and the server's limit)
+  const s = Math.min(P.w, P.h), k = 8192 / Math.max(P.w, P.h);
+  return [['720p', 720], ['1080p', 1080], ['1440p', 1440], ['4K', 2160], ['8K', 4320]].map(([l, short]) => [l, even(Math.min((P.w * short) / s, P.w * k)), even(Math.min((P.h * short) / s, P.h * k))]);
+}
+function sourceSize() { // the largest picture on the timeline [w, h] (by area): exporting above it adds pixels, not detail
+  let best = null;
+  for (const c of [...P.main, ...P.overlay]) { const m = M.get(c.media); if (m?.w && m?.h && (!best || m.w * m.h > best[0] * best[1])) best = [m.w, m.h]; }
+  return best;
 }
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
@@ -3872,9 +3899,12 @@ function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
   modal(`<h2>Export</h2>
     <label class="row"><span>File name</span><input id="exName" value="${esc(P.name)}"></label>
+    <label class="row"><span>Preset</span><select id="exPreset"><option value="">None (choose below)</option>${Object.entries(EX_PRESETS).map(([k, x]) => `<option value="${k}">${x.name}</option>`).join('')}</select></label>
     <label class="row"><span>Resolution</span><select id="exRes">${exportSizes().map(([l, w, h], i) => `<option value="${i}"${i === 1 ? ' selected' : ''}>${l} · ${w}×${h}</option>`).join('')}</select></label>
+    <label class="row"><span>Frame rate</span><select id="exFps"><option value="0">Project (${+P.fps.toFixed(3)} fps)</option>${EXPORT_FPS.map(f => `<option value="${f}">${f} fps</option>`).join('')}</select></label>
     <label class="row"><span>Encoder</span><select id="exQ"><option value="fast">Fast (Apple hardware)</option><option value="best">Best quality (x264, slower)</option></select></label>
-    <label class="row"><span>Bitrate</span><select id="exRate"><option value="1">Standard</option><option value="1.6">High</option><option value="2.5">Very high</option></select></label>
+    <label class="row"><span>Bitrate</span><select id="exRate"><option value="1">Standard</option><option value="1.6">High</option><option value="2.5">Very high</option><option value="custom">Custom (Mbps)</option></select></label>
+    <label class="row" id="exMbpsRow" hidden><span>Mbps</span><input id="exMbps" type="number" min="0.5" max="400" step="0.5" value="10"></label>
     <label class="row chk"><span>Loudness −14 LUFS</span><input id="exLoud" type="checkbox"></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
@@ -3882,14 +3912,36 @@ function openExport() {
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
-    const f = $('#exFmt').value, d = mss(total()), fps = +P.fps.toFixed(3);
-    $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f); $('#exLight').disabled = ['mp3', 'wav', 'srt'].includes(f);
-    $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
-    $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
-      prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
-      wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
+    const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f), still = ['gif', 'png'].includes(f);
+    const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
+    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub; $('#exLight').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
+    $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && $('#exQ').value === 'fast'));
+    $('#exMbpsRow').hidden = $('#exRate').value !== 'custom'; $('#exMbps').disabled = $('#exRate').disabled;
+    const rate = !$('#exRate').disabled && $('#exRate').value === 'custom' ? ` · ${+$('#exMbps').value || 0} Mbps` : '', vid = `${fps} fps${rate} · ${d}`;
+    const notes = [];
+    if (!snd && !sub && f !== 'gif' && src && w * h > src[0] * src[1] * 1.01) notes.push(`${rl} is above the largest source (${src[0]}×${src[1]}): it is upscaled, no detail is added.`);
+    if (!snd && !sub && !still && efps && efps > P.fps + 0.01) notes.push(`${efps} fps from a ${+P.fps.toFixed(3)} fps project repeats frames: smooth playback, no new motion.`);
+    if (!snd && !sub && !still && efps && efps < P.fps - 0.01) notes.push(`${efps} fps drops frames of the ${+P.fps.toFixed(3)} fps project.`);
+    if (!snd && !sub && f !== 'gif' && w * h > 4096 * 2304) notes.push(`8K renders slowly and needs a Mac with 16 GB of memory${f === 'mp4' ? '; H.264 at 8K uses x264 (the Mac\'s H.264 engine stops at 4096 px); HEVC there is about twice as fast with half the memory' : ''}.`);
+    const pk = $('#exPreset').value, px = EX_PRESETS[pk];
+    if (px?.tall && P.w >= P.h) notes.push(`${px.name} wants a vertical 9:16 canvas; this project is ${P.w}×${P.h} (change the ratio to fill the screen).`);
+    $('#exHint').textContent = [{ mp4: `MP4 · H.264 + AAC · ${vid}`, hevc: `MP4 · HEVC + AAC, about half the size · ${vid}`, av1: `MP4 · AV1 + AAC, the smallest; slower to make and to play on older devices · ${vid}`,
+      av1webm: `WebM · AV1 + Opus, for the web (Safari plays it on recent Macs and iPhones only) · ${vid}`, webm: `WebM · VP9 + Opus, for the web and Chrome / Firefox; the slowest to make · ${vid}`,
+      prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${fps} fps · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`,
+      mp3: `Audio only · MP3 · ${d}`, m4a: `Audio only · AAC 256 kb/s (M4A) · ${d}`, wav: `Audio only · WAV, uncompressed · ${d}`,
+      srt: `${n} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, vtt: `${n} subtitles as WebVTT, for the web and players`,
+      txt: `${n} lines of text, each with its time ([start --> end] text); it imports back as captions`, png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f], ...notes].join(' ');
   };
-  $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();
+  const preset = () => { // fills the fields; any of them can still be changed afterwards
+    const k = $('#exPreset').value;
+    if (!k) return hint();
+    const v = presetFields(k);
+    $('#exRes').value = String(Math.max(0, exportSizes().findIndex(x => x[0] === v.res))); $('#exFmt').value = v.fmt; $('#exQ').value = v.q; $('#exFps').value = String(v.fps);
+    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').checked = v.loud;
+    hint();
+  };
+  for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
+  $('#exPreset').addEventListener('change', preset); hint();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
 }
 function exportUI(pct, msg, done) { // the dialog when it's open (it can be closed and opened again while rendering) and the Export button
@@ -3909,14 +3961,15 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
   exportUI(0, 'Rendering text layer…', '');
   const tell = msg => { if ($('#modal').hidden || !$('#exStatus')) toast(msg); };
   try {
-    if (fmt === 'srt') {
-      const file = await saveSRT(name);
+    if (SUB_FMT.includes(fmt)) {
+      const file = await saveSRT(name, fmt);
       S.exporting = null;
       exportUI(100, `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
       return;
     }
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').checked, fmt);
-    plan.rate = +$('#exRate').value; plan.light = $('#exLight').checked;
+    plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value;
+    if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await api('/api/export', plan);
     S.exporting.job = job;
     for (;;) {
@@ -5056,7 +5109,7 @@ const REMOTE = {
   async options() {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
-      textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
+      textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), exportPresets: Object.keys(EX_PRESETS), exportFps: EXPORT_FPS, voices: [...$('#ttsVoice').options].map(o => o.value),
       effects: { ...Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), adjust: `${ADJUST.n}: its adj, look and grade colour everything under it` }, sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
@@ -5286,19 +5339,23 @@ const REMOTE = {
     o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
     return { t: r3(S.t), image: o.toDataURL('image/png').split(',')[1] };
   },
-  async export({ format = 'mp4', resolution = '1080p', quality = 'fast', bitrate = 1, name, loudness = false, at, show = false }) {
+  async export(a) {
+    if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
+    const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
+    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false } = a;
+    if (fps && !EXPORT_FPS.includes(+fps)) throw new Error(`fps must be one of ${EXPORT_FPS.join(', ')} (or 0 = the project's)`);
     const sz = exportSizes().find(x => x[0] === resolution);
     if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
     if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
     if (at !== undefined) S.t = +at;
-    if (format === 'srt') { const file = await saveSRT(name); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
+    if (SUB_FMT.includes(format)) { const file = await saveSRT(name, format); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
     S.exporting = true;
     try {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, !!loudness, format);
-      plan.rate = +bitrate || 1;
+      plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
       const jb = await job('/api/export', plan, 'Exporting');
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, shown: !!show };
+      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show };
     } finally { S.exporting = false; }
   },
 };

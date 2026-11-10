@@ -199,6 +199,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .presets.small button { padding: 7px 4px; font-size: 12px; border-radius: 8px; }
 .presets button.on { border-color: var(--accent); color: var(--accent2); background: rgba(139, 92, 246, .1); }
 .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; min-height: 26px; }
+.row[hidden], button[hidden] { display: none; } /* (display: flex / inline-flex beat the hidden attribute: Cancel export showed while idle) */
 .row > span:first-child { width: 100px; flex: none; color: var(--muted); font-size: 12.5px; }
 .row input[type=range] { flex: 1; min-width: 0; }
 .row select, .row input:not([type=range]):not([type=checkbox]):not([type=color]) { flex: 1; min-width: 0; }
