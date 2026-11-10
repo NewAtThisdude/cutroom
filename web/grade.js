@@ -201,10 +201,10 @@ void main() {
     const lutT = gl.createTexture();
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_3D, lutT);
     for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v);
-    Object.assign(GPU, { gl, cv, U, srcT: t2(0, gl.LINEAR), toneT: t2(1, gl.NEAREST), maskT: t2(3, gl.LINEAR), lutT, toneKey: '', lutKey: '', maskKey: null });
+    Object.assign(GPU, { gl, cv, U, pg, srcT: t2(0, gl.LINEAR), toneT: t2(1, gl.NEAREST), maskT: t2(3, gl.LINEAR), lutT, toneKey: '', lutKey: '', maskKey: null });
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; });
+    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; GPU.mb = null; MB.clear(); });
     return gl;
   } catch (e) { GPU.failed = true; console.warn('GPU colour pass off:', e.message); return null; }
 }
@@ -216,7 +216,7 @@ function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, colour
   const { cv, U } = GPU, vw = el.videoWidth || el.naturalWidth || el.width, vh = el.videoHeight || el.naturalHeight || el.height;
   if (!vw || !vh) return null;
   if (cv.width < W || cv.height < H) { cv.width = Math.max(cv.width, W); cv.height = Math.max(cv.height, H); }
-  gl.viewport(0, 0, W, H);
+  gl.useProgram(GPU.pg); gl.viewport(0, 0, W, H); // (the motion-blur mix has its own program)
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GPU.srcT);
   try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { return null; }
   gl.uniform4f(U.crop, src[0] / vw, src[1] / vh, (src[0] + src[2]) / vw, (src[1] + src[3]) / vh);
@@ -242,6 +242,61 @@ function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, colour
   gl.uniform1f(U.beauty, bt); gl.uniform1f(U.bSig, 0.008 * Math.min(src[2], src[3])); gl.uniform2f(U.texel, 1 / vw, 1 / vh);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return [cv, cv.height - H];
+}
+
+// ---------- motion blur: a clip's last N frames, mixed (the export's tmix) ----------
+// Each frame the colour pass draws for a motion-blurred clip is copied into a texture under its frame number (on the GPU,
+// no read-back); the picture shown is the plain mean of frames j-N+1..j, with the clip's first frame standing in for the
+// ones before it (tmix repeats it). Paused, app.js draws the frames before the playhead itself (mbFill, store = true).
+const MB = new Map(), MBN = 9; // clip id -> { sig, f: Map(frame number -> texture) }; at most 9 frames mixed
+function mbProg(gl) {
+  if (GPU.mb) return GPU.mb;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const pg = gl.createProgram(), hs = [...Array(MBN).keys()];
+  gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+  gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; uniform sampler2D ${hs.map(i => `h${i}`).join(', ')}; uniform int n; uniform vec2 size; out vec4 o;
+void main() { vec2 uv = gl_FragCoord.xy / size; vec4 s = texture(h0, uv);
+  ${hs.slice(1).map(i => `if (n > ${i}) s += texture(h${i}, uv);`).join(' ')}
+  o = floor(s * 255.0 / float(n) + 0.5) / 255.0; }`));
+  gl.bindAttribLocation(pg, gl.getAttribLocation(GPU.pg, 'p'), 'p'); // the colour pass's vertex buffer, as it is
+  gl.linkProgram(pg);
+  if (!gl.getProgramParameter(pg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pg));
+  gl.useProgram(pg);
+  hs.forEach(i => gl.uniform1i(gl.getUniformLocation(pg, `h${i}`), 4 + i)); // units 4+: 0-3 belong to the colour pass
+  return (GPU.mb = { pg, n: gl.getUniformLocation(pg, 'n'), size: gl.getUniformLocation(pg, 'size'), free: [] });
+}
+// right after gpuPass drew clip frame j (W x H): keep it, then (unless store) draw the mix -> { gp: [canvas, y], miss: [frames not held] }
+function gpuMotion(id, sig, j, N, W, H, store) {
+  const gl = GPU.gl;
+  if (!gl) return null;
+  let Q;
+  try { Q = mbProg(gl); } catch (e) { console.warn('motion blur preview off:', e.message); return null; }
+  let e = MB.get(id);
+  MB.delete(id); // (most recently drawn last)
+  if (e && e.sig !== sig) { Q.free.push(...e.f.values()); e = null; } // the clip changed: its frames are stale
+  e ??= { sig, f: new Map() };
+  MB.set(id, e);
+  for (const [k, x] of MB) { if (MB.size <= 6) break; Q.free.push(...x.f.values()); MB.delete(k); } // clips no longer shown
+  let t = e.f.get(j);
+  if (!t) {
+    t = Q.free.pop() || gl.createTexture();
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, t);
+    for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v);
+    e.f.set(j, t);
+  }
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, W, H, 0);
+  if (store) return null;
+  for (const [k, x] of e.f) if (k > j || k <= j - N) { e.f.delete(k); Q.free.push(x); }
+  while (Q.free.length > 12) gl.deleteTexture(Q.free.pop());
+  const use = [], miss = [];
+  for (let i = 0; i < N; i++) { const k = Math.max(0, j - i); if (e.f.has(k)) use.push(e.f.get(k)); else miss.push(k); } // (playing, a missed frame is left out)
+  gl.useProgram(Q.pg); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H);
+  use.forEach((x, i) => { gl.activeTexture(gl.TEXTURE4 + i); gl.bindTexture(gl.TEXTURE_2D, x); });
+  gl.uniform1i(Q.n, use.length); gl.uniform2f(Q.size, W, H);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  return { gp: [GPU.cv, GPU.cv.height - H], miss: [...new Set(miss)] };
 }
 
 // ---------- scopes: waveform, histogram, vectorscope of the preview ----------

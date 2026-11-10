@@ -66,7 +66,7 @@ const ICON = {
 };
 
 const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip to black'], ['fadewhite', 'Dip to white'], ['fadegrays', 'Fade to grey'], ['dissolve', 'Noise'],
-  ['pixelize', 'Pixelate'], ['hblur', 'Blur'], ['zoomin', 'Zoom'], ['wipeleft', 'Wipe left'], ['wiperight', 'Wipe right'], ['wipeup', 'Wipe up'], ['wipedown', 'Wipe down'],
+  ['pixelize', 'Pixelate'], ['hblur', 'Blur'], ['zoomin', 'Zoom'], ['whipleft', 'Whip left'], ['whipright', 'Whip right'], ['zoomblur', 'Zoom blur'], ['wipeleft', 'Wipe left'], ['wiperight', 'Wipe right'], ['wipeup', 'Wipe up'], ['wipedown', 'Wipe down'],
   ['smoothleft', 'Soft wipe left'], ['smoothright', 'Soft wipe right'], ['smoothup', 'Soft wipe up'], ['smoothdown', 'Soft wipe down'], ['slideleft', 'Slide left'], ['slideright', 'Slide right'],
   ['slideup', 'Slide up'], ['slidedown', 'Slide down'], ['squeezeh', 'Squeeze'], ['squeezev', 'Squeeze sideways'], ['circleopen', 'Circle open'], ['circleclose', 'Circle close'],
   ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds']];
@@ -119,6 +119,10 @@ const uploads = [], pool = new Map(), imgs = new Map();
 const len = c => c.dur ?? (c.out - c.in) / c.speed;
 const frames = c => Math.max(1, Math.round(len(c) * P.fps));
 const tdur = (c, lane) => (lane === 'main' ? frames(c) / P.fps : len(c)); // main clips snap to whole frames, like the export
+// motion blur: frames mixed (the export's tmix), 0 = off; and the clip's own frame number at clip time lt (0 = its first frame)
+const mbN = c => (c.mb > 0 && M.get(c.media)?.kind === 'video' ? 1 + Math.max(1, Math.round(c.mb * 4)) : 0);
+const clipFrame = (c, lt) => Math.max(0, Math.floor((c.start + lt) * P.fps + 1e-6) - Math.ceil(c.start * P.fps - 1e-6));
+const mbSig = c => JSON.stringify([c.media, c.start, c.in, c.speed, c.adj, c.look, c.grade, c.key, c.mask, c.mkf, c.lkf, c.beauty, c.flip, c.crop, P.fps]); // what the held frames depend on
 function trF(i) { // frames main clip i shares with i+1 in a transition (0 = hard cut); same clamp as server overlap()
   const c = P.main[i], n = P.main[i + 1];
   return c?.tr && n ? clamp(Math.round((+c.tr.d || 0.5) * P.fps), 1, Math.floor(Math.min(frames(c), frames(n)) / 2)) : 0;
@@ -803,6 +807,7 @@ function mediaPanel(c, lane) {
   const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${mss(d)}${m.kind === 'image' ? '' : ` of ${mss(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
   const fmax = Math.max(0.05, Math.min(3, d), c.fadeIn || 0, c.fadeOut || 0), amax = Math.max(0.2, Math.min(3, d));
   let basic = m.kind !== 'image' ? slider('c.speed', 'Speed', Math.log10(c.speed), -1, 2, 0.005, 'x', ' data-log') + (m.hasAudio ? tick('c.pitch', 'Change pitch with speed', c.pitch) : '') : '';
+  if (vid) basic += slider('c.mb', 'Motion blur', c.mb || 0, 0, 1, 0.01, '%', ' title="Each frame mixed with the ones before it: streaks on fast pans and speed-ups"');
   if (c.mc) basic = `<h4>Multicam</h4><div class="seg wrap mcangles">${c.mc.angles.map((A, i) => `<button data-mcangle="${i}" class="${i === c.mc.a ? 'on' : ''}" title="${esc(M.get(A.media)?.name || '')}">${i + 1} · ${esc(short(M.get(A.media)?.name || 'missing', 14))}</button>`).join('')}</div><p class="hint">Press 1–${c.mc.angles.length} while it plays to cut to that angle at that moment (the sound stays on one track).</p>` + basic;
   if (vis) {
     basic += segs('fit', 'Fit', c.fit, [['fit', 'Fit'], ['fill', 'Fill'], ...(lane === 'main' ? [['blur', 'Blur bg']] : [])]);
@@ -1220,8 +1225,16 @@ function layer(n) {
   if (L.width !== cv.width || L.height !== cv.height) { L.width = cv.width; L.height = cv.height; }
   return L;
 }
+// blur transitions (the server's TR_BLUR): a slide or a dissolve, blurred most half way through (sin(pi p)), like the export
+const TR_BLUR = { whipleft: 'slideleft', whipright: 'slideright', zoomblur: 'fade' }, WHIP = 0.04, ZOOMB = 0.25, ZB_K = 8;
 function transition(ctx, A, B, type, p) { // per-pixel math of ffmpeg's xfade, whose progress P runs 1 -> 0
   const W = A.width, H = A.height, P1 = clamp(1 - p, 0, 1);
+  if (TR_BLUR[type]) {
+    transition(ctx, A, B, TR_BLUR[type], p);
+    const s = Math.sin(Math.PI * clamp(p, 0, 1));
+    if (type === 'zoomblur') zblurInPlace(ctx, W, H, ZOOMB * s); else hblurInPlace(ctx, W, H, WHIP * W * s);
+    return;
+  }
   ctx.save();
   if (type === 'fadeblack') { // mix(mix(a,black,ss(.8,1,P)), mix(black,b,ss(.2,1,P)), P) with black = 0
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
@@ -1422,7 +1435,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k) {
     ctx.save();
     if (fgr && rad) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(rad); ctx.translate(-(x + w / 2), -(y + h / 2)); }
     const blendVid = lane === 'overlay' && c.blend && c.blend !== 'normal' && el.tagName === 'VIDEO'; // WebKit draws a <video> as plain source-over, whatever the blend mode: blend from a canvas
-    if (fgr && (c.key || c.mask || a.vig > 0 || graded || (filt && (!CANVAS_FILTER || gpu())) || blendVid)) { // needs pixels: colour + mirror + key + mask + vignette (one GPU pass; by hand without one)
+    if (fgr && (c.key || c.mask || a.vig > 0 || graded || mbN(c) > 1 || (filt && (!CANVAS_FILTER || gpu())) || blendVid)) { // needs pixels: colour + mirror + key + mask + vignette (one GPU pass; by hand without one)
       const oc = offscreen(el, c, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], w, h, filt, lt);
       ctx.filter = 'none'; glowDraw(ctx, c, h, () => ctx.drawImage(oc, x, y, w, h)); ctx.restore();
       return;
@@ -1476,6 +1489,39 @@ function blurInPlace(x, W, H, r) { // the export's boxblur (3 passes), run small
   boxBlurRGB(tx, tw, th, rr);
   x.save(); x.globalCompositeOperation = 'source-atop'; x.imageSmoothingQuality = 'high'; x.drawImage(t, 0, 0, W, H); x.restore();
 }
+function hblurInPlace(x, W, H, sigma) { // the export's gblur sigmaV=0 (sideways only), close to it, on 2D canvases only (3 box passes through
+  // fxGPU matched as well but cost 9 ms a frame in WebKit, the canvas upload and read-back: whips dropped to 45 fps). Halved k times (an
+  // exact 2:1 shrink averages pixel pairs; WebKit's one-step shrink skips pixels), stretched back (bilinear: a tent), variance f²/4 with
+  // f = 2^k; what is still missing comes from a 1/4 1/2 1/4 smear of the narrow copy (variance d²/2)
+  const k = Math.floor(Math.log2(2 * sigma));
+  if (k < 1) return; // under a pixel or so
+  const cv = [scratch(W, H, 'hblurA'), scratch(W, H, 'hblurB')]; // fixed canvases, drawn into their left part (one per width churned the scratch cache)
+  let src = x.canvas, w = W;
+  for (let i = 0; i < k && w > 2; i++) {
+    const nw = Math.round(w / 2), s = cv[i % 2], sx = s.getContext('2d');
+    sx.globalCompositeOperation = 'copy'; sx.imageSmoothingQuality = 'low'; sx.drawImage(src, 0, 0, w, H, 0, 0, nw, H);
+    src = s; w = nw;
+  }
+  const f = W / w, d = Math.sqrt(Math.max(0, 2 * (sigma * sigma - (f * f) / 4))) / f; // the rest, in narrow pixels
+  if (d > 0.05) {
+    const s = src === cv[0] ? cv[1] : cv[0], sx = s.getContext('2d');
+    sx.globalCompositeOperation = 'copy'; sx.globalAlpha = 1; sx.drawImage(src, 0, 0, w, H, 0, 0, w, H);
+    sx.globalCompositeOperation = 'source-over'; sx.globalAlpha = 1 / 3; sx.drawImage(src, 0, 0, w, H, -d, 0, w, H);
+    sx.globalAlpha = 1 / 4; sx.drawImage(src, 0, 0, w, H, d, 0, w, H); sx.globalAlpha = 1;
+    src = s;
+  }
+  x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'copy'; x.imageSmoothingQuality = 'low';
+  x.drawImage(src, 0, 0, w, H, 0, 0, W, H);
+  x.restore();
+}
+function zblurInPlace(x, W, H, z) { // zoom blur, like the server's zoom_blur(): ZB_K copies zoomed 1 .. 1+z about the centre, averaged
+  if (z < 1e-3) return;
+  const C = scratch(W, H, 'zblur'), c = C.getContext('2d');
+  c.globalCompositeOperation = 'copy'; c.drawImage(x.canvas, 0, 0); c.globalCompositeOperation = 'source-over';
+  x.save(); x.setTransform(1, 0, 0, 1, 0, 0);
+  for (let i = 1; i < ZB_K; i++) { const k = 1 + (z * i) / (ZB_K - 1), w = W * k, h = H * k; x.globalAlpha = 1 / (i + 1); x.drawImage(C, (W - w) / 2, (H - h) / 2, w, h); } // a running mean
+  x.restore();
+}
 function colorPass(x, W, H, c, mixK = 1) { // the GPU pass's colour on the CPU (no WebGL2): brightness, contrast, saturate, tone, look, grade LUT, strength
   const a = c.adj || {}, b = a.b ?? 1, k = a.c ?? 1, s = a.s ?? 1, L = lookMatrix(c), T = toneLUT(c), GR = gradeLUT(c), q = v => (v < 0 ? 0 : v > 255 ? 255 : v), r8 = v => Math.round(q(v));
   const M = [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s];
@@ -1528,12 +1574,35 @@ function featherAlpha(x, W, H, sigma) { // maskCanvas's blur(sigma) by hand: 3 b
   x.putImageData(img, 0, 0);
 }
 const keyCv = document.createElement('canvas'), keyCvG = document.createElement('canvas'), hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
-function offscreen(el, c, src, w, h, filt, lt = 0) { // colour + mirror, then chroma key (colorkey's formula) x mask, vignette, like the export
+function mbFill(c, src, w, h, filt, lt, j, miss) { // paused: draw the motion-blurred clip's frames before the playhead into its held ones
+  const key = `${c.id}:${j}:${w}x${h}:${mbSig(c)}`;
+  if (S.mbFill || mbFill.last === key) return; // one at a time (the repaint after it asks again for what is still missing), once per frame (a broken file)
+  mbFill.last = key;
+  const m = M.get(c.media), v = vidFor('mbfill', m);
+  S.mbFill = (async () => {
+    for (const k of miss) {
+      const lk = Math.max(0, lt - (j - k) / P.fps), at = c.in + lk * c.speed; // that frame, at the same point in it as the playhead
+      if (v.readyState < 2 || srcFrame(v, v.currentTime) !== srcFrame(v, at)) v.currentTime = at + 1e-4;
+      const t0 = performance.now();
+      while (performance.now() - t0 < 3000 && !(v.readyState >= 2 && !v.seeking && srcFrame(v, v.currentTime) === srcFrame(v, at))) await sleep(15);
+      await sleep(40); // WebKit hands drawImage the new frame a moment after 'seeked'
+      if (S.playing) break;
+      offscreen(v, c, src, w, h, filt, lk, k);
+    }
+  })().finally(() => { S.mbFill = null; S.dirty = true; });
+}
+function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + mirror, then chroma key (colorkey's formula) x mask, vignette, like the export
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h));
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
-  const sk = strengthAt(c, lt), mk = maskAt(c, lt), gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
+  const sk = strengthAt(c, lt), mk = maskAt(c, lt), N = mbN(c);
+  let gp = gpuPass(el, src, W, H, c, { k: sk, mask: mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
+  if (gp && N > 1) { // motion blur: this frame and the clip's N-1 before it, mixed on the GPU (store: only keep this one, for mbFill)
+    const j = store ?? clipFrame(c, lt), r = gpuMotion(c.id, mbSig(c), j, N, W, H, store != null);
+    if (store != null) return null;
+    if (r) { gp = r.gp; if (r.miss.length && !S.playing) mbFill(c, src, w, h, filt, lt, j, r.miss); }
+  }
   if (gp) { // kept on the GPU: drawn into keyCv (CPU-backed, for the by-hand path below) every graded frame was read back, 10-20 ms
     if (keyCvG.width !== W || keyCvG.height !== H) { keyCvG.width = W; keyCvG.height = H; }
     const g = keyCvG.getContext('2d');
@@ -1639,6 +1708,8 @@ const FX = {
   quake: { n: 'Earthquake', cat: 'camera', d: 1.5, px: shake(0.07, 31, 27) },
   pulse: { n: 'Beat zoom', cat: 'camera', d: 2, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.14 * f.amt * Math.exp(-sinceBeat(f, lt) / 0.12), x: 0, y: 0 }] },
   zoomin: { n: 'Slow zoom', cat: 'camera', d: 3, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.2 * f.amt * clamp(lt / f.dur, 0, 1), x: 0, y: 0 }] },
+  motionblur: { n: 'Motion blur', cat: 'camera', d: 1.5, px: (W, H, u, lt, f) => [{ op: 'hblur', sigma: +Math.max(0.5, 24 * u * f.amt).toFixed(2) }] }, // sideways streaks: pans, passing cars
+  zoomblur: { n: 'Zoom blur', cat: 'camera', d: 1.5, px: (W, H, u, lt, f) => [{ op: 'zblur', s: +clamp(0.12 * f.amt, 0, 2).toFixed(4) }] },
   flash: { n: 'Flash', cat: 'light', d: 0.6, rate: 'frame', layer: (x, W, H, u, lt, f) => { x.fillStyle = `rgba(255,255,255,${Math.min(1, f.amt) * (1 - Math.abs(2 * lt / f.dur - 1)) ** 1.5})`; x.fillRect(0, 0, W, H); } },
   strobe: { n: 'Strobe', cat: 'light', d: 1.5, rate: 'frame', layer: (x, W, H, u, lt, f) => { if (fxFrame(lt) % 4 === 0) { x.fillStyle = `rgba(255,255,255,${0.85 * Math.min(1, f.amt)})`; x.fillRect(0, 0, W, H); } } },
   blink: { n: 'Blink', cat: 'light', d: 1, rate: 'frame', layer: (x, W, H, u, lt, f) => { // eyelids close and open again
@@ -1803,6 +1874,8 @@ function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same 
     }
     if (o.op === 'negate') { x.save(); x.globalCompositeOperation = 'difference'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.restore(); continue; }
     if (o.op === 'matrix') { matrixPass(x, W, H, o.m.map(v => v * (o.k ?? 1))); continue; }
+    if (o.op === 'hblur') { hblurInPlace(x, W, H, o.sigma); continue; }
+    if (o.op === 'zblur') { zblurInPlace(x, W, H, o.s); continue; }
     if (['mirror', 'grid', 'transform', 'glow', 'blur'].includes(o.op)) {
       const C = scratch(W, H, 'fxc'), c = C.getContext('2d');
       c.globalCompositeOperation = 'copy'; c.drawImage(x.canvas, 0, 0); c.globalCompositeOperation = 'source-over';
@@ -3485,6 +3558,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1 }; });
       if (c.mask && c.mkf?.length) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m);
       if (c.adj?.vig > 0) o.vig = await vigPNG(c, m);
+      if (mbN(c)) o.mb = mbN(c);
       const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
       if (c.adj?.blur > 0) o.blur = Math.max(1, Math.min(Math.round(c.adj.blur * 0.03 * short0), Math.floor(short0 / 4) - 1));
       if (c.beauty?.amt > 0) o.beauty = { amt: c.beauty.amt, sigma: 0.008 * short0 };
@@ -4675,7 +4749,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   return o;
 }
-const EDITABLE = new Set(['beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
+const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch', 'ease',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -4695,6 +4769,7 @@ async function waitFrame() { // the preview shows the frame at S.t: every elemen
   }
   await sleep(40); // WebKit hands drawImage the new frame a moment after 'seeked'
   paint();
+  for (let i = 0; S.mbFill && i < 6; i++) { await S.mbFill; paint(); } // motion blur: the frames before this one, drawn (each paint may ask for another clip's)
 }
 const REMOTE = {
   async status() { packMain(); return { project: { id: P.id, name: P.name, w: P.w, h: P.h, fps: P.fps, duration: r3(total()) }, playhead: r3(S.t), playing: S.playing, selected: S.sel, clips: Object.fromEntries(LANES.map(L => [L.key, P[L.key].length])) }; },
@@ -4746,9 +4821,10 @@ const REMOTE = {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
     if (set.fx !== undefined && !FX[set.fx]) throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}`);
-    const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
+    const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt', 'mb'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
     if (nan.length) throw new Error(`${nan.join(', ')} must be numbers`);
     if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
+    if (set.mb != null && !(set.mb >= 0 && set.mb <= 1)) throw new Error('mb (motion blur) must be 0-1');
     if ((set.in ?? c.in) >= (set.out ?? c.out) && c.media) throw new Error('in must be before out');
     if (set.dur !== undefined && !(set.dur > 0)) throw new Error('dur must be above 0');
     if (set.grade !== undefined && set.grade !== null) {
