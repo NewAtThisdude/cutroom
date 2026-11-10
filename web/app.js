@@ -505,7 +505,7 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
 const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
   ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['⌥← ⌥→', 'Nudge the selected clips one frame'],
   ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
-  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
+  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
 function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-close>Close</button></div>`); }
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
@@ -1041,6 +1041,11 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
     }
   }
   for (const [id, v] of voices) if (!seen.has(id)) { for (const n of v.srcs.values()) n?.stop(); v.n.osc?.stop(); v.n.out.disconnect(); voices.delete(id); }
+}
+function warmTempo(c) { // a kept-pitch speed's sound (its own copy of the clip's seconds), from the playhead on
+  if (!c?.media || c.pitch || Math.abs(c.speed - 1) < 1e-6 || !M.get(c.media)?.hasAudio) return;
+  const tempo = +c.speed.toFixed(4), sp = pcmSpan(c, tempo), at = (c.in - sp[0] + Math.max(0, S.t - c.start) * c.speed) / tempo;
+  pcmChunk(c.media, tempo, Math.floor(at / PCM_S), sp);
 }
 function audioWarm() { // paused: the chunks at the playhead, so play starts with sound at once
   for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
@@ -2008,7 +2013,7 @@ const LOOK_ATTRS = ['look', 'adj', 'anim', 'mask', 'key', 'blend', 'crop', 'flip
 function pasteLook() { // ⌥⌘V: the copied clip's filter, adjustments, animations, mask and key (or a text's style) onto the selection
   const src = clipboard?.items[0]?.c;
   if (!src) return toast('Copy a clip first (⌘C), then select others and paste its look (⌥⌘V)');
-  const targets = selection().filter(([c]) => !!c.media === !!src.media && !c.fx && !src.fx);
+  const targets = selection().filter(([c, lane]) => !!c.media === !!src.media && !c.fx && !src.fx && !locked(lane, c));
   if (!targets.length) return toast(src.media ? 'Select video or photo clips to paste onto' : 'Select text clips to paste the style onto');
   change(() => {
     for (const [c, lane] of targets) {
@@ -2024,6 +2029,7 @@ function trimTo(side) { // Q / W: delete what is left / right of the playhead in
   let lane = S.sel?.lane === 'tr' ? 'main' : S.sel?.lane, c = selClip();
   if (!c || !inside(c, lane)) { lane = 'main'; c = P.main.find(x => inside(x, 'main')); }
   if (!c) return toast('Put the playhead over a clip first');
+  if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
   let kept;
   change(() => {
     const b = splitClip(c, lane, lane === 'main' ? snap(t) : t);
@@ -2593,6 +2599,7 @@ function split() {
   let lane = S.sel?.lane === 'tr' ? 'main' : S.sel?.lane, c = selClip();
   if (!c || !inside(c, lane)) { lane = 'main'; c = P.main.find(x => inside(x, 'main')); }
   if (!c) return toast('Put the playhead over a clip to split it');
+  if (locked(lane, c)) return toast('That track is locked: click its lock to edit it'); // (S, Q, W went through on a locked track)
   change(() => { S.sel = { lane, id: splitClip(c, lane, t).id }; });
 }
 function splitClip(c, lane, t) { // cut c at timeline time t; returns the right half, inserted after c
@@ -2620,16 +2627,18 @@ function splitClip(c, lane, t) { // cut c at timeline time t; returns the right 
   }
 }
 function del() {
-  const many = selection();
+  const many = selection().filter(([x, lane]) => !locked(lane, x));
   if (many.length > 1) { change(() => { for (const [x, lane] of many) P[lane] = P[lane].filter(y => y !== x); S.sel = null; S.multi.clear(); }); return toast(`Deleted ${many.length} clips`); }
   const c = selClip();
   if (!c) return;
+  if (locked(S.sel.lane, c)) return toast('That track is locked: click its lock to edit it');
   if (S.sel.lane === 'tr') return change(() => { delete c.tr; });
   change(() => { P[S.sel.lane] = P[S.sel.lane].filter(x => x !== c); S.sel = null; });
 }
 function dup() {
   const c = selClip(), lane = S.sel?.lane;
   if (!c || lane === 'tr') return;
+  if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
   change(() => {
     const b = { ...structuredClone(c), id: hex12() };
     if (lane !== 'main') b.start = c.start + tdur(c, lane);
@@ -3487,15 +3496,39 @@ function snapTo(s, c, lane) { // a moved clip snaps by whichever edge is closer 
   const d = tdur(c, lane), [a, da] = magnet(s, c), [b, db] = magnet(s + d, c);
   return Math.max(0, da <= db ? (da < Infinity ? a : s) : b - d);
 }
-function scrub(e) {
+function scrub(e) { // drag the playhead: you hear it, the timeline scrolls at its edges, and playback carries on after a click
+  const was = S.playing;
   if (S.playing) pause();
   if (!e.target.closest('.ruler') && (S.sel || S.multi.size)) { S.sel = null; S.multi.clear(); renderInspector(); $$('.clip.sel').forEach(x => x.classList.remove('sel')); }
-  const left = $('#tlInner').getBoundingClientRect().left;
-  const set = ev => { S.t = snap(clamp((ev.clientX - left) / S.pps, 0, total())); placePlayhead(); S.dirty = true; };
+  const sc = $('#tlScroll');
+  let last = e, raf = 0;
+  const set = ev => { last = ev; S.t = snap(clamp((ev.clientX - $('#tlInner').getBoundingClientRect().left) / S.pps, 0, total())); placePlayhead(); S.dirty = true; scrubSound(); };
+  const edge = () => { // held near an edge: scroll that way, faster nearer the edge
+    raf = 0;
+    const r = sc.getBoundingClientRect(), d = last.clientX < r.left + 30 ? last.clientX - (r.left + 30) : last.clientX > r.right - 30 ? last.clientX - (r.right - 30) : 0;
+    if (!d) return;
+    sc.scrollLeft += d / 2; set(last); raf = requestAnimationFrame(edge);
+  };
+  const move = ev => { set(ev); if (!raf) raf = requestAnimationFrame(edge); };
   set(e);
-  const up = () => { removeEventListener('pointermove', set); removeEventListener('pointerup', up); if (selClip()) renderInspector(); };
-  addEventListener('pointermove', set);
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); cancelAnimationFrame(raf); if (selClip()) renderInspector(); if (was) play(); };
+  addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+function scrubSound() { // 70 ms of what is under the playhead, at most every 40 ms (Shift+A turns it off)
+  if (!actx || actx.state !== 'running' || store.get('cutroom.scrubSound') === 'off') return;
+  const now = actx.currentTime;
+  if (now - (S.scrubAt || 0) < 0.04) return;
+  S.scrubAt = now;
+  for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
+    if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
+    const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k), g0 = clipGain(c, lane, S.t);
+    if (!p.buf || !g0) continue; // loading: the next move has it
+    const n = actx.createBufferSource(), g = actx.createGain();
+    n.buffer = p.buf; n.playbackRate.value = c.speed; n.connect(g).connect(actx.destination);
+    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(g0, now + 0.005); g.gain.setValueAtTime(g0, now + 0.065); g.gain.linearRampToValueAtTime(0, now + 0.07);
+    n.start(now, Math.max(0, s - k * PCM_S), 0.07 * c.speed);
+  }
 }
 function drag(e, lane, c, el) {
   const before = JSON.stringify(P), x0 = e.clientX, y0 = e.clientY, o = structuredClone(c), m = M.get(c.media);
@@ -3572,7 +3605,7 @@ function fadeDrag(lane, c, el, isIn) { // a fade knob: drag it into the clip to 
 }
 function setZoom(pps, anchorX) {
   const sc = $('#tlScroll'), x = anchorX ?? sc.clientWidth / 2, t = (sc.scrollLeft + x) / S.pps;
-  S.pps = clamp(pps, 8, 600);
+  S.pps = clamp(pps, Math.min(8, (sc.clientWidth - 60) / Math.max(1, total())), 600); // out far enough that a long edit fits
   $('#zoom').value = Math.log2(S.pps / 8);
   renderTimeline();
   sc.scrollLeft = t * S.pps - x;
@@ -3974,6 +4007,7 @@ function wire() {
     if (pending) { undo.push(pending); redo = []; pending = null; }
     renderTimeline();
     const k = e.target.dataset.k;
+    if (k === 'c.speed' || k === 'c.pitch') warmTempo(selClip()); // the new speed's sound is made now, not when Space is pressed
     if (k === 'p.fps') renderAll();
     else if (selClip()?.kf || k === 'c.tr.d' || k === 'c.speed' || e.target.tagName === 'SELECT' || e.target.type === 'checkbox') renderInspector(); // controls that depend on it
   });
@@ -4111,6 +4145,7 @@ function wire() {
     else if (mod && (e.key === '=' || e.key === '+' || e.key === '-')) { e.preventDefault(); const sc = $('#tlScroll'); setZoom(S.pps * (e.key === '-' ? 0.8 : 1.25), clamp(S.t * S.pps - sc.scrollLeft, 0, sc.clientWidth)); }
     else if (!mod && e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); fitTimeline(); }
     else if (!mod && e.key === '?') { e.preventDefault(); shortcuts(); }
+    else if (!mod && e.shiftKey && e.code === 'KeyA') { e.preventDefault(); const off = store.get('cutroom.scrubSound') !== 'off'; store.set('cutroom.scrubSound', off ? 'off' : 'on'); toast(off ? 'Sound while scrubbing: off' : 'Sound while scrubbing: on'); }
     else if (e.altKey && !mod && (key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); nudge(key === 'arrowleft' ? -1 : 1); }
     else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
     else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }

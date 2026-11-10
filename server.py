@@ -98,6 +98,17 @@ def probe(path):
 
 
 def import_file(name, stream, length, background=True, src=None):
+    key = None
+    if src:  # the same file imported again (a card plugged in twice): the item already there, not a second copy and proxy
+        st = Path(src).stat()
+        key = f'{Path(src).name}|{st.st_size}|{int(st.st_mtime)}'
+        for f in MEDIA.glob('*.json'):
+            try:
+                m = json.loads(f.read_text())
+            except ValueError:
+                continue
+            if m.get('srckey') == key and (MEDIA / m.get('file', '')).is_file():
+                return {**m, 'dup': True}
     mid = uuid.uuid4().hex[:12]
     ext = Path(name).suffix.lower()
     ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.bin'
@@ -131,7 +142,7 @@ def import_file(name, stream, length, background=True, src=None):
         raise ValueError('no audio or video in this file')
     if kind == 'image':
         info.update(duration=0, hasAudio=False, hdr=False)
-    m = {'id': mid, 'name': Path(name).name[:200], 'file': dst.name, 'kind': kind, **info, 'ready': kind == 'image', 'added': time.time()}
+    m = {'id': mid, 'name': Path(name).name[:200], 'file': dst.name, 'kind': kind, **info, 'ready': kind == 'image', 'added': time.time(), **({'srckey': key} if key else {})}
     save_meta(m)
     if kind != 'image':
         threading.Thread(target=prepare, args=(m,), daemon=True).start() if background else prepare(m)
@@ -234,8 +245,12 @@ def pcm(m, tempo=1.0, a=0, b=0):
             src = exact_audio(m) if m.get('kind') == 'audio' else MEDIA / m['file']
             tmp = out.with_suffix('.tmp')
             trim = '' if one else f"atrim=start={a}{f':end={b}' if b > a else ''},asetpts=PTS-STARTPTS,"
-            if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}',
-                   '-ac', '2', '-f', 's16le', str(tmp)], low=True).returncode:
+            # a span at another speed is cut from the 1x copy (raw samples: the seek is exact and instant); from the source
+            # it decoded everything before the span first: 1.6 s of silence on a sped-up clip 5 minutes in
+            base = None if one else pcm(m)
+            cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', atempo(tempo)]
+                   if base else ['-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}'])
+            if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp)], low=not base).returncode:
                 tmp.unlink(missing_ok=True)
                 return None
             tmp.replace(out)
@@ -2303,6 +2318,15 @@ def graph(p, td):
 FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'prores': '.mov', 'gif': '.gif', 'mp3': '.mp3', 'wav': '.wav', 'png': '.png'}
 
 
+def h264_level(W, H, F):
+    """The lowest H.264 level whose frame size and macroblock rate fit (1080p60 needs 4.2, 4K60 5.2)."""
+    fs = math.ceil(W / 16) * math.ceil(H / 16)
+    for lv, max_fs, max_mbps in (('4.1', 8192, 245760), ('4.2', 8704, 522240), ('5.1', 36864, 983040), ('5.2', 36864, 2073600)):
+        if fs <= max_fs and fs * F <= max_mbps:
+            return lv
+    return '0'  # past 5.2 (8K): VideoToolbox's own choice (it lists nothing higher)
+
+
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
     W, H, F, fmt = p['w'], p['h'], p['fps'], 'mp4' if intermediate else p.get('format', 'mp4')
@@ -2319,12 +2343,12 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         vmap, enc = [], ['-c:a', 'libmp3lame', '-q:a', '2'] if fmt == 'mp3' else ['-c:a', 'pcm_s16le']
     elif fmt == 'prores':
         enc = ['-c:v', 'prores_ks', '-profile:v', '2', '-c:a', 'pcm_s16le']
-    elif fmt == 'hevc':
-        enc = ['-c:v', 'hevc_videotoolbox', '-b:v', br, '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
+    elif fmt == 'hevc':  # "smaller": about half H.264's bitrate for the same look
+        enc = ['-c:v', 'hevc_videotoolbox', '-b:v', f"{max(1200, round(int(br[:-1]) * 0.55))}k", '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
     elif p['quality'] == 'best':
         enc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac', '-b:a', '192k']
     else:
-        enc = ['-c:v', 'h264_videotoolbox', '-b:v', br, '-profile:v', 'high', '-c:a', 'aac', '-b:a', '192k']
+        enc = ['-c:v', 'h264_videotoolbox', '-b:v', br, '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
     video = fmt not in ('mp3', 'wav')
     pix = (['-pix_fmt', 'yuv422p10le' if fmt == 'prores' else 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
            if video and fmt not in ('gif', 'png') else [])
@@ -3293,6 +3317,7 @@ def main():
         return selftest()
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
         d.mkdir(parents=True, exist_ok=True)
+    ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
     threading.Thread(target=resume_prepare, daemon=True).start()
