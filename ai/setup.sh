@@ -48,4 +48,20 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
+# Voice clone + dubbing: Chatterbox multilingual v3 (Resemble AI, MIT; 23 languages, 2.7 GB) with its S3 tokenizer, and WavLM
+# speaker verification (Microsoft, MIT; 0.4 GB) to measure how close a clone sounds. Pinned revisions; the big files' SHA-256 checked.
+env -u PYTHONPATH .venv/bin/python -I -c "
+import hashlib
+from huggingface_hub import snapshot_download
+for repo, rev, f, sha in [('mlx-community/chatterbox-multilingual-v3', '03565773edd72e949572557597af8063bb49a18a', 'model.safetensors', 'e702f2c441e040bd360e59a86c85d462539759d665e41cfd1938adadd74187a3'),
+                          ('mlx-community/S3TokenizerV2', 'e0c9886f0e1c35ae85b1f27277416fb19fc72bec', 'model.safetensors', '928726bc1f206a613d36b8f49e297eae9c5593a21bf9b92ddfe2c23f85eb92cc'),
+                          ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', 'pytorch_model.bin', 'e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad')]:
+    d = snapshot_download(repo, revision=rev)
+    h = hashlib.sha256()
+    with open(f'{d}/{f}', 'rb') as fh:
+        for b in iter(lambda: fh.read(1 << 24), b''):
+            h.update(b)
+    assert h.hexdigest() == sha, (repo, f, h.hexdigest())
+    print('ok', repo)"
+# Talking photos and lip sync run on the RTX 4090 PC: ai/gpu_setup.sh (Wan 2.2 S2V into its ComfyUI, ~18 GB).
 echo "On-device AI ready."

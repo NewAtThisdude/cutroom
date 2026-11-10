@@ -175,6 +175,19 @@
       <h4>Hook title</h4>
       <button id="btnHooks" class="wide">Suggest hook titles</button>
       <div id="hookList"></div>
+      <h4>Voice clone and dubbing</h4>
+      <p class="hint">Clones the selected clip's voice from about 10 s of its speech, on this Mac (Chatterbox, MIT licence), then dubs the captions into another language in that voice, each sentence fitted to its time. Only clone someone's voice with their consent.</p>
+      <label class="row chk"><span>The speaker agreed to be cloned</span><input id="vcConsent" type="checkbox"></label>
+      <div class="actions"><button id="btnClone">Clone voice from clip</button><button id="btnVcDel" title="Move this cloned voice to the Trash">Delete voice</button></div>
+      <label class="row"><span>Voice</span><select id="vcVoice"></select></label>
+      <label class="row"><span>Dub into</span><select id="dubLang"></select></label>
+      <label class="row"><span>Original voice</span><select id="dubOrig"><option value="duck">Quieter (20%)</option><option value="mute">Muted</option></select></label>
+      <button id="btnDub" class="primary wide">Dub the video</button>
+      <p id="dubStatus" class="muted"></p>
+      <h4>Lip sync and talking photo</h4>
+      <p class="hint">On your RTX 4090 PC (Wan 2.2 S2V), about a minute per 5 s. Lip sync re-animates the selected clip from its first frame to the dub under it. Talking photo makes the selected portrait say the audio under it.</p>
+      <div class="actions"><button id="btnLipSync">Lip sync clip</button><button id="btnTalk">Talking photo</button></div>
+      <p id="lsStatus" class="muted"></p>
       <h4>Animate a picture (AI video)</h4>
       <p class="hint">The selected photo, or the selected video's frame at the playhead, comes to life for about 5 s. Made on your RTX 4090 PC (Wan 2.2), so this Mac stays cool; about 2 minutes, plus a minute the first time.</p>
       <textarea id="aivPrompt" rows="2" placeholder="What happens: the camera slowly pushes in, she turns and smiles" spellcheck="true"></textarea>

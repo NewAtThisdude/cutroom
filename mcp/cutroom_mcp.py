@@ -195,6 +195,21 @@ TOOLS = [
                     'min/max = length range in seconds.',
      S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
     ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working.', S({'to': txt}, ['to']), 'translate_captions'),
+    ('clone_voice', 'Clone the voice in a clip ON THIS MAC (Chatterbox, MIT): ~10 s of its speech from the playhead (or the clip start). consent=true is REQUIRED and means '
+                    'the speaker agreed to be cloned; never set it on your own, ask the user. clip = a clip id (default: the selected one). '
+                    'Returns the voice with similarity (speaker-embedding cosine to the clip) and baseline (the closest stock voice).',
+     S({'clip': txt, 'consent': boo, 'name': txt}, ['consent']), 'clone_voice'),
+    ('voices', 'The cloned voices (id, name, similarity) and the languages dub_video speaks (code: name).', S({}), 'voices'),
+    ('dub_video', 'AI dubbing ON THIS MAC: captions (made first if there are none) -> translated -> spoken in a cloned voice, each sentence fitted to its '
+                  'time (0.8-1.25x; too long = said shorter), as a new audio clip; the clips\' own sound is ducked (original=duck) or muted (mute). '
+                  'lang = a code from voices (es, fr, de, ...); voice = a cloned voice id (default: the one picked in the AI tab). The captions become the translation.',
+     S({'lang': txt, 'voice': txt, 'original': {'type': 'string', 'enum': ['duck', 'mute']}}, ['lang']), 'dub_video'),
+    ('lip_sync', "Lip sync a main-track video clip to the dub under it, on the user's RTX 4090 PC (Wan 2.2 S2V: the shot is re-animated from its first frame "
+                 'to the dubbed speech, ~1 min per 5 s, 30 s at most). The clip switches to the new video (muted: the dub plays the sound). Fails clearly when the PC is off.',
+     S({'clip': txt, 'seed': {'type': 'integer'}}), 'lip_sync'),
+    ('talking_photo', "Make a portrait photo talk, on the user's RTX 4090 PC (Wan 2.2 S2V, ~1 min per 5 s, 30 s at most): image + audio (library ids or names), "
+                      'or clip = a photo clip on the timeline, which speaks the audio clip under it and becomes the talking video. prompt = how they move.',
+     S({'image': txt, 'audio': txt, 'clip': txt, 'prompt': txt, 'at': num, 'seed': {'type': 'integer'}}), 'talking_photo'),
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
     ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
@@ -241,7 +256,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

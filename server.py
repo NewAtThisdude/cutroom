@@ -1579,6 +1579,171 @@ def ai_voice(st, text, voice='af_heart', speed=1.0):
     return {'media': m['id']}
 
 
+# ---------- voice clone + AI dubbing on this Mac (Chatterbox multilingual, Resemble AI, MIT licence) ----------
+CLONE_HUB = 'models--mlx-community--chatterbox-multilingual-v3'
+CLONE_LANGS = {'ar': 'Arabic', 'da': 'Danish', 'de': 'German', 'el': 'Greek', 'en': 'English', 'es': 'Spanish', 'fi': 'Finnish', 'fr': 'French',
+               'he': 'Hebrew', 'hi': 'Hindi', 'it': 'Italian', 'ja': 'Japanese', 'ko': 'Korean', 'ms': 'Malay', 'nl': 'Dutch', 'no': 'Norwegian',
+               'pl': 'Polish', 'pt': 'Portuguese', 'ru': 'Russian', 'sv': 'Swedish', 'sw': 'Swahili', 'tr': 'Turkish', 'zh': 'Chinese'}
+VOICES = HOME / 'voices'
+CONSENT = 'cloning a voice needs the speaker\'s consent: tick "The speaker agreed" first'
+CHECK_LINE = 'This is a short check of how close the cloned voice sounds to the person in the original clip.'
+STOCK = ('af_heart', 'am_michael', 'bf_emma', 'bm_george')  # Kokoro's stock voices: the baseline a clone has to beat
+
+
+def clone_ready():
+    return (AI_BIN / 'python').exists() and (HUB / CLONE_HUB / 'snapshots').exists()
+
+
+def clones():
+    return sorted((json.loads(f.read_text()) for f in VOICES.glob('*.json')), key=lambda v: -v['added']) if VOICES.is_dir() else []
+
+
+def raw16(src, out):  # 16 kHz mono s16 for the speaker embedding
+    if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-ac', '1', '-ar', '16000', '-f', 's16le', str(out)]).returncode:
+        raise RuntimeError('could not read the audio for the voice check')
+    return str(out)
+
+
+def voice_check(ref, td):
+    """How much the clone sounds like the reference: WavLM speaker-embedding cosine of the clone saying CHECK_LINE vs the
+    reference, next to the same line in Kokoro's stock voices (the baseline: a clone that doesn't beat them isn't a clone)."""
+    td = Path(td)
+    ai_worker('clone', timeout=600, text=CHECK_LINE, ref=str(ref), lang='en', out=str(td / 'c.wav'))
+    stock = []
+    for v in STOCK:
+        f = CACHE / f'voicecheck-{v}.wav'
+        if not f.exists():
+            ai_worker('voice', timeout=300, text=CHECK_LINE, voice=v, speed=1.0, out=str(td / f'{v}.wav'))
+            shutil.move(td / f'{v}.wav', f)
+        stock.append(raw16(f, td / f'{v}.raw'))
+    sims = ai_worker('embed', timeout=300, files=[raw16(ref, td / 'r.raw'), raw16(td / 'c.wav', td / 'c.raw'), *stock])['sims']
+    return {'similarity': sims[0], 'baseline': max(sims[1:]), 'stock': dict(zip(STOCK, sims[1:]))}
+
+
+def ai_clone(st, media, t0, t1, name='', consent=False):
+    """A voice from a clip's speech (3-15 s of it; ~10 s clones best) -> voices/<id>.wav, checked against the stock voices."""
+    if consent is not True:
+        raise ValueError(CONSENT)
+    if not clone_ready():
+        raise RuntimeError('the voice-clone model is not installed (README: On-device AI, ai/setup.sh)')
+    m = meta(media)
+    if not m.get('hasAudio'):
+        raise ValueError(f"{m['name']} has no sound to clone a voice from")
+    t0 = fnum(t0, 0, 1e6)
+    t1 = min(fnum(t1, 0, 1e6), t0 + 15)
+    if t1 - t0 < 3:
+        raise ValueError('pick at least 3 s of speech to clone (about 10 s works best)')
+    VOICES.mkdir(parents=True, exist_ok=True)
+    vid = uuid.uuid4().hex[:12]
+    ref = VOICES / f'{vid}.wav'
+    r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.3f}', '-t', f'{t1 - t0:.3f}', '-i', str(MEDIA / m['file']), '-vn', '-ac', '1', '-ar', '24000',
+            '-af', 'loudnorm=I=-20:TP=-2', str(ref)])
+    if r.returncode or not ref.exists():
+        raise RuntimeError(plain('Reading the speech', r.stderr, r.returncode))
+    st['progress'] = 0.1
+    try:
+        with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+            chk = voice_check(ref, td)
+    except Exception:
+        ref.unlink(missing_ok=True)
+        raise
+    info = {'id': vid, 'name': ' '.join(str(name).split())[:40] or Path(m['name']).stem[:40], 'media': media, 't0': round(t0, 3), 't1': round(t1, 3),
+            'added': time.time(), 'consent': True, **chk}
+    (VOICES / f'{vid}.json').write_text(json.dumps(info))
+    return {'voice': info}
+
+
+def trim_silence(pcm, sr, floor=0.02, pad=0.04):  # s16 mono array -> the part between the first and last sound (+ pad)
+    win = int(sr * 0.02)
+    loud = [i for i in range(0, len(pcm) - win, win) if max(map(abs, pcm[i:i + win])) > floor * 32767]
+    if not loud:
+        return pcm
+    return pcm[max(0, loud[0] - int(pad * sr)):min(len(pcm), loud[-1] + win + int(pad * sr))]
+
+
+def read_wav(f):  # mono s16
+    import wave
+    with wave.open(str(f)) as w:
+        return w.getframerate(), array('h', w.readframes(w.getnframes()))
+
+
+def write_wav(f, sr, pcm):
+    import wave
+    with wave.open(str(f), 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+
+
+def ai_dub(st, voice, lang, items):
+    """Captions -> speech in the cloned voice, sentence by sentence, each fitted to its slot: atempo 0.8-1.25x; longer than
+    that -> the local model says it in fewer words (up to twice; the best-fitting take is kept); still long -> it runs up to 0.1 s
+    into the next slot, which then starts that much later (1.5x at most if it must); shorter -> a pause after it. items = [{s, e, text}] timeline seconds. -> one WAV from timeline 0
+    (so any clip's span of it is the same offset into the file: lip sync reads it that way)."""
+    if not re.fullmatch(r'[a-f0-9]{12}', str(voice)) or not (VOICES / f'{voice}.wav').exists():
+        raise ValueError('clone a voice first (Clone voice from clip)')
+    if lang not in CLONE_LANGS:
+        raise ValueError(f"dubbing languages: {', '.join(CLONE_LANGS.values())}")
+    its = sorted(({'s': fnum(i.get('s'), 0, 1e6), 'e': fnum(i.get('e'), 0, 1e6), 'text': ' '.join(str(i.get('text', '')).split())[:600]}
+                  for i in items if str(i.get('text', '')).strip()), key=lambda i: i['s'])[:400]
+    if not its:
+        raise ValueError('nothing to dub (make captions first)')
+    ref, sr, out = str(VOICES / f'{voice}.wav'), 24000, []
+    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        free = 0.0  # where the previous sentence's speech ended (+ a breath): a sentence never starts before it
+        for k, it in enumerate(its):
+            start = max(it['s'], free)  # at most ~0.13 s late (the one before may run 0.1 s into this slot)
+            nxt = its[k + 1]['s'] if k + 1 < len(its) else it['e'] + 0.5
+            slot, room = max(0.2, it['e'] - start), max(0.2, min(nxt + 0.1, it['e'] + 0.15) - start)  # never more than 0.15 s past its slot
+            text, shorter, takes = it['text'], False, []
+            for attempt in range(3):
+                f = Path(td) / f'{k}.{attempt}.wav'
+                ai_worker('clone', timeout=600, text=text, ref=ref, lang=lang, out=str(f))
+                gsr, pcm = read_wav(f)
+                pcm = trim_silence(pcm, gsr)
+                d = len(pcm) / gsr
+                takes.append((d, gsr, pcm, text, attempt > 0))
+                if d / min(slot, room) <= 1.25 or attempt == 2:
+                    break
+                n = len(text.split())  # too long even at 1.25x: the local model says it in fewer words (twice at most; models undershoot cuts)
+                try:
+                    ans = llm('You shorten dubbing lines. Reply with JSON only.',
+                              f'Say this {CLONE_LANGS[lang]} sentence in at most {max(2, int(n * 1.15 * min(slot, room) / d))} words, same meaning, '
+                              f'natural spoken {CLONE_LANGS[lang]}. Return {{"t": "..."}}.\n' + text)
+                    t2 = str(ans.get('t', '')).strip() if isinstance(ans, dict) else ''
+                except (RuntimeError, OSError, ValueError):
+                    t2 = ''
+                if not t2 or len(t2) >= len(text):
+                    break
+                text = t2
+            # the take that fits best: running long costs more than a pause after it (a cut that undershot leaves one)
+            d, gsr, pcm, text, shorter = min(takes, key=lambda x: 3 * max(0, x[0] / min(slot, room) - 1.25) + max(0, 0.8 - x[0] / slot))
+            tempo = min(max(d / slot, 0.8), 1.25)
+            if d / tempo > room:  # it would still run into the next sentence: as fast as it must (1.5x at most)
+                tempo = min(d / room, 1.5)
+            g, src = Path(td) / f'{k}.fit.wav', Path(td) / f'{k}.trim.wav'
+            write_wav(src, gsr, pcm)
+            r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-af', f'atempo={tempo:.5f}' if abs(tempo - 1) > 1e-3 else 'anull', '-ar', str(sr), '-ac', '1', str(g)])
+            if r.returncode:
+                raise RuntimeError(plain('Fitting the dub', r.stderr, r.returncode))
+            _, fit = read_wav(g)
+            out.append({'s': round(it['s'], 3), 'e': round(it['e'], 3), 'a': round(start, 3), 'b': round(start + len(fit) / sr, 3), 'tempo': round(tempo, 3),
+                        'text': text, **({'shorter': True} if shorter else {}), 'pcm': fit, 'at': int(round(start * sr))})
+            free = start + len(fit) / sr + 0.03
+            st['progress'] = 0.97 * (k + 1) / len(its)
+        total = max(o['at'] + len(o['pcm']) for o in out) + int(0.3 * sr)
+        mix = array('h', bytes(2 * total))
+        for o in out:
+            pcm, at = o.pop('pcm'), o.pop('at')
+            mix[at:at + len(pcm)] = pcm
+        f = Path(td) / 'dub.wav'
+        write_wav(f, sr, mix)
+        with open(f, 'rb') as fh:
+            md = import_file(f'AI dub - {CLONE_LANGS[lang]}.wav', fh, f.stat().st_size, background=False)
+    return {'media': md['id'], 'start': 0, 'items': out}
+
+
 # ---------- AI video: image to video on the RTX 4090 PC (ComfyUI + Wan 2.2 14B, Lightning 4 steps), through an SSH tunnel ----------
 GPU_HOST = os.environ.get('CUTROOM_GPU_HOST', 'win4090')  # ~/.ssh/config alias; ComfyUI listens on that PC's 127.0.0.1:8188 only
 COMFY = {'proc': None, 'port': int(os.environ.get('CUTROOM_COMFY_PORT', '18188')), 'log': [], 'lock': threading.Lock()}
@@ -1720,6 +1885,126 @@ def ai_video_(st, image, prompt, ratio='9:16', quality='fast', seed=None):
         st['progress'] = 0.1 + 0.85 * min(1, (time.time() - t0) / (240 if quality == 'best' else 150))
         time.sleep(3)
     raise RuntimeError('the GPU PC took over 30 minutes')
+
+
+S2V = {'unet': 'wan2.2_s2v_14B_fp8_scaled.safetensors', 'audio': 'wav2vec2_large_english_fp16.safetensors',
+       'lora': 'wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors'}  # ai/gpu_setup.sh puts them in ComfyUI's models
+TALK_PROMPT = 'a person talking naturally to the camera, lips moving clearly with the speech, subtle head movement, natural blinking, steady camera'
+
+
+def gpu_reachable():
+    """Fail fast, in a plain sentence, when the 4090 PC is off or asleep (instead of a 4-minute wait for ComfyUI)."""
+    try:
+        comfy('/system_stats', timeout=3)
+        return
+    except OSError:
+        pass
+    try:
+        ok = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=6', GPU_HOST, 'exit'], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    if not ok:
+        raise RuntimeError(f'the RTX 4090 PC ({GPU_HOST}) is not reachable, so this runs nowhere right now: turn it on or wake it, then try again')
+
+
+def comfy_upload(f, name):
+    boundary = uuid.uuid4().hex
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode() + \
+        Path(f).read_bytes() + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{COMFY['port']}/upload/image", data=body, headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read()).get('name', name)
+
+
+def ai_talk(st, image, audio, a0=0.0, a1=None, prompt='', seed=None):
+    try:
+        return ai_talk_(st, image, audio, a0, a1, prompt, seed)
+    finally:
+        comfy_idle()
+
+
+def ai_talk_(st, image, audio, a0, a1, prompt, seed):
+    """A picture speaks the audio's [a0, a1] (up to 30 s): Wan 2.2 S2V 14B (Apache-2.0) + lightx2v 4 steps on the 4090 PC,
+    in 77-frame (4.8 s) pieces chained by WanSoundImageToVideoExtend, 16 fps, ~480p, the audio muxed in -> a library item.
+    Its first frame comes out washed out (the reference frame): it is replaced by the second.
+    Talking photos use a portrait; lip sync uses the clip's first frame (the shot is re-animated to the dubbed speech)."""
+    im, au = meta(image), meta(audio)
+    if im['kind'] != 'image':
+        raise ValueError('start from a picture of a face')
+    if not au.get('hasAudio'):
+        raise ValueError(f"{au['name']} has no sound")
+    a0 = fnum(a0, 0, 1e6)
+    a1 = min(fnum(a1 if a1 is not None else au.get('duration') or 0, 0, 1e6), au.get('duration') or 1e6, a0 + 30)
+    if a1 - a0 < 0.5:
+        raise ValueError('the speech is too short (at least half a second)')
+    dur, seed = a1 - a0, int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 2 ** 31
+    ar = (im.get('w') or 1) / (im.get('h') or 1)
+    w, h = (832, 480) if ar > 1.2 else (480, 832) if ar < 0.83 else (640, 640)
+    gpu_reachable()
+    comfy_up(st)
+    have = comfy('/object_info/UNETLoader')['UNETLoader']['input']['required']['unet_name'][0]
+    if S2V['unet'] not in have:
+        raise RuntimeError('the talking-photo model is not on the GPU PC yet: run ai/gpu_setup.sh on this Mac (18 GB, once)')
+    name = f'cutroom_{uuid.uuid4().hex[:8]}'
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        wav = Path(td) / f'{name}.wav'
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{a0:.3f}', '-t', f'{dur:.3f}', '-i', str(MEDIA / au['file']), '-vn', '-ac', '1', '-ar', '16000', str(wav)])
+        if r.returncode:
+            raise RuntimeError(plain('Reading the speech', r.stderr, r.returncode))
+        img_name, wav_name = comfy_upload(MEDIA / im['file'], name + Path(im['file']).suffix), comfy_upload(wav, wav.name)
+    text = ' '.join(str(prompt).split())[:800] or TALK_PROMPT
+    wf = {'1': {'class_type': 'UNETLoader', 'inputs': {'unet_name': S2V['unet'], 'weight_dtype': 'default'}},
+          '2': {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': ['1', 0], 'lora_name': S2V['lora'], 'strength_model': 1.0}},
+          '3': {'class_type': 'ModelSamplingSD3', 'inputs': {'model': ['2', 0], 'shift': 8.0}},
+          '4': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', 'type': 'wan'}},
+          '5': {'class_type': 'CLIPTextEncode', 'inputs': {'text': text, 'clip': ['4', 0]}},
+          '6': {'class_type': 'CLIPTextEncode', 'inputs': {'text': VIDEO_NEG, 'clip': ['4', 0]}},
+          '7': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'wan_2.1_vae.safetensors'}},
+          '8': {'class_type': 'AudioEncoderLoader', 'inputs': {'audio_encoder_name': S2V['audio']}},
+          '9': {'class_type': 'LoadAudio', 'inputs': {'audio': wav_name}},
+          '10': {'class_type': 'AudioEncoderEncode', 'inputs': {'audio_encoder': ['8', 0], 'audio': ['9', 0]}},
+          '11': {'class_type': 'LoadImage', 'inputs': {'image': img_name}},
+          '20': {'class_type': 'WanSoundImageToVideo', 'inputs': {'positive': ['5', 0], 'negative': ['6', 0], 'vae': ['7', 0], 'width': w, 'height': h, 'length': 77,
+                                                                  'batch_size': 1, 'audio_encoder_output': ['10', 0], 'ref_image': ['11', 0]}}}
+    ks = lambda i, src: {'class_type': 'KSampler', 'inputs': {'model': ['3', 0], 'seed': seed + i, 'steps': 4, 'cfg': 1.0, 'sampler_name': 'uni_pc', 'scheduler': 'simple',
+                                                              'positive': [src, 0], 'negative': [src, 1], 'latent_image': [src, 2], 'denoise': 1.0}}
+    # (the full model at 20 steps, cfg 4.5, took 6x as long, 524 vs 86 s for 8 s, and its mouth followed the speech no better)
+    wf['21'], lat, n = ks(0, '20'), ['21', 0], max(1, math.ceil(dur * 16 / 77 - 0.05))
+    for i in range(1, n):  # each piece continues from the frames so far (their last latents are its motion reference)
+        e, k, c = str(30 + 3 * i), str(31 + 3 * i), str(32 + 3 * i)
+        wf[e] = {'class_type': 'WanSoundImageToVideoExtend', 'inputs': {'positive': ['5', 0], 'negative': ['6', 0], 'vae': ['7', 0], 'length': 77, 'video_latent': lat,
+                                                                        'audio_encoder_output': ['10', 0], 'ref_image': ['11', 0]}}
+        wf[k] = ks(i, e)
+        wf[c] = {'class_type': 'LatentConcat', 'inputs': {'samples1': lat, 'samples2': [k, 0], 'dim': 't'}}
+        lat = [c, 0]
+    wf['90'] = {'class_type': 'VAEDecode', 'inputs': {'samples': lat, 'vae': ['7', 0]}}
+    wf['91'] = {'class_type': 'VHS_VideoCombine', 'inputs': {'images': ['90', 0], 'audio': ['9', 0], 'frame_rate': 16, 'loop_count': 0, 'filename_prefix': name,
+                                                             'format': 'video/h264-mp4', 'pingpong': False, 'save_output': True}}
+    try:
+        pid = comfy('/prompt', {'prompt': wf, 'client_id': 'cutroom'})['prompt_id']
+    except urllib.error.HTTPError as e:  # a workflow ComfyUI rejects says why in its body
+        raise RuntimeError('the GPU PC refused the talking-photo job: ' + e.read().decode(errors='replace')[-300:]) from None
+    t0, guess = time.time(), 60 + 50 * n
+    while time.time() - t0 < 3600:
+        h_ = comfy(f'/history/{pid}')
+        if pid in h_:
+            outs = [g for o in h_[pid].get('outputs', {}).values() for g in o.get('gifs', []) + o.get('videos', [])]
+            if not outs:
+                raise RuntimeError('the GPU PC made no video: ' + json.dumps(h_[pid].get('status', {}).get('messages', []))[-300:])
+            o = outs[0]
+            vid = comfy(f"/view?filename={urllib.parse.quote(o['filename'])}&subfolder={urllib.parse.quote(o.get('subfolder', ''))}&type={o.get('type', 'output')}", raw=True, timeout=300)
+            with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+                f, g = Path(td) / 'v.mp4', Path(td) / 'talk.mp4'
+                f.write_bytes(vid)
+                r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(f), '-t', f'{dur:.3f}', '-vf', 'trim=start_frame=1,setpts=PTS-STARTPTS,tpad=start=1:start_mode=clone', '-c:v', 'libx264', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', str(g)])
+                if r.returncode:
+                    raise RuntimeError(plain('Saving the talking video', r.stderr, r.returncode))
+                with open(g, 'rb') as fh:
+                    cut = import_file(f"Talking - {Path(im['name']).stem[:40]}.mp4", fh, g.stat().st_size, background=False)
+            return {'media': cut['id'], 'seed': seed}
+        st['progress'] = 0.1 + 0.85 * min(1, (time.time() - t0) / guess)
+        time.sleep(3)
+    raise RuntimeError('the GPU PC took over an hour')
 
 
 def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
@@ -3377,7 +3662,7 @@ class App(BaseHTTPRequestHandler):
                     threading.Timer(5, remote_reoffer, (m,)).start()
                 return self.reply(m)
             if path == '/api/ai/status':
-                return self.reply({**ai_status(), 'voices': ai_voices()})
+                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS})
             if path == '/api/remote/status':
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
@@ -3591,6 +3876,18 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(translate, body.get('texts') or [], body.get('to', ''))})
             if u.path == '/api/ai/hooks':
                 return self.reply({'job': run_job(hooks, body.get('ranges') or [], body.get('lang', 'auto'))})
+            if u.path == '/api/ai/clone':
+                return self.reply({'job': run_job(ai_clone, body['media'], body.get('t0', 0), body.get('t1', 0), body.get('name', ''), body.get('consent') is True)})
+            if u.path == '/api/ai/dub':
+                return self.reply({'job': run_job(ai_dub, str(body.get('voice', '')), str(body.get('lang', '')), list(body.get('items') or []))})
+            if u.path == '/api/ai/talk':
+                return self.reply({'job': run_job(ai_talk, str(body.get('image', '')), str(body.get('audio', '')), body.get('a0', 0), body.get('a1'),
+                                                  body.get('prompt', ''), body.get('seed'))})
+            if m := re.fullmatch(r'/api/ai/clones/([a-f0-9]{12})/trash', u.path):  # reversible, like media: voices/<id>.* -> trash/voices
+                (HOME / 'trash' / 'voices').mkdir(parents=True, exist_ok=True)
+                for f in VOICES.glob(f'{m[1]}.*'):
+                    shutil.move(f, HOME / 'trash' / 'voices' / f.name)
+                return self.reply({'clones': clones()})
             if u.path == '/api/transcript':  # timestamped sentences (the MCP transcript tool)
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
@@ -3757,6 +4054,30 @@ def selftest():
     MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports', 'cache'))
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
         d.mkdir(parents=True)
+    # dub time-fitting on a stub voice (0.1 s of tone per character, 0.3 s of silence around it) and a stub model that halves a
+    # line: speech starts on its slot (<= 0.15 s late), ends <= 0.15 s past it, never overlaps the next, atempo 0.8-1.25x
+    keep = {k: globals()[k] for k in ('ai_worker', 'llm', 'VOICES')}
+    try:
+        globals()['VOICES'] = HOME / 'voices'
+        VOICES.mkdir()
+        write_wav(VOICES / 'aaaaaaaaaaaa.wav', 24000, array('h', bytes(4800)))
+
+        def fake_worker(op, timeout=0, **q):
+            tone = [int(8000 * math.sin(i * 0.1)) for i in range(int(2400 * len(q['text'])))]
+            write_wav(q['out'], 24000, array('h', [0] * 7200 + tone + [0] * 7200))
+        globals()['ai_worker'] = fake_worker
+        globals()['llm'] = lambda system, user, **k: {'t': user.split('\n')[-1][:len(user.split('\n')[-1]) // 2]}
+        items = [{'s': 0.5, 'e': 2.5, 'text': 'x' * 20}, {'s': 2.5, 'e': 4.0, 'text': 'y' * 40}, {'s': 4.6, 'e': 8.0, 'text': 'z' * 12}]
+        r = ai_dub({}, 'aaaaaaaaaaaa', 'es', items)
+        it = r['items']
+        assert all(0 <= x['a'] - x['s'] <= 0.15 and x['b'] <= x['e'] + 0.15 and 0.8 <= x['tempo'] <= 1.25 for x in it), it
+        assert it[1].get('shorter') and all(it[i]['b'] <= it[i + 1]['a'] for i in range(len(it) - 1)), it
+        _, dw = read_wav(MEDIA / meta(r['media'])['file'])  # (not "pcm": that is a function the selftest uses later)
+        loud = [i / 24000 for i in range(0, len(dw), 240) if abs(dw[i]) > 500 or abs(dw[min(len(dw) - 1, i + 8)]) > 500]
+        assert loud and all(any(x['a'] - 0.01 <= t <= x['b'] + 0.01 for x in it) for t in loud), 'dub sound outside its sentences'
+        print(f"dub time-fit ok (tempos {[x['tempo'] for x in it]})")
+    finally:
+        globals().update(keep)
 
     def gen(*a):
         subprocess.run(['ffmpeg', '-v', 'error', '-y', *a], check=True)

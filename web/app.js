@@ -4507,6 +4507,19 @@ function wire() {
     catch (e) { $('#aiVoiceStatus').textContent = e.message; }
     finally { b.disabled = false; }
   });
+  const aiBtn = (id, out, run) => $(id).addEventListener('click', async () => { // a long AI step: its button waits, its status line says how it went
+    const b = $(id); b.disabled = true;
+    try { await run(); } catch (e) { $(out).textContent = e.message; } finally { b.disabled = false; }
+  });
+  aiBtn('#btnClone', '#dubStatus', () => cloneVoice({ consent: $('#vcConsent').checked }));
+  aiBtn('#btnDub', '#dubStatus', () => dubVideo({ lang: $('#dubLang').value, original: $('#dubOrig').value }));
+  aiBtn('#btnLipSync', '#lsStatus', () => lipSync());
+  aiBtn('#btnTalk', '#lsStatus', () => talkingPhoto());
+  $('#btnVcDel').addEventListener('click', async () => {
+    const o = $('#vcVoice').selectedOptions[0];
+    if (!o?.value || !confirm(`Move the cloned voice "${o.textContent.split(' · ')[0]}" to the Trash?`)) return;
+    await api(`/api/ai/clones/${o.value}/trash`, {}); await loadAI(); $('#dubStatus').textContent = 'Voice moved to the Trash.';
+  });
   $('#btnTemplates').addEventListener('click', openTemplates);
   $('#heads').addEventListener('click', e => {
     const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
@@ -5199,14 +5212,14 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
   if (st) st.innerHTML = made.map(x => `<button class="wide" data-openproj="${x.id}" title="${esc(x.reason)}">${esc(x.name)} · ${fmtDur(x.end - x.start)}</button>`).join('');
   return { shorts: made };
 }
-async function translateCaptions({ to }) { // whole sentences are translated, then re-cut into captions over the same time (fragments translate badly)
+async function translateCaptions({ to, say = sayIn('#trStatus') }) { // whole sentences are translated, then re-cut into captions over the same time (fragments translate badly)
   if (!P.captions.length) throw new Error('no captions to translate yet (generate captions first)');
   const groups = [];
   for (const c of [...P.captions].sort((x, y) => x.start - y.start)) {
     const g = groups.at(-1), prev = g?.at(-1);
     if (prev && c.start - (prev.start + prev.dur) < 0.6 && !/[.?!…。？！]$/.test(prev.text.trim())) g.push(c); else groups.push([c]);
   }
-  const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating', sayIn('#trStatus'));
+  const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating', say);
   const per = Math.max(1, +$('#capWords').value || 3), CJK = '぀-ヿ㐀-鿿＀-￯　-〿';
   change(() => {
     const out = [];
@@ -5227,7 +5240,78 @@ async function translateCaptions({ to }) { // whole sentences are translated, th
     P.captions = out;
     if (S.sel?.lane === 'captions') S.sel = null;
   });
-  return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text) };
+  return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text),
+    items: groups.map((g, i) => ({ s: g[0].start, e: g.at(-1).start + g.at(-1).dur, text: String(texts[i] || '') })) }; // the sentences' times (dubbing fits speech to them)
+}
+// ---------- voice clone + dubbing on this Mac (Chatterbox); lip sync and talking photos on the 4090 PC (Wan 2.2 S2V) ----------
+const CONSENT = 'cloning a voice needs the speaker\'s consent: tick "The speaker agreed to be cloned" first';
+function pickClip(clip) { // the clip a tool works on: given, selected, or the main clip under the playhead
+  packMain();
+  if (clip) return cfind(clip)[0];
+  return S.sel && S.sel.lane !== 'tr' && selClip()?.media ? selClip() : P.main.find(x => S.t >= x.start && S.t < x.start + tdur(x, 'main'));
+}
+async function cloneVoice({ clip, consent, name, say = sayIn('#dubStatus') } = {}) {
+  if (consent !== true) throw new Error(CONSENT);
+  const c = pickClip(clip), m = c && M.get(c.media);
+  if (!m?.hasAudio) throw new Error('select a clip with the speech to clone');
+  const here = S.t >= c.start && S.t < c.start + len(c) ? c.in + (S.t - c.start) * c.speed : c.in, t0 = c.out - here >= 3 ? here : c.in; // from the playhead when 3 s of the clip are left
+  const { voice } = await job('/api/ai/clone', { media: m.id, t0, t1: Math.min(c.out, t0 + 15), name, consent: true }, 'Cloning the voice', say);
+  await loadAI();
+  $('#vcVoice').value = voice.id;
+  say(`Cloned "${voice.name}": similarity ${voice.similarity.toFixed(2)} to the clip (closest stock voice ${voice.baseline.toFixed(2)}).`);
+  return voice;
+}
+async function dubVideo({ lang = 'es', voice, original = 'duck', say = sayIn('#dubStatus') } = {}) {
+  const langs = G.ai?.dubLangs || {}, name = langs[lang];
+  if (!name) throw new Error(`lang must be one of ${Object.keys(langs).join(', ') || '(the voice-clone model is not installed)'}`);
+  voice ||= $('#vcVoice').value;
+  if (!voice) throw new Error('clone a voice first (Clone voice from clip)');
+  if (!P.captions.length) { say('Transcribing first…'); await autoCaptions(true); }
+  if (!P.captions.length) throw new Error('no speech to dub (no captions came out)');
+  const tr = await translateCaptions({ to: name, say });
+  const j = await job('/api/ai/dub', { voice, lang, items: tr.items }, 'Dubbing', say);
+  await loadMedia();
+  addMedia(j.media, 'audio', j.start);
+  const [d] = cfind(S.sel.id), end = Math.max(...j.items.map(i => i.b));
+  change(() => {
+    d.dub = lang;
+    for (const c of [...P.main, ...P.overlay]) if (M.get(c.media)?.hasAudio && c.start < end && c.start + len(c) > j.start) c.volume = original === 'mute' ? 0 : Math.min(c.volume, 0.2);
+  });
+  say(`Dubbed ${j.items.length} sentences into ${name}${j.items.some(i => i.shorter) ? ' (some said shorter to fit)' : ''}.`);
+  return { media: j.media, clip: brief(d, 'audio'), sentences: j.items };
+}
+function swapInVideo(c, id, keep) { // the clip shows the new video from its start; the timeline's audio keeps the sound
+  const m = M.get(id);
+  change(() => Object.assign(c, { media: id, in: 0, out: Math.min(m.duration, keep), speed: 1, volume: 0 }));
+  return brief(...cfind(c.id));
+}
+async function lipSync({ clip, seed, say = sayIn('#lsStatus') } = {}) {
+  const c = pickClip(clip), m = c && M.get(c.media);
+  if (m?.kind !== 'video' || cfind(c.id)[1] !== 'main') throw new Error('select a video clip on the main track (the face to re-sync)');
+  const d = P.audio.find(a => a.dub && a.start <= c.start + 0.05 && a.start + len(a) > c.start);
+  if (!d) throw new Error('dub the video first: lip sync follows the dub under the clip');
+  const st = await api('/api/still', { media: m.id, t: c.in }), a0 = d.in + (c.start - d.start) * d.speed;
+  const j = await job('/api/ai/talk', { image: st.id, audio: d.media, a0, a1: a0 + len(c) * d.speed, seed }, 'Lip-syncing on the GPU PC', say);
+  await loadMedia();
+  say('Lip-synced: the clip now plays the re-animated shot.');
+  return { media: j.media, seed: j.seed, clip: swapInVideo(c, j.media, len(c)) };
+}
+async function talkingPhoto({ image, audio, clip, prompt, at = S.t, seed, say = sayIn('#lsStatus') } = {}) {
+  let c = null, img = image ? mediaBy(image) : null, au = audio ? mediaBy(audio) : null, a0 = 0, a1;
+  if (!img) { c = pickClip(clip); img = c && M.get(c.media); }
+  if (img?.kind !== 'image') throw new Error('select a portrait photo to make it talk (a generated one works)');
+  if (!au) { // the audio under the photo, from where they overlap to the end of that audio clip (30 s at most)
+    const t = c ? c.start : at, a = P.audio.find(x => x.start < t + (c ? len(c) : 1) && x.start + len(x) > t);
+    if (!a) throw new Error('put the speech on the audio track under the photo (a voiceover, a dub, a recording), or pass audio');
+    au = M.get(a.media); a0 = a.in + Math.max(0, t - a.start) * a.speed; a1 = a.out;
+  }
+  if (!au?.hasAudio) throw new Error('that audio has no sound');
+  const j = await job('/api/ai/talk', { image: img.id, audio: au.id, a0, a1, prompt, seed }, 'Making it talk on the GPU PC', say);
+  await loadMedia();
+  say('Done: the photo talks.');
+  if (c) return { media: j.media, seed: j.seed, clip: swapInVideo(c, j.media, M.get(j.media).duration) };
+  addMedia(j.media, 'main', at);
+  return { media: j.media, seed: j.seed, clip: brief(...cfind(S.sel.id)) };
 }
 const MUSIC_STYLES = { // prompts MusicGen does well with
   'Upbeat pop': 'upbeat pop, bright synths, punchy drums, catchy, 120 bpm', 'Lo-fi': 'lo-fi hip hop beat, mellow piano, soft drums, relaxed, 85 bpm',
@@ -5260,6 +5344,13 @@ async function loadAI() { // fill the AI tab from what is installed
   for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
   if (!s.llm) $('#scStatus').textContent = 'Without the local model, shots are kept in the order they were filmed.';
   if (!s.llm) $('#hlStatus').textContent = 'Needs Ollama with a model (ollama pull qwen3.5:9b).';
+  const keep = $('#vcVoice').value;
+  $('#vcVoice').innerHTML = (s.clones || []).map(v => `<option value="${v.id}">${esc(v.name)} · ${v.similarity.toFixed(2)} similar</option>`).join('') || '<option value="">None yet</option>';
+  if ((s.clones || []).some(v => v.id === keep)) $('#vcVoice').value = keep;
+  if (!$('#dubLang').options.length) $('#dubLang').innerHTML = Object.entries(s.dubLangs || {}).map(([k, n]) => `<option value="${k}"${k === 'es' ? ' selected' : ''}>${n}</option>`).join('');
+  for (const id of ['btnClone', 'btnDub']) $(`#${id}`).disabled = !s.cloneReady;
+  $('#btnVcDel').disabled = !s.clones?.length;
+  if (!s.cloneReady) $('#dubStatus').textContent = 'The voice-clone model is not installed (README: On-device AI).';
   G.ai = s; $('#btnMusic').disabled = !s.music;
   if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
   renderMediaList();
@@ -5590,6 +5681,11 @@ const REMOTE = {
   async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
   async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
+  async clone_voice(args) { return cloneVoice(args); },
+  async dub_video(args) { await loadAI(); return dubVideo(args); },
+  async lip_sync(args) { return lipSync(args); },
+  async talking_photo(args) { return talkingPhoto(args); },
+  async voices() { await loadAI(); return { clones: G.ai.clones, dubLangs: G.ai.dubLangs }; },
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
   async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
   async relink_media({ missing, media }) { const to = mediaBy(media).id; if (!LANES.some(L => P[L.key].some(c => c.media === missing))) throw new Error(`no clip uses media ${missing}`); return { relinked: relink(missing, to) }; },
