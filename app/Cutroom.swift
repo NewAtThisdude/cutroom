@@ -2,6 +2,7 @@
 // If nothing answers on the port it starts ~/cutroom/server.py (again, if it ever dies), and on quit it stops only a server it started.
 // Build: app/build.sh -> ~/Applications/Cutroom.app
 import AppKit
+import PhotosUI
 import UniformTypeIdentifiers
 import WebKit
 
@@ -55,6 +56,16 @@ func expand(_ urls: [URL]) -> [URL] {
     }
 }
 
+/// Saves a picker file (gone once its callback returns) under the asset's own name: the library shows that name.
+func photoCopy(_ url: URL, name: String?, into dir: URL) -> URL? {
+    var n = (name ?? "").replacingOccurrences(of: "/", with: "-")
+    if n.isEmpty { n = url.deletingPathExtension().lastPathComponent }
+    if (n as NSString).pathExtension.isEmpty { n += "." + url.pathExtension }
+    let dst = dir.appendingPathComponent(n)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return (try? FileManager.default.copyItem(at: url, to: dst)) != nil ? dst : nil // a clone on APFS
+}
+
 /// The editor's web view. Files dropped on it are imported by path (an APFS clone: instant, and no extra disk) instead of
 /// being uploaded through the page, which copied every byte (25 GB of 4K clips took 25 GB more). Subtitles and LUTs still
 /// go to the page.
@@ -71,7 +82,7 @@ final class EditorView: WKWebView {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler, PHPickerViewControllerDelegate {
     var window: NSWindow!
     var web: WKWebView!
     var server: Process? // set only when this app started the server
@@ -90,6 +101,7 @@ final class EditorView: WKWebView {
         cfg.preferences.inactiveSchedulingPolicy = .none // keep running behind other windows: Claude Code drives it (MCP), exports run
         cfg.userContentController.add(self, name: "busy") // at rest the app may nap like any other: it used to hold App Nap off for good
         cfg.userContentController.add(self, name: "pick")
+        cfg.userContentController.add(self, name: "photos") // the Media panel's Photos button
         let view = EditorView(frame: .zero, configuration: cfg)
         view.onFiles = { [weak self] urls in Task { _ = await self?.importPaths(urls, fallback: false) } }
         web = view
@@ -113,6 +125,7 @@ final class EditorView: WKWebView {
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "pick" { pickLibrary = true; return }
+        if message.name == "photos" { pickPhotos(); return }
         guard message.name == "busy" else { return }
         if (message.body as? Bool) == true {
             if activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Cutroom is working") }
@@ -202,6 +215,62 @@ final class EditorView: WKWebView {
         let js = String(decoding: (try? JSONSerialization.data(withJSONObject: [msg])) ?? Data("[\"\"]".utf8), as: UTF8.self)
         _ = try? await web.evaluateJavaScript("loadMedia().then(() => toast(\(js)[0]))")
         return failed
+    }
+
+    // MARK: Import from Photos. The system picker runs out of process, so the app needs no Photos library permission.
+
+    func pickPhotos() {
+        guard window.attachedSheet == nil else { return }
+        var cfg = PHPickerConfiguration()
+        cfg.filter = .any(of: [.videos, .images])
+        cfg.selectionLimit = 0 // any number
+        cfg.preferredAssetRepresentationMode = .current // the original (HEVC, HDR, HEIC) as it is: no transcode to H.264/JPEG
+        let picker = PHPickerViewController(configuration: cfg)
+        picker.delegate = self
+        let sheet = NSWindow(contentViewController: picker)
+        sheet.setContentSize(NSSize(width: min(1100, window.frame.width - 80), height: min(720, window.frame.height - 80)))
+        window.beginSheet(sheet)
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        if let s = picker.view.window { window.endSheet(s) }
+        guard !results.isEmpty else { return }
+        Task { await importPhotos(results) }
+    }
+
+    func toast(_ msg: String) async {
+        let js = String(decoding: (try? JSONSerialization.data(withJSONObject: [msg])) ?? Data("[\"\"]".utf8), as: UTF8.self)
+        _ = try? await web.evaluateJavaScript("toast(\(js)[0])")
+    }
+
+    /// Copies each picked item out of the picker (it deletes its file when the callback returns; iCloud-only originals download
+    /// first), then imports them by path like the Import button. Each item gets its own folder: two IMG_0001.HEIC can't collide.
+    func importPhotos(_ results: [PHPickerResult]) async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("CutroomPhotos-" + UUID().uuidString)
+        var files: [URL] = []
+        for (i, r) in results.enumerated() {
+            let p = r.itemProvider
+            guard let type = p.registeredTypeIdentifiers.compactMap({ UTType($0) }).first(where: { $0.conforms(to: .movie) || $0.conforms(to: .image) }) else { continue }
+            let into = dir.appendingPathComponent(String(i)), name = p.suggestedName
+            let label = "Getting \(i + 1) of \(results.count) from Photos…"
+            var ticker: Task<Void, Never>?
+            let got: URL? = await withCheckedContinuation { c in
+                let prog = p.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in
+                    c.resume(returning: url.flatMap { photoCopy($0, name: name, into: into) })
+                }
+                ticker = Task { @MainActor in // the toast lives 3.5 s; an iCloud download can take minutes
+                    while !Task.isCancelled {
+                        let f = prog.fractionCompleted
+                        await self.toast(f > 0 && f < 1 ? "\(label) \(Int(f * 100))%" : label)
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                }
+            }
+            ticker?.cancel()
+            if let got { files.append(got) }
+        }
+        if files.isEmpty { await toast("Photos gave no files to import") } else { _ = await importPaths(files, fallback: false) }
+        try? FileManager.default.removeItem(at: dir) // the library holds its own clones now
     }
 
     // The page saves 400 ms after an edit: quitting inside that window lost the edit. Let it save first (2 s at most).

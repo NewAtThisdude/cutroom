@@ -156,6 +156,11 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .import { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; border: 1.5px dashed var(--line2); border-radius: var(--r); cursor: pointer; font-weight: 650; color: var(--accent2); background: rgba(139, 92, 246, .05); }
 .import:hover { border-color: var(--accent); background: rgba(139, 92, 246, .1); }
 .import input { display: none; }
+.import[hidden] { display: none; }
+.imports { display: flex; gap: 8px; }
+.imports .import { flex: 1; }
+.imports button.import { flex: 0 0 auto; }
+.imports button.import:hover { border-color: var(--accent); background: rgba(139, 92, 246, .1); }
 
 /* media library: cards */
 .media-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
