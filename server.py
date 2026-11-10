@@ -33,11 +33,14 @@ CTYPES = {'.mov': 'video/mp4', '.m4v': 'video/mp4', '.m4a': 'audio/mp4', '.js': 
 XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', 'wipedown', 'slideleft', 'slideright', 'slideup', 'slidedown',
           'circleopen', 'circleclose', 'zoomin', 'dissolve', 'pixelize', 'radial', 'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
           'vertopen', 'horzopen', 'diagtl', 'diagbr', 'hlslice', 'vuslice', 'hblur', 'fadegrays', 'squeezeh', 'squeezev',
-          'whipleft', 'whipright', 'zoomblur'}  # the UI mirrors these per pixel
+          'whipleft', 'whipright', 'zoomblur', 'whipup', 'whipdown', 'blurfade'}  # the UI mirrors these per pixel
 # blur transitions: an xfade underneath, then a blur that peaks half way (sin(pi p)) on those frames; the UI's transition() does the same
-TR_BLUR = {'whipleft': 'slideleft', 'whipright': 'slideright', 'zoomblur': 'fade'}
-WHIP, ZOOMB, ZB_K = 0.04, 0.25, 8  # whip: horizontal sigma, x frame width; zoom blur: the last copy's extra zoom; copies averaged
-FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur', 'lut'}  # video effects: the UI expands each one into these
+TR_BLUR = {'whipleft': 'slideleft', 'whipright': 'slideright', 'zoomblur': 'fade', 'whipup': 'slideup', 'whipdown': 'slidedown', 'blurfade': 'fade'}
+WHIP, ZOOMB, ZB_K, BLURF = 0.04, 0.25, 8, 0.02  # whip: sigma, x frame width (height for up/down); zoom blur: the last copy's extra zoom; copies averaged; blur dissolve: boxblur radius x height
+FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur', 'lut', 'expr'}  # video effects: the UI expands each one into these
+# per-pixel expressions from web/fxpack.js (geq: transitions on their stacked overlap frames, effects on the composite): only these names, numbers and + - * / ( ) , ;
+XNAMES = {'X', 'Y', 'W', 'H', 'N', 'PI', 'LF', 'if', 'ifnot', 'lt', 'lte', 'gt', 'gte', 'eq', 'between', 'min', 'max', 'abs', 'floor', 'ceil', 'trunc',
+          'sqrt', 'exp', 'log', 'sin', 'cos', 'tan', 'atan', 'atan2', 'mod', 'pow', 'clip', 'hypot', 'r', 'g', 'b', 'st', 'ld', 'TO'}
 BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expressions; x = backdrop, y = clip, 0..255 (ffmpeg's own blend modes differ)
     'multiply': 'x*y/255', 'screen': 'x+y-x*y/255', 'darken': 'min(x,y)', 'lighten': 'max(x,y)',
     'overlay': 'if(lte(x,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
@@ -2950,7 +2953,9 @@ def clean_plan(p):
         if not Path(k['path']).is_file():  # said up front by name, not as ffmpeg's error halfway through the render
             raise ValueError(f"{m.get('name') or 'A clip'} has lost its file (moved or deleted): relink it from the clip's panel")
         tr = c.get('tr') or {}
-        k['tr'] = tr.get('type') if tr.get('type') in XFADES else None
+        k['tr'] = tr.get('type') if tr.get('type') in XFADES else 'custom' if tr.get('expr') else None
+        if k['tr'] == 'custom':  # an effects-pack transition (web/fxpack.js): geq's red, green, blue, checked token by token
+            k['trx'] = {c: xexpr((tr['expr'] or {}).get(c)) for c in ('er', 'eg', 'eb')}
         k['trf'] = int(fnum(tr.get('frames', 0), 0, 1e6)) if k['tr'] else 0
         k.update(hdr=bool(m.get('hdr')) and not m.get('alpha'), rot=int(m.get('rot', 0)), alpha=bool(m.get('alpha')),  # VT decode would drop alpha
                  trc=m.get('hdr') and (m.get('trc') or sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
@@ -3085,6 +3090,8 @@ def fx_op(f, W, H):
         k['z'], k['x'], k['y'] = per('z', 1, 8), per('x', -W, W), per('y', -H, H)
     elif op == 'glow':
         k['sigma'], k['amt'] = fnum(f['sigma'], 0.1, 500), fnum(f['amt'], 0, 2)
+    elif op == 'expr':  # an effects-pack effect: geq's red, green and blue expressions (web/fxpack.js), LF = frames since its start
+        k.update({'e' + c: xexpr(f.get('e' + c)) for c in 'rgb'})  # er, eg, eb (a and b are its frames)
     elif op == 'lut':  # an adjustment layer: its whole colour stage as one 33^3 table (uint16, like a clip's grade)
         k['lut'] = base64.b64decode(str(f.get('lut') or ''))
         if len(k['lut']) != 33 ** 3 * 3 * 2:
@@ -3097,6 +3104,21 @@ def fx_op(f, W, H):
 
 def even(x):
     return int(round(x / 2)) * 2
+
+
+def xexpr(s):
+    """A per-pixel expression from the page (web/fxpack.js compiles each one): nothing but XNAMES, numbers, + - * / ( ) ,
+    and ; (st/ld sequences), so it can't leave its quoted filter option, and every parenthesis closes."""
+    s, depth = str(s or ''), 0
+    if not s or len(s) > 100000:
+        raise ValueError('expression missing or too long')
+    for t in re.findall(r'[A-Za-z_]\w*|\d+\.?\d*|\.\d+|\S', s):
+        depth += (t == '(') - (t == ')')
+        if depth < 0 or not (t in XNAMES or t[0].isdigit() or t[0] == '.' and len(t) > 1 or t in '+-*/(),;'):
+            raise ValueError(f'bad expression token {t!r}')
+    if depth:
+        raise ValueError('unbalanced expression')
+    return s
 
 
 def zoom_blur(tag, z, W, H):
@@ -3599,13 +3621,23 @@ def graph(p, td):
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]' if o else f'[{ca}][a{k}]concat=n=2:v=0:a=1[ma{k}]')
             elif o:
                 tr, n0 = prev['tr'], n - o  # the overlap is main-stream frames n0 .. n-1; its frame i is at p = i/o
-                fg.append(f"[{cv}][v{k}]xfade=transition={TR_BLUR.get(tr, tr)}:duration={o / F:.6f}:offset={n0 / F:.6f}[mv{k}]")
+                if tr == 'custom':  # the overlap's frames of a over b, through geq (threaded, with lets), between the frames before and after
+                    ex = ':'.join(f"{c}='" + re.sub(r'\bTO\b', str(o), prev['trx']['e' + c]) + "'" for c in 'rgb')
+                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0}[cp{k}];[cb{k}]trim=start_frame={n0},setpts=PTS-STARTPTS[oa{k}];'
+                              f'[v{k}]split[va{k}][vb{k}];[va{k}]trim=end_frame={o},setpts=PTS-STARTPTS[ob{k}];[vb{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
+                              f'[oa{k}][ob{k}]vstack,geq=interpolation=nearest:{ex},crop={W}:{H}:0:0[ov{k}];[cp{k}][ov{k}][cq{k}]concat=n=3:v=1:a=0[mv{k}]')
+                else:
+                    fg.append(f"[{cv}][v{k}]xfade=transition={TR_BLUR.get(tr, tr)}:duration={o / F:.6f}:offset={n0 / F:.6f}[mv{k}]")
                 if tr == 'zoomblur':
                     zb = zoom_blur(f'zt{k}', f'{ZOOMB}*sin(PI*n/{o})', W, H)
                     fg.append(f'[mv{k}]split[zt{k}m][zt{k}c];[zt{k}c]trim=start_frame={n0}:end_frame={n},{zb}[zt{k}e];[zt{k}m][zt{k}e]overlay=eof_action=pass:format=gbrp[mb{k}]')
-                elif tr in TR_BLUR:  # whips: a sideways blur per frame
-                    fg.append(f'[mv{k}]' + ','.join(f"gblur=sigma={WHIP * W * math.sin(math.pi * i / o):.3f}:sigmaV=0:steps=3:enable='eq(n,{n0 + i})'" for i in range(1, o)) + f'[mb{k}]'
-                              if o > 1 else f'[mv{k}]null[mb{k}]')
+                elif tr in TR_BLUR:  # whips: a sideways (or up-down) blur per frame; blur dissolve: a 3-pass box blur
+                    sw = lambda i: math.sin(math.pi * i / o)
+                    one = (lambda i: f"boxblur={round(BLURF * H * sw(i))}:3:enable='eq(n,{n0 + i})'" if round(BLURF * H * sw(i)) >= 1 else '') if tr == 'blurfade' else \
+                        (lambda i: f"gblur=sigma=0:sigmaV={WHIP * H * sw(i):.3f}:steps=3:enable='eq(n,{n0 + i})'") if tr in ('whipup', 'whipdown') else \
+                        (lambda i: f"gblur=sigma={WHIP * W * sw(i):.3f}:sigmaV=0:steps=3:enable='eq(n,{n0 + i})'")
+                    steps = [x for x in map(one, range(1, o)) if x]
+                    fg.append(f'[mv{k}]' + ','.join(steps) + f'[mb{k}]' if steps else f'[mv{k}]null[mb{k}]')
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]')
             else:
                 fg.append(f'[{cv}][{ca}][v{k}][a{k}]concat=n=2:v=1:a=1[mv{k}][ma{k}]')
@@ -3687,9 +3719,12 @@ def graph(p, td):
             zb = zoom_blur(tag, f"{f['s']:.4f}", W, H)
             fg.append(f"[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]trim=start_frame={f['a']}:end_frame={f['b']},{zb}[{tag}e];"
                       f"[{tag}a][{tag}e]overlay=eof_action=pass:format=gbrp[{nxt}]")
-        elif op in ('matrix', 'negate', 'blur', 'hblur', 'pixelize', 'rgbshift', 'lut'):  # filters with timeline support: in place, on those frames only
+        elif op in ('matrix', 'negate', 'blur', 'hblur', 'pixelize', 'rgbshift', 'lut', 'expr'):  # filters with timeline support: in place, on those frames only
             pre = ''
-            if op == 'lut':  # adjustment layer: the composite (gbrp, lut3d takes it as is) through the table
+            if op == 'expr':  # nearest pixels, like the preview's texel fetches; LF = this frame's number since the effect began
+                lf = f"(N-{f['a']})"
+                body = 'geq=interpolation=nearest:' + ':'.join(c + "='" + re.sub(r'\bLF\b', lf, f['e' + c]) + "'" for c in 'rgb') + (":a='alpha(X,Y)'" if A else '') + ':'
+            elif op == 'lut':  # adjustment layer: the composite (gbrp, lut3d takes it as is) through the table
                 body = grade({'grade': f['lut']}, '') + ':'
             elif op == 'matrix':
                 names, m, kk = ('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb'), f['m'], f['k']
@@ -4002,7 +4037,7 @@ def export(job, p):
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
                              'frames': frames, 'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1},
                              'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']},
-                             'bt709': True, 'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
+                             'bt709': True, 'tr': part[-1]['tr'], 'trf': part[-1]['trf'], 'trx': part[-1].get('trx')}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
             if p.get('loud') is True and p.get('format') not in ('png', 'gif'):
@@ -4765,6 +4800,14 @@ def selftest():
         out = render({**tplan, 'name': tr, 'duration': 3, 'main': [still_clip(R, {'type': tr, 'frames': 30}), still_clip(B)]}, 90)
         assert pixel(out, 0.5, 135, 240)[0] > 180 and pixel(out, 2.5, 135, 240)[2] > 180, tr
     print(f'transitions ok: {len(XFADES) - 6} more types render from a to b')
+    tx = {'er': 'if(lt(Y,H/2),r(X,clip(Y,0,H/2-1)+H/2),0)', 'eg': 'if(lt(Y,H/2),clip(N/TO*200,0,255),0)', 'eb': 'if(lt(Y,H/2),b(X,clip(Y,0,H/2-1)),0)'}  # b's red, a ramp, a's blue
+    for chunk in (24, 1):
+        CHUNK = chunk
+        out = render({**tplan, 'name': 'tr-custom', 'duration': 3, 'main': [still_clip(B, {'type': 'cube', 'frames': 30, 'expr': tx}), still_clip(R)]}, 90)
+        c0, c1, c2 = pixel(out, 0.5, 135, 240), pixel(out, 1.5, 135, 240), pixel(out, 2.5, 135, 240)  # blue, then (b's red, 100, a's blue) half way, then red
+        assert c0[2] > 200 and c0[0] < 50 and c1[0] > 200 and abs(c1[1] - 100) <= 10 and c1[2] > 200 and c2[0] > 200 and c2[2] < 50, ('effects-pack transition (geq on a over b)', chunk, c0, c1, c2)
+    CHUNK = 24
+    print('transitions ok: an effects-pack transition (geq on the stacked overlap), single graph and chunked')
     # plain cuts stay 4:2:0 (yuv_ok): BT.709 and untagged HD video (passed through), untagged SD (BT.601), a letterboxed
     # clip and an RGB picture, a dissolve, fades and a background past the main track give the RGB path's picture,
     # BT.709-tagged; Light (VideoToolbox decode) the same again
@@ -4806,6 +4849,16 @@ def selftest():
     assert abs(g1[0] - g1[1]) < 8 and 40 < g1[0] < 70 and 18 < g2[0] < 40, ('matrix with a per-frame factor', g1, g2)
     assert at(42, 145)[0] > 200 and at(42, 145)[2] > 200 and at(47, 145)[0] < 50, ('red moved 20 px right, then back', at(42, 145), at(47, 145))
     assert at(55, 160)[0] > 200 and at(55, 190)[2] > 200, ('zoom 1.5 about the centre, moved 40 px right: the seam goes to x = 135 + 40', at(55, 160), at(55, 190))
+    out = render({**tplan, 'name': 'fx-expr', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'expr', 'a': 10, 'b': 20, 'er': '0', 'eg': 'clip(LF*20,0,255)', 'eb': 'b(X,Y)'}]}, 30)
+    e5, e15, e15b, e25 = at(5), at(15), at(15, 200), at(25)  # LF = frames since the step began (5 at frame 15)
+    assert e5[0] > 200 and max(abs(u - v) for u, v in zip(e15, (0, 100, 0))) <= 3 and e15b[2] > 200 and e15b[0] < 10 and e25[0] > 200, ('geq expression on frames 10-19 only', e5, e15, e15b, e25)
+    for bad in ("1'", 'foo(1)', 'r(X,Y', 'X:Y', 'X[0]', 'r(X,Y))'):  # page expressions are checked token by token: nothing can leave the quoted option
+        try:
+            xexpr(bad)
+            raise AssertionError(f'expression {bad!r} accepted')
+        except ValueError:
+            pass
+    print('effects-pack expressions ok: geq on its frames, LF counts from its start, bad tokens refused')
     gen('-f', 'lavfi', '-i', 'color=red:s=320x320,drawbox=x=200:y=0:w=120:h=320:color=blue:t=fill', '-frames:v', '1', str(HOME / 'box.png'))
     out = render({**tplan, 'name': 'fx-zblur', 'duration': 1, 'main': [{**still_clip(imp('box.png')), 'frames': 30}], 'fx': [{'op': 'zblur', 's': 0.5, 'a': 10, 'b': 20}]}, 30)
     z5, z15, z25 = at(5, 210), at(15, 210), at(25, 210)  # blue from x = 195; zoomed copies (up to 1.5x about x = 135) push it out to 225

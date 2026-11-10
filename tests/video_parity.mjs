@@ -9,8 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
-const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain)/; // 28: a scaled or turning clip's edges land a pixel apart
-const APPROX = /effect (blur|pixelate|motionblur|zoomblur)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
+const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain|oldtv|nightvision|halftone)/; // grain, and halftone's dots (a few pixels, shrunk to 160 px: moiré): by block averages // 28: a scaled or turning clip's edges land a pixel apart
+const APPROX = /effect (blur|pixelate|motionblur|zoomblur|handheld|beatshake|posterize|halftone)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // camera moves: sub-pixel offsets land a pixel apart; posterize: a level apart in the source can flip a band; halftone: dots sized at each side's own resolution // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-parity-`);
 const gen = (name, args) => { const f = `${tmp}/${name}`; execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, f]); return f; };
 const files = {
