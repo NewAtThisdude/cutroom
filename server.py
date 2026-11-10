@@ -226,10 +226,15 @@ def wk_copy(m):
     with WK_LOCK:
         if not out.exists():
             cs = m.get('cs') or ''
-            matrix = 6 if cs in ('smpte170m', 'bt470bg') or (cs in ('', 'unknown') and max(m['w'], m['h']) < 720) else 9 if cs.startswith('bt2020') else 1
+            matrix = 1 if m.get('hdr') else (  # HDR is always its proxy here: tone mapped to BT.709 (hdr_decode)
+                6 if cs in ('smpte170m', 'bt470bg') or (cs in ('', 'unknown') and max(m['w'], m['h']) < 720) else 9 if cs.startswith('bt2020') else 1)
             tmp = out.with_suffix('.tmp.mov')
+            # the container's labels too: a tagged source (every VideoToolbox proxy) kept its BT.709 transfer in the 'colr' atom,
+            # which is what WebKit reads, and the preview showed lifted mid-tones (7 levels over the export on iPhone HDR)
             if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', '-c', 'copy', '-bsf:v',
-                   f'{codec}_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients={matrix}', '-movflags', '+faststart', str(tmp)]).returncode == 0:
+                   f'{codec}_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients={matrix}',
+                   '-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1', '-colorspace', {1: 'bt709', 6: 'smpte170m', 9: 'bt2020nc'}[matrix],
+                   '-movflags', '+faststart', str(tmp)]).returncode == 0:
                 tmp.replace(out)
     return out if out.exists() else src
 
@@ -363,7 +368,10 @@ def proxy_cmd(m, src, out, sw=False):
     if not dec and not sw and not (BIG_MAC and m.get('codec') == 'h264'):
         dec = ['-hwaccel', 'videotoolbox', '-threads', '1']  # one thread: ffmpeg's frame threads would only hold frames
     tall = 720 if heavy(m) else 1080  # 4K60 at 720p (decoding speed); a long-GOP 1080p phone clip keeps its size
-    return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-c:v', 'h264_videotoolbox', '-b:v', '5M' if tall == 720 else '8M',
+    # each frame keeps its own time: on a 1/fps time base iPhone 120 fps frames (on a 1/600 s grid, with gaps) moved up to a
+    # frame, and the preview showed a later frame than the export (which reads the original) at 3 of 5 test times
+    return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-fps_mode:v', 'passthrough', '-enc_time_base:v', 'demux',
+            '-c:v', 'h264_videotoolbox', '-b:v', '5M' if tall == 720 else '8M',
             '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
 
 
@@ -621,14 +629,21 @@ def beats(mid):
     return out
 
 
+# VideoToolbox HDR (HLG/PQ) -> SDR BT.709. scale_vt converts the pixels but leaves the frames tagged bt2020nc, so every RGB
+# conversion after it (and the proxy's own labels) read BT.709 data as BT.2020: setparams retags them, and the bare scale
+# makes the link take the new tags (without it ffmpeg's auto RGB conversion still reads them wrong)
+VT_SDR = ('scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
+          'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,')
+
+
 def hdr_decode(m):
     """HLG/PQ -> SDR BT.709 the way the export does it (VideoToolbox; rotation by hand, autorotate can't touch hw
     frames): ffmpeg input args + filters ending in ','. Empty for SDR."""
     if not m.get('hdr') or m.get('alpha'):
         return [], ''
     tr = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-m.get('rot', 0) % 360, '')
-    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-threads', '1'],
-            f'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,{tr}')
+    # -display_rotation 0: the pixels are turned by hand, so files made from them must not carry the phone's rotation too
+    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1'], VT_SDR + tr)
 
 
 def still(mid, t):
@@ -1673,7 +1688,7 @@ def shots(st, mid, span=(0.0, 1.0)):
     src, dur = str(MEDIA / m['file']), m['duration']
     if heavy(m) and (px := CACHE / f'{mid}.proxy.mp4').exists():  # 4K60: the same looks from the 720p proxy, 11x faster
         src = str(px)
-    dec, vf = hdr_decode(m)
+    dec, vf = hdr_decode(m) if src == str(MEDIA / m['file']) else ([], '')  # an HDR proxy is already tone mapped and upright
     r = sh(['ffmpeg', '-v', 'error', *dec, '-i', src, '-an', '-vf',
             f'{vf}fps=4,scale=320:-2,blurdetect=block_width=32:block_height=32,signalstats,metadata=print:file=-', '-f', 'null', '-'])
     fr = []
@@ -2019,9 +2034,8 @@ def clean_plan(p):
         k['blend'] = c.get('blend') if c.get('blend') in BLENDS else None
         k['trans'] = bool(m.get('trans'))
         k['untagged_hd'] = m['kind'] == 'video' and m.get('cs') in ('', 'unknown') and max(m.get('w', 0), m.get('h', 0)) >= 720 and not m.get('hdr')
-        # decodes as BT.709 frames tagged so. Not HDR: scale_vt converts to 709 but leaves the frames tagged bt2020nc, which the
-        # RGB path (and the preview's relabelled copy) read as such; the 4:2:0 path takes that same route for them
-        k['bt709'] = m['kind'] == 'video' and (m.get('cs') == 'bt709' or k['untagged_hd']) and not k['hdr']
+        # decodes as BT.709 frames tagged so; HDR too (VT_SDR tone maps to BT.709 and retags the frames)
+        k['bt709'] = m['kind'] == 'video' and (m.get('cs') == 'bt709' or k['untagged_hd'] or k['hdr'])
         k['vkf'] = [{'t': fnum(f['t'], -1e5, 1e5), 'v': fnum(f['v'], 0, 10), 'e': 1 if f.get('e') else 0} for f in (c.get('vkf') or [])[:5000]] or None
         if m['kind'] != 'audio':  # source size after crop, in display pixels: rotation and keyframe placement need it
             k['mw'], k['mh'] = m['w'] * (1 - k['crop']['l'] - k['crop']['r']), m['h'] * (1 - k['crop']['t'] - k['crop']['b'])
@@ -2333,7 +2347,7 @@ def graph(p, td):
             # (looks, colour, keys, rotation) still read the frames as BT.601 and shift every colour a look touches
             v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,'
         if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709; rotation applied by hand since autorotate can't touch hw frames
-            v += 'scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
+            v += VT_SDR
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
         # round=up: each output frame shows the last source frame at or before its time, as the preview's <video> does
         # (nearest put 59.94 fps footage in a 60 fps project one frame early for half of every 16.7 s)
@@ -3691,6 +3705,23 @@ def selftest():
     trc = sh(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=color_transfer', '-of', 'csv=p=0', str(outs['hlg_rot.mp4'])]).stdout.strip()
     ps = re.search(r'average:([\d.]+|inf)', sh(['ffmpeg', '-hide_banner', '-i', str(outs['hlg_rot.mp4']), '-i', str(outs['sdr_rot.mp4']), '-lavfi', 'psnr', '-f', 'null', '-']).stderr)
     assert trc != 'arib-std-b67' and ps and float(ps[1]) > 22, ('HDR tone map / rotation', trc, ps and ps[1])
+    # colours: the export's 4:2:0 pixels = scale_vt's own (compared as Y/U/V: ffmpeg 9's swscale colour-manages RGB reads by
+    # route), on both paths. Read as the bt2020nc scale_vt leaves them tagged, saturated colours moved: luma |d| 6.7 (fixed 0.2-2.1)
+    hr = imp('hlg_rot.mp4')
+    dec, vf = hdr_decode(hr)
+    yuv = lambda args, f, pre='': subprocess.run(['ffmpeg', '-v', 'error', *args, '-ss', '0.5', '-i', str(f), '-frames:v', '1', '-vf', f'{pre}scale={W}:{H}',
+                                                   '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'], capture_output=True, check=True).stdout
+    planes = lambda b: [b[:W * H], b[W * H:W * H * 5 // 4], b[W * H * 5 // 4:]]
+    ref = planes(yuv(dec, HOME / 'hlg_rot.mp4', vf))
+    hplan = {'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#000000', 'name': 'hdr colour', 'overlay': [], 'audio': [],
+             'main': [{'media': hr['id'], 'in': 0, 'out': 1, 'frames': 30, 'geom': geom(hr)}]}
+    assert yuv_ok(clean_plan(hplan)), 'a plain HDR cut takes the 4:2:0 path'
+    for k, kw in (('yuv', {}), ('rgb', {'rgb': True})):
+        got = planes(yuv([], render({**hplan, 'name': f'hdr colour {k}'}, 30, **kw)))
+        d = [(sum(a) - sum(b)) / len(b) for a, b in zip(got, ref)]
+        luma = sum(abs(a - b) for a, b in zip(got[0], ref[0])) / len(ref[0])  # read as BT.2020, saturated colours' luma moves (6.7 here)
+        assert max(map(abs, d)) < 1 and luma < 3.5, ('HDR colours vs scale_vt (Y, U, V mean shift; luma |d|)', k, d, luma)
+        print(f'hdr colour ok ({k}): Y/U/V mean shift vs scale_vt {", ".join(f"{x:+.2f}" for x in d)}, luma |d| {luma:.2f}')
     fz = still(imp('hlg.mp4')['id'], 0.5)
     assert not fz['hdr'], fz
     render({'w': W, 'h': H, 'fps': F, 'duration': 1, 'bg': '#000000', 'name': 'hdrstill', 'overlay': [], 'audio': [],
@@ -3739,12 +3770,13 @@ def selftest():
     # the app's preview copy: same decoded pixels, only the colour labels change (sRGB transfer: WebKit shows them unlifted)
     gen('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'hd.mp4'))
     hd = imp('hd.mp4')
-    wk = wk_copy(hd)
-    tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer', '-of', 'json',
-                          str(wk)]).stdout)['streams'][0]
     md5 = lambda f: re.findall(r'[0-9a-f]{32}', sh(['ffmpeg', '-v', 'error', '-i', str(f), '-map', '0:v', '-f', 'framemd5', '-']).stdout)
-    assert wk.name.endswith('.wk.mov') and tags == {'color_space': 'bt709', 'color_primaries': 'bt709', 'color_transfer': 'iec61966-2-1'}, tags
-    assert md5(wk) == md5(MEDIA / hd['file']), 'the WebKit copy decodes differently'
+    for src in (hd, V7):  # untagged, and labelled BT.709 in its container (as every proxy is): the container's labels change too
+        wk = wk_copy(src)
+        tags = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space,color_primaries,color_transfer', '-of', 'json',
+                              str(wk)]).stdout)['streams'][0]
+        assert wk.name.endswith('.wk.mov') and tags == {'color_space': 'bt709', 'color_primaries': 'bt709', 'color_transfer': 'iec61966-2-1'}, (src['name'], tags)
+        assert md5(wk) == md5(MEDIA / src['file']), 'the WebKit copy decodes differently'
     print('webkit preview copy ok: identical frames, labelled bt709 + sRGB transfer')
     if (AI_BIN / 'python').exists():  # object removal end to end: Vision tracks a moving square both ways, the fill must match the clean shot
         gen('-f', 'lavfi', '-i', 'testsrc2=s=480x270', '-frames:v', '1', str(HOME / 'bg.png'))
@@ -3811,6 +3843,18 @@ def resume_prepare():
         if m.get('kind') == 'video' and 'gop' not in m and m.get('ready') and m.get('file') and (MEDIA / m['file']).is_file() and not m.get('trans'):
             m['gop'] = gop(MEDIA / m['file'])  # measured once for items imported before it was
             save_meta(m)
+        px = CACHE / f"{m.get('id')}.proxy.mp4"
+        if m.get('hdr') and px.exists() and 'bt2020' in sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_space',
+                                                              '-of', 'csv=p=0', str(px)]).stdout:
+            # an HDR proxy from before 2026-11-09: BT.709 pixels labelled BT.2020, and upright pixels that still carried the
+            # phone's rotation (portrait clips previewed sideways). Remade below with its filmstrip and WebKit copy
+            for f in (px, CACHE / f"{m['id']}.wk.mov"):
+                f.unlink(missing_ok=True)
+            m.pop('grid', None)
+        wk = CACHE / f"{m.get('id')}.wk.mov"
+        if wk.exists() and 'iec61966-2-1' not in sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
+                                                       '-of', 'csv=p=0', str(wk)]).stdout:
+            wk.unlink()  # from before its container was relabelled too (WebKit showed it lifted): remade on the next request
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
                 not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
