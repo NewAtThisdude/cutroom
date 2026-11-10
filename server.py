@@ -705,17 +705,31 @@ def beats(mid):
     if cache.exists():
         return json.loads(cache.read_text())
     sr, hop = 8000, 128  # 62.5 onset frames per second
-    # the preview's 48 kHz PCM when it exists: raw samples resample in a third of an MP3/AAC decode (which was ~2/3 of the time)
+    # the preview's 48 kHz PCM when it exists: raw samples resample in a third of an MP3/AAC decode (which was ~2/3 of the time).
+    # Same BPM on all 22 pack songs; 2 of them had 2 beats each 2-3 frames off the grid read from the file itself
     f = CACHE / f'{mid}.pcm'
     src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
+    # numpy in the AI venv (ai/beats.py, the same grid) starts first: Python and numpy load while ffmpeg decodes, then ~8 ms
+    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not (AI_BIN / 'python').exists() else subprocess.Popen(
+        [str(AI_BIN / 'python'), '-I', str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
     raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
+    if fast:
+        try:
+            out = json.loads(fast.communicate(raw)[0])
+        except (ValueError, OSError):
+            out = None  # a broken venv: the stdlib loops below
+        if out and out.get('error'):
+            raise ValueError(out['error'])
+        if out:
+            cache.write_text(json.dumps(out))
+            return out
     x = array('h')
     x.frombytes(raw[:len(raw) // 2 * 2])
     n, fps = len(x) // hop, sr / hop
     if n < fps * 4:
         raise ValueError('need at least 4 seconds of audio')
-    # the loops run in C (map/sum over slices, max/index), the same sums in the same order: the grid is identical to the
-    # per-sample Python loops they replaced (3x slower on a 3 minute song: 0.21 -> 0.07 s; the dynamic programme 6x)
+    # no venv: the loops run in C (map/sum over slices, max/index), the same sums in the same order: the grid is identical
+    # to the per-sample Python loops they replaced (CUTROOM_BEATS_STDLIB=1 forces this path; tests/audio_packs.mjs times both)
     from operator import mul, sub
     env = [math.log1p(sum(map(mul, b, b)) / hop / 1e4) for b in (x[i * hop:(i + 1) * hop] for i in range(n))]
     on = [0.0] + [max(0.0, e - d) for d, e in zip(env, env[1:])]

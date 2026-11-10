@@ -317,13 +317,74 @@ if (run('beats')) {
   else {
     const m = await post('/api/packs/add', { id: song.id });
     for (let k = 0; k < 60 && !(await get('/api/media')).find(x => x.id === m.id)?.peaks; k++) await new Promise(r => setTimeout(r, 500)); // its preview PCM is made at import
-    const ts = [];
+    const ts = [], decs = [], src = `${LIB}/media/${(await get('/api/media')).find(x => x.id === m.id).file}`, raw = `${os.tmpdir()}/cutroom-beats-${m.id}.raw`;
     let r;
-    for (let k = 0; k < 3; k++) { fs.rmSync(`${LIB}/cache/${m.id}.beats.json`, { force: true }); const t0 = performance.now(); r = await post('/api/beats', { media: m.id }); ts.push((performance.now() - t0) / 1000); }
+    for (let k = 0; k < 4; k++) { // interleaved with the old way's decode, so a load spike on this busy Mac hits both
+      fs.rmSync(`${LIB}/cache/${m.id}.beats.json`, { force: true });
+      let t0 = performance.now(); r = await post('/api/beats', { media: m.id }); ts.push((performance.now() - t0) / 1000);
+      t0 = performance.now(); execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', src, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', raw]); decs.push((performance.now() - t0) / 1000);
+    }
     const gaps = r.beats.slice(1).map((v, i) => v - r.beats[i]), sd = Math.sqrt(mean(gaps.map(g => (g - mean(gaps)) ** 2)));
-    // 117.2 BPM / 335 beats: what the per-sample Python loops gave on this file (scratchpad bench, old vs new: identical grids)
-    check('beats on a 2:50 song: the same grid as the old loops (117.2 BPM, 335 beats)', r.bpm === 117.2 && r.beats.length === 335, `${r.bpm} BPM, ${r.beats.length} beats, gap sd ${(sd * 1000).toFixed(1)} ms`);
-    check('beats: under 0.3 s cold (the old loops took 0.37-0.72 s)', Math.min(...ts) < 0.3, `${ts.map(t => t.toFixed(3)).join(', ')} s (HTTP round trip included)`);
+    // the same run, the same bytes: the per-sample loops beats() had before (fbe3c4a, verbatim below) vs ai/beats.py (numpy,
+    // what the app runs) vs server.py's stdlib fallback; the old one end to end = its MP3 decode + its loops
+    const dec = Math.min(...decs);
+    const OLD = `import sys, math, statistics, time, json
+from array import array
+x = array('h'); x.frombytes(open(sys.argv[1], 'rb').read())
+def old():
+    sr, hop = 8000, 128
+    n, fps = len(x) // hop, sr / hop
+    env = [math.log1p(sum(v * v for v in x[i * hop:(i + 1) * hop]) / hop / 1e4) for i in range(n)]
+    on = [0.0] + [max(0.0, env[i] - env[i - 1]) for i in range(1, n)]
+    sd = statistics.pstdev(on) or 1.0
+    on = [v / sd for v in on]
+    prior = lambda L: math.exp(-0.5 * math.log2(60 * fps / L / 120) ** 2)
+    period = max(range(int(60 * fps / 180), int(60 * fps / 60) + 1), key=lambda L: prior(L) * sum(on[i] * on[i - L] for i in range(L, n)))
+    score, back = on[:], [-1] * n
+    for t in range(n):
+        best, arg = -1e9, -1
+        for prev in range(max(0, t - 2 * period), max(0, t - period // 2)):
+            v = score[prev] - 100 * math.log((t - prev) / period) ** 2
+            if v > best:
+                best, arg = v, prev
+        if arg >= 0:
+            score[t], back[t] = on[t] + best, arg
+    t = max(range(max(0, n - period), n), key=lambda i: score[i])
+    grid = []
+    while t >= 0:
+        grid.append(t)
+        t = back[t]
+    return {'bpm': round(60 * fps / period, 1), 'beats': [round(i / fps, 3) for i in reversed(grid)]}
+ts = []
+for _ in range(2):
+    a = time.perf_counter(); out = old(); ts.append(time.perf_counter() - a)
+print(json.dumps({'t': min(ts), 'out': out}))`;
+    const NEW = `import sys, io, time, runpy, json
+data = open(sys.argv[2], 'rb').read(); ts = []
+for _ in range(5):
+    sys.stdin = io.TextIOWrapper(io.BytesIO(data)); so, sys.stdout = sys.stdout, io.StringIO()
+    a = time.perf_counter(); runpy.run_path(sys.argv[1]); ts.append(time.perf_counter() - a)
+    out, sys.stdout = sys.stdout.getvalue(), so
+print(json.dumps({'t': min(ts), 'out': json.loads(out)}))`;
+    const FALLBACK = `import sys, os, time, json
+os.environ['CUTROOM_BEATS_STDLIB'] = '1'
+sys.path.insert(0, sys.argv[1]); import server
+f = server.CACHE / (sys.argv[2] + '.beats.json'); ts = []
+for _ in range(3):
+    f.unlink(missing_ok=True); a = time.perf_counter(); out = server.beats(sys.argv[2]); ts.append(time.perf_counter() - a)
+f.unlink(missing_ok=True)
+print(json.dumps({'t': min(ts), 'out': out}))`;
+    const py = (exe, code, ...a) => JSON.parse(execFileSync(exe, ['-I', '-c', code, ...a], { env: { ...process.env, CUTROOM_HOME: LIB, PYTHONPATH: '' }, maxBuffer: 1 << 26 }).toString());
+    const old = py('python3', OLD, raw), np = py(`${ROOT}ai/.venv/bin/python`, NEW, `${ROOT}ai/beats.py`, raw), sl = py('python3', FALLBACK, ROOT, m.id);
+    fs.rmSync(raw, { force: true });
+    const same = o => JSON.stringify(o) === JSON.stringify(r);
+    check('beats on a 2:50 song: the app grid == the old per-sample loops on the same song (117.2 BPM, 335 beats)', same(old.out) && r.bpm === 117.2 && r.beats.length === 335, `${r.bpm} BPM, ${r.beats.length} beats, gap sd ${(sd * 1000).toFixed(1)} ms; old ${old.out.bpm} BPM ${old.out.beats.length} beats`);
+    check('beats: numpy (ai/beats.py) and the stdlib fallback give that same grid', same(np.out) && same(sl.out), `numpy ${np.out.bpm}/${np.out.beats.length}, stdlib ${sl.out.bpm}/${sl.out.beats.length}`);
+    check('beats: the computation >= 5x faster than the old loops (same bytes, same run)', old.t / np.t >= 5, `old loops ${old.t.toFixed(3)} s, numpy ${np.t.toFixed(4)} s: ${(old.t / np.t).toFixed(1)}x; stdlib fallback end to end ${sl.t.toFixed(3)} s`);
+    // end to end the ffmpeg decode is the floor (5x is not reachable): the old way's MP3 decode alone is ~0.17 s on a quiet
+    // Mac, the cached PCM's resample ~0.09 s, and the app's beats() is that resample + ~40 ms. 1.6-4.1x measured under load
+    const e2eOld = dec + old.t, e2e = Math.min(...ts);
+    check('beats: end to end through the app >= 1.5x faster than the old way (not 5x: the ffmpeg decode is the floor)', e2eOld / e2e >= 1.5, `old ${dec.toFixed(3)} s decode + ${old.t.toFixed(3)} s loops = ${e2eOld.toFixed(3)} s; app ${ts.map(t => t.toFixed(3)).join(', ')} s (HTTP included): ${(e2eOld / e2e).toFixed(1)}x`);
   }
 }
 
