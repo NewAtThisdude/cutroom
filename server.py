@@ -2257,8 +2257,18 @@ def clean_plan(p):
     out['overlay'] = [clip(c, True) for c in p.get('overlay', [])]
     out['audio'] = [clip(c, True) for c in p.get('audio', [])]
     t = p.get('text') or {}
-    out['pngs'] = [base64.b64decode(s.split(',')[-1]) for s in t.get('pngs', [])]
-    if any(not b.startswith(b'\x89PNG') for b in out['pngs']):
+    if t.get('layer'):  # uploaded before the plan (POST /api/layer/<id>/<i>): PNGs of one crop box, laid at its corner
+        if not re.fullmatch(r'[0-9a-f]{12}', str(t['layer'])) or len(t.get('box') or []) != 4:
+            raise ValueError('bad text layer')
+        d = CACHE / 'layers' / t['layer']
+        out['pngs'] = [d / f't{i}.png' for i in range(int(fnum(t['n'], 1, 200000)))]
+        if not all(f.is_file() for f in out['pngs']):
+            raise ValueError('text layer upload incomplete')
+        out['box'] = [int(fnum(v, 0, 8192)) for v in t['box']]
+        out['layer_dir'] = d
+    else:
+        out['pngs'] = [base64.b64decode(s.split(',')[-1]) for s in t.get('pngs', [])]
+    if any(not isinstance(b, Path) and not b.startswith(b'\x89PNG') for b in out['pngs']):
         raise ValueError('text layer must be PNG')
     out['frames'] = [{'i': int(fnum(f['i'], 0, len(out['pngs']) - 1)), 'start': fnum(f['start'], 0, 1e6), 'end': fnum(f['end'], 0, 1e6)}
                      for f in t.get('frames', [])]
@@ -2938,6 +2948,9 @@ def graph(p, td):
     if p['frames'] and not ao:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer
         files = []
         for j, b in enumerate(p['pngs']):
+            if isinstance(b, Path):  # uploaded (CACHE/layers)
+                files.append(b)
+                continue
             files.append(Path(td) / f't{j}.png')
             files[-1].write_bytes(b)
         lines, rate = ['ffconcat version 1.0'], {23.976: '24000/1001', 29.97: '30000/1001', 59.94: '60000/1001'}.get(round(F, 3), f'{F:g}')
@@ -2947,7 +2960,7 @@ def graph(p, td):
         (Path(td) / 'text.ffconcat').write_text('\n'.join(lines) + '\n')
         ins.append(['-f', 'concat', '-safe', '0', '-i', str(Path(td) / 'text.ffconcat')])
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
-        over('tx')
+        over('tx', *p.get('box', (0, 0))[:2])  # a crop: everything outside its box is transparent in every frame
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
     # loudness (-14 LUFS, the reels/YouTube target): export() measures the whole mix first ('measure'), then sets ONE gain
     # in dB for all of it (two-pass, linear: single-pass loudnorm rode the gain and pumped up the quiet parts). Otherwise a
@@ -3227,6 +3240,9 @@ def export(job, p):
             st.update(state='cancelled')
         else:
             st.update(state='error', error=str(e))
+    finally:
+        if p.get('layer_dir'):  # the uploaded text layer (still_cut and the chunk plans keep the key)
+            shutil.rmtree(p['layer_dir'], ignore_errors=True)
 
 
 def has_file(mid):  # a library item whose file is there (not trashed or moved)
@@ -3456,6 +3472,17 @@ class App(BaseHTTPRequestHandler):
                 if n > 32 << 20:
                     raise ValueError('font file too big (32 MB at most)')
                 return self.reply(import_font(parse_qs(u.query).get('name', ['Font'])[0], self.rfile.read(n)))
+            if m := re.fullmatch(r'/api/layer/([0-9a-f]{12})/(\d{1,6})', u.path):  # one text-layer PNG, raw: the export's layer workers upload them as they go
+                n = int(self.headers.get('Content-Length') or 0)
+                if n > 300 << 20:
+                    raise ValueError('request too large')
+                data = self.rfile.read(n)
+                if not data.startswith(b'\x89PNG'):
+                    raise ValueError('text layer must be PNG')
+                d = CACHE / 'layers' / m[1]
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f't{int(m[2])}.png').write_bytes(data)
+                return self.reply({'ok': True})
             body = self.body()
             if u.path == '/api/transcribe':
                 return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
@@ -3472,12 +3499,16 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(w.get('res') if done else {'ok': False, 'result': 'timed out waiting for the editor'})
             if u.path == '/api/still_frame':  # one frame from the export renderer, returned inline (the MCP snapshot tool)
                 p = still_cut(clean_plan({**body, 'format': 'png'}))  # only what is on screen at that frame
-                with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-                    out = Path(td) / 'frame.png'
-                    run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda _x: None)
-                    if not out.exists():
-                        raise RuntimeError('no frame rendered')
-                    return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
+                try:
+                    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+                        out = Path(td) / 'frame.png'
+                        run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda _x: None)
+                        if not out.exists():
+                            raise RuntimeError('no frame rendered')
+                        return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
+                finally:
+                    if p.get('layer_dir'):
+                        shutil.rmtree(p['layer_dir'], ignore_errors=True)
             if u.path == '/api/luts':  # import a .cube LUT (its text): kept in Movies/Cutroom/luts for every project
                 text, name = str(body.get('text', '')), str(body.get('name') or 'LUT')
                 if len(text) > 64 << 20 or not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):
@@ -3787,6 +3818,20 @@ def selftest():
         assert r > 200 and 90 < g < 170 and b < 60, ('image clip wrong', r, g, b)
         assert max(pixel(out, 8.0, 135, 240)) < 40, 'background after main track should be #101010'
         print(f'export ok (chunk={chunk}): {out.name} {W}x{H} 270 frames, audio {float(a["duration"]):.2f}s')
+    for chunk in (24, 2):  # an uploaded layer (POST /api/layer/<id>/<i>): one red 32x24 crop laid at (40, 60), removed after the export
+        CHUNK = chunk
+        lid, ld = f'{chunk:012x}', CACHE / 'layers' / f'{chunk:012x}'
+        ld.mkdir(parents=True, exist_ok=True)
+        sh(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=red:s=32x24', '-frames:v', '1', str(ld / 't0.png')])
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**plan, 'text': {'layer': lid, 'n': 1, 'box': [40, 60, 32, 24], 'frames': [{'i': 0, 'start': 0, 'end': 9}]}}))
+        assert JOBS['t']['state'] == 'done', JOBS['t']
+        out = EXPORTS / JOBS['t']['file']
+        r, g, b = pixel(out, 8.0, 50, 70)
+        assert r > 200 and g < 40 and b < 40, ('uploaded layer box missing', r, g, b)
+        assert max(pixel(out, 8.0, 30, 50)) < 40 and max(pixel(out, 8.0, 80, 70)) < 40, 'uploaded layer drawn outside its box'
+        assert not ld.exists(), 'uploaded layer left behind'
+        print(f'uploaded layer ok (chunk={chunk})')
     def imp(f):
         with open(HOME / f, 'rb') as fh:
             return import_file(f, fh, (HOME / f).stat().st_size, background=False)
@@ -4375,6 +4420,7 @@ def main():
         return selftest()
     for d in (MEDIA, PROJ, EXPORTS, CACHE):
         d.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(CACHE / 'layers', ignore_errors=True)  # ponytail: uploads of a plan that never ran stay until the next start
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)

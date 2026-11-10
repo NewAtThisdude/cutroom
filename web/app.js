@@ -6,10 +6,8 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const hex12 = () => [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const even = x => Math.round(x / 2) * 2;
-const hexA = (hex, a = 1) => `${hex}${Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0')}`;
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
@@ -45,8 +43,6 @@ const LANES = [
 ];
 const RATIOS = { '9:16': [1080, 1920], '16:9': [1920, 1080], '1:1': [1080, 1080], '4:5': [1080, 1350], '3:4': [1080, 1440], '4:3': [1440, 1080], '21:9': [2520, 1080] };
 const FONTS = ['Montserrat', 'Poppins', 'Anton', 'Bebas Neue', 'Helvetica Neue', 'Arial Black', 'Impact', 'Futura', 'Avenir Next', 'Georgia', 'Marker Felt', 'American Typewriter', 'Menlo'];
-const TEXT_BASE = { font: 'Montserrat', weight: 800, size: 72, color: '#ffffff', stroke: '#000000', strokeW: 0, shadow: false, box: false, boxColor: '#000000', boxAlpha: 0.72, upper: false, hl: '#ffd400', pop: false, maxW: 0.86, lh: 1.15,
-  italic: false, align: 'center', ls: 0, shc: '#000000', sha: 0.55, shb: 0.18, shx: 0, shy: 0.04, boxR: 0.18, boxPad: 0.3 };
 const TEXT_PRESETS = {
   Title: { font: 'Montserrat', weight: 900, size: 116, shadow: true },
   Subtitle: { font: 'Poppins', weight: 800, size: 64, shadow: true },
@@ -84,9 +80,7 @@ const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip 
   ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds']];
 const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter']];
 const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace']];
-const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.anim) === 'type' ? 1.2 : ANIM_T); // text in/out length; typing takes longer
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
-const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
 const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'],
   ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
@@ -110,7 +104,6 @@ function presetFields(k) { // -> the dialog's values for preset k on this projec
   const res = x.master ? (sizes.filter(([, w, h]) => !src || w * h <= src[0] * src[1]).at(-1) || sizes[1])[0] : x.res;
   return { res, fmt: x.fmt, q: 'fast', fps: x.master ? 0 : hi ? 60 : 30, mbps: x.mbps ? x.mbps[hi ? 1 : 0] : 0, loud: x.loud };
 }
-const ANIM_T = 0.3; // default text in/out animation length, seconds
 const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror'], ['heart', 'Heart'], ['star', 'Star'], ['polygon', 'Polygon'], ['pen', 'Pen']]; // + 'ai' (SAM 2 subject), made by a job
 const BLENDS = [['normal', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'], ['darken', 'Darken'], ['lighten', 'Lighten'], // canvas modes; the export runs the same formulas
@@ -136,7 +129,6 @@ const LOOKS = { // 3x3 RGB matrices: the preview uses them as SVG feColorMatrix,
   arctic: [.85, .05, .1, .05, .95, .1, .1, .1, 1.15], night: [.7, .05, .1, .02, .8, .12, .04, .12, 1.1], retro: [.95, .15, 0, .1, .9, .05, .05, .15, .7],
   silver: [.331, .608, .061, .181, .758, .061, .2, .62, .26],
 };
-const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
 const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 
 let P = null;                        // current project
@@ -167,29 +159,6 @@ function tc(t) { const fps = Math.round(P.fps), f = Math.round(t * P.fps), s = M
 const mss = t => { const d = Math.round(t * 10) / 10; return `${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, '0')}`; }; // m:ss.s outside the transport (00:04:12 read as minutes or frames)
 const fmtDur = s => (s > 0 && s < 1 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`); // a sound effect under a second isn't "0:00"
 
-const ss3 = x => x * x * (3 - 2 * x);
-// keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
-const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1] };
-function bezE(bz, u) { // cubic-bezier at time u: s by 16 halvings, the very steps the server's pw() writes into ffmpeg (same doubles both sides)
-  const [x1, y1, x2, y2] = bz, cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx, cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
-  let s = 0, h = 1;
-  for (let i = 0; i < 16; i++) { h /= 2; const q = s + h; if (((ax * q + bx) * q + cx) * q < u) s = q; }
-  s += h / 2;
-  return ((ay * s + by) * s + cy) * s;
-}
-const easeU = (u, r0, r1, bz) => { const E = bz ? v => bezE(bz, v) : ss3, d = E(r1) - E(r0); return Math.abs(d) > 1e-9 ? (E(r0 + u * (r1 - r0)) - E(r0)) / d : u; }; // part [r0, r1] of the curve, rescaled to 0..1
-function propsAt(c, lt) { // keyframed scale/x/y/opacity at clip-local time: linear, exactly like the server's pw()
-  const k = c.kf;
-  if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1, rot: c.rot ?? 0 };
-  let i = 0;
-  while (i + 1 < k.length && k[i + 1].t <= lt) i++;
-  const a = k[i], b = k[i + 1];
-  if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity, rot: a.rot ?? 0 }; // never leak a keyframe's own t
-  let u = clamp((lt - a.t) / Math.max(1e-6, b.t - a.t), 0, 1);
-  if (a.ease ?? c.ease) u = easeU(u, a.eu0 ?? 0, a.eu1 ?? 1, a.bz); // smoothstep (or its cubic-bezier) from this keyframe (or clip default), same as pw() with e=1
-  const mix = p => (a[p] ?? 0) + ((b[p] ?? 0) - (a[p] ?? 0)) * u;
-  return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity'), rot: mix('rot') };
-}
 function envAt(c, lt) { // volume envelope (auto-duck) as a multiplier of the clip volume, linear like the server's
   const k = c.vkf;
   if (!k?.length) return 1;
@@ -2011,161 +1980,18 @@ async function maskSeq(c, m) { // keyframed mask: one PNG per frame where it cha
   return { pngs, spans };
 }
 
-// ---------- video effects (the Effects track) ----------
-// px(): steps the export runs on the composite (same numbers here and in ffmpeg); layer(): drawn into the text layer, so it renders exactly as previewed.
-// rate: how often a layer changes: 'frame', n per second, 'edges' (animated only near its ends) or 0 (static).
-const rnd = (i, s = 0) => { const x = Math.sin(i * 127.1 + s * 311.7) * 43758.5453; return x - Math.floor(x); }; // deterministic noise: preview and export agree
-const ID3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-const lerpM = (A, B, t) => A.map((v, i) => v + (B[i] - v) * t);
-const fxFrame = lt => Math.floor(lt * P.fps + 1e-6);
-const clock = s => `00:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+// ---------- video effects (the Effects track; the FX table is in draw.js) ----------
 const FX_CATS = [['all', 'All'], ['camera', 'Camera'], ['light', 'Light'], ['retro', 'Retro'], ['distort', 'Distort'], ['party', 'Party'], ['frame', 'Frame']];
 function beatTimes() { const out = []; for (const a of P.audio) for (const b of a.beats || []) if (b >= a.in && b <= a.out) out.push(a.start + (b - a.in) / a.speed); return out.sort((x, y) => x - y); }
 function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect beats), else 120 BPM from the effect's start
   const t = f.start + lt, b = f.gallery ? [] : beatTimes().filter(x => x <= t + 1e-6 && x >= f.start - 0.6);
   return b.length ? t - b.at(-1) : lt % 0.5;
 }
-const shake = (a, fx, fy) => (W, H, u, lt, f) => { const s = a * f.amt; return [{ op: 'transform', z: 1 + 2 * s + 0.01, x: W * s * wob(lt * fx), y: H * s * wob(lt * fy + 5) }]; };
-function particles(n, fn) { for (let i = 0; i < n; i++) fn(i); }
-const FX = {
-  shake: { n: 'Shake', cat: 'camera', d: 1.5, px: shake(0.035, 17, 14) },
-  quake: { n: 'Earthquake', cat: 'camera', d: 1.5, px: shake(0.07, 31, 27) },
-  pulse: { n: 'Beat zoom', cat: 'camera', d: 2, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.14 * f.amt * Math.exp(-sinceBeat(f, lt) / 0.12), x: 0, y: 0 }] },
-  zoomin: { n: 'Slow zoom', cat: 'camera', d: 3, px: (W, H, u, lt, f) => [{ op: 'transform', z: 1 + 0.2 * f.amt * clamp(lt / f.dur, 0, 1), x: 0, y: 0 }] },
-  motionblur: { n: 'Motion blur', cat: 'camera', d: 1.5, px: (W, H, u, lt, f) => [{ op: 'hblur', sigma: +Math.max(0.5, 24 * u * f.amt).toFixed(2) }] }, // sideways streaks: pans, passing cars
-  zoomblur: { n: 'Zoom blur', cat: 'camera', d: 1.5, px: (W, H, u, lt, f) => [{ op: 'zblur', s: +clamp(0.12 * f.amt, 0, 2).toFixed(4) }] },
-  flash: { n: 'Flash', cat: 'light', d: 0.6, rate: 'frame', layer: (x, W, H, u, lt, f) => { x.fillStyle = `rgba(255,255,255,${Math.min(1, f.amt) * (1 - Math.abs(2 * lt / f.dur - 1)) ** 1.5})`; x.fillRect(0, 0, W, H); } },
-  strobe: { n: 'Strobe', cat: 'light', d: 1.5, rate: 'frame', layer: (x, W, H, u, lt, f) => { if (fxFrame(lt) % 4 === 0) { x.fillStyle = `rgba(255,255,255,${0.85 * Math.min(1, f.amt)})`; x.fillRect(0, 0, W, H); } } },
-  blink: { n: 'Blink', cat: 'light', d: 1, rate: 'frame', layer: (x, W, H, u, lt, f) => { // eyelids close and open again
-    const c = Math.sin(Math.PI * clamp(lt / f.dur, 0, 1)) ** 2 * Math.min(1, f.amt), h = c * H * 0.56;
-    x.fillStyle = '#000';
-    if (c > 0.97) return x.fillRect(0, 0, W, H);
-    if (h < 0.5) return;
-    for (const [y0, s] of [[0, 1], [H, -1]]) { x.beginPath(); x.moveTo(0, y0); x.lineTo(W, y0); x.lineTo(W, y0 + s * h * 0.7); x.quadraticCurveTo(W / 2, y0 + s * h * 1.3, 0, y0 + s * h * 0.7); x.closePath(); x.fill(); }
-  } },
-  glow: { n: 'Dreamy glow', cat: 'light', d: 3, px: (W, H, u, lt, f) => [{ op: 'glow', sigma: 16 * u, amt: Math.min(1, 0.6 * f.amt) }] },
-  vhs: { n: 'VHS', cat: 'retro', d: 3, rate: 1,
-    px: (W, H, u, lt, f) => { const s = Math.max(1, Math.round(4 * u * f.amt)); return [{ op: 'rgbshift', rh: -s, bh: s }, { op: 'noise', s: Math.round(clamp(10 * f.amt, 1, 60)) }]; },
-    layer: (x, W, H, u, lt) => {
-      x.fillStyle = 'rgba(0,0,0,0.16)';
-      for (let y = 0; y < H; y += Math.max(2, 4 * u)) x.fillRect(0, y, W, Math.max(1, 1.5 * u));
-      x.font = `700 ${40 * u}px Menlo, monospace`; x.fillStyle = '#fff'; x.shadowColor = 'rgba(0,0,0,0.6)'; x.shadowBlur = 4 * u;
-      x.textBaseline = 'top'; x.fillText('PLAY ▶', 48 * u, 48 * u);
-      x.textBaseline = 'bottom'; x.fillText(`SP ${clock(Math.floor(lt))}`, 48 * u, H - 48 * u);
-    } },
-  oldfilm: { n: 'Old film', cat: 'retro', d: 3, rate: 'frame',
-    px: (W, H, u, lt, f) => [{ op: 'matrix', m: lerpM(ID3, LOOKS.sepia, Math.min(1, f.amt)), k: +(0.9 + 0.1 * rnd(fxFrame(lt), 7)).toFixed(3) }, { op: 'noise', s: Math.round(clamp(14 * f.amt, 1, 60)) }],
-    layer: (x, W, H, u, lt) => { // scratches and dust, new every frame
-      const g = fxFrame(lt);
-      x.strokeStyle = 'rgba(30,20,10,0.35)'; x.lineWidth = Math.max(1, 1.5 * u);
-      for (let i = 0; i < Math.floor(rnd(g, 1) * 3); i++) { const xx = rnd(g, 10 + i) * W; x.beginPath(); x.moveTo(xx, 0); x.lineTo(xx + (rnd(g, 20 + i) - 0.5) * 20 * u, H); x.stroke(); }
-      x.fillStyle = 'rgba(20,15,10,0.5)';
-      for (let i = 0; i < Math.floor(rnd(g, 2) * 7); i++) { x.beginPath(); x.arc(rnd(g, 30 + i) * W, rnd(g, 40 + i) * H, (1 + 3 * rnd(g, 50 + i)) * u, 0, 6.2832); x.fill(); }
-    } },
-  grain: { n: 'Film grain', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'noise', s: Math.round(clamp(16 * f.amt, 1, 80)) }] },
-  bw: { n: 'Black & white', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'matrix', m: sat(1 - Math.min(1, f.amt)) }] },
-  sepia: { n: 'Sepia', cat: 'retro', d: 3, px: (W, H, u, lt, f) => [{ op: 'matrix', m: lerpM(ID3, LOOKS.sepia, Math.min(1, f.amt)) }] },
-  glitch: { n: 'Glitch', cat: 'distort', d: 1.5, px: (W, H, u, lt, f) => { const g = fxFrame(lt), s = Math.round(u * f.amt * (rnd(g, 2) > 0.7 ? 22 : 7) * (rnd(g, 1) * 2 - 1)); return [{ op: 'rgbshift', rh: s, bh: -s }]; } },
-  rgb: { n: 'RGB split', cat: 'distort', d: 2, px: (W, H, u, lt, f) => { const s = Math.max(1, Math.round(8 * u * f.amt)); return [{ op: 'rgbshift', rh: -s, bh: s }]; } },
-  pixelate: { n: 'Pixelate', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [{ op: 'pixelize', size: Math.max(2, Math.round(28 * u * f.amt)) }] },
-  blur: { n: 'Blur', cat: 'distort', d: 2, px: (W, H, u, lt, f) => [{ op: 'blur', sigma: +Math.max(0.5, 12 * u * f.amt).toFixed(2) }] },
-  invert: { n: 'Invert', cat: 'distort', d: 1, px: () => [{ op: 'negate' }] },
-  mirror: { n: 'Mirror', cat: 'distort', d: 3, px: () => [{ op: 'mirror' }] },
-  split4: { n: 'Split ×4', cat: 'distort', d: 3, px: () => [{ op: 'grid' }] },
-  snow: { n: 'Snow', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    x.fillStyle = '#fff';
-    particles(Math.round(110 * f.amt), i => {
-      const v = 0.05 + 0.09 * rnd(i, 2), yy = ((rnd(i, 4) + lt * v) % 1.08) - 0.04, xx = rnd(i, 1) + 0.02 * Math.sin(lt * 1.3 + 6.28 * rnd(i, 5));
-      x.globalAlpha = 0.5 + 0.5 * rnd(i, 6); x.beginPath(); x.arc(xx * W, yy * H, (1.5 + 4.5 * rnd(i, 3)) * u, 0, 6.2832); x.fill();
-    });
-  } },
-  rain: { n: 'Rain', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    x.strokeStyle = 'rgba(200,220,255,0.45)'; x.lineWidth = 2 * u; x.lineCap = 'round'; x.beginPath();
-    particles(Math.round(90 * f.amt), i => {
-      const yy = ((rnd(i, 4) + lt * (1.1 + 0.6 * rnd(i, 2))) % 1.2) - 0.1, xx = rnd(i, 1) - yy * 0.12, L = (40 + 40 * rnd(i, 3)) * u;
-      x.moveTo(xx * W, yy * H); x.lineTo(xx * W - 0.25 * L, yy * H + L);
-    });
-    x.stroke();
-  } },
-  sparkle: { n: 'Sparkles', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    particles(Math.round(34 * f.amt), i => {
-      const s = Math.max(0, Math.sin(lt * (2 + 3 * rnd(i, 3)) + 6.28 * rnd(i, 4))) ** 3, r = (8 + 18 * rnd(i, 5)) * u * s;
-      if (s < 0.02) return;
-      x.save(); x.translate(rnd(i, 1) * W, rnd(i, 2) * H); x.rotate(rnd(i, 6) * 0.8); x.globalAlpha = s; x.fillStyle = '#fff'; x.shadowColor = '#ffe9a8'; x.shadowBlur = r * 1.2;
-      x.beginPath(); for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, rr = k % 2 ? r * 0.18 : r; x.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } x.closePath(); x.fill(); x.restore();
-    });
-  } },
-  hearts: { n: 'Hearts', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    const col = ['#ff3d7f', '#ff6b9d', '#e6004c', '#ff9ec4'];
-    particles(Math.round(16 * f.amt), i => {
-      const yy = 1.08 - ((rnd(i, 4) + lt * (0.12 + 0.12 * rnd(i, 2))) % 1.2), xx = rnd(i, 1) + 0.03 * Math.sin(lt * 2 + 6.28 * rnd(i, 5)), s = (18 + 26 * rnd(i, 3)) * u;
-      x.save(); x.translate(xx * W, yy * H); x.rotate((rnd(i, 6) - 0.5) * 0.6); x.globalAlpha = 0.85; x.fillStyle = col[i % 4];
-      x.beginPath(); x.moveTo(0, s * 0.35); x.bezierCurveTo(-s, -s * 0.35, -s * 0.45, -s * 1.05, 0, -s * 0.45); x.bezierCurveTo(s * 0.45, -s * 1.05, s, -s * 0.35, 0, s * 0.35); x.fill(); x.restore();
-    });
-  } },
-  confetti: { n: 'Confetti', cat: 'party', d: 3, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    const col = ['#ffd400', '#ff3d7f', '#3dd6ff', '#7cff6b', '#b49bff', '#ff8a3d'];
-    particles(Math.round(80 * f.amt), i => {
-      const yy = ((rnd(i, 4) + lt * (0.18 + 0.2 * rnd(i, 2))) % 1.15) - 0.07, xx = rnd(i, 1) + 0.04 * Math.sin(lt * 1.7 + 6.28 * rnd(i, 5));
-      x.save(); x.translate(xx * W, yy * H); x.rotate(lt * (2 + 4 * rnd(i, 6)) + 6.28 * rnd(i, 7)); x.scale(1, Math.cos(lt * (3 + 5 * rnd(i, 8)) + 6.28 * rnd(i, 9)));
-      x.fillStyle = col[i % col.length]; x.fillRect(-5 * u, -8 * u, 10 * u, 16 * u); x.restore();
-    });
-  } },
-  bubbles: { n: 'Bubbles', cat: 'party', d: 4, rate: 'frame', layer: (x, W, H, u, lt, f) => {
-    x.strokeStyle = '#fff'; x.fillStyle = '#fff'; x.lineWidth = 2 * u;
-    particles(Math.round(22 * f.amt), i => {
-      const yy = 1.1 - ((rnd(i, 4) + lt * (0.08 + 0.1 * rnd(i, 2))) % 1.25), xx = rnd(i, 1) + 0.025 * Math.sin(lt * 1.5 + 6.28 * rnd(i, 5)), r = (10 + 30 * rnd(i, 3)) * u;
-      x.globalAlpha = 0.55; x.beginPath(); x.arc(xx * W, yy * H, r, 0, 6.2832); x.stroke();
-      x.globalAlpha = 0.35; x.beginPath(); x.arc(xx * W - r * 0.35, yy * H - r * 0.35, r * 0.22, 0, 6.2832); x.fill();
-    });
-  } },
-  bars: { n: 'Cinema bars', cat: 'frame', d: 4, rate: 'edges', layer: (x, W, H, u, lt, f) => { // 2.39:1 letterbox, sliding in and out
-    const hb = Math.min(1.5, f.amt) * (W > H ? Math.max(H * 0.08, (H - W / 2.39) / 2) : H * 0.11), s = ss3(clamp(lt / 0.4, 0, 1)) * ss3(clamp((f.dur - lt) / 0.4, 0, 1));
-    x.fillStyle = '#000'; x.fillRect(0, 0, W, hb * s); x.fillRect(0, H - hb * s, W, hb * s);
-  } },
-  rec: { n: 'Camcorder', cat: 'frame', d: 4, rate: 2, layer: (x, W, H, u, lt) => { // the dot blinks and the clock ticks: two changes a second
-    const m = 40 * u, L = 70 * u, q = Math.floor(lt * 2) / 2;
-    x.strokeStyle = '#fff'; x.lineWidth = 4 * u; x.globalAlpha = 0.9; x.beginPath();
-    for (const [cx, cy, sx, sy] of [[m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1]]) { x.moveTo(cx, cy + sy * L); x.lineTo(cx, cy); x.lineTo(cx + sx * L, cy); }
-    x.stroke();
-    x.font = `600 ${34 * u}px Menlo, monospace`; x.textBaseline = 'middle'; x.fillStyle = '#fff';
-    if (q % 1 < 0.5) { x.fillStyle = '#ff2d2d'; x.beginPath(); x.arc(m + 34 * u, m + 46 * u, 11 * u, 0, 6.2832); x.fill(); x.fillStyle = '#fff'; }
-    x.fillText('REC', m + 54 * u, m + 46 * u);
-    x.strokeRect(W - m - 92 * u, m + 32 * u, 60 * u, 28 * u); x.fillRect(W - m - 30 * u, m + 40 * u, 5 * u, 12 * u);
-    for (let i = 0; i < 3; i++) x.fillRect(W - m - 86 * u + i * 19 * u, m + 37 * u, 15 * u, 18 * u);
-    x.textAlign = 'right'; x.fillText(clock(Math.floor(q)), W - m - 24 * u, H - m - 44 * u);
-  } },
-  vignette: { n: 'Vignette', cat: 'frame', d: 4, rate: 0, layer: (x, W, H, u, lt, f) => {
-    const g = x.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.hypot(W, H) / 2);
-    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${Math.min(0.95, 0.75 * f.amt)})`);
-    x.fillStyle = g; x.fillRect(0, 0, W, H);
-  } },
-  film: { n: 'Film strip', cat: 'frame', d: 4, rate: 'frame', layer: (x, W, H, u, lt) => { // sprocket holes running past
-    const bw = 60 * u, hole = 26 * u, gap = 64 * u, off = (lt * 240 * u) % gap;
-    x.fillStyle = '#0b0b0b'; x.fillRect(0, 0, bw, H); x.fillRect(W - bw, 0, bw, H);
-    x.fillStyle = 'rgba(235,235,225,0.9)'; x.beginPath();
-    for (let y = -gap + off; y < H + gap; y += gap) { x.roundRect((bw - hole) / 2, y, hole, hole * 1.4, 5 * u); x.roundRect(W - bw + (bw - hole) / 2, y, hole, hole * 1.4, 5 * u); }
-    x.fill();
-  } },
-};
-const fxOn = (f, t) => t >= f.start && t < f.start + f.dur;
-function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the text layer (preview and export draw them the same way)
-  if (P.mute.fx) return;
-  const W = P.w * k, H = P.h * k, u = Math.min(W, H) / 1080;
-  for (const f of shown('fx')) if (fxOn(f, t) && FX[f.fx]?.layer) { ctx.save(); FX[f.fx].layer(ctx, W, H, u, t - f.start, f); ctx.restore(); }
-}
 function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (video and overlays)
   if (P.mute.fx) return;
   const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
   // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
   runOps(ctx, W, H, shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f))));
-}
-const scratchCv = new Map();
-function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
-  const key = `${tag}:${W}x${H}`;
-  let c = scratchCv.get(key);
-  if (!c) { c = document.createElement('canvas'); c.width = W; c.height = H; scratchCv.set(key, c); if (scratchCv.size > 64) scratchCv.delete(scratchCv.keys().next().value); }
-  return c;
 }
 function blurred(C, W, H, sigma) { // Gaussian blur of a canvas (ctx.filter where there is one; WebKit: down- and up-scaling, close to it)
   const B = scratch(W, H, 'fxb'), b = B.getContext('2d');
@@ -2944,109 +2770,6 @@ function addTemplate(name) {
   toast(`${name} added: click a line to change its words`);
 }
 
-function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? { ...P.capStyle, ...it.style } : it.style) }; }
-function drawTexts(ctx, t, k, preview) {
-  drawFxLayers(ctx, t, k);
-  for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
-}
-function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
-  const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
-  const u = (Math.min(P.w, P.h) / 1080) * k * pr.scale, size = st.size * u;
-  const timed = it.words?.length ? it.words : null;
-  const paras = timed ? [timed.map(w => w.w)] : String(it.text ?? '').split('\n').map(p => p.split(/\s+/).filter(Boolean));
-  let active = -1;
-  if (timed && st.hl) timed.forEach((w, i) => { if (lt >= w.s) active = i; });
-  ctx.save();
-  ctx.font = `${st.italic ? 'italic ' : ''}${st.weight} ${size}px "${st.font}", system-ui, sans-serif`;
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  const LS = (st.ls || 0) * size; // letter spacing, drawn letter by letter so it works in every engine (WebKit has no ctx.letterSpacing everywhere)
-  const meas = w => (LS ? [...w].reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) + LS * ([...w].length - 1) : ctx.measureText(w).width);
-  const put = (stroke, w, x0, y0) => {
-    if (!LS) return stroke ? ctx.strokeText(w, x0, y0) : ctx.fillText(w, x0, y0);
-    let xx = x0;
-    for (const ch of w) { if (stroke) ctx.strokeText(ch, xx, y0); else ctx.fillText(ch, xx, y0); xx += ctx.measureText(ch).width + LS; }
-  };
-  const cjk = /[぀-ヿ㐀-鿿＀-￯　-〿]/.test(paras.flat().join('')); // Chinese / Japanese words are characters: no gaps
-  const sp = (cjk ? 0 : ctx.measureText(' ').width) + LS, maxW = st.maxW * P.w * k, lines = [];
-  const grow = timed && st.pop ? 1.12 : 1; // every word reserves its popped width: no overlap, and the line doesn't jitter
-  let idx = 0;
-  for (const para of paras) {
-    let ln = { ws: [], w: 0 };
-    for (let w of para) {
-      if (st.upper) w = w.toUpperCase();
-      const ww = meas(w);
-      if (ln.ws.length && ln.w + sp + ww * grow > maxW) { lines.push(ln); ln = { ws: [], w: 0 }; }
-      ln.w += (ln.ws.length ? sp : 0) + ww * grow;
-      ln.ws.push({ w, ww, i: idx++ });
-    }
-    lines.push(ln);
-  }
-  const lh = size * st.lh, x = pr.x * P.w * k, y = pr.y * P.h * k;
-  const top = y - (lines.length * lh) / 2, padX = size * (st.boxPad ?? 0.3), BW = Math.max(0, ...lines.map(l => l.w));
-  const lx = ln => (st.align === 'left' ? x - BW / 2 : st.align === 'right' ? x + BW / 2 - ln.w : x - ln.w / 2); // line start for the alignment
-  if (pr.rot) { ctx.translate(x, y); ctx.rotate((pr.rot * Math.PI) / 180); ctx.translate(-x, -y); }
-  const av = st.anim && st.anim !== 'none' ? clamp(lt / animLen(st, false), 0, 1) : 1; // "in" animation progress
-  ctx.globalAlpha = pr.opacity * (st.anim === 'type' ? 1 : st.anim === 'pop' ? Math.min(1, av * 2) : st.anim === 'drop' ? Math.min(1, av * 3) : av);
-  if (av < 1 && st.anim === 'pop') { const s = 0.6 + 0.4 * easeOutBack(av); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
-  if (av < 1 && st.anim === 'slide') ctx.translate(0, (1 - av) ** 3 * lh * 0.8);
-  if (av < 1 && st.anim === 'zoom') { const s = 1.6 - 0.6 * (1 - (1 - av) ** 3); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
-  if (av < 1 && st.anim === 'drop') ctx.translate(0, -(1 - easeOutBack(av)) * lh * 1.6);
-  const ao = st.out && st.out !== 'none' ? clamp((it.dur - lt) / animLen(st, true), 0, 1) : 1; // "out" animation, mirrored
-  if (ao < 1) {
-    if (st.out !== 'type') ctx.globalAlpha *= st.out === 'pop' ? Math.min(1, ao * 2) : ao;
-    if (st.out === 'pop') { const s = 0.6 + 0.4 * ao; ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
-    if (st.out === 'slide') ctx.translate(0, -((1 - ao) ** 2) * lh * 0.8);
-    if (st.out === 'zoom') { const s = 1 + 0.6 * (1 - ao) ** 2; ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
-  }
-  if (st.loop === 'bounce') ctx.translate(0, -Math.abs(Math.sin(lt * Math.PI * 2)) * size * 0.15);
-  if (st.loop === 'pulse') { const s = 1 + 0.06 * Math.sin(lt * Math.PI * 4); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
-  if (st.loop === 'wiggle') { ctx.translate(x, y); ctx.rotate(0.06 * Math.sin(lt * Math.PI * 6)); ctx.translate(-x, -y); }
-  const nch = lines.map(l => l.ws.reduce((n2, w) => n2 + [...w.w].length, 0)), before = nch.map((_, i) => nch.slice(0, i).reduce((x2, y2) => x2 + y2, 0));
-  const all = before.at(-1) + nch.at(-1);
-  let shown = Infinity; // typewriter: characters typed so far; backspace: characters still left
-  if (st.anim === 'type' && av < 1) shown = Math.floor(av * all);
-  if (st.out === 'type' && ao < 1) shown = Math.min(shown, Math.floor(ao * all));
-  let left = shown;
-  // WebKit draws shadowed text at full strength whatever globalAlpha says (the default Title popped on instead of fading,
-  // in the preview and the export): such text is drawn solid on a scratch canvas, then laid on at the fade
-  const main = ctx, fade = ctx.globalAlpha;
-  if (st.shadow && fade < 1) {
-    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d');
-    sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, sx.canvas.width, sx.canvas.height);
-    sx.setTransform(main.getTransform()); sx.font = main.font; sx.textBaseline = 'middle'; sx.lineJoin = 'round';
-    ctx = sx;
-  }
-  let gradFill = null; // gradient text: top colour to bottom colour over the whole block
-  if (st.grad) { gradFill = ctx.createLinearGradient(0, top, 0, top + lines.length * lh); gradFill.addColorStop(0, st.color); gradFill.addColorStop(1, st.grad); }
-  if (st.box) {
-    ctx.fillStyle = hexA(st.boxColor, st.boxAlpha);
-    for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) { ctx.beginPath(); ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18))); ctx.fill(); }
-  }
-  for (const [li, ln] of lines.entries()) {
-    let cx = lx(ln);
-    const cy = top + li * lh + lh / 2;
-    for (const w of ln.ws) {
-      const on = w.i === active, wx = cx + (w.ww * grow - w.ww) / 2, chars = [...w.w], vis = left >= chars.length ? w.w : chars.slice(0, Math.max(0, left)).join('');
-      left -= chars.length;
-      if (!vis) { cx += w.ww * grow + sp; continue; } // not typed yet: its place stays reserved
-      ctx.save();
-      if (on && st.pop) { ctx.translate(wx + w.ww / 2, cy); ctx.scale(grow, grow); ctx.translate(-(wx + w.ww / 2), -cy); }
-      if (st.shadow) { ctx.shadowColor = hexA(st.shc || '#000000', st.sha ?? 0.55); ctx.shadowBlur = size * (st.shb ?? 0.18); ctx.shadowOffsetX = size * (st.shx || 0); ctx.shadowOffsetY = size * (st.shy ?? 0.04); }
-      if (st.strokeW > 0) { ctx.lineWidth = st.strokeW * u * 2; ctx.strokeStyle = st.stroke; put(true, vis, wx, cy); ctx.shadowColor = 'transparent'; }
-      ctx.fillStyle = on ? st.hl : gradFill || st.color;
-      put(false, vis, wx, cy);
-      ctx.restore();
-      cx += w.ww * grow + sp;
-    }
-  }
-  if (ctx !== main) { main.setTransform(1, 0, 0, 1, 0, 0); main.globalAlpha = fade; main.drawImage(ctx.canvas, 0, 0); ctx = main; }
-  ctx.restore();
-  if (preview) {
-    const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;
-    hits.push({ lane, id: it.id, x0: x - bw, y0: top, x1: x + bw, y1: top + lines.length * lh, rot: pr.rot || 0 });
-  }
-}
 function frame(now) {
   rafId = 0;
   if (!P) return;
@@ -4179,6 +3902,89 @@ function sourceSize() { // the largest picture on the timeline [w, h] (by area):
   for (const c of [...P.main, ...P.overlay]) { const m = M.get(c.media); if (m?.w && m?.h && (!best || m.w * m.h > best[0] * best[1])) best = [m.w, m.h]; }
   return best;
 }
+// The export's text/effect layer, made in background workers (web/layer.js, the preview's drawing code from draw.js): pass 1
+// scans the frames (pixel hash + ink box), the page dedupes them in frame order; pass 2 encodes each distinct picture cut to
+// ONE box (the union of the ink: the concat stream can't change size) and uploads it raw. Workers that can't draw the page's
+// fonts (the probe), or fail at all, hand the whole layer to the page: the same functions on the main thread.
+const layerFonts = new Map(); // font file URL -> its bytes, fetched once for the workers
+function layerFontList() { // every face the page draws with: style.css's @font-face rules and the imported fonts (the Mac's own are there by name)
+  const faces = [];
+  for (const sh of document.styleSheets) for (const r of sh.cssRules) if (r instanceof CSSFontFaceRule) {
+    const src = r.style.getPropertyValue('src').match(/url\("?([^")]+)"?\)/);
+    if (src) faces.push([r.style.getPropertyValue('font-family').replace(/["']/g, ''), new URL(src[1], sh.href).href, { weight: r.style.getPropertyValue('font-weight') || '400' }]);
+  }
+  for (const f of G.fonts || []) faces.push([f.family, new URL(`/fonts/${f.file}`, location.href).href, { weight: '1 1000' }]);
+  return Promise.all(faces.map(async ([family, url, desc]) => {
+    if (!layerFonts.has(url)) layerFonts.set(url, fetch(url).then(r => { if (!r.ok) throw new Error(`font ${r.status}`); return r.arrayBuffer(); }).catch(e => { layerFonts.delete(url); throw e; }));
+    return [family, await layerFonts.get(url), desc];
+  }));
+}
+function layerWorker() { // call(msg) -> its answer ({err} rejects); {done} messages in between go to onDone
+  const wk = new Worker('layer.js');
+  let wait = null;
+  wk.onmessage = ({ data: d }) => {
+    if (d.done !== undefined) return wait?.[2]?.(d.done);
+    const w0 = wait; wait = null;
+    if (d.err) w0?.[1](new Error(d.err)); else w0?.[0](d);
+  };
+  wk.onerror = e => { e.preventDefault(); const w0 = wait; wait = null; w0?.[1](new Error(e.message || 'layer worker failed')); };
+  return { call: (msg, onDone) => new Promise((ok, no) => { wait = [ok, no, onDone]; wk.postMessage(msg); }), close: () => wk.terminate() };
+}
+async function layerPool(snap, w, h, k, n, fonts) { // n workers with the project snapshot and the page's fonts, checked by the probe
+  if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') throw new Error('no workers');
+  const faces = await layerFontList(), ws = Array.from({ length: n }, layerWorker);
+  try {
+    await Promise.all(ws.map(x => x.call({ init: { P: snap, w, h, k, fonts: faces } })));
+    const mine = fonts.map(probeText), got = await Promise.all(ws.map(x => x.call({ probe: fonts })));
+    for (const g of got) g.px.forEach((a, i) => { for (let j = 0; j < a.length; j++) if (Math.abs(a[j] - mine[i][j]) > 16) throw new Error(`font probe: ${fonts[i]}`); });
+  } catch (e) { ws.forEach(x => x.close()); throw e; }
+  return ws.map(x => ({ scan: f => x.call({ scan: f }).then(d => d.res), encode: (lid, box, items, onDone) => x.call({ encode: { lid, box, items } }, onDone).then(d => d.redrawn), close: x.close }));
+}
+function layerPage(w, h, k) { // the fallback: the page's own canvas, yielding between blocks so the editor keeps drawing
+  const ctx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
+  return [{ scan: async f => { await new Promise(r => setTimeout(r)); return layerScan(ctx, k, f); }, encode: (lid, box, items, onDone) => layerEncode(ctx, k, box, items, lid, onDone), close() {} }];
+}
+async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n, box, frames} (null when nothing ever shows)
+  const starts = fr.slice(0, -1), blocks = [], res = [];
+  for (let i = 0; i < starts.length; i += 32) blocks.push(starts.slice(i, i + 32));
+  const bar = (pct, msg) => { if (S.exporting && !S.exporting.job) exportUI(pct, msg); }; // an export's dialog and button (not a snapshot)
+  let q = 0, done = 0;
+  try {
+    await Promise.all(rs.map(async r => { while (q < blocks.length) { const i = q++; res[i] = await r.scan(blocks[i]); bar(Math.round((++done / blocks.length) * 30), 'Rendering text layer…'); } }));
+    const seen = new Map(), items = [], spans = [];
+    let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+    res.flat().forEach(([f, key, ...bb], j) => { // spans on the frame grid: the export can't put a change between two frames
+      let i = seen.get(key);
+      if (i === undefined) {
+        seen.set(key, (i = items.length)); items.push([i, f, key]);
+        if (bb[0] !== null) { x0 = Math.min(x0, bb[0]); y0 = Math.min(y0, bb[1]); x1 = Math.max(x1, bb[2]); y1 = Math.max(y1, bb[3]); }
+      }
+      const last = spans.at(-1), b = fr[j + 1] / fps;
+      if (last && last.i === i) last.end = b; else spans.push({ i, start: f / fps, end: b });
+    });
+    if (x1 < 0) return null; // nothing ever shows (an empty caption, a fully faded title)
+    const box = [x0, y0, x1 - x0, y1 - y0], lid = hex12();
+    done = 0;
+    const redrawn = await Promise.all(rs.map((r, j) => r.encode(lid, box, items.filter((_, i) => i % rs.length === j),
+      () => bar(30 + Math.round((++done / items.length) * 70), `Rendering text layer… ${done}/${items.length}`))));
+    S.layerStats = { redrawn: redrawn.reduce((x, y) => x + y, 0) };
+    return { layer: lid, n: items.length, box, frames: spans };
+  } finally { rs.forEach(r => r.close()); }
+}
+async function textLayer(w, h, k, fr, fonts) {
+  const t0 = performance.now(), n = Math.min(clamp((navigator.hardwareConcurrency || 4) - 1, 1, 7), fr.length - 1);
+  // the project as it plays, taken now: a compound clip borrows P only while its plan is built
+  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text'), captions: shown('captions'), fx: shown('fx') };
+  let why = S.layerForce === 'page' ? 'forced' : '', pool = null;
+  S.layerStats = {};
+  if (!why) try { pool = await layerPool(snap, w, h, k, n, fonts); } catch (e) { why = e.message; }
+  const t1 = performance.now();
+  if (pool) try { const r = await layerRun(pool, fr, snap.fps); S.layerMode = 'workers'; S.layerStats = { ...S.layerStats, n, startMs: Math.round(t1 - t0), ms: Math.round(performance.now() - t0) }; return r; } catch (e) { why = e.message; }
+  console.warn('layer: page fallback', why);
+  const r = await layerRun(layerPage(w, h, k), fr, snap.fps);
+  S.layerMode = 'page'; S.layerStats = { ...S.layerStats, n: 1, why, ms: Math.round(performance.now() - t0) };
+  return r;
+}
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
   await lutsReady([...P.main, ...P.overlay, ...P.fx]); // imported LUTs in the grades are loaded
@@ -4237,23 +4043,9 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     for (const c of cuts) fs.add(Math.floor(c * P.fps)).add(Math.ceil(c * P.fps)); // the frames on either side of every change
     const sf = Math.floor(clamp(S.t, 0, Math.max(0, D - 1 / P.fps)) * P.fps + 1e-6); // a still: only its own frame's text (after one span from 0: the spans play back to back)
     const fr = format === 'png' ? [...new Set([0, sf, sf + 1])] : [...fs].filter(f => f >= 0 && f <= nF).sort((a, b) => a - b);
-    const cv = new OffscreenCanvas(w, h), ctx = cv.getContext('2d', { willReadFrequently: true }), pngs = [], seen = new Map(), spans = [];
-    for (let i = 0; i + 1 < fr.length; i++) { // spans on the frame grid: the export can't put a change between two frames
-      const a = fr[i] / P.fps, b = fr[i + 1] / P.fps;
-      ctx.clearRect(0, 0, w, h);
-      drawTexts(ctx, a, k, false); // exactly what the preview draws on that frame (same function, same time)
-      // the same picture again (a looping title comes back every half second) is found by its pixels, not encoded again:
-      // the PNG encode was most of the 20 s before the render started
-      const px = new Uint32Array(ctx.getImageData(0, 0, w, h).data.buffer);
-      let h1 = 2166136261, h2 = 0x9e3779b9;
-      for (let j = 0; j < px.length; j++) { const v = px[j]; h1 = Math.imul(h1 ^ v, 16777619); h2 = Math.imul(h2 ^ v, 2246822519) ^ (h2 >>> 13); }
-      const key = `${h1 >>> 0}:${h2 >>> 0}`;
-      let idx = seen.get(key);
-      if (idx === undefined) { idx = pngs.push(await blobURL(await cv.convertToBlob({ type: 'image/png' }))) - 1; seen.set(key, idx); }
-      const last = spans.at(-1);
-      if (last && last.i === idx) last.end = b; else spans.push({ i: idx, start: a, end: b });
-    }
-    text = { pngs, frames: spans };
+    const fonts = [...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.italic ? 'italic ' : ''}${s.weight} 64px "${s.font}", system-ui, sans-serif`; }))]; // as drawText sets them
+    if (layerFx.some(f => f.fx === 'vhs' || f.fx === 'rec')) fonts.push('700 64px Menlo, monospace', '600 64px Menlo, monospace');
+    text = await textLayer(w, h, k, fr, fonts);
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
