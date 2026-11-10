@@ -37,7 +37,7 @@ XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', '
 # blur transitions: an xfade underneath, then a blur that peaks half way (sin(pi p)) on those frames; the UI's transition() does the same
 TR_BLUR = {'whipleft': 'slideleft', 'whipright': 'slideright', 'zoomblur': 'fade'}
 WHIP, ZOOMB, ZB_K = 0.04, 0.25, 8  # whip: horizontal sigma, x frame width; zoom blur: the last copy's extra zoom; copies averaged
-FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur'}  # video effects: the UI expands each one into these
+FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur', 'lut'}  # video effects: the UI expands each one into these
 BLENDS = {  # overlay blend modes = the canvas's W3C formulas as lut2 expressions; x = backdrop, y = clip, 0..255 (ffmpeg's own blend modes differ)
     'multiply': 'x*y/255', 'screen': 'x+y-x*y/255', 'darken': 'min(x,y)', 'lighten': 'max(x,y)',
     'overlay': 'if(lte(x,127.5),2*x*y/255,255-2*(255-x)*(255-y)/255)',
@@ -2070,6 +2070,10 @@ def fx_op(f, W, H):
         k['z'], k['x'], k['y'] = per('z', 1, 8), per('x', -W, W), per('y', -H, H)
     elif op == 'glow':
         k['sigma'], k['amt'] = fnum(f['sigma'], 0.1, 500), fnum(f['amt'], 0, 2)
+    elif op == 'lut':  # an adjustment layer: its whole colour stage as one 33^3 table (uint16, like a clip's grade)
+        k['lut'] = base64.b64decode(str(f.get('lut') or ''))
+        if len(k['lut']) != 33 ** 3 * 3 * 2:
+            raise ValueError('lut must be a 33-point 3D table')
     for key in ('k', 'rh', 'bh', 'z', 'x', 'y'):
         if isinstance(k.get(key), list) and len(k[key]) != n:
             raise ValueError(f'{op}.{key} needs one value per frame ({n})')
@@ -2358,7 +2362,7 @@ def graph(p, td):
             a += f',adelay={round(delay * 1000)}:all=1'
         return a
 
-    def grade(c):  # the UI's grade table as a .cube for lut3d (trilinear, like the preview's 3D texture)
+    def grade(c, fmt=',format=rgb24,'):  # the UI's grade table as a .cube for lut3d (trilinear, like the preview's 3D texture)
         if not c.get('grade'):
             return ''
         a = array('H')
@@ -2367,7 +2371,7 @@ def graph(p, td):
             a.byteswap()
         f = Path(td) / f'grade{len(list(Path(td).glob("grade*.cube")))}.cube'
         f.write_text('LUT_3D_SIZE 33\n' + ''.join(f'{a[i] / 65535:.6f} {a[i + 1] / 65535:.6f} {a[i + 2] / 65535:.6f}\n' for i in range(0, len(a), 3)))
-        return f",format=rgb24,lut3d=file='{f}':interp=trilinear"
+        return f"{fmt}lut3d=file='{f}':interp=trilinear"
 
     def tone(c):  # the UI's curve as a 1D LUT (exact at 8-bit inputs, like the preview's feComponentTransfer table)
         if not c.get('tone'):
@@ -2586,9 +2590,11 @@ def graph(p, td):
             zb = zoom_blur(tag, f"{f['s']:.4f}", W, H)
             fg.append(f"[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]trim=start_frame={f['a']}:end_frame={f['b']},{zb}[{tag}e];"
                       f"[{tag}a][{tag}e]overlay=eof_action=pass:format=gbrp[{nxt}]")
-        elif op in ('matrix', 'negate', 'blur', 'hblur', 'pixelize', 'rgbshift'):  # filters with timeline support: in place, on those frames only
+        elif op in ('matrix', 'negate', 'blur', 'hblur', 'pixelize', 'rgbshift', 'lut'):  # filters with timeline support: in place, on those frames only
             pre = ''
-            if op == 'matrix':
+            if op == 'lut':  # adjustment layer: the composite (gbrp, lut3d takes it as is) through the table
+                body = grade({'grade': f['lut']}, '') + ':'
+            elif op == 'matrix':
                 names, m, kk = ('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb'), f['m'], f['k']
                 if isinstance(kk, list):
                     pre = frame_cmds(f, tag, f'colorchannelmixer@{tag}', lambda i: tuple((nm, round(v * kk[i], 4)) for nm, v in zip(names, m)))
@@ -3478,6 +3484,10 @@ def selftest():
     want = [g0[0], (2 * g0[0] + g0[1]) / 3, (g0[0] + g0[1] + g0[2]) / 3, g0[3] - (g0[2] - g0[1])]  # tmix repeats the first frame before it
     assert all(abs(a - b) <= 2 for a, b in zip(g3, want)), ('motion blur 3 = mean of the frame and the 2 before', g0, g3, want)
     print(f'motion blur ok: zoom blur on its frames only; tmix of 3 frames = their mean ({g0} -> {g3})')
+    swap = base64.b64encode(array('H', [round(v * 65535 / 32) for b in range(33) for g in range(33) for r in range(33) for v in (b, g, r)]).tobytes()).decode()
+    out = render({**tplan, 'name': 'fx-lut', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'lut', 'lut': swap, 'a': 10, 'b': 20}]}, 30)
+    l5, l15, l25 = at(5, 60), at(15, 60), at(15, 200)
+    assert l5[0] > 200 and l15[2] > 200 and l15[0] < 50 and l25[0] > 200 and l25[2] < 50, ('adjustment layer table on frames 10-19 only: red and blue swapped', l5, l15, l25)
     for op in ({'op': 'blur', 'sigma': 4}, {'op': 'hblur', 'sigma': 8}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
         out = render({**tplan, 'name': f"fx-{op['op']}", 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{**op, 'a': 0, 'b': 30}]}, 30)
         if op['op'] == 'mirror':

@@ -75,6 +75,9 @@ add('mask inverted', `main(B); ov(A).mask = { type: 'circle', x: 0, y: 0, w: 0.5
 add('chroma key', `main(B); ov(A).key = { color: '#ffffff', sim: 0.25, blend: 0.1 }; T = 1.5`);
 for (const tr of opt.transitions) add(`transition ${tr}`, `main(A).tr = { type: '${tr}', d: 1 }; main(B); packMain(); T = P.main[1].start + 0.3`); // 30 %: at 50 % Zoom has zoomed into one pixel
 for (const fx of Object.keys(opt.effects)) add(`effect ${fx}`, `main(A); P.fx.push({ id: hex12(), fx: '${fx}', start: 0, dur: 4, amt: 1 }); T = 1.5`);
+add('adjustment layer', `main(A); main(B); P.fx.push({ id: hex12(), fx: 'adjust', start: 0.5, dur: 8, amt: 1, adj: { b: 1.1, c: 1.3, s: 0.5, temp: 0.4, ex: 0.3 }, look: { name: 'teal', amount: 0.7 }, grade: { gain: { x: 0.3, y: 0, l: 0.1 }, hsl: { red: { h: 0.5 } }, curves: { m: [[0, 0.05], [0.5, 0.6], [1, 1]] } } }); T = 7`);
+add('adjustment layer over overlay + text', `main(A); Object.assign(ov(B), { scale: 0.5, x: 0.2 }); text('Title'); P.fx.push({ id: hex12(), fx: 'adjust', start: 0, dur: 4, amt: 1, adj: { b: 0.8, c: 1.4, s: 1.6 }, grade: { lift: { x: -0.3, y: 0.3, l: 0.1 } } }); T = 1.5`); // the text stays ungraded on top
+add('adjustment layer after an effect', `main(A); P.fx.push({ id: hex12(), fx: 'bw', start: 0, dur: 4, amt: 0.6 }, { id: hex12(), fx: 'adjust', start: 0, dur: 4, amt: 1, look: { name: 'warm', amount: 1 }, adj: { b: 1, c: 1, s: 1, fade: 0.4 } }); T = 1.5`);
 for (const tp of opt.textPresets) add(`text ${tp}`, `main(A); text('${tp}'); T = 1.5`);
 add('text Title fading in, half way', `main(A); text('Title'); P.text.at(-1).style.anim = 'fade'; T = 0.15`); // a shadow made WebKit ignore the fade
 for (const an of opt.clipIn.filter(x => x !== 'none')) add(`clip in ${an}`, `main(B); ov(A).anim = { in: '${an}', ind: 1, out: 'none', outd: 0.5, loop: 'none', amt: 1 }; T = 0.5`);

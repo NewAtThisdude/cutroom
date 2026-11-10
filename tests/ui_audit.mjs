@@ -62,7 +62,7 @@ await ev(() => {
   const v = [...M.values()].find(m => m.kind === 'video' && m.hasAudio && m.duration > 8), a = [...M.values()].find(m => m.kind === 'audio');
   addMedia(v.id, 'main'); addMedia(v.id, 'overlay', 1); addMedia(a.id, 'audio', 0); addText('Title');
   P.captions = [{ id: hex12(), start: 0.5, dur: 1.5, text: 'Caption line here', words: [] }];
-  P.fx = [{ id: hex12(), fx: Object.keys(FX)[0], start: 0, dur: 2, amt: 1 }];
+  P.fx = [{ id: hex12(), fx: Object.keys(FX)[0], start: 0, dur: 2, amt: 1 }, { id: hex12(), fx: 'adjust', start: 2, dur: 2, amt: 1, adj: { b: 1.1, c: 1, s: 1 } }];
   renderAll();
 });
 const pid = await ev(() => P.id);
@@ -70,11 +70,11 @@ for (const t of ['media', 'audio', 'text', 'stickers', 'effects', 'transitions',
   await page.click(`.rail button[data-tab="${t}"]`);
   await audit(`rail ${t}`, `#tab-${t}`);
 }
-for (const lane of ['main', 'overlay', 'audio', 'text', 'captions', 'fx']) {
-  await ev(l => { const c = P[l][0]; S.sel = { lane: l, id: c.id }; renderAll(); }, lane);
+for (const [lane, i] of [['main', 0], ['overlay', 0], ['audio', 0], ['text', 0], ['captions', 0], ['fx', 0], ['fx', 1]]) { // fx 1: the adjustment layer
+  await ev(([l, i]) => { const c = P[l][i]; S.sel = { lane: l, id: c.id }; renderAll(); }, [lane, i]);
   const tabs = await page.$$eval('#inspector .itabs button', bs => bs.map(x => x.dataset.itab));
-  if (!tabs.length) await audit(`inspector ${lane}`, '#inspector');
-  for (const it of tabs) { await page.click(`#inspector .itabs button[data-itab="${it}"]`); await audit(`inspector ${lane} / ${it}`, '#inspector'); }
+  if (!tabs.length) await audit(`inspector ${lane}${i ? " adjust" : ""}`, '#inspector');
+  for (const it of tabs) { await page.click(`#inspector .itabs button[data-itab="${it}"]`); await audit(`inspector ${lane}${i ? " adjust" : ""} / ${it}`, '#inspector'); }
 }
 await ev(() => { S.sel = null; renderAll(); });
 await audit('inspector project', '#inspector');

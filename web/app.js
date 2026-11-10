@@ -15,6 +15,18 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
 };
 
+// pane sizes: library | preview | inspector widths and the timeline height, dragged on the .gut handles, kept per Mac
+const PANES = (() => { try { return JSON.parse(store.get('cutroom.panes')) || {}; } catch { return {}; } })();
+const paneSize = k => ({ lw: $('.left'), rw: $('#inspector'), th: $('.timeline') })[k].getBoundingClientRect()[k === 'th' ? 'height' : 'width'];
+function fitPanes(save) { // the saved sizes, held inside what this window has room for (the preview keeps 360 x 240 px)
+  const W = innerWidth, H = innerHeight, lim = { lw: [280, W - 360 - (PANES.rw ?? 304)], rw: [280, W - 360 - (PANES.lw ?? 356)], th: [200, H - 52 - 240] };
+  for (const k of ['lw', 'rw', 'th']) {
+    if (PANES[k] === undefined) document.body.style.removeProperty(`--${k}`);
+    else document.body.style.setProperty(`--${k}`, `${Math.round(clamp(PANES[k], lim[k][0], Math.max(lim[k][0], lim[k][1])))}px`);
+  }
+  if (save) { for (const k of Object.keys(PANES)) PANES[k] = Math.round(paneSize(k)); store.set('cutroom.panes', JSON.stringify(PANES)); }
+}
+
 async function api(path, body, method = body === undefined ? 'GET' : 'POST', keepalive = false) {
   const json = body === undefined ? undefined : JSON.stringify(body);
   const r = await fetch(path, { method, headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: json, keepalive: keepalive && json.length < 6e4 }); // keepalive: the page may be going away (64 KB cap)
@@ -518,7 +530,7 @@ function trHandles(wa = -Infinity, wb = Infinity) {
 
 function clipHTML(lane, c, top = 0, h = 42) {
   const pps = S.pps, m = M.get(c.media), layers = []; // [image, size, position, repeat]
-  let label = c.fx ? FX[c.fx]?.n || c.fx : c.media ? 'Missing media' : c.text;
+  let label = c.fx ? FX[c.fx]?.n || (c.fx === 'adjust' ? ADJUST.n : c.fx) : c.media ? 'Missing media' : c.text;
   if (m) {
     label = m.name + (c.speed !== 1 ? ` · ${c.speed}×` : '');
     const full = (m.duration / c.speed) * pps, off = (-c.in / c.speed) * pps, wave = m.wave && (lane === 'audio' || lane === 'main');
@@ -707,12 +719,24 @@ const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><se
 const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"></label>`;
 const tick = (k, label, v) => `<label class="row chk"><span>${label}</span><input type="checkbox" data-k="${k}"${v ? ' checked' : ''}></label>`;
 const segs = (attr, label, v, opts) => `<div class="row"><span>${label}</span><div class="seg">${opts.map(([val, txt]) => `<button data-${attr}="${val}" class="${val === v ? 'on' : ''}">${txt}</button>`).join('')}</div></div>`;
+const animTiles = (k, v, opts) => `<div class="presets small anims">${opts.map(([val, txt]) => `<button data-animk="${k}" data-animv="${val}" class="${val === v ? 'on' : ''}">${esc(txt)}</button>`).join('')}</div>`;
+function pickAnim(k, v) { // an animation tile: set it, then play its span on the selected clip once (reduced motion: show where it ends)
+  const c = selClip(), lane = S.sel?.lane;
+  if (!c) return;
+  change(() => apply({ dataset: { k }, value: v }));
+  if (v === 'none') return;
+  const kind = /\.(in|anim)$/.test(k) ? 'in' : /\.out$/.test(k) ? 'out' : 'loop', d = tdur(c, lane), A = c.anim || {}, st = c.media ? null : textStyle(c, lane);
+  const n = kind === 'loop' ? Math.min(d, 3) : Math.min(d, c.media ? (kind === 'in' ? A.ind : A.outd) ?? 0.5 : animLen(st, kind === 'out'));
+  const a = kind === 'out' ? c.start + d - n : c.start, b = Math.max(a, Math.min(kind === 'in' ? a + n : Infinity, c.start + d - 1 / P.fps)); // its end, on screen
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return seekTo(b);
+  seekTo(a); play(); S.end = b;
+}
 
 function renderInspector() {
   const c = selClip();
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
-  if (c?.media && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
+  if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
@@ -818,10 +842,10 @@ function mediaPanel(c, lane) {
   }
   basic += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, fmax, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, fmax, 0.05, 's')}`
     + (vis ? `<p class="hint">${lane === 'main' ? 'Main-track fades go through black.' : 'Overlay fades turn see-through.'}</p>` : '');
-  const animate = vis ? `<h4>In</h4>${pick('c.anim.in', 'Animation', A.in || 'none', CLIP_ANIMS)}${A.in && A.in !== 'none' ? slider('c.anim.ind', 'Duration', A.ind ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
-    + `<h4>Out</h4>${pick('c.anim.out', 'Animation', A.out || 'none', CLIP_ANIMS)}${A.out && A.out !== 'none' ? slider('c.anim.outd', 'Duration', A.outd ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
-    + `<h4>Combo</h4>${pick('c.anim.loop', 'Motion', A.loop || 'none', LOOP_ANIMS)}${A.loop && A.loop !== 'none' ? slider('c.anim.amt', 'Strength', A.amt ?? 1, 0.1, 3, 0.05, '%') : ''}`
-    + '<p class="hint">Plays on top of keyframes, the same in the preview and the export. Splitting keeps In on the first part and Out on the last.</p>' : '';
+  const animate = vis ? `<h4>In</h4>${animTiles('c.anim.in', A.in || 'none', CLIP_ANIMS)}${A.in && A.in !== 'none' ? slider('c.anim.ind', 'Duration', A.ind ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
+    + `<h4>Out</h4>${animTiles('c.anim.out', A.out || 'none', CLIP_ANIMS)}${A.out && A.out !== 'none' ? slider('c.anim.outd', 'Duration', A.outd ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
+    + `<h4>Combo</h4>${animTiles('c.anim.loop', A.loop || 'none', LOOP_ANIMS)}${A.loop && A.loop !== 'none' ? slider('c.anim.amt', 'Strength', A.amt ?? 1, 0.1, 3, 0.05, '%') : ''}`
+    + '<p class="hint">Picking one plays it once on the clip. It plays on top of keyframes, the same in the preview and the export. Splitting keeps In on the first part and Out on the last.</p>' : '';
   let look = '';
   if (vis) {
     look += `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`;
@@ -897,9 +921,9 @@ function colorPanel(c) { // colour wheels, curves, HSL, an imported LUT, and the
     + slider(`c.grade.hsl.${band}.h`, 'Hue', hb.h || 0, -1, 1, 0.01, '%') + slider(`c.grade.hsl.${band}.s`, 'Saturation', hb.s || 0, -1, 1, 0.01, '%') + slider(`c.grade.hsl.${band}.l`, 'Lightness', hb.l || 0, -1, 1, 0.01, '%')
     + `<h4>LUT</h4><div class="row"><span>LUT</span><select id="lutSel"><option value="">None</option>${luts.map(L => `<option value="${L.id}"${g.lut?.id === L.id ? ' selected' : ''}>${esc(short(L.name, 24))}</option>`).join('')}</select></div>`
     + `<div class="actions"><label class="btn"><input type="file" data-lutin hidden accept=".cube">Import .cube…</label></div>${g.lut?.id ? slider('c.grade.lut.amount', 'Strength', g.lut.amount ?? 1, 0, 1, 0.01, '%') : ''}`
-    + `<h4>Strength over time</h4><p class="hint">${c.lkf?.length ? `${c.lkf.length} point${c.lkf.length > 1 ? 's' : ''}: filters, adjustments and grade fade by them. ` : 'Fade all of this clip\'s colour (filter, adjust, grade) in or out: set a level at the playhead, move, set another.'}</p>`
+    + (c.fx ? '' : `<h4>Strength over time</h4><p class="hint">${c.lkf?.length ? `${c.lkf.length} point${c.lkf.length > 1 ? 's' : ''}: filters, adjustments and grade fade by them. ` : 'Fade all of this clip\'s colour (filter, adjust, grade) in or out: set a level at the playhead, move, set another.'}</p>`
     + slider('lk.here', 'Strength here', +strengthAt(c, lt).toFixed(2), 0, 1, 0.01, '%', ' id="lkHere"')
-    + `<div class="actions"><button data-act="lkprev" title="Previous strength point">◀ Point</button><button data-act="lknext" title="Next strength point">Point ▶</button>${c.lkf?.length ? '<button data-act="lkdel">Delete point</button><button data-act="lkclear">Clear all</button>' : ''}</div>`
+    + `<div class="actions"><button data-act="lkprev" title="Previous strength point">◀ Point</button><button data-act="lknext" title="Next strength point">Point ▶</button>${c.lkf?.length ? '<button data-act="lkdel">Delete point</button><button data-act="lkclear">Clear all</button>' : ''}</div>`)
     + (gradeOn(g) || c.lkf?.length ? '<div class="actions"><button data-act="gradereset">Reset colour</button></div>' : '');
 }
 function strengthPoint(c, v) { // the strength curve at the playhead: a new point, or the one already there
@@ -1000,9 +1024,9 @@ function textPanel(c, lane) {
       + slider(`${r}.shx`, 'Offset X', st.shx, -0.5, 0.5, 0.005, '%') + slider(`${r}.shy`, 'Offset Y', st.shy, -0.5, 0.5, 0.005, '%') : ''}`
     + `<h4>Background</h4>${tick(`${r}.box`, 'Background', st.box)}${st.box ? colour(`${r}.boxColor`, 'Colour', st.boxColor) + slider(`${r}.boxAlpha`, 'Opacity', st.boxAlpha, 0, 1, 0.01, '%')
       + slider(`${r}.boxR`, 'Roundness', st.boxR, 0, 1, 0.01, '%') + slider(`${r}.boxPad`, 'Padding', st.boxPad, 0, 1.5, 0.01, '%') : ''}`;
-  const anim = pick(`${r}.anim`, 'In', st.anim || 'none', ANIMS) + (st.anim && st.anim !== 'none' ? slider(`${r}.animT`, 'In length', animLen(st, false), 0.1, 5, 0.05, 's') : '')
-    + pick(`${r}.out`, 'Out', st.out || 'none', OUTS) + (st.out && st.out !== 'none' ? slider(`${r}.outT`, 'Out length', animLen(st, true), 0.1, 5, 0.05, 's') : '')
-    + pick(`${r}.loop`, 'Loop', st.loop || 'none', LOOPS);
+  const anim = `<h4>In</h4>${animTiles(`${r}.anim`, st.anim || 'none', ANIMS)}` + (st.anim && st.anim !== 'none' ? slider(`${r}.animT`, 'In length', animLen(st, false), 0.1, 5, 0.05, 's') : '')
+    + `<h4>Out</h4>${animTiles(`${r}.out`, st.out || 'none', OUTS)}` + (st.out && st.out !== 'none' ? slider(`${r}.outT`, 'Out length', animLen(st, true), 0.1, 5, 0.05, 's') : '')
+    + `<h4>Loop</h4>${animTiles(`${r}.loop`, st.loop || 'none', LOOPS)}<p class="hint">Picking one plays it once on the clip.</p>`;
   const pos = cap ? slider('cap.y', 'Position Y', P.capStyle.y - 0.5, -0.5, 0.5, 0.005, '%', ' data-off="0.5"') + '<p class="hint">Captions share one position; drag any caption on the preview to move them all.</p>'
     : slider('c.x', 'Position X', pr.x - 0.5, -0.5, 0.5, 0.005, '%', ' data-off="0.5"') + slider('c.y', 'Position Y', pr.y - 0.5, -0.5, 0.5, 0.005, '%', ' data-off="0.5"') + slider('c.scale', 'Scale', pr.scale, 0.2, 4, 0.01, '%')
       + slider('c.rot', 'Rotate', pr.rot, -180, 180, 1, '°') + slider('c.opacity', 'Opacity', pr.opacity, 0, 1, 0.01, '%') + kfRow(c, lane);
@@ -1865,7 +1889,7 @@ function fxPixels(ctx, t) { // effect steps on what is on the canvas so far (vid
   if (P.mute.fx) return;
   const W = ctx.canvas.width, H = ctx.canvas.height, u = Math.min(W, H) / 1080;
   // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
-  runOps(ctx, W, H, shown('fx').filter(f => fxOn(f, t) && FX[f.fx]?.px).flatMap(f => FX[f.fx].px(W, H, u, t - f.start, f)));
+  runOps(ctx, W, H, shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f))));
 }
 const scratchCv = new Map();
 function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
@@ -1903,6 +1927,7 @@ function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same 
       const g = fxGPU(x.canvas, W, H, ops.slice(i, j + 1).flatMap(q => FX_GPU[q.op](q)));
       if (g) { x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'copy'; x.drawImage(g[0], 0, g[1], W, H, 0, 0, W, H); x.restore(); i = j; continue; }
     }
+    if (o.op === 'lut') { lutPass(x, W, H, o.G); continue; } // an adjustment layer without WebGL2
     if (o.op === 'negate') { x.save(); x.globalCompositeOperation = 'difference'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.restore(); continue; }
     if (o.op === 'matrix') { matrixPass(x, W, H, o.m.map(v => v * (o.k ?? 1))); continue; }
     if (o.op === 'hblur') { hblurInPlace(x, W, H, o.sigma); continue; }
@@ -1937,8 +1962,8 @@ function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same 
   }
 }
 function addEffect(type, start = S.t, dur, amt = 1) {
-  const d = FX[type];
-  if (!d) throw new Error(`effect must be one of ${Object.keys(FX).join(', ')}`);
+  const d = FX[type] || (type === 'adjust' && ADJUST);
+  if (!d) throw new Error(`effect must be one of ${Object.keys(FX).join(', ')}, adjust`);
   let c;
   change(() => { c = { id: hex12(), fx: type, start: snap(Math.max(0, start)), dur: Math.max(1 / P.fps, snap(dur ?? d.d)), amt: clamp(+amt || 1, 0.1, 2) }; P.fx.push(c); S.sel = { lane: 'fx', id: c.id }; });
   return c;
@@ -1948,6 +1973,7 @@ function fxPlan(w, h) { // the effect steps for the export, sampled at every fra
   if (P.mute.fx) return out;
   for (const f of shown('fx')) {
     const d = FX[f.fx], a = Math.ceil(f.start * P.fps - 1e-6), b = Math.min(nF, Math.ceil((f.start + f.dur) * P.fps - 1e-6));
+    if (f.fx === 'adjust') { const G = b > a && adjustLUT(f); if (G) out.push({ op: 'lut', a, b, lut: gradeB64(G) }); continue; } // one table for all its frames (lut3d)
     if (!d?.px || b <= a) continue;
     const per = [];
     for (let i = a; i < b; i++) per.push(d.px(w, h, u, i / P.fps - f.start, f));
@@ -1960,11 +1986,22 @@ function fxPlan(w, h) { // the effect steps for the export, sampled at every fra
   return out;
 }
 function fxPanel(c) {
+  if (c.fx === 'adjust') return adjustPanel(c);
   const d = FX[c.fx] || { n: c.fx };
   return `<h3>${esc(d.n)}</h3><p class="muted">Effects track · ${mss(c.dur)} · changes everything under it (text stays on top)</p>
     ${slider('c.amt', 'Strength', c.amt ?? 1, 0.1, 2, 0.01, '%')}${pick('c.fx', 'Effect', c.fx, Object.entries(FX).map(([k, v]) => [k, v.n]))}
     <p class="hint">Drag its edges on the timeline to change how long it lasts. More effects are in the library on the left.</p>
     <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>`;
+}
+function adjustPanel(c) { // an adjustment layer: the clip colour controls that bake into one table (no vignette, blur or keying)
+  const a = c.adj || {};
+  const look = `<h4>Filter</h4><div class="presets small">${['none', ...Object.keys(LOOKS)].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`
+    + `<h4>Adjust</h4>${slider('c.adj.b', 'Brightness', a.b ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.c', 'Contrast', a.c ?? 1, 0, 2, 0.01, '%')}${slider('c.adj.s', 'Saturation', a.s ?? 1, 0, 3, 0.01, '%')}`
+    + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
+    + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%') + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%');
+  return `<h3>${ADJUST.n}</h3><p class="muted">Effects track · ${mss(c.dur)} · grades everything under it (text stays on top)</p><p id="clipStatus" class="muted"></p>`
+    + tabbed([['Adjust', look], ['Color', colorPanel(c)]])
+    + '<div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>';
 }
 
 const fract = a => a - Math.floor(a);
@@ -3621,7 +3658,7 @@ function exportSizes() {
 }
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
 async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
-  await lutsReady([...P.main, ...P.overlay]); // imported LUTs in the grades are loaded
+  await lutsReady([...P.main, ...P.overlay, ...P.fx]); // imported LUTs in the grades are loaded
   await duckReady();
   const k = w / P.w, D = total();
   const clip = async (c, lane, i) => {
@@ -4128,6 +4165,7 @@ function wire() {
     if (!b || b.disabled || !P) return;
     const d = b.dataset;
     if (d.fx) addEffect(d.fx);
+    else if (b.id === 'btnAdjust') addEffect('adjust');
     else if (d.fxcat) { G.fxCat = d.fxcat; renderEffects(); }
     else if (d.trset) applyTransition(d.trset);
     else if (d.lookset) applyLook(d.lookset);
@@ -4462,6 +4500,7 @@ function wire() {
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
     else if (d.voice) setVoice(c, d.voice);
+    else if (d.animk) pickAnim(d.animk, d.animv);
     else if (d.act === 'dup') dup();
     else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.duck; delete c.anim; delete c.pitch; delete c.au; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
@@ -4601,7 +4640,19 @@ function wire() {
     else if (key === 'escape' && (S.sel || S.multi.size)) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
   });
   new ResizeObserver(fitStage).observe($('#stage'));
-  addEventListener('resize', () => renderTimeline());
+  addEventListener('resize', () => { renderTimeline(); fitPanes(); });
+  fitPanes();
+  for (const g of $$('.gut')) {
+    const k = g.dataset.gut;
+    g.addEventListener('dblclick', () => { delete PANES[k]; fitPanes(true); });
+    g.addEventListener('pointerdown', e => {
+      e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add('on');
+      const x0 = e.clientX, y0 = e.clientY, v0 = paneSize(k);
+      const mv = ev => { PANES[k] = Math.round(v0 + (k === 'lw' ? ev.clientX - x0 : k === 'rw' ? x0 - ev.clientX : y0 - ev.clientY)); fitPanes(); };
+      const up = () => { g.removeEventListener('pointermove', mv); g.removeEventListener('pointerup', up); g.classList.remove('on'); fitPanes(true); };
+      g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up);
+    });
+  }
   document.fonts.addEventListener('loadingdone', () => { S.dirty = true; });
 }
 
@@ -4814,7 +4865,7 @@ const r3 = v => Math.round(v * 1000) / 1000;
 function brief(c, lane) { // compact clip description: what an assistant needs to refer to and reason about it
   const o = { id: c.id, lane, start: r3(c.start), dur: r3(tdur(c, lane)) };
   if (c.media) { const m = M.get(c.media); Object.assign(o, { media: m?.name, kind: m?.kind, in: r3(c.in), out: r3(c.out) }); }
-  else if (c.fx) Object.assign(o, { fx: c.fx, effect: FX[c.fx]?.n, strength: c.amt });
+  else if (c.fx) Object.assign(o, { fx: c.fx, effect: FX[c.fx]?.n || ADJUST.n, strength: c.amt });
   else o.text = c.text;
   const def = { speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: lane === 'text' ? 0.5 : 0, y: lane === 'text' ? 0.42 : 0, rot: 0, opacity: 1, fadeIn: 0, fadeOut: 0 };
   for (const k of ['speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'pitch']) {
@@ -4862,7 +4913,7 @@ const REMOTE = {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
       textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
-      effects: Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
+      effects: { ...Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), adjust: `${ADJUST.n}: its adj, look and grade colour everything under it` }, sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
     packMain();
@@ -4905,7 +4956,7 @@ const REMOTE = {
   async update_clip({ id, set = {} }) {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
-    if (set.fx !== undefined && !FX[set.fx]) throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}`);
+    if (set.fx !== undefined && !FX[set.fx] && set.fx !== 'adjust') throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}, adjust`);
     const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt', 'mb'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
     if (nan.length) throw new Error(`${nan.join(', ')} must be numbers`);
     if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
