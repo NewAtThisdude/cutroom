@@ -1092,6 +1092,99 @@ def iou(a, b):
     return w * h / max(1e-9, a[2] * a[3] + b[2] * b[3] - w * h)
 
 
+# Retouch (CapCut's face and body retouch): slider -> range. Colours are '#rrggbb'. ai/retouch.py does the work.
+RETOUCH = {'smooth': (0, 1), 'bright': (0, 1), 'eyes': (0, 1), 'teeth': (0, 1), 'slim': (0, 1), 'width': (-1, 1), 'cheek': (-1, 1),
+           'jaw': (-1, 1), 'chin': (-1, 1), 'nose': (-1, 1), 'lips': (0, 1), 'blush': (0, 1), 'body': (0, 1), 'legs': (0, 1)}
+
+
+def retouch_params(p):
+    p = p if isinstance(p, dict) else {}
+    out = {k: round(fnum(p.get(k, 0), *r), 4) for k, r in RETOUCH.items()}
+    for k, d in (('lipc', '#b8283f'), ('blushc', '#f2647a')):
+        out[k] = p[k] if re.fullmatch(r'#[0-9a-fA-F]{6}', str(p.get(k, ''))) else d
+    return out
+
+
+def retouch_job(m, t0, dur, p, out, lm, still=False):
+    dec, vf = hdr_decode(m)
+    tags = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] if dec else []
+    if not dec:  # keep the source's colour labels (untagged stays untagged, so it previews and exports the same)
+        for opt, key in (('-colorspace', 'cs'), ('-color_trc', 'trc')):
+            if m.get(key) not in (None, '', 'unknown', 'reserved'):
+                tags += [opt, m[key]]
+    return {'src': str(MEDIA / m['file']), 'out': str(out), 't0': t0, 'dur': dur, 'fps': float(m.get('fps') or 30), 'w': m['w'], 'h': m['h'],
+            'dec': dec, 'vf': vf, 'tags': tags, 'mat': '601' if not dec and m.get('cs') in ('bt470bg', 'smpte170m') else '709',
+            'p': p, 'lm': str(lm), 'still': still, 'detect': build_tool('retouch'), 'max': 1920}
+
+
+def run_retouch(jf, what):
+    r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'retouch.py'), str(jf)], capture_output=True, text=True, env=AI_ENV, timeout=120)
+    if r.returncode:
+        raise RuntimeError(f'{what} failed: ' + ((r.stderr or r.stdout).strip().splitlines() or ['no output'])[-1][-300:])
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def retouch_preview(mid, t, p):
+    """One frame retouched (the paused frame), as a PNG: the sliders' live preview. The frame's landmarks are cached."""
+    m = meta(mid)
+    if m['kind'] != 'video' or not (AI_BIN / 'python').exists():
+        raise ValueError('retouch works on video clips (and needs the on-device AI tools: ai/setup.sh)')
+    t = fnum(t, 0, max(0.0, m['duration'] - 1 / (m.get('fps') or 30)))
+    lm = CACHE / f'rt_{mid}_{t:.4f}.lm'
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        jf, out = Path(td) / 'job.json', Path(td) / 'frame.png'
+        jf.write_text(json.dumps(retouch_job(m, t, 0, retouch_params(p), out, lm, still=True)))
+        r = run_retouch(jf, 'The retouch preview')
+        return {'png': base64.b64encode(out.read_bytes()).decode(), 'faces': r['faces'], 'bodies': r['bodies'], 't': t}
+
+
+def retouch(st, mid, t0, t1, p):
+    """A retouched copy of the clip's range: Vision finds the face landmarks and body pose on every frame (tools/retouch),
+    ai/retouch.py smooths them over time and renders skin, eyes, teeth, makeup, face shape and body. The same clip and
+    sliders again are the same copy (no render)."""
+    import hashlib
+    m, p = meta(mid), retouch_params(p)
+    if m['kind'] != 'video' or m.get('alpha') or m.get('trans'):
+        raise ValueError('retouch works on video clips without transparency')
+    if not (AI_BIN / 'python').exists():
+        raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
+    t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
+    if t1 - t0 < 1 / (m.get('fps') or 30):
+        raise ValueError('the clip is too short')
+    key = 'retouch:' + hashlib.sha1(json.dumps([mid, round(t0, 6), round(t1, 6), p], sort_keys=True).encode()).hexdigest()
+    if hit := find_key(key):
+        return {'media': hit['id'], 'cached': True}
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        lm, out, jf = Path(td) / 'lm.jsonl', Path(td) / 'retouched.mp4', Path(td) / 'job.json'
+        proc = subprocess.Popen([build_tool('retouch'), str(MEDIA / m['file']), f'{t0:.6f}', f'{t1:.6f}'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        n = found = 0
+        with open(lm, 'w') as f:
+            for line in proc.stdout:
+                f.write(line)
+                d = json.loads(line)
+                n, found = n + 1, found + bool(d['faces'] or d['bodies'])
+                st['progress'] = 0.3 * min(1.0, (d['t'] - t0) / max(t1 - t0, 0.01))
+        err = proc.stderr.read()
+        if proc.wait():
+            raise RuntimeError('finding the faces failed: ' + err.strip()[-300:])
+        if not found:
+            raise RuntimeError('no face or body found in this clip')
+        jf.write_text(json.dumps(retouch_job(m, t0, t1 - t0, p, out, lm)))
+        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'retouch.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors='replace', env=AI_ENV)
+        said = []
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.3 + 0.68 * float(line.split()[1])
+            elif line.strip():
+                said = (said + [line.strip()])[-5:]
+        if proc.wait() or not out.exists():
+            raise RuntimeError('retouching failed: ' + (said[-1][-300:] if said else 'no output'))
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (retouched).mp4", fh, out.stat().st_size, background=False, key=key)
+    return {'media': new['id'], 'frames': n, 'found': found}
+
+
 def slowmo(st, mid, t0, t1, factor):
     """Smooth slow motion (CapCut 'smooth slow-mo'): motion-interpolated copy of a range at factor x the frame rate,
     so playing it at 1/factor speed still shows a fresh frame every frame."""
@@ -3245,7 +3338,7 @@ class App(BaseHTTPRequestHandler):
                             j = json.loads(t)
                         except ValueError:
                             continue
-                        if any(m[1] in (c.get('media'), (c.get('ramp') or {}).get('src')) for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):  # a ramped clip can go back to its source
+                        if any(m[1] in (c.get('media'), (c.get('ramp') or {}).get('src'), (c.get('rt') or {}).get('src')) for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):  # a ramped clip can go back to its source
                             out.append({'id': f.stem, 'name': j.get('name', 'Untitled')})
                 return self.reply(out)
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
@@ -3397,6 +3490,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(lift(body['media']))
             if u.path == '/api/isolate':
                 return self.reply({'job': run_job(isolate, body['media'], body.get('keep', 'voice'))})
+            if u.path == '/api/retouch':
+                return self.reply({'job': run_job(retouch, body['media'], body.get('t0', 0), body.get('t1', 0), body.get('p'))})
+            if u.path == '/api/retouch_preview':
+                return self.reply(retouch_preview(body['media'], body.get('t', 0), body.get('p')))
             if u.path == '/api/mask_preview':  # one frame's SAM 2 outline, a second or two: shown before Best removal runs
                 return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box'), body.get('points'), body.get('mode', 'remove')))
             if u.path == '/api/remove_object':
