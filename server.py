@@ -3336,7 +3336,7 @@ EXPORT_FPS = (24, 25, 30, 50, 60, 120)  # an export frame rate apart from the pr
 ALPHA_FORMATS = ('prores4444', 'webm', 'pngseq', 'gif', 'png')  # the ones that keep a transparent background
 OUT_PIX = {('prores4444', True): 'yuva444p10le', ('prores4444', False): 'yuv444p10le', ('webm', True): 'yuva420p'}  # (format, alpha) -> encoder input
 HDR_TRC = {'hlg': 'arib-std-b67', 'pq': 'smpte2084'}
-VT_Q = 86  # Standard: VideoToolbox quality 0.86 (H.264 and HEVC) = PSNR / SSIM at or above the old bitrate exports, without their soft ones
+VT_Q = {'h264': 82, 'hevc': 80}  # Standard, VideoToolbox quality (whole steps): DJI 4K60 / 1080p60 at ~0.9-1.1x the old -b:v sizes, PSNR at or above them
 
 
 def hlg_to_pq(r, g, b):
@@ -3395,7 +3395,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     # VideoToolbox: constant quality (High / Very high = +3 / +5); only a custom bitrate stays -b:v. Its rate control made the
     # same frames softer and different on every export (ring detail 0.31-0.76 over 4 runs, more so under load) and starts
     # soft (~10 frames of warm-up); -maxrate makes it far worse. prio_speed 0: never VT's speed mode (it varies run to run too)
-    vt = (['-b:v', br] if mb else ['-q:v', f"{min(98, round(VT_Q + 4 * math.log2(p.get('rate', 1))))}"]) + ['-prio_speed', '0']
+    vt = lambda c: (['-b:v', br] if mb else ['-q:v', f"{min(98, round(VT_Q[c] + 4 * math.log2(p.get('rate', 1))))}"]) + ['-prio_speed', '0']
     pf, cs = 'yuv420p', ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
     if hdr:
         cs = ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', HDR_TRC[hdr], '-color_range', 'tv']
@@ -3422,8 +3422,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         enc, pf = ['-c:v', 'prores_ks', '-profile:v', '3' if hdr else '2', '-c:a', 'pcm_s16le'], 'yuv422p10le'
     elif fmt == 'prores4444':  # ProRes 4444 + 16-bit alpha: what Final Cut / Premiere / Resolve read as a transparent clip
         enc, pf = ['-c:v', 'prores_ks', '-profile:v', '4', '-alpha_bits', '16', '-vendor', 'apl0', '-c:a', 'pcm_s16le'], OUT_PIX[(fmt, bool(A))]
-    elif fmt == 'hevc':  # "smaller": the same quality setting as H.264 in 1/2 to 3/4 of its size. HDR: Main 10
-        enc = ['-c:v', 'hevc_videotoolbox', *vt, '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
+    elif fmt == 'hevc':  # "smaller": about 0.55-0.7x H.264's size on DJI footage, ~0.3 dB under it. HDR: Main 10
+        enc = ['-c:v', 'hevc_videotoolbox', *vt('hevc'), '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
         if hdr:
             enc[2:2], pf = ['-profile:v', 'main10'], 'p010le'
     elif fmt in ('av1', 'av1webm'):  # SVT-AV1 preset 8, VBR to about HEVC's bitrate
@@ -3436,7 +3436,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         enc = ['-c:v', 'libx264', '-preset', 'medium' if p['quality'] == 'best' else 'veryfast', *(['-threads', '8'] if max(W, H) > 4096 else []),  # 8K: 12.5 -> 9.2 GB, 8 % slower
                *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
-        enc = ['-c:v', 'h264_videotoolbox', *vt, '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
+        enc = ['-c:v', 'h264_videotoolbox', *vt('h264'), '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
     video = fmt not in SOUND
     pix = ['-pix_fmt', pf] + (cs if pf != 'gbrap' else []) if video and fmt not in ('gif', 'png', 'pngseq') else []
     rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
@@ -4452,8 +4452,8 @@ def selftest():
     per = lambda f: [float(x) for x in re.findall(r'psnr_y:([\d.]+)', sh(['ffmpeg', '-v', 'error', '-i', str(f), '-i', str(pref), '-lavfi', '[1]format=yuv420p[b];[0][b]psnr=stats_file=-', '-f', 'null', '-']).stdout)]
     q1, q2 = per(render(vplan_, 60)), per(render(vplan_, 60))
     m1, m2 = sum(q1) / 60, sum(q2) / 60
-    # (the old -b:v: 38.5 dB with a frame at 37.4 = 1.1 under its mean; quality 0.86 on an M4 Max: 39.7, every frame within 0.2)
-    assert len(q1) == len(q2) == 60 and m1 > 38 and abs(m1 - m2) < 0.1 and min(q1 + q2) > min(m1, m2) - 0.6, ('VideoToolbox export: soft, uneven or a soft start', m1, m2, min(q1), min(q2))
+    # (the old -b:v: 38.5 dB with a frame at 37.4 = 1.1 under its mean; quality 0.82 on an M4 Max: 39.6, every frame within 0.15)
+    assert len(q1) == len(q2) == 60 and m1 > 39 and abs(m1 - m2) < 0.1 and min(q1 + q2) > min(m1, m2) - 0.5, ('VideoToolbox export: soft, uneven or a soft start', m1, m2, min(q1), min(q2))
     print(f'default MP4 (VideoToolbox) twice on a masked blur: {m1:.2f} / {m2:.2f} dB vs ProRes, worst frame {min(q1 + q2):.2f} dB')
     ease_kf = [{'t': 0, 'w': 135, 'x': 67.5, 'y': 172.5, 'op': 1, 'e': 1}, {'t': 2, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]
     out = one('ease', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': ease_kf})
