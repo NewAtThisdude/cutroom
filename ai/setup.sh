@@ -78,4 +78,8 @@ if command -v ollama > /dev/null; then
   curl -s http://127.0.0.1:11434/api/tags | grep -q '"nomic-embed-text:v1.5".*0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f' \
     || echo "warning: nomic-embed-text:v1.5 is not the pinned build (search still works, scores may differ)"
 fi
+# Speaker labels: WavLM Base Plus speaker verification (Microsoft; licence CC BY-SA 3.0: the HF card's "License" section points
+# to microsoft/UniSpeech/LICENSE), 386 MB, via transformers; pinned revision, weights checked. No token needed (pyannote's is gated).
+env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/wavlm-base-plus-sv', revision='feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', allow_patterns=['*.json', 'pytorch_model.bin'], local_dir='vendor/wavlm-base-plus-sv')"
+echo "e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad  vendor/wavlm-base-plus-sv/pytorch_model.bin" | shasum -a 256 -c -
 echo "On-device AI ready."

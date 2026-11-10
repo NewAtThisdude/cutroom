@@ -82,6 +82,12 @@ add('adjustment layer', `main(A); main(B); P.fx.push({ id: hex12(), fx: 'adjust'
 add('adjustment layer over overlay + text', `main(A); Object.assign(ov(B), { scale: 0.5, x: 0.2 }); text('Title'); P.fx.push({ id: hex12(), fx: 'adjust', start: 0, dur: 4, amt: 1, adj: { b: 0.8, c: 1.4, s: 1.6 }, grade: { lift: { x: -0.3, y: 0.3, l: 0.1 } } }); T = 1.5`); // the text stays ungraded on top
 add('adjustment layer after an effect', `main(A); P.fx.push({ id: hex12(), fx: 'bw', start: 0, dur: 4, amt: 0.6 }, { id: hex12(), fx: 'adjust', start: 0, dur: 4, amt: 1, look: { name: 'warm', amount: 1 }, adj: { b: 1, c: 1, s: 1, fade: 0.4 } }); T = 1.5`);
 for (const tp of opt.textPresets) add(`text ${tp}`, `main(A); text('${tp}'); T = 1.5`);
+for (const cp of opt.captionPresets) add(`caption ${cp}`, `main(A); caps('${cp}'); T = 1.1`); // a word part way through its sweep / entrance
+add('caption bilingual', `main(A); caps('Bold', { bi: true, biColor: '#9ff0ff', biSize: 0.55 }); T = 1.1`);
+add('caption bilingual boxed', `main(A); caps('Subtitle', { bi: true }); T = 1.1`);
+add('caption keywords', `main(A); caps('Clean', { kw: true }); T = 0.7`);
+add('caption speakers', `main(A); caps('Karaoke', { spk: true, spkNames: [null, 'Ana'] }); T = 1.1`);
+add('caption everything', `main(A); caps('Pop In', { bi: true, kw: true, spk: true, emoji: true }); T = 0.62`);
 add('text Title fading in, half way', `main(A); text('Title'); P.text.at(-1).style.anim = 'fade'; T = 0.15`); // a shadow made WebKit ignore the fade
 for (const an of opt.clipIn.filter(x => x !== 'none')) add(`clip in ${an}`, `main(B); ov(A).anim = { in: '${an}', ind: 1, out: 'none', outd: 0.5, loop: 'none', amt: 1 }; T = 0.5`);
 for (const lp of opt.comboMotion.filter(x => x !== 'none')) add(`motion ${lp}`, `main(B); Object.assign(ov(A), { scale: 0.6 }).anim = { in: 'none', out: 'none', ind: 0.5, outd: 0.5, loop: '${lp}', amt: 1 }; T = 1.7`);
@@ -94,6 +100,10 @@ const shoot = (code) => ev(async ([code, ids]) => {
   const main = id => { addMedia(id, 'main'); return P.main.at(-1); };
   const ov = id => { addMedia(id, 'overlay', 0); const c = P.overlay.at(-1); c.start = 0; return c; };
   const text = name => { S.t = 0; addText(name, { text: 'Parity 123' }); };
+  const caps = (name, extra = {}) => { // word-timed captions in a caption preset, with a translation, keyword, speaker and emoji to show
+    P.capStyle = { ...capPreset(name), y: 0.72, ...extra };
+    P.captions = [{ id: hex12(), start: 0.5, dur: 1.6, text: 'Caption parity check', tr: 'Prueba de paridad', kw: [2], spk: 1, emoji: '🎬', words: [{ w: 'Caption', s: 0, e: 0.5 }, { w: 'parity', s: 0.5, e: 1 }, { w: 'check', s: 1, e: 1.6 }] }];
+  };
   let T = 0;
   eval(code); // eslint-disable-line no-eval
   S.sel = null; renderAll();

@@ -65,7 +65,28 @@ const CAP_PRESETS = {
   Clean: { font: 'Poppins', weight: 800, size: 62, color: '#ffffff', strokeW: 0, hl: '#ffffff', shadow: true },
   Boxed: { font: 'Montserrat', weight: 800, size: 58, color: '#ffffff', strokeW: 0, hl: '#ff7a45', box: true, boxAlpha: 0.75 },
   Neon: { font: 'Anton', weight: 400, size: 96, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#3dff8b', upper: true, pop: true },
+  // dynamic: the fields drawText reads for word-timed captions (kar sweep, wbox, wanim, reveal, one, color2, stack, emoji)
+  Karaoke: { font: 'Montserrat', weight: 900, size: 80, color: '#ffffff', stroke: '#101828', strokeW: 6, hl: '#4fd8ff', kar: 'sweep' },
+  'Karaoke Gold': { font: 'Anton', weight: 400, size: 100, color: '#ffffff', stroke: '#000000', strokeW: 7, hl: '#ffc400', kar: 'sweep', upper: true },
+  'Word Box': { font: 'Montserrat', weight: 900, size: 76, color: '#ffffff', stroke: '#000000', strokeW: 0, hl: '#7c4dff', wbox: true, upper: true },
+  'Box Pop': { font: 'Poppins', weight: 800, size: 72, color: '#ffffff', strokeW: 0, hl: '#ff3d7f', wbox: true, wanim: 'scale' },
+  Bounce: { font: 'Poppins', weight: 900, size: 80, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#ffd400', wanim: 'bounce' },
+  'Pop In': { font: 'Montserrat', weight: 900, size: 82, color: '#ffffff', stroke: '#000000', strokeW: 7, hl: '#ffd400', wanim: 'pop', upper: true },
+  Rise: { font: 'Poppins', weight: 800, size: 70, color: '#ffffff', stroke: '#1a1a1a', strokeW: 4, hl: '#9effc0', wanim: 'rise' },
+  Slam: { font: 'Anton', weight: 400, size: 110, color: '#ffffff', stroke: '#000000', strokeW: 8, hl: '#ff4d4d', wanim: 'slam', upper: true },
+  Grow: { font: 'Montserrat', weight: 900, size: 76, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#3dff8b', wanim: 'scale', upper: true },
+  Typewriter: { font: 'Menlo', weight: 700, size: 58, color: '#ffffff', strokeW: 0, hl: '#ffffff', reveal: 'char', box: true, boxAlpha: 0.7, boxR: 0.1 },
+  'One Word': { font: 'Anton', weight: 400, size: 150, color: '#ffffff', stroke: '#000000', strokeW: 8, hl: '#ffd400', one: true, wanim: 'pop', upper: true },
+  'Two-Tone': { font: 'Montserrat', weight: 900, size: 80, color: '#ffffff', color2: '#ffd400', stroke: '#000000', strokeW: 6, hl: '#3dff8b', upper: true },
+  Glow: { font: 'Poppins', weight: 800, size: 74, color: '#ffffff', strokeW: 0, hl: '#ff7af5', shadow: true, shc: '#ff2fd0', sha: 1, shb: 0.5, shx: 0, shy: 0 },
+  Emoji: { font: 'Poppins', weight: 900, size: 76, color: '#ffffff', stroke: '#000000', strokeW: 6, hl: '#ffd400', pop: true, emoji: true },
+  Gradient: { font: 'Montserrat', weight: 900, size: 84, color: '#ffe259', grad: '#ff5e7e', stroke: '#2a0a24', strokeW: 5, hl: '#ffffff', upper: true },
+  'Shadow Stack': { font: 'Anton', weight: 400, size: 104, color: '#ffffff', strokeW: 0, hl: '#ffd400', stack: 5, shc: '#ff3d7f', upper: true },
+  Beast: { font: 'Montserrat', weight: 900, size: 96, color: '#ffffff', stroke: '#000000', strokeW: 12, hl: '#ffe600', pop: true, upper: true, italic: true, shadow: true, shc: '#000000', sha: 0.9, shb: 0, shx: 0.02, shy: 0.05 },
+  Subtitle: { font: 'Helvetica Neue', weight: 500, size: 50, color: '#ffffff', strokeW: 0, hl: '#ffffff', box: true, boxAlpha: 0.6, boxR: 0.12, boxPad: 0.35, maxW: 0.9 },
 };
+const CAP_KEEP = ['y', 'kw', 'kwc', 'bi', 'biColor', 'biSize', 'biFont', 'spk', 'spkc', 'spkNames']; // a preset restyles; position, keywords, second line and speakers stay
+const capPreset = n => ({ ...TEXT_BASE, ...CAP_PRESETS[n], ...Object.fromEntries(CAP_KEEP.filter(k => P.capStyle?.[k] !== undefined).map(k => [k, P.capStyle[k]])) });
 const ICON = {
   play: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4.5v15l12-7.5z" fill="currentColor"/></svg>',
   pause: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
@@ -810,7 +831,7 @@ function renderInspector() {
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
-  else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) renderCapList();
+  else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) { renderCapList(); renderCapTiles(false); }
   if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p><div class="actions"><button data-act="compound">Make compound clip</button></div>`);
 }
 function trPanel(c) {
@@ -1162,6 +1183,8 @@ function textPanel(c, lane) {
     + fontPick(`${r}.font`, st.font) + pick(`${r}.weight`, 'Weight', ws.includes(st.weight) ? st.weight : ws[0], ws.map(w => [w, WEIGHT_NAMES[w] || String(w)]))
     + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Colour', st.color)
     + (cap ? colour(`${r}.hl`, 'Highlight', st.hl) + tick(`${r}.pop`, 'Pop active word', st.pop) : '')
+    + (cap && P.captions.some(x => x.tr) ? `<h4>Second line</h4>${tick('cap.bi', 'Show translation', !!P.capStyle.bi)}${P.capStyle.bi ? colour('cap.biColor', 'Colour', P.capStyle.biColor || '#ffe27a') + slider('cap.biSize', 'Size', P.capStyle.biSize ?? 0.6, 0.3, 1, 0.01, '%') : ''}` : '')
+    + (cap && P.captions.some(x => x.kw) ? tick('cap.kw', 'Keyword highlight', !!P.capStyle.kw) : '') + (cap && P.captions.some(x => x.spk != null) ? tick('cap.spk', 'Speaker labels', !!P.capStyle.spk) : '')
     + `<h4>Layout</h4>${segs('align', 'Align', st.align || 'center', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']])}`
     + slider(`${r}.ls`, 'Letter spacing', st.ls || 0, -0.05, 0.5, 0.005, '%') + slider(`${r}.lh`, 'Line height', st.lh, 0.8, 2.2, 0.01) + slider(`${r}.maxW`, 'Max width', st.maxW, 0.2, 1, 0.01, '%') + tick(`${r}.upper`, 'All caps', st.upper)
     + `<h4>Outline</h4>${slider(`${r}.strokeW`, 'Width', st.strokeW, 0, 20, 0.5)}${colour(`${r}.stroke`, 'Colour', st.stroke)}`
@@ -2246,7 +2269,24 @@ function renderPane() { // the open gallery, refreshed (cheap: called on tab cha
   else if (t === 'audio') renderAudio();
   else if (t === 'text') renderTextTiles();
   else if (t === 'script') renderScript();
-  else if (t === 'captions') renderCapList();
+  else if (t === 'captions') { renderCapList(); renderCapTiles(); }
+}
+const CAP_SAMPLE = { id: 'tile', start: 0, dur: 1.8, text: 'make it pop', emoji: '🔥', words: [{ w: 'make', s: 0, e: 0.4 }, { w: 'it', s: 0.4, e: 0.7 }, { w: 'pop', s: 0.7, e: 1.3 }] };
+function renderCapTiles(draw = true) { // the caption styles drawn by drawText itself on a stand-in scene: still, the hovered one plays (all text escaped)
+  const cur = Object.keys(CAP_PRESETS).find(n => Object.entries(CAP_PRESETS[n]).every(([k, v]) => P?.capStyle?.[k] === v));
+  const el = $('#capPresets'), want = Object.keys(CAP_PRESETS).join('|');
+  if (el.dataset.n !== want) { el.dataset.n = want; draw = true; el.innerHTML = Object.keys(CAP_PRESETS).map(n => `<button class="tile" data-cap="${esc(n)}" title="Caption style: ${esc(n)}">${tileCv()}<span>${esc(n)}</span></button>`).join(''); }
+  for (const b of $$('.tile[data-cap]', el)) b.classList.toggle('on', b.dataset.cap === cur);
+  if (draw) drawTiles(true);
+  for (const [id, k] of [['#capKw', 'kw'], ['#capEmoji', 'emoji'], ['#capSpk', 'spk'], ['#trBi', 'bi']]) $(id).checked = !!P?.capStyle?.[k];
+  const n = P ? Math.max(0, ...P.captions.map(c => (c.spk ?? -1) + 1)) : 0, st = P?.capStyle || {};
+  if (!document.activeElement?.closest('#capSpkList')) $('#capSpkList').innerHTML = st.spk && n ? Array.from({ length: n }, (_, i) => `<label class="row"><input type="color" data-spkc="${i}" value="${esc(st.spkc?.[i] || SPK_C[i % SPK_C.length])}" aria-label="Colour of speaker ${i + 1}"><input data-spkname="${i}" value="${esc(st.spkNames?.[i] || `Speaker ${i + 1}`)}" aria-label="Name of speaker ${i + 1}"></label>`).join('') : '';
+}
+function capTile(x, n, lt) {
+  x.drawImage(sampleScene(TILE_W, TILE_H, 1), 0, 0);
+  const s = CAP_PRESETS[n], P0 = P;
+  P = { ...(P0 || {}), w: 1920, h: 1080, capStyle: { ...TEXT_BASE, ...s, size: s.size * 2.6, maxW: 0.94, y: s.emoji ? 0.62 : 0.52 } }; // bigger than on a frame: a tile is small
+  try { drawText(x, CAP_SAMPLE, 'captions', lt, TILE_W / 1920, false); } finally { P = P0; }
 }
 function renderEffects() {
   $('#fxCats').innerHTML = FX_CATS.map(([k, n]) => `<button data-fxcat="${k}" class="${G.fxCat === k ? 'on' : ''}">${n}</button>`).join('');
@@ -2377,14 +2417,15 @@ function renderTextTiles() {
 function drawTiles(force, now = performance.now()) { // still tiles; the one under the pointer plays (every tile playing took a third of a core)
   const pane = $(`#tab-${G.tab}`), pr = pane?.getBoundingClientRect();
   if (!pr) return;
-  for (const b of $$('.tile[data-fx], .tile[data-trset]', pane)) {
+  for (const b of $$('.tile[data-fx], .tile[data-trset], .tile[data-cap]', pane)) {
     const r = b.getBoundingClientRect();
     if (r.bottom < pr.top || r.top > pr.bottom) continue;
     const moving = G.hover === b;
     if (!force && !moving) continue;
     const x = b.firstElementChild.getContext('2d', { willReadFrequently: true }), tsec = moving ? now / 1000 : null;
     x.save();
-    if (b.dataset.fx) {
+    if (b.dataset.cap) capTile(x, b.dataset.cap, tsec === null ? 0.95 : tsec % 2.2);
+    else if (b.dataset.fx) {
       const k = b.dataset.fx, d = FX[k], f = { fx: k, start: 0, dur: d.d, amt: 1, gallery: true }, u = TILE_H / 540;
       const one = (lt, a) => { // the scene with the effect at lt, laid over the tile at alpha a
         const T = scratch(TILE_W, TILE_H, 'tile1'), tx = T.getContext('2d', { willReadFrequently: true });
@@ -2405,7 +2446,7 @@ function drawTiles(force, now = performance.now()) { // still tiles; the one und
 }
 function galleryLoop(now) {
   G.raf = 0;
-  if ((G.tab !== 'effects' && G.tab !== 'transitions') || !G.hover) return;
+  if (!['effects', 'transitions', 'captions'].includes(G.tab) || !G.hover) return;
   if (++G.frame % 2 === 0) drawTiles(false, now); // 30 fps is plenty for thumbnails
   G.raf = requestAnimationFrame(galleryLoop);
 }
@@ -3861,10 +3902,14 @@ async function autoCaptions(force) { // words come back in source time; map them
   btn.disabled = true;
   try {
     const ids = [...new Set(src.map(c => c.media))], words = new Map();
+    const lyrics = $('#capLyrics').checked;
     for (const [i, id] of ids.entries()) {
-      const msg = status.textContent = `Transcribing ${i + 1}/${ids.length}: ${M.get(id).name}…`;
-      words.set(id, await fetchWords(id, lang, usedSpans(id, src), p => { status.textContent = msg + p; }));
+      // lyrics: the song's vocals alone (Demucs, cached; the same length as the song, so its times hold), then heard like speech
+      const use = lyrics ? (await job('/api/isolate', { media: id, keep: 'voice' }, `Separating the vocals ${i + 1}/${ids.length}`, s => { status.textContent = s; })).media : id;
+      const msg = status.textContent = `${lyrics ? 'Hearing the lyrics' : 'Transcribing'} ${i + 1}/${ids.length}: ${M.get(id).name}…`;
+      words.set(id, await fetchWords(use, lang, usedSpans(id, src), p => { status.textContent = msg + p; }));
     }
+    if (lyrics) loadMedia(); // the vocals are in the library now
     // placed on the timeline as it is NOW (edits while it listened move the words with them), in the project it was asked in
     if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
     packMain(); src = speech().filter(c => words.has(c.media));
@@ -3896,8 +3941,8 @@ async function autoCaptions(force) { // words come back in source time; map them
       if (gap > 0 && gap < 0.5) caps[i].dur += gap;
       else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
     }
-    const kept = new Map(P.captions.filter(c => c.style).map(c => [c.text, c.style])); // a restyled caption keeps its look when captions are re-made after a cut
-    for (const c of caps) if (kept.has(c.text)) c.style = kept.get(c.text);
+    const EXTRA = ['style', 'tr', 'kw', 'emoji', 'spk'], kept = new Map(P.captions.filter(c => EXTRA.some(k => c[k] !== undefined)).map(c => [c.text, c])); // a restyled (translated, labelled...) caption keeps that when captions are re-made after a cut
+    for (const c of caps) if (kept.has(c.text)) for (const k of EXTRA) if (kept.get(c.text)[k] !== undefined) c[k] = structuredClone(kept.get(c.text)[k]);
     change(() => { P.captions = caps; S.sel = null; });
     status.textContent = caps.length ? `${caps.length} captions from ${all.length} words. Click one to edit it.` : 'No speech found.';
   } catch (e) { status.textContent = e.message; throw e; }
@@ -4053,7 +4098,8 @@ async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n,
 async function textLayer(w, h, k, fr, fonts) {
   const t0 = performance.now(), n = Math.min(clamp((navigator.hardwareConcurrency || 4) - 1, 1, 7), fr.length - 1);
   // the project as it plays, taken now: a compound clip borrows P only while its plan is built
-  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text'), captions: shown('captions'), fx: shown('fx') };
+  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text'), captions: shown('captions'), fx: shown('fx'),
+    emoji: Object.fromEntries([...new Set(shown('captions').map(c => c.emoji).filter(Boolean))].map(e => [e, emojiPic(e).getContext('2d').getImageData(0, 0, 256, 256)])) }; // the page's emoji pixels
   let why = S.layerForce === 'page' ? 'forced' : '', pool = null;
   S.layerStats = {};
   if (!why) try { pool = await layerPool(snap, w, h, k, n, fonts); } catch (e) { why = e.message; }
@@ -4111,7 +4157,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       cuts.add(it.start); cuts.add(end);
       if (it.words) for (const wd of it.words) cuts.add(it.start + wd.s);
       const spans = [st.anim && st.anim !== 'none' ? [it.start, it.start + animLen(st, false)] : null, l !== 'captions' && it.kf?.length > 1 ? [it.start + it.kf[0].t, it.start + it.kf.at(-1).t] : null,
-        st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null];
+        st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null, l === 'captions' && it.words?.length && capLive(st) ? [it.start, end] : null,
+        l === 'captions' && st.emoji && it.emoji ? [it.start, it.start + 0.25] : null]; // the emoji's pop-in (drawText: 0.25 s), with or without word timing
       for (const [a, b] of spans.filter(Boolean)) for (let t = a; t < Math.min(b, end); t += 1 / P.fps) cuts.add(t); // animated: one PNG per frame
     }
     for (const f of layerFx) { // effect overlays change every frame, n times a second, near their ends only, or never
@@ -4125,7 +4172,10 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     const fr = format === 'png' ? [...new Set([0, sf, sf + 1])] : [...fs].filter(f => f >= 0 && f <= nF).sort((a, b) => a - b);
     const fonts = [...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.italic ? 'italic ' : ''}${s.weight} 64px "${s.font}", system-ui, sans-serif`; }))]; // as drawText sets them
     if (layerFx.some(f => f.fx === 'vhs' || f.fx === 'rec')) fonts.push('700 64px Menlo, monospace', '600 64px Menlo, monospace');
-    text = await textLayer(w, h, k, fr, fonts);
+    if (items.some(([l, it]) => l === 'captions' && it.emoji && textStyle(it, l).emoji)) fonts.push('64px "Apple Color Emoji", "Noto Color Emoji", sans-serif');
+    for (const [l, it] of items) { const s = textStyle(it, l); if (l === 'captions' && ((s.bi && it.tr) || (s.spk && it.spk != null))) fonts.push(`${s.italic ? 'italic ' : ''}${Math.min(s.weight, 700)} 64px "${s.biFont || s.font}", system-ui, sans-serif`, `700 64px "${s.font}", system-ui, sans-serif`); } // the second line and speaker names
+    await Promise.all(fonts.map(f => document.fonts.load(f)));
+    text = await textLayer(w, h, k, fr, [...new Set(fonts)]);
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
@@ -4510,7 +4560,6 @@ function wire() {
   $('#btnPlay').innerHTML = ICON.play;
   $('#zoom').value = Math.log2(S.pps / 8);
   renderTextTiles();
-  $('#capPresets').innerHTML = Object.entries(CAP_PRESETS).map(([n, s]) => `<button data-cap="${n}" style="font-family:'${s.font}';font-weight:${s.weight};color:${s.hl}">${n}</button>`).join('');
 
   $('#btnPlay').addEventListener('click', () => (S.playing ? pause() : play()));
   $('#btnStart').addEventListener('click', () => P && seekTo(0));
@@ -4575,9 +4624,25 @@ function wire() {
   $('#btnTranslate').addEventListener('click', async () => {
     const b = $('#btnTranslate');
     b.disabled = true; $('#trStatus').textContent = 'Translating on this Mac…';
-    try { const r = await translateCaptions({ to: $('#trLang').value }); $('#trStatus').textContent = `${r.sentences} sentences translated${r.kept ? ` (${r.kept} kept as they were)` : ''}.`; }
+    try { const r = await translateCaptions({ to: $('#trLang').value, bilingual: $('#trBi').checked }); $('#trStatus').textContent = `${r.sentences} sentences translated${r.kept ? ` (${r.kept} kept as they were)` : ''}.`; }
     catch (e) { $('#trStatus').textContent = e.message; }
     finally { b.disabled = false; }
+  });
+  $('#trBi').addEventListener('change', e => { if (P?.captions.some(c => c.tr)) change(() => { P.capStyle.bi = e.target.checked; }); });
+  const capToggle = (id, key, need, go) => $(id).addEventListener('change', async e => { // on: made by the local AI the first time, then just shown or hidden
+    const el = e.target;
+    if (!P) return;
+    if (!el.checked || !need()) return change(() => { P.capStyle[key] = el.checked; });
+    el.disabled = true;
+    try { await go(); } catch (er) { $('#capAiStatus').textContent = er.message; el.checked = false; } finally { el.disabled = false; }
+  });
+  capToggle('#capKw', 'kw', () => !P.captions.some(c => c.kw), () => captionMarks('keywords'));
+  capToggle('#capEmoji', 'emoji', () => !P.captions.some(c => c.emoji), () => captionMarks('emoji'));
+  capToggle('#capSpk', 'spk', () => !P.captions.some(c => c.spk != null), () => labelSpeakers($('#capSpkN').value));
+  $('#capSpkN').addEventListener('change', () => { if (P?.capStyle.spk && P.captions.length) labelSpeakers($('#capSpkN').value).catch(er => { $('#capAiStatus').textContent = er.message; }); });
+  $('#capSpkList').addEventListener('change', e => {
+    const d = e.target.dataset, i = +(d.spkc ?? d.spkname);
+    if (Number.isFinite(i)) change(() => { const k = 'spkc' in d ? 'spkc' : 'spkNames', a = P.capStyle[k] = [...(P.capStyle[k] || [])]; a[i] = e.target.value.trim() || undefined; });
   });
   $('#btnAiVoice').addEventListener('click', async () => {
     const text = $('#aiText').value.trim(), b = $('#btnAiVoice');
@@ -4613,7 +4678,7 @@ function wire() {
   $('#textPresets').addEventListener('click', e => { const b = e.target.closest('[data-addtext]'); if (b) { addText(b.dataset.addtext); editText(); } });
   $('#capPresets').addEventListener('click', e => {
     const b = e.target.closest('[data-cap]');
-    if (b) { change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[b.dataset.cap], y: P.capStyle.y }; }); toast(`Caption style: ${b.dataset.cap}`); }
+    if (b) { change(() => { P.capStyle = capPreset(b.dataset.cap); }); toast(`Caption style: ${b.dataset.cap}`); }
   });
   $('.rail').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) openTab(b.dataset.tab); });
   const railFade = () => { const n = $('.rail'); n.classList.toggle('ft', n.scrollTop > 1); n.classList.toggle('fb', n.scrollTop + n.clientHeight < n.scrollHeight - 1); }; // a fade where more tabs are hidden
@@ -4985,7 +5050,7 @@ function wire() {
     } else if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
     else if (d.fps) { change(() => { P.fps = +d.fps; }); renderAll(); }
     else if (d.fit) change(() => { c.fit = d.fit; });
-    else if (d.cappreset) change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[d.cappreset], y: P.capStyle.y }; });
+    else if (d.cappreset) change(() => { P.capStyle = capPreset(d.cappreset); });
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
@@ -5292,15 +5357,31 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
   if (st) st.innerHTML = made.map(x => `<button class="wide" data-openproj="${x.id}" title="${esc(x.reason)}">${esc(x.name)} · ${fmtDur(x.end - x.start)}</button>`).join('');
   return { shorts: made };
 }
-async function translateCaptions({ to }) { // whole sentences are translated, then re-cut into captions over the same time (fragments translate badly)
-  if (!P.captions.length) throw new Error('no captions to translate yet (generate captions first)');
+function capGroups() { // the captions as sentences (punctuation or a pause ends one), in time order
   const groups = [];
   for (const c of [...P.captions].sort((x, y) => x.start - y.start)) {
     const g = groups.at(-1), prev = g?.at(-1);
     if (prev && c.start - (prev.start + prev.dur) < 0.6 && !/[.?!…。？！]$/.test(prev.text.trim())) g.push(c); else groups.push([c]);
   }
+  return groups;
+}
+async function translateCaptions({ to, bilingual = false }) { // whole sentences are translated, then re-cut into captions over the same time (fragments translate badly)
+  if (!P.captions.length) throw new Error('no captions to translate yet (generate captions first)');
+  const groups = capGroups();
   const { texts, kept } = await job('/api/ai/translate', { texts: groups.map(g => g.map(c => c.text).join(' ')), to }, 'Translating', sayIn('#trStatus'));
   const per = Math.max(1, +$('#capWords').value || 3), CJK = '぀-ヿ㐀-鿿＀-￯　-〿';
+  if (bilingual) { // the original stays: each caption gets its share of its sentence's translation as a second line
+    change(() => {
+      groups.forEach((g, gi) => {
+        const tr = String(texts[gi] || '').trim(), cjk = new RegExp(`[${CJK}]`).test(tr), units = (cjk ? [...tr.replace(/\s+/g, '')] : tr.split(/\s+/)).filter(Boolean);
+        const n = g.map(c => c.text.split(/\s+/).filter(Boolean).length || 1), tot = n.reduce((a, b) => a + b, 0);
+        let at = 0, acc = 0;
+        g.forEach((c, i) => { acc += n[i]; const to2 = i === g.length - 1 ? units.length : Math.round((units.length * acc) / tot); c.tr = units.slice(at, to2).join(cjk ? '' : ' '); if (!c.tr) delete c.tr; at = to2; });
+      });
+      P.capStyle.bi = true;
+    });
+    return { sentences: groups.length, captions: P.captions.length, kept, bilingual: true, first: P.captions.slice(0, 5).map(c => [c.text, c.tr || '']) };
+  }
   change(() => {
     const out = [];
     groups.forEach((g, gi) => {
@@ -5321,6 +5402,45 @@ async function translateCaptions({ to }) { // whole sentences are translated, th
     if (S.sel?.lane === 'captions') S.sel = null;
   });
   return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text) };
+}
+async function captionMarks(kind) { // the local model reads the captions a sentence at a time: 'keywords' (its key words, at most 2 a caption) or 'emoji' (one, on its first caption)
+  if (!P.captions.length) throw new Error('no captions yet (generate captions first)');
+  const groups = capGroups(), caps = groups.flat(), emo = kind === 'emoji', ws = c => c.text.split(/\s+/).filter(Boolean);
+  const { marks } = await job('/api/ai/capmarks', { texts: groups.map(g => (emo ? g.map(c => c.text).join(' ') : g.map(c => c.text))), kind: emo ? 'emoji' : 'keywords' }, emo ? 'Picking emoji' : 'Picking keywords', sayIn('#capAiStatus'));
+  change(() => {
+    if (emo) { caps.forEach(c => delete c.emoji); groups.forEach((g, i) => { if (marks[i]) g[0].emoji = marks[i]; }); P.capStyle.emoji = true; return; }
+    groups.forEach((g, gi) => { // sentence word indices -> each caption's own (its first; two in a caption of 4+ words)
+      let at = 0;
+      for (const c of g) { const n = ws(c).length, kw = (marks[gi] || []).filter(i => i >= at && i < at + n).map(i => i - at).slice(0, n >= 4 ? 2 : 1); if (kw.length) c.kw = kw; else delete c.kw; at += n; }
+    });
+    P.capStyle.kw = true;
+  });
+  const n = emo ? marks.filter(Boolean).length : caps.filter(c => c.kw).length;
+  $('#capAiStatus').textContent = emo ? `An emoji on ${n} of ${groups.length} sentences.` : `Keywords on ${n} of ${caps.length} captions.`;
+  return { kind: emo ? 'emoji' : 'keywords', marked: n, of: emo ? groups.length : caps.length, sample: (emo ? groups.map(g => [g.map(c => c.text).join(' '), g[0].emoji || '']) : caps.map(c => [c.text, (c.kw || []).map(i => ws(c)[i])])).slice(0, 8) };
+}
+async function labelSpeakers(n = 0) { // who says each caption: speaker embeddings of each caption's own sound, clustered (on this Mac)
+  if (!P.captions.length) throw new Error('no captions yet (generate captions first)');
+  packMain();
+  const srcs = [...P.main, ...P.audio].filter(c => M.get(c.media)?.hasAudio && c.volume > 0), caps = [...P.captions].sort((a, b) => a.start - b.start);
+  const items = caps.map(c => { // the clip under the caption's middle (main first): its source time
+    const mid = c.start + c.dur / 2, s = srcs.find(x => mid >= x.start && mid < x.start + tdur(x, P.main.includes(x) ? 'main' : 'audio'));
+    if (!s) return null;
+    const src = t => clamp(s.in + (t - s.start) * s.speed, s.in, s.out);
+    return { media: s.media, s: r3(src(c.start)), e: r3(src(c.start + c.dur)) };
+  });
+  if (!items.some(Boolean)) throw new Error('the captions are not over any clip with sound');
+  // heard a sentence at a time (a 3-word caption is too little voice to tell two alike apart): captions run on while the
+  // same file plays with no pause and no sentence end; a new speaker almost always starts after one
+  const grp = [];
+  items.forEach((x, i) => { const g = grp.at(-1), p = g && items[g.at(-1)], c0 = caps[g?.at(-1)]; if (x && p && x.media === p.media && x.s - p.e < 0.3 && !/[.?!…。？！]$/.test(c0.text.trim())) g.push(i); else grp.push([i]); });
+  const spans = grp.map(g => items[g[0]] && { media: items[g[0]].media, s: items[g[0]].s, e: items[g.at(-1)].e });
+  const { labels: gl, speakers, merges } = await job('/api/ai/speakers', { items: spans, speakers: +n || 0 }, 'Finding the speakers', sayIn('#capAiStatus'));
+  const labels = caps.map(() => -1);
+  grp.forEach((g, k) => g.forEach(i => { if (items[i]) labels[i] = gl[k]; }));
+  change(() => { caps.forEach((c, i) => { if (labels[i] >= 0) c.spk = labels[i]; else delete c.spk; }); P.capStyle.spk = true; });
+  $('#capAiStatus').textContent = `${speakers} speaker${speakers === 1 ? '' : 's'} found.`;
+  return { speakers, labelled: labels.filter(x => x >= 0).length, sentences: grp.length, labels, merges };
 }
 const MUSIC_STYLES = { // prompts MusicGen does well with
   'Upbeat pop': 'upbeat pop, bright synths, punchy drums, catchy, 120 bpm', 'Lo-fi': 'lo-fi hip hop beat, mellow piano, soft drums, relaxed, 85 bpm',
@@ -5542,11 +5662,21 @@ const REMOTE = {
     change(() => { if (all) P.main.slice(0, -1).forEach(put); else { const [c, L] = cfind(after); if (L !== 'main') throw new Error('transitions go between main-track clips: pass the id of the clip before the cut'); put(c); } });
     return (await REMOTE.timeline()).tracks.main;
   },
-  async auto_captions({ lang = 'auto', words = 3, style, audio = true }) {
+  async caption_extras({ keywords, emoji, speakers, bilingual, show }) { // the smart caption layers: made with the local AI, or shown / hidden (show: {kw, emoji, spk, bi})
+    const out = {};
+    if (keywords) out.keywords = await captionMarks('keywords');
+    if (emoji) out.emoji = await captionMarks('emoji');
+    if (speakers !== undefined && speakers !== false) out.speakers = await labelSpeakers(speakers === true ? 0 : +speakers);
+    if (bilingual) out.bilingual = await translateCaptions({ to: bilingual, bilingual: true });
+    if (show) change(() => { for (const k of ['kw', 'emoji', 'spk', 'bi']) if (k in show) P.capStyle[k] = !!show[k]; });
+    return { ...out, style: Object.fromEntries(['kw', 'emoji', 'spk', 'bi'].map(k => [k, !!P.capStyle[k]])) };
+  },
+  async auto_captions({ lang = 'auto', words = 3, style, audio = true, lyrics = false }) {
+    $('#capLyrics').checked = !!lyrics;
     $('#capLang').value = lang; if (!$('#capLang').value) { $('#capLang').insertAdjacentHTML('beforeend', `<option value="${esc(lang)}">${esc(lang)}</option>`); $('#capLang').value = lang; }
     $('#capWords').value = String(words); if (!$('#capWords').value) { $('#capWords').insertAdjacentHTML('beforeend', `<option>${+words}</option>`); $('#capWords').value = String(words); }
     $('#capAudio').checked = !!audio;
-    if (style) { if (!CAP_PRESETS[style]) throw new Error(`style must be one of ${Object.keys(CAP_PRESETS).join(', ')}`); P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[style], y: P.capStyle.y }; }
+    if (style) { if (!CAP_PRESETS[style]) throw new Error(`style must be one of ${Object.keys(CAP_PRESETS).join(', ')}`); P.capStyle = capPreset(style); }
     await autoCaptions(true);
     return { captions: P.captions.length, status: $('#capStatus').textContent, first: P.captions.slice(0, 5).map(c => c.text) };
   },
@@ -5695,7 +5825,7 @@ const REMOTE = {
   async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
   async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
-  async translate_captions({ to }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to }); },
+  async translate_captions({ to, bilingual = false }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to, bilingual }); },
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
   async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
   async relink_media({ missing, media }) { const to = mediaBy(media).id; if (!LANES.some(L => P[L.key].some(c => c.media === missing))) throw new Error(`no clip uses media ${missing}`); return { relinked: relink(missing, to) }; },

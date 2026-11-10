@@ -120,12 +120,21 @@
       </select></label>
       <label class="row"><span>Words each</span><select id="capWords"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option></select></label>
       <label class="row chk"><span>Include audio track</span><input id="capAudio" type="checkbox" checked></label>
-      <h4>Style</h4>
-      <div id="capPresets" class="presets"></div>
+      <label class="row chk" title="Music: the vocals are separated first (Demucs), then transcribed"><span>Lyrics from a song</span><input id="capLyrics" type="checkbox"></label>
       <button id="btnCaptions" class="primary wide">Generate captions</button>
       <p id="capStatus" class="muted"></p>
+      <h4>Style</h4>
+      <div id="capPresets" class="tiles"></div>
+      <h4>Smart captions</h4>
+      <label class="row chk" title="The local model picks 1-2 key words per caption, drawn in the highlight colour"><span>Highlight keywords</span><input id="capKw" type="checkbox"></label>
+      <label class="row chk" title="The local model picks an emoji for each caption, shown above it"><span>Emoji</span><input id="capEmoji" type="checkbox"></label>
+      <label class="row chk" title="Who speaks when, found on this Mac: a name and a colour per speaker"><span>Speaker labels</span><input id="capSpk" type="checkbox"></label>
+      <label class="row"><span>Speakers</span><select id="capSpkN"><option value="0">Auto</option><option>2</option><option>3</option><option>4</option></select></label>
+      <div id="capSpkList"></div>
+      <p id="capAiStatus" class="muted"></p>
       <h4>Translate</h4>
       <label class="row"><span>Into</span><select id="trLang"><option>English</option><option selected>Spanish</option><option>French</option><option>German</option><option>Italian</option><option>Portuguese</option><option>Russian</option><option>Armenian</option><option>Ukrainian</option><option>Turkish</option><option>Arabic</option><option>Persian</option><option>Hindi</option><option>Japanese</option><option>Korean</option><option>Chinese</option></select></label>
+      <label class="row chk" title="The original stays; the translation is a second line under it"><span>Bilingual (two lines)</span><input id="trBi" type="checkbox"></label>
       <button id="btnTranslate" class="wide">Translate captions</button>
       <p id="trStatus" class="muted"></p>
       <h4>Subtitle files</h4>

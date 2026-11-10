@@ -28,6 +28,13 @@ await ev(async fam => {
       { kf: [{ t: 0, scale: 1, x: 0.4, y: 0.9, opacity: 1 }, { t: 2, scale: 1.3, x: 0.6, y: 0.88, opacity: 0.6 }] })];
   p.captions = [{ id: hex12(), start: 0.5, dur: 1.6, text: 'three bold words', words: [{ w: 'three', s: 0, e: 0.5 }, { w: 'bold', s: 0.5, e: 1 }, { w: 'words', s: 1, e: 1.6 }] },
     { id: hex12(), start: 2.2, dur: 1.4, text: 'and some more', words: [{ w: 'and', s: 0, e: 0.4 }, { w: 'some', s: 0.4, e: 0.9 }, { w: 'more', s: 0.9, e: 1.4 }], style: { font: 'Poppins', weight: 900 } }];
+  // the dynamic caption styles (karaoke sweep, word entrances, one word, emoji, second line, speaker name, keywords), drawn every frame
+  const W3 = [{ w: 'every', s: 0, e: 0.45 }, { w: 'word', s: 0.45, e: 0.9 }, { w: 'counts', s: 0.9, e: 1.5 }];
+  p.captions.push({ id: hex12(), start: 0.3, dur: 1.5, text: 'every word counts', words: W3, tr: 'cada palabra cuenta', spk: 0, style: { ...CAP_PRESETS.Karaoke, bi: true, spk: true } },
+    { id: hex12(), start: 1.9, dur: 1.5, text: 'every word counts', words: W3, kw: [2], emoji: '🔥', spk: 1, style: { ...CAP_PRESETS.Emoji, kw: true, spk: true } },
+    { id: hex12(), start: 0.2, dur: 1.5, text: 'every word counts', words: W3, style: { ...CAP_PRESETS['One Word'] } },
+    { id: hex12(), start: 1.8, dur: 1.5, text: 'every word counts', words: W3, style: { ...CAP_PRESETS['Shadow Stack'], wanim: 'bounce' } },
+    { id: hex12(), start: 2.0, dur: 1.5, text: 'every word counts', words: W3, style: { ...CAP_PRESETS.Typewriter } });
   p.capStyle = { ...TEXT_BASE, ...CAP_PRESETS.Bold, y: 0.72 };
   p.fx = [{ id: hex12(), fx: 'snow', start: 0, dur: 1.5, amt: 1 }, { id: hex12(), fx: 'vhs', start: 1.5, dur: 1.2, amt: 1 }, { id: hex12(), fx: 'rec', start: 2.7, dur: 1.3, amt: 1 }];
   setProject(p); renderAll(); S.t = 1.6;

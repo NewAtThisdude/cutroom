@@ -126,7 +126,8 @@ TOOLS = [
                       'Add a result with add_sound_effect(name=<id>).',
      S({'query': txt, 'category': txt, 'install': boo}), 'sound_library'),
     ('auto_captions', 'Transcribe speech on this Mac (whisper.cpp) and lay word-timed captions on the captions track (replaces existing ones).',
-     S({'lang': {**txt, 'description': 'auto or a 2-letter code'}, 'words': {'type': 'integer', 'description': 'words per caption (1-6)'}, 'style': {**txt, 'description': 'a caption preset'}, 'audio': {**boo, 'description': 'include the audio track'}}),
+     S({'lang': {**txt, 'description': 'auto or a 2-letter code'}, 'words': {'type': 'integer', 'description': 'words per caption (1-6)'}, 'style': {**txt, 'description': 'a caption preset'}, 'audio': {**boo, 'description': 'include the audio track'},
+        'lyrics': {**boo, 'description': 'music: separate the vocals first (Demucs) and caption the lyrics'}}),
      'auto_captions'),
     ('remove_pauses', 'Cut silent gaps longer than min seconds out of main-track clips (jump cuts).', S({'min': num}), 'remove_pauses'),
     ('remove_fillers', 'Cut um / uh / er / hmm out of main-track clips (on-device transcript).', S(), 'remove_fillers'),
@@ -205,7 +206,12 @@ TOOLS = [
     ('make_shorts', 'Long video -> shorts on this Mac: a local language model picks the best moments; each becomes a new 9:16 project with captions, face reframing and a hook title. '
                     'min/max = length range in seconds.',
      S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
-    ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working.', S({'to': txt}, ['to']), 'translate_captions'),
+    ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working. '
+                           'bilingual=true keeps the original and adds the translation as a second line under each caption.', S({'to': txt, 'bilingual': boo}, ['to']), 'translate_captions'),
+    ('caption_extras', 'Smart caption layers, made on this Mac: keywords=true (the local model picks 1-2 key words per caption, drawn in the highlight colour), '
+                       'emoji=true (one emoji per sentence, above its first caption), speakers=true or a count (who speaks each caption: local speaker embeddings, '
+                       "'Speaker 1/2' label + a colour each), bilingual=<language> (second translated line). show={kw, emoji, spk, bi} turns made layers on or off.",
+     S({'keywords': boo, 'emoji': boo, 'speakers': {'type': ['boolean', 'integer']}, 'bilingual': txt, 'show': obj}), 'caption_extras'),
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
     ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
@@ -261,7 +267,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

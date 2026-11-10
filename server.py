@@ -2420,6 +2420,108 @@ def translate(st, texts, to):
     return {'texts': [o if o is not None else texts[j] for j, o in enumerate(out)], 'kept': sum(o is None for o in out)}
 
 
+CAP_STOP = set(('a about all am an and are as at be been but by can could did do does for from get got had has have he her here his i im if in into is it '
+                'its just me my no not of on or our out over she so some than that thats the their them then there they this to too up us very was we were what '
+                'will with would you your').split())  # as cap_marks normalises words (no apostrophes)
+
+
+def first_emoji(v):
+    """The first emoji in a model's answer (with its variation selector, skin tone or ZWJ sequence), else ''."""
+    import unicodedata
+    out = ''
+    for ch in str(v).strip():
+        o = ord(ch)
+        pict = unicodedata.category(ch) == 'So' and o > 0x2000
+        if pict or (out and (o in (0x200D, 0xFE0F) or 0x1F3FB <= o <= 0x1F3FF or out[-1] == '‍')):
+            out += ch
+        elif out:
+            break
+    return out[:8]
+
+
+def cap_marks(st, texts, kind='keywords'):
+    """Caption sentences marked by the local model. texts: one per sentence, its captions as a list (or one string).
+    'keywords' = a word to highlight in each caption, picked with the whole sentence in view, returned as indices into the
+    sentence's words (in caption order: a caption's first index is its pick); 'emoji' = one emoji per sentence. Numbered, so a
+    sentence the model drops is asked again; one it still skips stays unmarked."""
+    emo = kind == 'emoji'
+    sents = [[str(c)[:200] for c in (t if isinstance(t, list) else [t])][:40] for t in texts][:3000]
+    out = [None] * len(sents)
+    norm = lambda w: re.sub(r'[^\w]', '', w.lower())
+    # keyed captions inside their sentence ("3b"): asked for bare per-caption lists the model picked words of the NEXT
+    # caption; asked per sentence it marked too few. A pick landing in a neighbour caption is moved there by position.
+    ask = ('For each numbered sentence from a video, pick ONE emoji that fits its meaning or mood. Return {"1": "🔥", "2": "😂"} with exactly the same numbers.\n'
+           if emo else 'These are the captions of a video, sentence by sentence; each caption has its own key ("3b" = sentence 3, caption b). For EVERY caption key, '
+           'pick the 1 word in that caption a viewer should notice most (a name, number, key noun, main verb or strong adjective), or [] when the caption '
+           'is only small words like "back to the". Copy it exactly from that caption. Return {"1": {"1a": ["word"], "1b": []}, "2": {...}} with every key.\n')
+    key = lambda k, c: f'{k + 1}{chr(97 + c % 26)}{c // 26 or ""}'
+    for i in range(0, len(sents), 15):
+        for _ in range(3):
+            todo = [j for j in range(i, min(i + 15, len(sents))) if out[j] is None]
+            if not todo:
+                break
+            q = {str(k + 1): ' '.join(sents[j]) if emo else {key(k, c): p for c, p in enumerate(sents[j])} for k, j in enumerate(todo)}
+            ans = llm('You mark up video captions. Reply with JSON only.', ask + json.dumps(q, ensure_ascii=False))
+            if isinstance(ans, dict) and len(ans) == 1 and isinstance(v := next(iter(ans.values())), (dict, list)) and str(len(todo)) not in ans:
+                ans = v  # {"answers": {...}}
+            if isinstance(ans, list):
+                ans = {str(k + 1): v for k, v in enumerate(ans)}
+            ans = ans if isinstance(ans, dict) else {}
+            flat = {**ans, **{kk: vv for vv0 in ans.values() if isinstance(vv0, dict) for kk, vv in vv0.items()}}  # the caption keys, nested or not
+            for k, j in enumerate(todo):
+                v = ans.get(str(k + 1))
+                if emo:
+                    if v is not None:
+                        out[j] = first_emoji(v)
+                    continue
+                picks = [flat.get(key(k, c)) for c in range(len(sents[j]))]
+                if all(p is None for p in picks):
+                    continue
+                ws, got = [norm(w) for c in sents[j] for w in c.split()], []
+                for p0 in picks:
+                    for p in (p0 if isinstance(p0, list) else [p0] if p0 else []):
+                        for w in str(p).split():
+                            n = norm(w)
+                            hit = next((x for x, y in enumerate(ws) if y == n and x not in got), None)
+                            if n and n not in CAP_STOP and hit is not None:
+                                got.append(hit)
+                out[j] = got
+        st['progress'] = min(1.0, (i + 15) / max(1, len(sents)))
+    if sents and all(o is None for o in out):
+        raise RuntimeError('the local model did not answer; try again')
+    return {'marks': [o if o is not None else ('' if emo else []) for o in out]}
+
+
+SPK_MODEL = AI_DIR / 'vendor' / 'wavlm-base-plus-sv'
+
+
+def speakers(st, items, n=0):
+    """Who says each caption (speaker diarization on this Mac): ai/diarize.py embeds each caption's own sound with WavLM
+    (microsoft/wavlm-base-plus-sv) and clusters the voices. items: [{media, s, e} source seconds | None] -> labels 0.. (-1 = none)."""
+    if not (AI_BIN / 'python').exists() or not (SPK_MODEL / 'pytorch_model.bin').exists():
+        raise RuntimeError('the speaker model is not installed (run ai/setup.sh)')
+    segs, files = [], {}
+    for it in list(items)[:5000]:
+        if not it:
+            segs.append(None)
+            continue
+        mid = str(it.get('media'))
+        m = meta(mid)
+        if mid not in files:
+            if not m.get('hasAudio') or not (f := pcm(m)):
+                raise RuntimeError(f"could not read the sound of {m['name']}")
+            files[mid] = str(f)
+        segs.append([files[mid], *(min(max(fnum(it.get(k, 0), -1e6, 1e6), 0.0), m['duration']) for k in ('s', 'e'))])
+    st['progress'] = 0.1
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        jf = Path(td) / 'job.json'
+        jf.write_text(json.dumps({'model': str(SPK_MODEL), 'segs': segs, 'speakers': int(fnum(n, 0, 12))}))
+        r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'diarize.py'), str(jf)], capture_output=True, text=True, env={**AI_ENV, 'HF_HUB_OFFLINE': '1'}, timeout=1800)
+    if r.returncode:
+        raise RuntimeError('finding the speakers failed: ' + r.stderr.strip()[-300:])
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
 def hooks(st, ranges, lang='auto'):
     """Three hook titles for the edit, from the on-device transcript of the clips' ranges (local model)."""
     words = []
@@ -4300,6 +4402,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(highlights, body['media'], body.get('lang', 'auto'), body.get('count', 3), body.get('min', 15), body.get('max', 45))})
             if u.path == '/api/ai/translate':
                 return self.reply({'job': run_job(translate, body.get('texts') or [], body.get('to', ''))})
+            if u.path == '/api/ai/capmarks':
+                return self.reply({'job': run_job(cap_marks, body.get('texts') or [], body.get('kind', 'keywords'))})
+            if u.path == '/api/ai/speakers':
+                return self.reply({'job': run_job(speakers, body.get('items') or [], body.get('speakers', 0))})
             if u.path == '/api/ai/hooks':
                 return self.reply({'job': run_job(hooks, body.get('ranges') or [], body.get('lang', 'auto'))})
             if u.path == '/api/plan':  # the command bar: an instruction + the project in brief -> checked steps
