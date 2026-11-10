@@ -751,6 +751,8 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     if not (AI_BIN / 'python').exists():
         raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
     fps = float(m.get('fps') or 30)
+    if mode == 'mask':  # an AI mask: SAM 2's outline frames for the clip's mask, at most 30 a second (the mask holds between them)
+        fps = min(fps, 30.0)
     t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
     if t1 - t0 < 2 / fps:
         raise ValueError('the clip is too short')
@@ -759,12 +761,12 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
         raise ValueError('draw a box around the object')
     src, pts, lost = str(MEDIA / m['file']), [{'t': t, **b}], False
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        if mode == 'cutout':  # SAM 2 follows the subject itself
+        if mode in ('cutout', 'mask'):  # SAM 2 follows the subject itself
             pass
         elif t1 - t > 1 / fps:
             r = track(st, mid, t, t1, b, span=(0.0, 0.15))
             pts, lost = pts + r['points'], r['lost']
-        if mode != 'cutout' and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
+        if mode not in ('cutout', 'mask') and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
             rev = Path(td) / 'rev.mp4'
             if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t - t0 + 1 / fps:.6f}', '-i', src, '-vf', 'scale=-2:480,reverse', '-an',
                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', str(rev)]).returncode:
@@ -786,7 +788,8 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
             for opt, key in (('-colorspace', 'color_space'), ('-color_primaries', 'color_primaries'), ('-color_trc', 'color_transfer')):
                 if probe_tags.get(key) not in (None, '', 'unknown', 'reserved'):
                     tags += [opt, probe_tags[key]]
-        out, jf = Path(td) / ('cut.webm' if mode == 'cutout' else 'clean.mp4'), Path(td) / 'job.json'
+        key = uuid.uuid4().hex[:12]
+        out, jf = CACHE / f'{key}.aimask' if mode == 'mask' else Path(td) / ('cut.webm' if mode == 'cutout' else 'clean.mp4'), Path(td) / 'job.json'
         seed_png = None
         if seed:  # the outline confirmed in the preview (a PNG mask of the picked frame): SAM 2 follows exactly that
             seed_png = Path(td) / 'seed.png'
@@ -807,7 +810,11 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
             elif line.strip():
                 said = (said + [line.strip()])[-5:]
         if proc.wait() or not out.exists():
-            raise RuntimeError(('cutting out' if mode == 'cutout' else 'object removal') + ' failed: ' + (said[-1][-300:] if said else 'no output'))
+            if mode == 'mask':
+                shutil.rmtree(out, ignore_errors=True)
+            raise RuntimeError({'cutout': 'cutting out', 'mask': 'the AI mask'}.get(mode, 'object removal') + ' failed: ' + (said[-1][-300:] if said else 'no output'))
+        if mode == 'mask':  # PNGs, white with SAM 2's soft outline as alpha, one per frame from t0 (served from /cache/<key>.aimask/)
+            return {'mask': key, 'n': len(list(out.glob('*.png'))), 'fps': fps, 't0': t0, 'frames': n, 'engine': engine}
         with open(out, 'rb') as fh:
             res = import_file(f"{Path(m['name']).stem} ({'cutout' if mode == 'cutout' else 'object removed'}).{out.suffix[1:]}", fh, out.stat().st_size,
                               background=False)
@@ -2034,7 +2041,8 @@ def clean_plan(p):
         if len(kf) > 2000:
             raise ValueError('too many keyframes')
         k['kf'] = [{**{a: fnum(f[a], -1e5, 1e5) for a in ('t', 'w', 'x', 'y', 'op')}, 'a': fnum(f.get('a', 0), -3600, 3600), 'e': 1 if f.get('e') else 0,
-                    'u0': fnum(f.get('u0', 0), 0, 1), 'u1': fnum(f.get('u1', 1), 0, 1)}
+                    'u0': fnum(f.get('u0', 0), 0, 1), 'u1': fnum(f.get('u1', 1), 0, 1),
+                    'bz': [fnum(v, *((0, 1) if i % 2 == 0 else (-5, 5))) for i, v in enumerate(f['bz'])] if isinstance(f.get('bz'), list) and len(f['bz']) == 4 else None}
                    for f in kf] or None
         k['angle'] = fnum(c.get('angle', 0), -3600, 3600)
         k['blend'] = c.get('blend') if c.get('blend') in BLENDS else None
@@ -2155,9 +2163,43 @@ def ss3(x):
     return x * x * (3 - 2 * x)
 
 
+def bez_coef(bz):
+    x1, y1, x2, y2 = (float(v) for v in bz)
+    cx = 3 * x1
+    bx = 3 * (x2 - x1) - cx
+    cy = 3 * y1
+    by = 3 * (y2 - y1) - cy
+    return 1 - cx - bx, bx, cx, 1 - cy - by, by, cy
+
+
+def bez(bz, u):
+    """cubic-bezier(x1, y1, x2, y2) at time u, s by 16 halvings: the same doubles as the UI's bezE() and bez_expr()."""
+    ax, bx, cx, ay, by, cy = bez_coef(bz)
+    s, h = 0.0, 1.0
+    for _ in range(16):
+        h /= 2
+        q = s + h
+        if ((ax * q + bx) * q + cx) * q < u:
+            s = q
+    s += h / 2
+    return ((ay * s + by) * s + cy) * s
+
+
+def bez_expr(bz, w):
+    """bez() as an ffmpeg expression of w (st/ld registers 0-1; each halving is one flat term, so no deep nesting)."""
+    ax, bx, cx, ay, by, cy = bez_coef(bz)
+    terms, h = [f'st(0,{w})', 'st(1,0)'], 1.0
+    for _ in range(16):
+        h /= 2
+        q = f'(ld(1)+{h!r})'
+        terms.append(f'st(1,ld(1)+{h!r}*lt((({ax!r}*{q}+{bx!r})*{q}+{cx!r})*{q},ld(0)))')
+    m = f'(ld(1)+{h / 2!r})'
+    return '(' + '+'.join(f'0*{x}' for x in terms) + f'+(({ay!r}*{m}+{by!r})*{m}+{cy!r})*{m})'
+
+
 def pw(kf, key, var='t'):
     """Keyframe curve as an ffmpeg expression (same interpolation as the UI's propsAt): linear, or smoothstep
-    per segment when the segment's first keyframe has e=1. Segments are chosen by a balanced if() tree: ffmpeg's
+    per segment when the segment's first keyframe has e=1 (its cubic-bezier when it also has bz). Segments are chosen by a balanced if() tree: ffmpeg's
     expression parser gives up past ~100 nesting levels, and tracking or ducking easily makes hundreds of points."""
     segs = list(zip(kf, kf[1:]))
     if not segs:
@@ -2165,7 +2207,14 @@ def pw(kf, key, var='t'):
 
     def seg(a, b):  # clip() also holds the end values outside the segment, so the outer leaves cover t < first and t > last
         u = f"clip(({var}-{a['t']:.6f})/{max(b['t'] - a['t'], 1e-6):.6f},0,1)"
-        if a.get('e'):  # smoothstep, or the part [u0, u1] of it that a cut left this segment with
+        if a.get('e') and a.get('bz'):  # a cubic-bezier ease (or the part [u0, u1] of it a cut left)
+            r0, r1, bz = a.get('u0', 0), a.get('u1', 1), a['bz']
+            d = bez(bz, r1) - bez(bz, r0)
+            if (r0, r1) == (0, 1):
+                u = bez_expr(bz, u)
+            elif abs(d) > 1e-9:
+                u = f"(({bez_expr(bz, f'({r0!r}+{u}*{r1 - r0!r})')})-{bez(bz, r0)!r})/{d!r}"
+        elif a.get('e'):  # smoothstep, or the part [u0, u1] of it that a cut left this segment with
             r0, r1 = a.get('u0', 0), a.get('u1', 1)
             if (r0, r1) == (0, 1):
                 u = f'({u}*{u}*(3-2*{u}))'
@@ -2189,8 +2238,9 @@ def pw_at(kf, key, t):
             u = min(1.0, max(0.0, (t - a['t']) / max(b['t'] - a['t'], 1e-6)))
             if a.get('e'):
                 r0, r1 = a.get('u0', 0), a.get('u1', 1)
-                d = ss3(r1) - ss3(r0)
-                u = (ss3(r0 + u * (r1 - r0)) - ss3(r0)) / d if d > 1e-9 else u
+                E = (lambda v: bez(a['bz'], v)) if a.get('bz') else ss3
+                d = E(r1) - E(r0)
+                u = (E(r0 + u * (r1 - r0)) - E(r0)) / d if abs(d) > 1e-9 else u
             return a[key] + (b[key] - a[key]) * u
     return kf[-1][key]
 
@@ -3213,6 +3263,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
                 return self.file(CACHE / m[1])
+            if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.aimask/\d{5}\.png)', path):  # AI mask frames
+                return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|gif|mp3|wav|m4a|png|srt|vtt|txt))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
@@ -3327,7 +3379,7 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(mask_preview(body['media'], body.get('t', 0), body.get('box'), body.get('points'), body.get('mode', 'remove')))
             if u.path == '/api/remove_object':
                 return self.reply({'job': run_job(remove_object, body['media'], body.get('t', 0), body.get('t0', 0), body.get('t1', 0), body.get('box'),
-                                                  body.get('quality', 'best'), 'cutout' if body.get('mode') == 'cutout' else 'remove', body.get('seed'))})
+                                                  body.get('quality', 'best'), body.get('mode') if body.get('mode') in ('cutout', 'mask') else 'remove', body.get('seed'))})
             if u.path == '/api/ai/combine':
                 return self.reply({'job': run_job(combine, body.get('media') or [], body.get('target', 0), body.get('style', 'balanced'),
                                                   body.get('order', 'auto'), body.get('music'), bool(body.get('sound')))})
@@ -3782,6 +3834,10 @@ def selftest():
     assert abs(pw_at(part, 'x', 0.5) - (67.5 - 67.5 * (ss3(0.625) - 0.5) / 0.5)) < 1e-6
     out = one('ease-part', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': part})
     assert max(pixel(out, 0.5, 36, 240)) < 40 and pixel(out, 0.5, 50, 240)[0] > 200, 'partial easing: the edge must sit near 43 px'
+    bz_kf = [{**ease_kf[0], 'bz': [0, 0, 0.58, 1]}, ease_kf[1]]  # ease-out as a cubic-bezier (st/ld halvings in the expression): ahead of linear
+    edge = round(67.5 * (1 - bez(bz_kf[0]['bz'], 0.25)))
+    out = one('ease-bezier', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': bz_kf})
+    assert max(pixel(out, 0.5, edge - 4, 240)) < 40 and pixel(out, 0.5, edge + 10, 240)[0] > 200, f'cubic-bezier easing: the edge must sit near {edge} px'
     gen('-f', 'lavfi', '-i', 'color=c=white:s=64x64:r=30:d=4', '-vf', 'fade=t=in:st=0:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'ramp.mp4'))
     rv = meta(reverse({}, imp('ramp.mp4')['id'])['media'])
     assert pixel(MEDIA / rv['file'], 0.1, 32, 32)[0] > 200 and pixel(MEDIA / rv['file'], 3.8, 32, 32)[0] < 60 and abs(rv['duration'] - 4) < 0.2, rv

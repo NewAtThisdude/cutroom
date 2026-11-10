@@ -432,6 +432,18 @@ def main(path):
     n = max(1, len(job['boxes']))
     if job.get('mode') == 'cutout':
         return cutout(job, n)
+    if job.get('mode') == 'mask':  # the subject's outline as a clip mask: SAM 2's soft masks as PNGs, white with that alpha
+        if not SAM2_CK.exists():
+            sys.exit('an AI mask needs SAM 2 (run ai/setup.sh)')
+        alpha = sam2_masks(job, n, 0.0, 0.95, soft=True)
+        if alpha[int(np.clip(job.get('pick', 0), 0, len(alpha) - 1))].max() < 128:
+            sys.exit('nothing found in that box: draw it around the subject')
+        print('engine sam2', flush=True)
+        os.makedirs(job['out'], exist_ok=True)
+        white = np.full(alpha.shape[1:], 255, np.uint8)
+        for i, a in enumerate(alpha):
+            cv2.imwrite(os.path.join(job['out'], f'{i:05d}.png'), np.dstack([white, white, white, a]))
+        return say(1)
     best = job.get('engine', 'best') == 'best'
     masks = None
     if best and SAM2_CK.exists() and job.get('box'):
