@@ -649,15 +649,16 @@ def hdr_decode(m):
 def still(mid, t):
     """Freeze frame: grab one frame as a new image in the library."""
     m = meta(mid)
+    if m.get('duration'):  # the playhead at a clip's very end asks for the time after the last frame: take the last frame
+        t = max(0.0, min(t, math.floor((m['duration'] - 1 / (m.get('fps') or 30)) * 1000) / 1000))  # floored: -ss 19.967 is past a frame at 19.96667
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         f, src = Path(td) / 'frame.png', str(MEDIA / m['file'])
         dec, vf = hdr_decode(m)
-        if dec:  # tone-map like video(), or the still imports as 16-bit HLG and breaks the export
-            cmd = ['ffmpeg', '-v', 'error', '-y', *dec, '-ss', f'{t:.3f}', '-i', src, '-vf', f'{vf}format=rgb24', '-frames:v', '1', '-update', '1', str(f)]
-        else:
-            cmd = ['ffmpeg', '-v', 'error', '-y', '-ss', f'{t:.3f}', '-i', src, '-frames:v', '1', '-update', '1', str(f)]
-        if sh(cmd).returncode or not f.exists():
-            raise RuntimeError('could not grab that frame')
+        out = ['-vf', f'{vf}format=rgb24'] if dec else []  # HDR: tone-map like video(), or the still imports as 16-bit HLG and breaks the export
+        grab = lambda seek, last=False: sh(['ffmpeg', '-v', 'error', '-y', *dec, *seek, '-i', src, *out, *([] if last else ['-frames:v', '1']), '-update', '1', str(f)])
+        if grab(['-ss', f'{t:.3f}']).returncode or not f.exists():  # past the video's last frame (its stream can end before the file's duration): the last frame
+            if grab(['-sseof', '-1'], last=True).returncode or not f.exists():
+                raise RuntimeError('could not grab that frame')
         with open(f, 'rb') as fh:
             return import_file(f"{Path(m['name']).stem} frame {t:.2f}s.png", fh, f.stat().st_size, background=False)
 

@@ -748,7 +748,7 @@ function pickAnim(k, v) { // an animation tile: set it, then play its span on th
   if (v === 'none') return;
   const kind = /\.(in|anim)$/.test(k) ? 'in' : /\.out$/.test(k) ? 'out' : 'loop', d = tdur(c, lane), A = c.anim || {}, st = c.media ? null : textStyle(c, lane);
   const n = kind === 'loop' ? Math.min(d, 3) : Math.min(d, c.media ? (kind === 'in' ? A.ind : A.outd) ?? 0.5 : animLen(st, kind === 'out'));
-  const a = kind === 'out' ? c.start + d - n : c.start, b = Math.max(a, Math.min(kind === 'in' ? a + n : Infinity, c.start + d - 1 / P.fps)); // its end, on screen
+  const a = kind === 'out' ? c.start + d - n : c.start, b = Math.max(a, Math.min(kind === 'out' ? Infinity : a + n, c.start + d - 1 / P.fps)); // its end, on screen (a loop plays its first 3 s, not the whole clip)
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return seekTo(b);
   seekTo(a); play(); S.end = b;
 }
