@@ -29,7 +29,7 @@ blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|
 fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (RNNoise, heard in preview and export)
 au: {voice none|robot|echo|hall|telephone, semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
-adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1}
+adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; ex: exposure EV -2..2; hi, sh: highlights/shadows -1..1; fade 0..1; vig: vignette 0..1; blur 0..1; sharp: sharpen 0..1}
 look: {name: a filter from options().looks (vivid, mono, sepia, warm, cool, teal, film, golden, punch, rose, dusk, emerald, arctic, night, retro, silver), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
 key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror|heart|star|polygon|pen, x, y -0.5..0.5, w, h, rot, feather, invert;
   star/polygon: n points/sides 3-12, star: inner 0.1-0.9; pen: pts [[u, v], ...] -1..1 in the mask's box (a smooth closed curve)} (an AI subject mask: cut_out_object as_mask)
@@ -124,13 +124,17 @@ TOOLS = [
     ('remove_pauses', 'Cut silent gaps longer than min seconds out of main-track clips (jump cuts).', S({'min': num}), 'remove_pauses'),
     ('remove_fillers', 'Cut um / uh / er / hmm out of main-track clips (on-device transcript).', S(), 'remove_fillers'),
     ('voiceover', "Text to speech with the Mac's voices, added on the audio track at `at` (default: playhead).", S({'text': txt, 'voice': txt, 'rate': num, 'at': num}, ['text']), 'voiceover'),
-    ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
+    ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo (a clip slower than 1x; engine ai = RIFE frames, '
+                  'fast = ffmpeg minterpolate), detach_audio, split_scenes, deflicker (even out brightness pumping), ai_upscale (scale 2|4, Real-ESRGAN), '
+                  'relight (preset light|subject|background, x, y 0..1 where the light is on the frame, color "#rrggbb", strength 0..1; depth from Depth Anything; '
+                  'these four render a copy of the clip range on this Mac that the clip then plays), '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead), slip (by seconds: new in/out, same place and length), slide (by: a main clip moves between its neighbours), '
-                  'roll (by: moves the cut at the clip\'s side end|start). slip/slide/roll keep the rest of the timeline as it is.',
-     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt, 'by': num, 'side': txt}, ['id', 'action']), 'clip_tool'),
+                  'roll (by: moves the cut at the clip\'s side end|start). slip/slide/roll keep the rest of the timeline as it is. deflicker, ai_upscale (scale 2|4), relight (preset light|subject|background, x, y, color, strength).',
+     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt, 'by': num, 'side': txt,
+        'engine': txt, 'scale': {'type': 'integer'}, 'preset': txt, 'x': num, 'y': num, 'color': txt, 'strength': num}, ['id', 'action']), 'clip_tool'),
     ('track_motion', 'Motion tracking: an overlay, sticker or text clip (id) follows what is inside box on the main-track video at time t, '
                      'moving, growing and turning with it (keyframes for x, y, scale, rot). box = {x, y, w, h} fractions of the canvas (look with snapshot first). '
                      'scale / rotate false: follow position only.',

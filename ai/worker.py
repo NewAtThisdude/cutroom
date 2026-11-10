@@ -4,6 +4,7 @@ loaded between requests. Starting a process per outline click reloaded SAM 2 eve
   worker.py <idle seconds>    reads one JSON request per line on stdin, answers one JSON line each on stdout:
     {"id": n, "op": "preview", "job": {...}}                -> {"id": n, "result": {...}}   (remove.preview)
     {"id": n, "op": "voice", "text", "voice", "speed", "out"} -> {"id": n, "result": {}}      (Kokoro, a WAV at out)
+    {"id": n, "op": "relight", "job": {...}}                -> {"id": n, "result": {w, h}} (enhance.preview, a PNG at out)
     any failure                                              -> {"id": n, "error": "..."}
 Exits after <idle> seconds without a request (0 = after each answer: a Mac under 16 GB needs that memory back), or when
 the server goes (stdin closes). Model output and warnings go to stderr: stdout carries only the answers.
@@ -45,7 +46,11 @@ def main(idle):
             return
         req = json.loads(line)
         try:
-            res = {'id': req.get('id'), 'result': remove.preview(req['job']) if req['op'] == 'preview' else voice(req)}
+            if req['op'] == 'relight':
+                import enhance  # torch + the depth model only when a relight preview is asked for
+                res = {'id': req.get('id'), 'result': enhance.preview(req['job'])}
+            else:
+                res = {'id': req.get('id'), 'result': remove.preview(req['job']) if req['op'] == 'preview' else voice(req)}
         except Exception as e:  # sent back to the editor
             res = {'id': req.get('id'), 'error': str(e) or type(e).__name__}
         out.write(json.dumps(res) + '\n')
