@@ -204,7 +204,7 @@ void main() {
     Object.assign(GPU, { gl, cv, U, pg, srcT: t2(0, gl.LINEAR), toneT: t2(1, gl.NEAREST), maskT: t2(3, gl.LINEAR), lutT, toneKey: '', lutKey: '', maskKey: null });
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; GPU.mb = null; MB.clear(); });
+    cv.addEventListener('webglcontextlost', e => { e.preventDefault(); GPU.gl = null; GPU.failed = false; GPU.mb = null; GPU.tr = null; MB.clear(); });
     return gl;
   } catch (e) { GPU.failed = true; console.warn('GPU colour pass off:', e.message); return null; }
 }
@@ -297,6 +297,107 @@ function gpuMotion(id, sig, j, N, W, H, store) {
   gl.uniform1i(Q.n, use.length); gl.uniform2f(Q.size, W, H);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return { gp: [GPU.cv, GPU.cv.height - H], miss: [...new Set(miss)] };
+}
+
+// ---------- the per-pixel transitions on the GPU ----------
+// dissolve, pixelize, hblur, radial and fadegrays read every pixel of both sides: in JS a read-back of two layer
+// canvases, a loop and a put. Uploading the two 2D layers to WebGL cost more than that, so this runs only when both
+// sides are a plain picture in a box (app.js drawMedia's cap): their <video>/<img> go straight into a texture, each
+// side's layer (the canvas colour + the picture) is rebuilt in an 8-bit texture, and pixelTr's maths run on those.
+const TR_GPU = { dissolve: 1, pixelize: 2, hblur: 3, radial: 4, fadegrays: 5 };
+function trProg(gl) {
+  if (GPU.tr) return GPU.tr;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const pg = gl.createProgram();
+  gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+  gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D vid, ta, tb, rnd; uniform int mode, size; uniform vec4 box, crop; uniform vec3 bg; uniform vec2 wh; uniform float P, dist, sq, s1, s2;
+out vec4 o;
+vec3 A(ivec2 q) { return texelFetch(ta, q, 0).rgb * 255.0; } // the layers: 8-bit, row 0 = the picture's top
+vec3 B(ivec2 q) { return texelFetch(tb, q, 0).rgb * 255.0; }
+void main() {
+  if (mode == 0) { // a side's layer: the canvas colour with the picture in its box
+    vec2 f = gl_FragCoord.xy; vec3 c = bg;
+    if (all(greaterThanEqual(f, box.xy)) && all(lessThan(f, box.xy + box.zw))) c = floor(texture(vid, crop.xy + (f - box.xy) / box.zw * crop.zw).rgb * 255.0 + 0.5);
+    o = vec4(c / 255.0, 1.0); return;
+  }
+  if (mode == 6) { // hblur's block sums (float): a's 32-pixel row blocks, then b's
+    ivec2 f = ivec2(gl_FragCoord.xy); int nb = (int(wh.x) + 31) / 32, x0 = (f.x % nb) * 32, e = min(x0 + 32, int(wh.x)); vec3 s = vec3(0.0);
+    for (int x = x0; x < e; x++) s += f.x < nb ? A(ivec2(x, f.y)) : B(ivec2(x, f.y));
+    o = vec4(s, 1.0); return;
+  }
+  ivec2 q = ivec2(int(gl_FragCoord.x), int(wh.y) - 1 - int(gl_FragCoord.y)); // (the canvas keeps row 0 at the bottom)
+  vec3 a = A(q), b = B(q), c;
+  if (mode == 1) c = texelFetch(rnd, q, 0).r >= 1.0 - P ? a : b; // dissolve: xfade's frand per pixel (the JS map, uploaded once)
+  else if (mode == 2) { ivec2 k = dist > 0.0 ? ivec2(min((floor(vec2(q) / sq) + 0.5) * sq, wh - 1.0)) : q; c = floor(A(k) * P + B(k) * (1.0 - P)); } // pixelize
+  else if (mode == 3) { // hblur: the mean of the row from x on, size wide (cut at the edge), cross-faded; whole 32-pixel blocks from rnd
+    vec3 x0 = vec3(0.0), x1 = vec3(0.0); int e = min(q.x + size, int(wh.x)), nb = (int(wh.x) + 31) / 32, x = q.x;
+    for (; x < e && (x & 31) != 0; x++) { x0 += A(ivec2(x, q.y)); x1 += B(ivec2(x, q.y)); }
+    for (; x + 32 <= e; x += 32) { x0 += texelFetch(rnd, ivec2(x / 32, q.y), 0).rgb; x1 += texelFetch(rnd, ivec2(nb + x / 32, q.y), 0).rgb; }
+    for (; x < e; x++) { x0 += A(ivec2(x, q.y)); x1 += B(ivec2(x, q.y)); }
+    float n = float(e - q.x); c = floor(x0 / n * P + x1 / n * (1.0 - P));
+  } else if (mode == 4) { // radial: b over a through TR_MASK.radial's weight (8-bit, as the mask canvas)
+    float w = floor(smoothstep(0.0, 1.0, atan(float(q.x) - wh.x / 2.0, float(q.y) - wh.y / 2.0) - (P - 0.5) * 3.14159265 * 2.5) * 255.0 + 0.5) / 255.0;
+    c = floor(b * w + a * (1.0 - w) + 0.5);
+  } else { float ga = floor((a.r + a.g + a.b) / 3.0), gb = floor((b.r + b.g + b.b) / 3.0); c = floor((a * s1 + ga * (1.0 - s1)) * P + (gb * s2 + b * (1.0 - s2)) * (1.0 - P)); } // fadegrays
+  o = vec4(clamp(c, 0.0, 255.0) / 255.0, 1.0);
+}`));
+  gl.bindAttribLocation(pg, gl.getAttribLocation(GPU.pg, 'p'), 'p'); // the colour pass's vertex buffer, as it is
+  gl.linkProgram(pg);
+  if (!gl.getProgramParameter(pg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pg));
+  gl.useProgram(pg);
+  const U = {};
+  for (const n of ['vid', 'ta', 'tb', 'rnd', 'mode', 'size', 'box', 'crop', 'bg', 'wh', 'P', 'dist', 'sq', 's1', 's2']) U[n] = gl.getUniformLocation(pg, n);
+  gl.uniform1i(U.vid, 0); gl.uniform1i(U.ta, 4); gl.uniform1i(U.tb, 5); gl.uniform1i(U.rnd, 6); // 4-6: the motion-blur units, which it rebinds before use
+  const tex = filter => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, filter], [gl.TEXTURE_MAG_FILTER, filter], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; };
+  return (GPU.tr = { pg, U, vid: tex(gl.LINEAR), t: [tex(gl.NEAREST), tex(gl.NEAREST)], fb: [gl.createFramebuffer(), gl.createFramebuffer()], rnd: tex(gl.NEAREST), bs: tex(gl.NEAREST), bfb: gl.createFramebuffer(), sz: '', rk: '', bk: '', fl: !!gl.getExtension('EXT_color_buffer_float') });
+}
+// sides: two { el, src: [x, y, w, h] of the source, dst: [x, y, w, h] on the canvas } -> the transition drawn into ctx, or false
+function trGPU(ctx, sides, type, P1, bg) {
+  const gl = gpu(), W = ctx.canvas.width, H = ctx.canvas.height;
+  if (!gl || GPU.trOff) return false;
+  let Q;
+  try { Q = trProg(gl); } catch (e) { GPU.trOff = true; console.warn('GPU transitions off:', e.message); return false; }
+  if (type === 'hblur' && !Q.fl) return false; // (its block sums need a float target)
+  const { cv } = GPU, { U } = Q, sz = `${W}x${H}`;
+  if (cv.width < W || cv.height < H) { cv.width = Math.max(cv.width, W); cv.height = Math.max(cv.height, H); }
+  gl.useProgram(Q.pg);
+  try {
+    for (const u of [4, 5, 6]) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, null); } // (a layer being drawn can't also be bound)
+    gl.uniform1i(U.mode, 0); gl.uniform3f(U.bg, ...hexRgb(bg)); gl.viewport(0, 0, W, H);
+    for (const [j, s] of sides.entries()) {
+      const vw = s.el.videoWidth || s.el.naturalWidth, vh = s.el.videoHeight || s.el.naturalHeight;
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, Q.vid);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.el);
+      gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.t[j]);
+      if (Q.sz !== sz) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, Q.fb[j]); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, Q.t[j], 0);
+      gl.uniform4f(U.box, ...s.dst); gl.uniform4f(U.crop, s.src[0] / vw, s.src[1] / vh, s.src[2] / vw, s.src[3] / vh);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, Q.t[0]);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, Q.t[1]);
+    gl.uniform2f(U.wh, W, H);
+    if (type === 'hblur') {
+      const nb = Math.ceil(W / 32);
+      gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.bs);
+      if (Q.bk !== sz) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 2 * nb, H, 0, gl.RGBA, gl.FLOAT, null); Q.bk = sz; }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, Q.bfb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, Q.bs, 0);
+      gl.viewport(0, 0, 2 * nb, H); gl.uniform1i(U.mode, 6); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); gl.viewport(0, 0, W, H);
+    }
+    Q.sz = sz;
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, type === 'hblur' ? Q.bs : Q.rnd);
+    if (type === 'dissolve' && Q.rk !== sz) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, W, H, 0, gl.RED, gl.FLOAT, frandMap(W, H)); Q.rk = sz; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const dist = Math.ceil(Math.min(P1, 1 - P1) * 50) / 50, prog = P1 <= 0.5 ? P1 * 2 : (1 - P1) * 2;
+    gl.uniform1i(U.mode, TR_GPU[type]); gl.uniform1f(U.P, P1);
+    gl.uniform1f(U.dist, dist); gl.uniform1f(U.sq, (2 * dist * Math.min(W, H)) / 20); gl.uniform1i(U.size, Math.trunc(1 + Math.trunc(W / 2) * prog));
+    gl.uniform1f(U.s1, smoothstep(0.8, 1, P1)); gl.uniform1f(U.s2, smoothstep(0.2, 1, P1));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } catch (e) { console.warn('GPU transition:', e.message); return false; } finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
+  ctx.drawImage(cv, 0, cv.height - H, W, H, 0, 0, W, H);
+  return true;
 }
 
 // ---------- scopes: waveform, histogram, vectorscope of the preview ----------
