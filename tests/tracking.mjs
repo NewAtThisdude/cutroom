@@ -46,7 +46,10 @@ async function open(reduce = 'no-preference') {
 const page = await open();
 const ev = (f, a) => page.evaluate(f, a);
 const fresh = (name, ratio = '16:9') => ev(([name, M0, ratio]) => { setProject(newProject(ratio)); P.name = `${name} (scratch)`; window.MD = M0; S.t = 0; renderAll(); return P.id; }, [name, MEDIA, ratio]);
-const exportMp4 = name => ev(n => REMOTE.export({ format: 'mp4', resolution: '720p', name: n }).then(r => r.file, e => 'ERR ' + e.message), name);
+// x264 (quality best), not the default VideoToolbox: the synth background's fine detail is ~1.5 grey levels, and the hardware
+// encoder's rate control keeps a different share of it on every export of the SAME project (ring median 0.48 / 0.76 / 0.76 in a row),
+// so the ring check measured the encoder, not where the blur is. x264 gives the same file every time.
+const exportMp4 = name => ev(n => REMOTE.export({ format: 'mp4', resolution: '720p', name: n, quality: 'best' }).then(r => r.file, e => 'ERR ' + e.message), name);
 const still = (t, max = 640) => ev(async ([t, max]) => { const r = await REMOTE.snapshot({ t, max }); const i = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(i.width, i.height), g = c.getContext('2d'); g.drawImage(i, 0, 0); return { w: i.width, h: i.height, px: [...g.getImageData(0, 0, i.width, i.height).data] }; }, [t, max]);
 const pvImg = t => ev(async t => { seekTo(t); await waitFrame(); const cv = $('#cv'), x = document.createElement('canvas').getContext('2d'); x.canvas.width = 640; x.canvas.height = 360; x.drawImage(cv, 0, 0, 640, 360); return { w: 640, h: 360, px: [...x.getImageData(0, 0, 640, 360).data] }; }, t);
 const at = (img, fx, fy) => { const i = (Math.round(fy * (img.h - 1)) * img.w + Math.round(fx * (img.w - 1))) * 4; return img.px.slice(i, i + 3); };
