@@ -100,6 +100,47 @@ if (run('tiles')) {
   check('an export with all the presets (and every extra) draws its text layer in the workers', r.mode === 'workers', JSON.stringify(r));
 }
 
+// ---------- a real mp4 export: emoji on a caption without word timing, and the active word on a speaker's colour ----------
+if (run('export')) {
+  await fresh('Emoji export');
+  const t = 1.5, r = await ev(async t => {
+    const v = [...M.values()].find(m => m.kind === 'video' && m.ready && m.duration >= 4);
+    addMedia(v.id, 'main');
+    P.capStyle = { ...capPreset('Emoji'), y: 0.6 };
+    P.captions = [{ id: hex12(), start: 0.5, dur: 2, text: 'No word timing here', emoji: '⭐' }]; // words dropped (e.g. its text edited), emoji kept
+    S.sel = null; renderAll();
+    const pv = await REMOTE.snapshot({ t, max: 1280, preview: true }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${pv.image}`)).blob());
+    const c = new OffscreenCanvas(640, 360), g = c.getContext('2d'); g.drawImage(im, 0, 0, 640, 360);
+    const ex = await REMOTE.export({ format: 'mp4', resolution: '720p', name: 'captions_pro emoji (scratch)' });
+    return { pv: [...g.getImageData(0, 0, 640, 360).data], file: ex.file, fps: P.fps, mode: S.layerMode };
+  }, t);
+  const f = `${LIB}/exports/${r.file}`, raw = execFileSync('ffmpeg', ['-v', 'error', '-ss', `${t + 0.25 / r.fps}`, '-i', f, '-frames:v', '1', '-vf', 'scale=640:360', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
+  fs.mkdirSync(`${LIB}/trash/exports`, { recursive: true }); fs.renameSync(f, `${LIB}/trash/exports/${r.file}`);
+  const star = (d, n) => { let c = 0; for (let i = 0; i < 640 * 360; i++) if (d[i * n] > 180 && d[i * n + 1] > 110 && d[i * n] - d[i * n + 2] > 100) c++; return c; }; // the yellow star's pixels (the words are white)
+  const se = star(raw, 3), sp = star(r.pv, 4);
+  check('emoji caption without word timing: the exported mp4 shows the emoji popped in, as big as the preview', sp > 100 && se / sp > 0.7 && se / sp < 1.4 && r.mode === 'workers', `${se} star px in the export, ${sp} in the preview (640x360), ${r.mode}`);
+  // speaker 1's colour is Bold's highlight yellow: the active word must still stand out (drawn in the caption's own white)
+  const k = await ev(async () => {
+    const W = [{ w: 'one', s: 0, e: 0.5 }, { w: 'two', s: 0.5, e: 1 }, { w: 'three', s: 1, e: 1.5 }];
+    P.capStyle = { ...capPreset('Bold'), y: 0.6, spk: true };
+    P.captions = [{ id: hex12(), start: 0.5, dur: 1.5, text: 'one two three', words: W, spk: 0 }]; renderAll();
+    const r = await REMOTE.snapshot({ t: 1.25, max: 640 }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob());
+    const c = new OffscreenCanvas(im.width, im.height), g = c.getContext('2d'); g.drawImage(im, 0, 0);
+    const d = g.getImageData(0, 0, im.width, im.height).data, n = { yellow: 0, white: 0 };
+    for (let y = Math.round(im.height * 0.45); y < im.height * 0.75; y++) for (let x = 0; x < im.width; x++) { const i = (y * im.width + x) * 4; if (d[i] > 235 && d[i + 1] > 190 && d[i + 1] < 230 && d[i + 2] < 40) n.yellow++; }
+    P.capStyle.spk = false; renderAll(); // the same frame without speakers: white words, yellow active word
+    return n;
+  });
+  const [wy, wo] = await ev(async () => { // pixels of the active word, colour-tested against the frame with speakers off
+    const grab = async () => { const r = await REMOTE.snapshot({ t: 1.25, max: 640 }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(im.width, im.height), g = c.getContext('2d'); g.drawImage(im, 0, 0); return g.getImageData(0, 0, im.width, im.height); };
+    const off = await grab(); P.capStyle.spk = true; renderAll(); const on = await grab();
+    let word = 0, still = 0; // the active word's yellow pixels with speakers off: with speakers on they must not be yellow any more
+    for (let i = 0; i < off.data.length; i += 4) if (off.data[i] > 235 && off.data[i + 1] > 190 && off.data[i + 1] < 230 && off.data[i + 2] < 40) { word++; if (on.data[i] > 235 && on.data[i + 1] > 190 && on.data[i + 1] < 230 && on.data[i + 2] < 40) still++; }
+    return [word, still];
+  });
+  check("speaker labels: the active word stands out from speaker 1's caption colour", wy > 200 && wo / wy < 0.2 && k.yellow > wy, `${wy} active-word px, ${wo} still yellow with speakers on; ${k.yellow} yellow px in the speaker's caption`);
+}
+
 // ---------- keywords (and emoji) on podcast-episode ----------
 const pod = await ev(() => [...M.values()].find(m => /podcast-episode/.test(m.name))?.id);
 if ((run('keywords') || run('bilingual')) && pod) {

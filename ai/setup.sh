@@ -48,8 +48,8 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
-# Speaker labels: WavLM Base Plus speaker verification (Microsoft, MIT licence like the rest of microsoft/unilm WavLM; the
-# HF card names none), 386 MB, via transformers; pinned revision, weights checked. No token needed (pyannote's is gated).
+# Speaker labels: WavLM Base Plus speaker verification (Microsoft; licence CC BY-SA 3.0: the HF card's "License" section points
+# to microsoft/UniSpeech/LICENSE), 386 MB, via transformers; pinned revision, weights checked. No token needed (pyannote's is gated).
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/wavlm-base-plus-sv', revision='feb593a6c23c1cc3d9510425c29b0a14d2b07b1e', allow_patterns=['*.json', 'pytorch_model.bin'], local_dir='vendor/wavlm-base-plus-sv')"
 echo "e906bce2fa42fb497a1d1a9ecf81548adb7e03b12a5644e32d2f42f0d6500fad  vendor/wavlm-base-plus-sv/pytorch_model.bin" | shasum -a 256 -c -
 echo "On-device AI ready."

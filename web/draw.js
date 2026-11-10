@@ -3,6 +3,7 @@
 'use strict';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const alike = (a, b) => /^#[0-9a-f]{6}/i.test(a) && /^#[0-9a-f]{6}/i.test(b) && [1, 3, 5].reduce((d, i) => d + Math.abs(parseInt(a.substr(i, 2), 16) - parseInt(b.substr(i, 2), 16)), 0) < 96; // two #rrggbb colours too close to tell apart
 const hexA = (hex, a = 1) => `${hex}${Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0')}`;
 const TEXT_BASE = { font: 'Montserrat', weight: 800, size: 72, color: '#ffffff', stroke: '#000000', strokeW: 0, shadow: false, box: false, boxColor: '#000000', boxAlpha: 0.72, upper: false, hl: '#ffd400', pop: false, maxW: 0.86, lh: 1.15,
   italic: false, align: 'center', ls: 0, shc: '#000000', sha: 0.55, shb: 0.18, shx: 0, shy: 0.04, boxR: 0.18, boxPad: 0.3 };
@@ -280,7 +281,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) { ctx.beginPath(); ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18))); ctx.fill(); }
   }
   const spkC = st.spk && it.spk != null ? st.spkc?.[it.spk] || SPK_C[it.spk % SPK_C.length] : null, baseC = spkC || st.color; // a speaker's captions in their colour
-  const kwC = st.kwc || (st.hl && st.hl !== st.color ? st.hl : '#ffd400');
+  const vs = c => spkC && alike(spkC, c) ? [st.color, '#ffffff', '#101010'].find(k => !alike(k, spkC)) : c; // a highlight that would vanish into the speaker's colour
+  const hl = vs(st.hl), kwC = vs(st.kwc || (st.hl && st.hl !== st.color ? st.hl : '#ffd400'));
   if (spkC) gradFill = null;
   for (const [li, ln] of lines.entries()) {
     let cx = lx(ln);
@@ -307,8 +309,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       let fill = gradFill || baseC; // two-tone: every other word in the second colour; keywords in the highlight
       if (st.color2 && (w.ti >= 0 ? w.ti : w.i) % 2) fill = st.color2;
       if (st.kw && tw && it.kw?.includes(w.ti)) fill = kwC;
-      if (on && !st.wbox && !st.kar) fill = st.hl;
-      if (on && st.wbox) { ctx.fillStyle = st.hl; ctx.beginPath(); ctx.roundRect(wx - size * 0.16, cy - size * 0.62, w.ww + size * 0.32, size * 1.24, size * 0.2); ctx.fill(); }
+      if (on && !st.wbox && !st.kar) fill = hl;
+      if (on && st.wbox) { ctx.fillStyle = hl; ctx.beginPath(); ctx.roundRect(wx - size * 0.16, cy - size * 0.62, w.ww + size * 0.32, size * 1.24, size * 0.2); ctx.fill(); }
       if (st.stack > 0) { // shadow stack: hard copies stepping down-right, the furthest first
         ctx.fillStyle = ctx.strokeStyle = st.shc || '#000000'; ctx.lineWidth = st.strokeW * u * 2;
         for (let j = Math.round(st.stack); j > 0; j--) { const o = j * size * 0.03; if (st.strokeW > 0) put(true, vis, wx + o, cy + o); put(false, vis, wx + o, cy + o); }
@@ -320,7 +322,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       const kp = st.kar && tw ? clamp((lt - tw.s) / Math.max(0.05, tw.e - tw.s), 0, 1) : 0; // karaoke: the highlight sweeps through the word as it is said
       if (kp > 0) {
         ctx.shadowColor = 'transparent'; ctx.beginPath(); ctx.rect(wx - size, cy - size * 1.5, size + w.ww * kp, size * 3); ctx.clip();
-        ctx.fillStyle = st.hl; put(false, vis, wx, cy);
+        ctx.fillStyle = hl; put(false, vis, wx, cy);
       }
       ctx.restore();
       cx += w.ww * grow + sp;

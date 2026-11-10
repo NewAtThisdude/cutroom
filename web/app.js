@@ -4077,7 +4077,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       cuts.add(it.start); cuts.add(end);
       if (it.words) for (const wd of it.words) cuts.add(it.start + wd.s);
       const spans = [st.anim && st.anim !== 'none' ? [it.start, it.start + animLen(st, false)] : null, l !== 'captions' && it.kf?.length > 1 ? [it.start + it.kf[0].t, it.start + it.kf.at(-1).t] : null,
-        st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null, l === 'captions' && it.words?.length && capLive(st) ? [it.start, end] : null];
+        st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null, l === 'captions' && it.words?.length && capLive(st) ? [it.start, end] : null,
+        l === 'captions' && st.emoji && it.emoji ? [it.start, it.start + 0.25] : null]; // the emoji's pop-in (drawText: 0.25 s), with or without word timing
       for (const [a, b] of spans.filter(Boolean)) for (let t = a; t < Math.min(b, end); t += 1 / P.fps) cuts.add(t); // animated: one PNG per frame
     }
     for (const f of layerFx) { // effect overlays change every frame, n times a second, near their ends only, or never
