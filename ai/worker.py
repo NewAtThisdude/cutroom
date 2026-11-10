@@ -39,7 +39,7 @@ def voice(req):
 
 
 CLONE = ('mlx-community/chatterbox-multilingual-v3', '03565773edd72e949572557597af8063bb49a18a')  # Resemble AI Chatterbox, MIT
-WAVLM = ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e')  # speaker verification x-vectors, MIT
+WAVLM = ('microsoft/wavlm-base-plus-sv', 'feb593a6c23c1cc3d9510425c29b0a14d2b07b1e')  # speaker verification x-vectors, CC BY-SA 3.0 (UniSpeech LICENSE; attribution)
 
 
 def clone(req):

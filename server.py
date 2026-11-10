@@ -1677,10 +1677,12 @@ def write_wav(f, sr, pcm):
 
 
 def ai_dub(st, voice, lang, items):
-    """Captions -> speech in the cloned voice, sentence by sentence, each fitted to its slot: atempo 0.8-1.25x; longer than
-    that -> the local model says it in fewer words (up to twice; the best-fitting take is kept); still long -> it runs up to 0.1 s
-    into the next slot, which then starts that much later (1.5x at most if it must); shorter -> a pause after it. items = [{s, e, text}] timeline seconds. -> one WAV from timeline 0
-    (so any clip's span of it is the same offset into the file: lip sync reads it that way)."""
+    """Captions -> speech in the cloned voice, sentence by sentence, each fitted to its slot: atempo 0.8-1.25x, never outside;
+    longer than that -> the local model says it in fewer words (up to three times, each target tighter; the best-fitting take is
+    kept); still long -> it starts up to 0.15 s early into a free gap before it, then may end up to 0.15 s past its slot (up to
+    0.1 s into the next one, which then starts that much later); if even that is not enough it overruns and the item says so
+    ('over' = seconds past its slot's end). Shorter -> a pause after it. items = [{s, e, text}] timeline seconds. -> one WAV
+    from timeline 0 (so any clip's span of it is the same offset into the file: lip sync reads it that way)."""
     if not re.fullmatch(r'[a-f0-9]{12}', str(voice)) or not (VOICES / f'{voice}.wav').exists():
         raise ValueError('clone a voice first (Clone voice from clip)')
     if lang not in CLONE_LANGS:
@@ -1695,21 +1697,22 @@ def ai_dub(st, voice, lang, items):
         for k, it in enumerate(its):
             start = max(it['s'], free)  # at most ~0.13 s late (the one before may run 0.1 s into this slot)
             nxt = its[k + 1]['s'] if k + 1 < len(its) else it['e'] + 0.5
-            slot, room = max(0.2, it['e'] - start), max(0.2, min(nxt + 0.1, it['e'] + 0.15) - start)  # never more than 0.15 s past its slot
+            fit_in = lambda a: (max(0.2, it['e'] - a), max(0.2, min(nxt + 0.1, it['e'] + 0.15) - a))  # (slot, room): room = <= 0.15 s past its slot
+            slot, room = fit_in(start)
             text, shorter, takes = it['text'], False, []
-            for attempt in range(3):
+            for attempt in range(4):
                 f = Path(td) / f'{k}.{attempt}.wav'
                 ai_worker('clone', timeout=600, text=text, ref=ref, lang=lang, out=str(f))
                 gsr, pcm = read_wav(f)
                 pcm = trim_silence(pcm, gsr)
                 d = len(pcm) / gsr
                 takes.append((d, gsr, pcm, text, attempt > 0))
-                if d / min(slot, room) <= 1.25 or attempt == 2:
+                if d / min(slot, room) <= 1.25 or attempt == 3:
                     break
-                n = len(text.split())  # too long even at 1.25x: the local model says it in fewer words (twice at most; models undershoot cuts)
+                n = len(text.split())  # too long even at 1.25x: the local model says it in fewer words (3 times at most, tighter each time: models undershoot cuts)
                 try:
                     ans = llm('You shorten dubbing lines. Reply with JSON only.',
-                              f'Say this {CLONE_LANGS[lang]} sentence in at most {max(2, int(n * 1.15 * min(slot, room) / d))} words, same meaning, '
+                              f'Say this {CLONE_LANGS[lang]} sentence in at most {max(2, int(n * (1.15, 1.0, 0.85)[attempt] * min(slot, room) / d))} words, same meaning, '
                               f'natural spoken {CLONE_LANGS[lang]}. Return {{"t": "..."}}.\n' + text)
                     t2 = str(ans.get('t', '')).strip() if isinstance(ans, dict) else ''
                 except (RuntimeError, OSError, ValueError):
@@ -1719,17 +1722,20 @@ def ai_dub(st, voice, lang, items):
                 text = t2
             # the take that fits best: running long costs more than a pause after it (a cut that undershot leaves one)
             d, gsr, pcm, text, shorter = min(takes, key=lambda x: 3 * max(0, x[0] / min(slot, room) - 1.25) + max(0, 0.8 - x[0] / slot))
-            tempo = min(max(d / slot, 0.8), 1.25)
-            if d / tempo > room:  # it would still run into the next sentence: as fast as it must (1.5x at most)
-                tempo = min(d / room, 1.5)
+            if d / 1.25 > room and free < it['s']:  # too long even at 1.25x: start early into the gap before it (0.15 s at most)
+                start = max(free, it['s'] - min(0.15, d / 1.25 - room))
+                slot, room = fit_in(start)
+            tempo = min(max(d / slot, 0.8), 1.25)  # never outside 0.8-1.25x: a take that still does not fit overruns and says so
             g, src = Path(td) / f'{k}.fit.wav', Path(td) / f'{k}.trim.wav'
             write_wav(src, gsr, pcm)
             r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-af', f'atempo={tempo:.5f}' if abs(tempo - 1) > 1e-3 else 'anull', '-ar', str(sr), '-ac', '1', str(g)])
             if r.returncode:
                 raise RuntimeError(plain('Fitting the dub', r.stderr, r.returncode))
             _, fit = read_wav(g)
+            over = start + len(fit) / sr - it['e']
             out.append({'s': round(it['s'], 3), 'e': round(it['e'], 3), 'a': round(start, 3), 'b': round(start + len(fit) / sr, 3), 'tempo': round(tempo, 3),
-                        'text': text, **({'shorter': True} if shorter else {}), 'pcm': fit, 'at': int(round(start * sr))})
+                        'text': text, **({'shorter': True} if shorter else {}), **({'over': round(over, 3)} if over > 0.15 else {}),
+                        'pcm': fit, 'at': int(round(start * sr))})
             free = start + len(fit) / sr + 0.03
             st['progress'] = 0.97 * (k + 1) / len(its)
         total = max(o['at'] + len(o['pcm']) for o in out) + int(0.3 * sr)
@@ -4070,12 +4076,15 @@ def selftest():
         items = [{'s': 0.5, 'e': 2.5, 'text': 'x' * 20}, {'s': 2.5, 'e': 4.0, 'text': 'y' * 40}, {'s': 4.6, 'e': 8.0, 'text': 'z' * 12}]
         r = ai_dub({}, 'aaaaaaaaaaaa', 'es', items)
         it = r['items']
-        assert all(0 <= x['a'] - x['s'] <= 0.15 and x['b'] <= x['e'] + 0.15 and 0.8 <= x['tempo'] <= 1.25 for x in it), it
+        assert all(abs(x['a'] - x['s']) <= 0.15 and x['b'] <= x['e'] + 0.15 and 0.8 <= x['tempo'] <= 1.25 and 'over' not in x for x in it), it
         assert it[1].get('shorter') and all(it[i]['b'] <= it[i + 1]['a'] for i in range(len(it) - 1)), it
         _, dw = read_wav(MEDIA / meta(r['media'])['file'])  # (not "pcm": that is a function the selftest uses later)
         loud = [i / 24000 for i in range(0, len(dw), 240) if abs(dw[i]) > 500 or abs(dw[min(len(dw) - 1, i + 8)]) > 500]
         assert loud and all(any(x['a'] - 0.01 <= t <= x['b'] + 0.01 for x in it) for t in loud), 'dub sound outside its sentences'
-        print(f"dub time-fit ok (tempos {[x['tempo'] for x in it]})")
+        globals()['llm'] = lambda system, user, **k: {}  # a model that cannot shorten: 1.25x at most, early into the gap, overrun reported
+        o = ai_dub({}, 'aaaaaaaaaaaa', 'es', [{'s': 1.0, 'e': 2.0, 'text': 'w' * 20}])['items'][0]
+        assert o['tempo'] == 1.25 and o['a'] == 0.85 and 0.4 < o['over'] < 0.6, o  # 2 s (+ trim margin) at 1.25x from 0.85
+        print(f"dub time-fit ok (tempos {[x['tempo'] for x in it]}; unshortenable line: x{o['tempo']}, over {o['over']} s)")
     finally:
         globals().update(keep)
 

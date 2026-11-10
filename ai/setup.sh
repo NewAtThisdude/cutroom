@@ -49,7 +49,7 @@ env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
 # Voice clone + dubbing: Chatterbox multilingual v3 (Resemble AI, MIT; 23 languages, 2.7 GB) with its S3 tokenizer, and WavLM
-# speaker verification (Microsoft, MIT; 0.4 GB) to measure how close a clone sounds. Pinned revisions; the big files' SHA-256 checked.
+# speaker verification (Microsoft, CC BY-SA 3.0 per its model card -> UniSpeech LICENSE, attribution required; 0.4 GB) to measure how close a clone sounds. Pinned revisions; the big files' SHA-256 checked.
 env -u PYTHONPATH .venv/bin/python -I -c "
 import hashlib
 from huggingface_hub import snapshot_download

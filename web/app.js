@@ -5277,7 +5277,8 @@ async function dubVideo({ lang = 'es', voice, original = 'duck', say = sayIn('#d
     d.dub = lang;
     for (const c of [...P.main, ...P.overlay]) if (M.get(c.media)?.hasAudio && c.start < end && c.start + len(c) > j.start) c.volume = original === 'mute' ? 0 : Math.min(c.volume, 0.2);
   });
-  say(`Dubbed ${j.items.length} sentences into ${name}${j.items.some(i => i.shorter) ? ' (some said shorter to fit)' : ''}.`);
+  const over = j.items.filter(i => i.over).length;
+  say(`Dubbed ${j.items.length} sentences into ${name}${j.items.some(i => i.shorter) ? ' (some said shorter to fit)' : ''}${over ? `; ${over} still run past their slot even at 1.25x` : ''}.`);
   return { media: j.media, clip: brief(d, 'audio'), sentences: j.items };
 }
 function swapInVideo(c, id, keep) { // the clip shows the new video from its start; the timeline's audio keeps the sound
