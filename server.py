@@ -656,6 +656,40 @@ def build_tool(name):
     return str(exe)
 
 
+SYS_FONTS = []  # the Mac's font families, listed once per server run
+
+
+def system_fonts():
+    if not SYS_FONTS:
+        r = sh([build_tool('fonts')])
+        SYS_FONTS.extend(json.loads(r.stdout or '[]') if r.returncode == 0 else [])
+    return SYS_FONTS
+
+
+FONT_MAGIC = {b'\x00\x01\x00\x00': '.ttf', b'true': '.ttf', b'OTTO': '.otf', b'wOF2': '.woff2'}
+
+
+def import_font(name, data):
+    """A .ttf / .otf / .woff2 into <library>/fonts for every project; the page registers it (FontFace) under `family`."""
+    ext = FONT_MAGIC.get(data[:4])
+    if not ext or len(data) > 32 << 20:
+        raise ValueError('not a font file (.ttf, .otf or .woff2)')
+    d = HOME / 'fonts'
+    d.mkdir(parents=True, exist_ok=True)
+    import hashlib
+    fid = hashlib.sha256(data).hexdigest()[:12]  # the same file twice is one font
+    if (d / f'{fid}.json').exists():
+        return json.loads((d / f'{fid}.json').read_text())
+    base = re.sub(r'[^\w\- ]', '', Path(name).stem).strip()[:60] or 'Font'  # no quotes: it goes into a CSS font string
+    taken, fam, n = {json.loads(f.read_text())['family'] for f in d.glob('*.json')}, base, 2
+    while fam in taken:
+        fam, n = f'{base} {n}', n + 1
+    (d / f'{fid}{ext}').write_bytes(data)
+    info = {'id': fid, 'family': fam, 'file': f'{fid}{ext}'}
+    (d / f'{fid}.json').write_text(json.dumps(info))
+    return info
+
+
 def run_job(fn, *args):
     job = uuid.uuid4().hex[:12]
     JOBS[job] = {'state': 'running', 'progress': 0.0}
@@ -2608,9 +2642,13 @@ def graph(p, td):
         fg.append(f'[{len(ins) - 1}:v]format=rgba[tx]')
         over('tx')
     fg.append(f'anullsrc=r=48000:cl=stereo,atrim=end={D:.6f}[sil]')
-    # -14 LUFS, the reels/YouTube target; otherwise a look-ahead limiter at -1 dBFS (it changes nothing below that): the
-    # sound effects at their default level, or music at +6 dB, clipped the file
-    loud = ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' if p.get('loud') else ',alimiter=limit=0.891:attack=1:release=50:level=false:latency=1'
+    # loudness (-14 LUFS, the reels/YouTube target): export() measures the whole mix first ('measure'), then sets ONE gain
+    # in dB for all of it (two-pass, linear: single-pass loudnorm rode the gain and pumped up the quiet parts). Otherwise a
+    # look-ahead limiter at -1 dBFS (it changes nothing below that): the sound effects at their default level, or music at
+    # +6 dB, clipped the file
+    lp = p.get('loud')
+    loud = (',loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json' if lp == 'measure' else f',volume={lp:.3f}dB' if type(lp) is float
+            else ',alimiter=limit=0.891:attack=1:release=50:level=false:latency=1')
     fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
     if not ao:
         fg.append(f'[{cur[0]}]format=rgb24[vout]' if p.get('format') in ('png', 'gif') else  # stills and GIFs stay RGB: no 4:2:0 round trip
@@ -2716,6 +2754,7 @@ def run_ffmpeg(cmd, dur, report, what='Rendering', job=None):
         raise RuntimeError('cancelled')
     if proc.wait():
         raise RuntimeError(plain(what, ''.join(err), proc.returncode))
+    return ''.join(err)
 
 
 def unique(path):
@@ -2751,6 +2790,17 @@ def still_cut(p):
             'still': still, 'duration': still + 2 / F}
 
 
+def loud_gain(p, td, job):
+    """Loudness pass one: the mix alone through loudnorm's meter. One gain to -14 LUFS for the whole edit, held down so the
+    true peak stays at -1.5 dBTP (what loudnorm's linear mode does; past that it would ride the gain)."""
+    cmd = ffmpeg_cmd({**p, 'format': 'wav', 'loud': 'measure'}, td, 'x')
+    cmd[cmd.index('-loglevel') + 1] = 'info'  # loudnorm prints its numbers at info level
+    err = run_ffmpeg(cmd[:-1] + ['-f', 'null', '-'], p['duration'], lambda _x: None, 'Measuring loudness', job)
+    j = json.loads(err[err.rindex('{'):err.rindex('}') + 1])
+    i, tp = float(j['input_i']), float(j['input_tp'])
+    return 0.0 if not (math.isfinite(i) and math.isfinite(tp)) or i < -70 else round(min(-14 - i, -1.5 - tp), 3)  # silence: as it is
+
+
 def export(job, p):
     st = JOBS[job]
     try:
@@ -2773,6 +2823,8 @@ def export(job, p):
                              'bt709': True, 'tr': part[-1]['tr'], 'trf': part[-1]['trf']}  # a transition into the next chunk still happens in the final pass
             if chunks:
                 p = {**p, 'main': chunks}
+            if p.get('loud') is True and p.get('format') not in ('png', 'gif'):
+                p = {**p, 'loud': loud_gain(p, td, job)}
             lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
             # rendered aside and moved in when complete: a failed or stopped export left an unplayable file under its name
             out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}"
@@ -2985,6 +3037,12 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'luts').glob('*.json')), key=lambda x: x.get('name', '').lower()))
             if m := re.fullmatch(r'/luts/([a-f0-9]{12})\.cube', path):
                 return self.file(HOME / 'luts' / f'{m[1]}.cube')
+            if path == '/api/fonts':  # imported fonts
+                return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'fonts').glob('*.json')), key=lambda x: x['family'].lower()))
+            if path == '/api/fonts/system':  # the Mac's installed families (drawn by name; nothing to load)
+                return self.reply(system_fonts())
+            if m := re.fullmatch(r'/fonts/([a-f0-9]{12}\.(?:ttf|otf|woff2))', path):
+                return self.file(HOME / 'fonts' / m[1])
             if path == '/api/templates':
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
@@ -3008,6 +3066,11 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/import':
                 name = parse_qs(u.query).get('name', ['file'])[0]
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
+            if u.path == '/api/fonts':  # the font file's bytes
+                n = int(self.headers.get('Content-Length') or 0)
+                if n > 32 << 20:
+                    raise ValueError('font file too big (32 MB at most)')
+                return self.reply(import_font(parse_qs(u.query).get('name', ['Font'])[0], self.rfile.read(n)))
             body = self.body()
             if u.path == '/api/transcribe':
                 return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})

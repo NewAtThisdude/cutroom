@@ -959,14 +959,40 @@ async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person 
     return cut;
   } catch (e) { setStatus(e.message); throw e; }
 }
+function fontPick(k, v) { // Cutroom's own fonts, the imported ones, then every family on this Mac
+  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f)), all = [...FONTS, ...mine, ...mac];
+  const grp = (label, fs) => (fs.length ? `<optgroup label="${label}">${fs.map(f => `<option value="${esc(f)}"${f === v ? ' selected' : ''}>${esc(f)}</option>`).join('')}</optgroup>` : '');
+  return `<label class="row"><span>Font</span><select data-k="${k}">${all.includes(v) ? '' : `<option value="${esc(v)}" selected>${esc(v)}</option>`}${grp('Cutroom', FONTS)}${grp('Imported', mine)}${grp('This Mac', mac)}</select></label>`
+    + '<div class="actions"><label class="btn"><input type="file" data-fontin hidden accept=".ttf,.otf,.woff2">Import font…</label></div>';
+}
+const fontsOn = new Set();
+async function loadFonts() { // imported fonts (Movies/Cutroom/fonts) registered with the page, so preview and export draw them alike
+  G.fonts = await api('/api/fonts').catch(() => G.fonts || []);
+  await Promise.all(G.fonts.filter(f => !fontsOn.has(f.id)).map(f => {
+    fontsOn.add(f.id);
+    WEIGHTS[f.family] ??= [400];
+    const ff = new FontFace(f.family, `url(/fonts/${f.file})`, { weight: '1 1000' }); // one face for every weight: never a faked bold
+    document.fonts.add(ff);
+    return ff.load().catch(() => {});
+  }));
+}
+async function importFont(f) {
+  const r = await fetch(`/api/fonts?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: f });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `${r.status} ${r.statusText}`);
+  await loadFonts();
+  toast(`Font "${j.family}" imported`);
+  return j;
+}
 function textPanel(c, lane) {
-  const cap = lane === 'captions', st = textStyle(c, lane), r = cap ? 'cap' : 'c.style', pr = cap ? null : propsAt(c, S.t - c.start), ws = WEIGHTS[st.font] || [400, 700];
+  const cap = lane === 'captions', st = textStyle(c, lane), r = 'c.style', pr = cap ? null : propsAt(c, S.t - c.start), ws = WEIGHTS[st.font] || [400, 700];
   const style = `<textarea data-k="c.text" rows="3" spellcheck="false">${esc(c.text)}</textarea>`
-    + (cap ? `<p class="hint">Style edits apply to every caption.</p><div class="presets small">${Object.keys(CAP_PRESETS).map(n => `<button data-cappreset="${n}">${n}</button>`).join('')}</div>`
+    + (cap ? `<p class="hint">Presets restyle every caption; the settings below restyle this one.</p><div class="presets small">${Object.keys(CAP_PRESETS).map(n => `<button data-cappreset="${n}">${n}</button>`).join('')}</div>`
+      + `<div class="actions"><button data-act="capall" title="Every caption takes this caption's style">Apply to all captions</button></div>`
       : `<div class="presets small">${Object.keys(TEXT_PRESETS).map(n => `<button data-textpreset="${n}">${n}</button>`).join('')}</div>`)
-    + pick(`${r}.font`, 'Font', st.font, FONTS.map(f => [f, f])) + pick(`${r}.weight`, 'Weight', ws.includes(st.weight) ? st.weight : ws[0], ws.map(w => [w, WEIGHT_NAMES[w] || String(w)]))
+    + fontPick(`${r}.font`, st.font) + pick(`${r}.weight`, 'Weight', ws.includes(st.weight) ? st.weight : ws[0], ws.map(w => [w, WEIGHT_NAMES[w] || String(w)]))
     + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Colour', st.color)
-    + (cap ? colour('cap.hl', 'Highlight', st.hl) + tick('cap.pop', 'Pop active word', st.pop) : '')
+    + (cap ? colour(`${r}.hl`, 'Highlight', st.hl) + tick(`${r}.pop`, 'Pop active word', st.pop) : '')
     + `<h4>Layout</h4>${segs('align', 'Align', st.align || 'center', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']])}`
     + slider(`${r}.ls`, 'Letter spacing', st.ls || 0, -0.05, 0.5, 0.005, '%') + slider(`${r}.lh`, 'Line height', st.lh, 0.8, 2.2, 0.01) + slider(`${r}.maxW`, 'Max width', st.maxW, 0.2, 1, 0.01, '%') + tick(`${r}.upper`, 'All caps', st.upper)
     + `<h4>Outline</h4>${slider(`${r}.strokeW`, 'Width', st.strokeW, 0, 20, 0.5)}${colour(`${r}.stroke`, 'Colour', st.stroke)}`
@@ -999,7 +1025,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
   for (const q of path) o = o[q] ??= {};
   o[last] = v;
-  if (last === 'font' && WEIGHTS[v]) { const w = o.weight ?? TEXT_BASE.weight, ws = WEIGHTS[v]; if (!ws.includes(w)) o.weight = ws.reduce((x, y) => (Math.abs(y - w) < Math.abs(x - w) ? y : x)); }
+  if (last === 'font' && WEIGHTS[v]) { const w = o.weight ?? textStyle(selClip() || {}, S.sel?.lane).weight, ws = WEIGHTS[v]; if (!ws.includes(w)) o.weight = ws.reduce((x, y) => (Math.abs(y - w) < Math.abs(x - w) ? y : x)); }
   if (el.dataset.k === 'c.text') retext(selClip());
 }
 function relink(from, to) { // every clip that played the missing `from` plays library item `to` instead (same in/out, kept inside it)
@@ -2590,7 +2616,7 @@ function addTemplate(name) {
   toast(`${name} added: click a line to change its words`);
 }
 
-function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? P.capStyle : it.style) }; }
+function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? { ...P.capStyle, ...it.style } : it.style) }; }
 function drawTexts(ctx, t, k, preview) {
   drawFxLayers(ctx, t, k);
   for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
@@ -3517,6 +3543,8 @@ async function autoCaptions(force) { // words come back in source time; map them
       if (gap > 0 && gap < 0.5) caps[i].dur += gap;
       else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
     }
+    const kept = new Map(P.captions.filter(c => c.style).map(c => [c.text, c.style])); // a restyled caption keeps its look when captions are re-made after a cut
+    for (const c of caps) if (kept.has(c.text)) c.style = kept.get(c.text);
     change(() => { P.captions = caps; S.sel = null; });
     status.textContent = caps.length ? `${caps.length} captions from ${all.length} words. Click one to edit it.` : 'No speech found.';
   } catch (e) { status.textContent = e.message; throw e; }
@@ -4402,6 +4430,7 @@ function wire() {
   });
   insp.addEventListener('change', e => {
     if (e.target.id === 'lutSel') { const c = selClip(), id = e.target.value; change(() => { c.grade ??= {}; if (id) c.grade.lut = { id, amount: c.grade.lut?.amount ?? 1 }; else delete c.grade.lut; }); if (id) loadLut(id); return; }
+    if ('fontin' in e.target.dataset && e.target.files[0]) { const c = selClip(); importFont(e.target.files[0]).then(f => change(() => { c.style ??= {}; c.style.font = f.family; c.style.weight = 400; })).catch(err => setStatus(err.message)); return; }
     if ('lutin' in e.target.dataset && e.target.files[0]) { const c = selClip(); importLutFile(e.target.files[0]).then(L => change(() => { c.grade ??= {}; c.grade.lut = { id: L.id, amount: 1 }; })).catch(err => setStatus(err.message)); return; }
     if ('relink' in e.target.dataset && e.target.files[0]) { const c = selClip(), f = e.target.files[0]; setStatus(`Importing ${f.name}…`); uploadOne(f).then(m => relink(c.media, m.id)).catch(err => setStatus(err.message)); return; }
     if (!e.target.dataset.k) return;
@@ -4455,7 +4484,8 @@ function wire() {
     else if (d.act === 'reframe') quiet(autoReframe(c));
     else if (d.act === 'kfease') change(() => { const f = c.kf.find(x => Math.abs(x.t - (S.t - c.start)) < 0.5 / P.fps); if (f) f.ease = !(f.ease ?? c.ease); });
     else if (d.act === 'duck') quiet(autoDuck(c, +($('#duckDepth')?.value || 0.25)));
-    else if (d.align) change(() => { (S.sel.lane === 'captions' ? P.capStyle : (c.style ??= {})).align = d.align; });
+    else if (d.align) change(() => { (c.style ??= {}).align = d.align; });
+    else if (d.act === 'capall') { change(() => { Object.assign(P.capStyle, c.style); for (const x of P.captions) delete x.style; }); toast('Every caption has this style now'); }
     else if (d.act === 'keypick') { S.keyPick = c.id; $('#cv').style.cursor = 'crosshair'; toast('Click the colour to remove on the preview (Esc cancels)'); }
     else if (d.act === 'fwd' || d.act === 'back') restack(c, d.act === 'fwd' ? 1 : -1);
     else if (d.act === 'kfprev' || d.act === 'kfnext') {
@@ -4828,7 +4858,7 @@ const REMOTE = {
   async options() {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: Object.keys(LOOKS), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
-      textLoop: LOOPS.map(x => x[0]), fonts: FONTS, luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
+      textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), voices: [...$('#ttsVoice').options].map(o => o.value),
       effects: Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
@@ -5098,6 +5128,8 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
   try {
     await loadMedia();
     G.luts = await api('/api/luts').catch(() => []);
+    await loadFonts();
+    api('/api/fonts/system').then(l => { G.sysFonts = l; }).catch(() => {});
     const list = await api('/api/projects'), last = store.get('cutroom.last');
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);
