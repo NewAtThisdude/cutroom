@@ -125,9 +125,9 @@ TOOLS = [
     ('clip_tool', 'Run a smart tool on a clip: remove_background, stabilize, reverse, auto_reframe, freeze_frame (at), smooth_slowmo, detach_audio, split_scenes, '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
-                  'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp name), auto_adjust (exposure, contrast, white balance from the picture; '
+                  'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead).',
-     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
+     S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt}, ['id', 'action']), 'clip_tool'),
     ('main_transcript', "The main track's speech as it plays on the timeline: sentences with start/end seconds, and every word timed. "
                         'Use it to decide what to cut, then cut_timeline. Transcribes on this Mac the first time (cached).', S({'lang': txt}), 'main_transcript'),
     ('cut_timeline', 'Ripple-delete ranges from the main track: ranges = [[start, end], ...] in timeline seconds (e.g. a sentence from main_transcript). '

@@ -192,7 +192,7 @@ await tool('detect_beats', mu.id, {}, async () => ev(id => P.audio.find(c => c.i
 await tool('beat_sync', mu.id, { every: 4 }, r => r.clipsNow >= 3);
 await tool('auto_duck', mu.id, { depth: 0.25 }, r => r.clip?.volumePoints >= 2 || JSON.stringify(r.clip));
 await tool('detach_audio', v.id, {}, r => (r.clipsNow === r.clipsBefore + 1 && r.clip?.volume === 0) || JSON.stringify(r));
-await tool('speed_ramp', v.id, { ramp: 'montage' }, r => r.clipsNow === r.clipsBefore + 7 || JSON.stringify(r));
+await tool('speed_ramp', v.id, { ramp: 'montage' }, r => (r.clipsNow === r.clipsBefore && r.clip?.ramp?.length === 10) || JSON.stringify(r)); // one clip with a curve, rendered into a copy
 await fails('clip_tool speed_ramp with a ramp that is not there', 'clip_tool', { id: v.id, action: 'speed_ramp', ramp: 'warp' }, /ramp must be one of/);
 await fails('clip_tool with an action that is not there', 'clip_tool', { id: v.id, action: 'teleport' }, /action must be one of/);
 await call('new_project', { ratio: '9:16', name: 'MCP e2e tools 2 (scratch)' });

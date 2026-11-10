@@ -121,18 +121,22 @@ def probe(path):
     return info
 
 
-def import_file(name, stream, length, background=True, src=None):
-    key = None
+def find_key(key):  # the library item made from this source key (a re-imported file, a rendered ramp), if its file is there
+    for f in MEDIA.glob('*.json'):
+        try:
+            m = json.loads(f.read_text())
+        except ValueError:
+            continue
+        if m.get('srckey') == key and (MEDIA / m.get('file', '')).is_file():
+            return m
+
+
+def import_file(name, stream, length, background=True, src=None, key=None):
     if src:  # the same file imported again (a card plugged in twice): the item already there, not a second copy and proxy
         st = Path(src).stat()
         key = f'{Path(src).name}|{st.st_size}|{int(st.st_mtime)}'
-        for f in MEDIA.glob('*.json'):
-            try:
-                m = json.loads(f.read_text())
-            except ValueError:
-                continue
-            if m.get('srckey') == key and (MEDIA / m.get('file', '')).is_file():
-                return {**m, 'dup': True}
+        if m := find_key(key):
+            return {**m, 'dup': True}
     mid = uuid.uuid4().hex[:12]
     ext = Path(name).suffix.lower()
     ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.bin'
@@ -1016,6 +1020,33 @@ def slowmo(st, mid, t0, t1, factor):
                    t1 - t0, lambda x: st.update(progress=0.95 * x))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (smooth {factor}x).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
+def ramp_copy(st, mid, t0, t1, mp, fps):
+    """Speed ramp (CapCut's curve): the range t0..t1 retimed by a knot table mp = [[source s, copy t], ...] (s from t0,
+    made by the editor's rampMap) into a silent copy at the project's fps, played at 1x: no inner cuts, so it plays
+    smoothly and the preview and the export show the same frames. The same curve again is the same copy (no render)."""
+    import hashlib
+    key = 'ramp:' + hashlib.sha1(json.dumps([mid, t0, t1, fps, mp]).encode()).hexdigest()
+    if m := find_key(key):
+        return {'media': m['id']}
+    m = meta(mid)
+    if m['kind'] != 'video' or m.get('alpha') or m.get('trans'):
+        raise ValueError('speed ramps work on video without transparency')
+    sf = m.get('fps') or 30
+    s0 = math.floor(t0 * sf + 1e-6) / sf  # from the frame the preview shows at the in point; lead = how far into it t0 is
+    lead, n = t0 - s0, round(mp[-1][1] * fps)
+    dec, vf = hdr_decode(m)
+    G = pw([{'t': s, 'v': t} for s, t in mp], 'v', f'((PTS-STARTPTS)*TB-{lead:.6f})')
+    vf += f"setpts='({G})/TB',fps={fps:g}:round=up,tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n}"
+    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out = Path(td) / 'ramp.mp4'
+        run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{s0:.6f}', '-t', f'{t1 - s0 + 1 / sf:.6f}',
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-an', '-vf', vf, '-c:v', 'h264_videotoolbox', '-q:v', '72', '-g', f'{round(fps)}',
+                    '-movflags', '+faststart', str(out)], mp[-1][1], lambda x: st.update(progress=0.9 * x), 'Rendering the ramp')
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (ramp).mp4", fh, out.stat().st_size, background=False, key=key)
     return {'media': new['id']}
 
 
@@ -3011,7 +3042,7 @@ class App(BaseHTTPRequestHandler):
                             j = json.loads(t)
                         except ValueError:
                             continue
-                        if any(c.get('media') == m[1] for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):
+                        if any(m[1] in (c.get('media'), (c.get('ramp') or {}).get('src')) for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):  # a ramped clip can go back to its source
                             out.append({'id': f.stem, 'name': j.get('name', 'Untitled')})
                 return self.reply(out)
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
@@ -3239,6 +3270,14 @@ class App(BaseHTTPRequestHandler):
                 shutil.move(str(src), str(MEDIA / info['file']))
                 shutil.move(str(js[-1]), str(MEDIA / f'{m[1]}.json'))
                 return self.reply({'ok': True, 'id': m[1]})
+            if u.path == '/api/ramp':  # the knot table is checked here: it goes into an ffmpeg expression
+                t0, t1, fps, mp = fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), fnum(body['fps'], 1, 120), body['map']
+                if not (0 < t1 - t0 <= 600) or not isinstance(mp, list) or not 2 <= len(mp) <= 1024 or not all(isinstance(q, list) and len(q) == 2 for q in mp):
+                    raise ValueError('a ramp needs 0-600 s of the clip and 2-1024 knots')
+                mp = [[fnum(s, 0, 1e6), fnum(t, 0, 1e6)] for s, t in mp]
+                if mp[0] != [0, 0] or abs(mp[-1][0] - (t1 - t0)) > 1e-3 or any(b[0] <= a[0] or b[1] <= a[1] for a, b in zip(mp, mp[1:])):
+                    raise ValueError('the ramp knots must start at 0, 0, rise in both columns and end at the range length')
+                return self.reply({'job': run_job(ramp_copy, body['media'], t0, t1, mp, fps)})
             if u.path == '/api/slowmo':
                 return self.reply({'job': run_job(slowmo, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), int(fnum(body.get('factor', 4), 2, 8)))})
             if m := re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
@@ -3596,7 +3635,18 @@ def selftest():
     assert gf['kind'] == 'video' and gf['trans'] and gf.get('proxy') and (CACHE / f"{gf['id']}.proxy.webm").exists(), gf
     sm = meta(slowmo({}, L['id'], 0, 1, 4)['media'])
     assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, sm
-    print('volume envelope + 6 export formats + animated GIF + smooth slow-mo ok')
+    rmap = [[0, 0], [0.5, 1], [1, 1.25]]  # speed ramp: 0.5x for the first half second of source, then 2x
+    rp = ramp_copy({}, L['id'], 0, 1, rmap, 30)
+    rm_, nm = meta(rp['media']), len(list(MEDIA.glob('*.json')))
+    nfr = int(sh(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', str(MEDIA / rm_['file'])]).stdout)
+    assert abs(rm_['duration'] - 1.25) <= 1 / 30 + 1e-6 and nfr == 38 and not rm_['hasAudio'], ('ramp copy length', rm_, nfr)
+    assert ramp_copy({}, L['id'], 0, 1, rmap, 30) == rp and len(list(MEDIA.glob('*.json'))) == nm, 'the same ramp again must be the same copy'
+    frame = lambda f, t: subprocess.run(['ffmpeg', '-v', 'error', '-ss', f'{t:.4f}', '-i', str(f), '-frames:v', '1', '-sws_flags', 'accurate_rnd+full_chroma_int', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                                        capture_output=True, check=True).stdout
+    fa, fb = frame(MEDIA / rm_['file'], (33 - 0.25) / 30), frame(MEDIA / L['file'], (21 - 0.25) / 30)  # copy 1.1 s = source 0.5 + 0.1 * 2 = 0.7 s
+    rdiff = sum(abs(x - y) for x, y in zip(fa, fb)) / len(fa)
+    assert len(fa) == len(fb) and rdiff < 1, ('ramp copy frame at 1.1 s vs the source at 0.7 s', rdiff)
+    print('volume envelope + 6 export formats + animated GIF + smooth slow-mo + speed ramp ok')
     snd = {}  # a WAV is built from the sound alone: the same sound as the video's track (AAC there: levels, not samples)
     for fmt in ('wav', 'mp4'):
         JOBS['t'] = {'state': 'running'}

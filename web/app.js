@@ -101,7 +101,7 @@ const WEIGHT_NAMES = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibo
 const CANVAS_FILTER = 'filter' in CanvasRenderingContext2D.prototype; // WebKit (the Mac app) has no ctx.filter: filters and feathering are done by hand
 const ALPHA_Q = navigator.vendor.startsWith('Apple') ? '?alpha=hevc' : ''; // WebKit plays VP9 alpha opaque; the server hands it an HEVC-alpha copy
 const WK_Q = navigator.vendor.startsWith('Apple') ? '?wk=1' : ''; // WebKit colour-manages video (BT.709 mid-tones lifted): a re-labelled copy shows it as exported
-const RAMPS = { // speed multipliers over 8 equal parts of the clip (CapCut's curve presets, baked into editable parts)
+const RAMPS = { // CapCut's curve presets: speeds at the middles of 8 equal parts of the clip (rampPts makes them a smooth curve)
   montage: [1, 1.6, 0.5, 2, 1, 0.5, 1.8, 1], hero: [1, 1, 0.5, 0.25, 0.25, 0.5, 1, 1], bullet: [2, 2, 0.35, 0.2, 0.35, 2, 2, 2],
   jumpcut: [1, 1, 3, 3, 1, 1, 3, 3], flashin: [4, 3, 2, 1.5, 1, 1, 1, 1], flashout: [1, 1, 1, 1, 1.5, 2, 3, 4],
 };
@@ -267,6 +267,27 @@ function monotone(pts) { // Fritsch-Carlson monotone cubic through the points: a
     return (2 * t3 - 3 * t2 + 1) * y[i] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * y[i + 1] + (t3 - t2) * h * m[i + 1];
   };
 }
+// Speed ramp = one clip with a curve: pts [[u, speed]] over the source range (u 0..1, speed 0.1-10), smooth in log speed.
+// The server renders the range through rampMap's knot table into a copy the clip plays at 1x (no inner cuts).
+const rampPts = n => { const s = RAMPS[n]; return [[0, s[0]], ...s.map((v, i) => [(i + 0.5) / 8, v]), [1, s[7]]]; };
+const rampSpeed = pts => { const f = monotone(pts.map(([u, s]) => [u, Math.log2(s)])); return u => 2 ** f(u); };
+function rampMap(pts, D, N = 128) { // [[source s, copy t]]: Simpson per knot, rounded so the server's cache key is stable
+  const v = rampSpeed(pts), T = [[0, 0]];
+  for (let i = 0; i < N; i++) { const a = i / N, b = (i + 1) / N; T.push([+(b * D).toFixed(6), +(T[i][1] + D / N / 6 * (1 / v(a) + 4 / v((a + b) / 2) + 1 / v(b))).toFixed(6)]); }
+  return T;
+}
+const mapAt = (T, x, i, j) => { let k = 1; while (k < T.length - 1 && T[k][i] < x) k++; const p = T[k - 1], q = T[k]; return p[j] + (q[j] - p[j]) * clamp((x - p[i]) / (q[i] - p[i] || 1), 0, 1); };
+function reclip(c, f, sp) { // in/out and every keyframe through f (old media time -> new media time), at speed sp
+  const q = t => c.in + t * c.speed, i1 = f(c.in);
+  for (const k of ['kf', 'vkf', 'lkf', 'mkf']) c[k]?.forEach(x => { x.t = (f(q(x.t)) - i1) / sp; });
+  Object.assign(c, { in: i1, out: Math.max(f(c.out), i1 + 1 / P.fps), speed: sp });
+}
+function rampPlan(c, pts) { // what Apply would render: the source range (a ramped clip re-ramps its whole original range) and old media time -> new copy time
+  const r0 = c.ramp && c.media === c.ramp.copy && M.get(c.ramp.src) ? c.ramp : null, src = r0 ? r0.src : c.media, a = r0 ? r0.in : c.in, b = r0 ? r0.out : c.out;
+  const tbl = rampMap(pts, b - a), old = r0 && rampMap(r0.pts, b - a), toSrc = x => (r0 ? mapAt(old, x, 1, 0) : x - a);
+  return { src, a, b, tbl, toSrc, f: x => mapAt(tbl, clamp(toSrc(x), 0, b - a), 0, 1) };
+}
+const unramp = c => { const r = c.ramp, tbl = rampMap(r.pts, r.out - r.in); reclip(c, x => r.in + mapAt(tbl, x, 1, 0), 1); c.media = r.src; delete c.ramp; };
 const toneCache = new Map();
 function toneLUT(c) { // exposure (in linear light), highlights, shadows, fade: one 256-entry curve the preview and the export both apply
   const a = c.adj || {}, ex = a.ex || 0, hi = a.hi || 0, sh = a.sh || 0, fd = a.fade || 0;
@@ -737,6 +758,7 @@ function renderInspector() {
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
+  if (c?.media) drawRamp(c);
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
@@ -897,14 +919,16 @@ function mediaPanel(c, lane) {
   }
   const acts = ['<button data-act="split">Split</button>', '<button data-act="dup">Duplicate</button>'];
   if (vid) acts.push('<button data-act="freeze">Freeze frame</button>', '<button data-act="reverse">Reverse</button>');
-  if (vid && c.speed < 1) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
+  if (vid && c.speed < 1 && !c.ramp) acts.push('<button data-act="slowmo">Smooth slow-mo</button>');
   if (lane === 'main' || lane === 'overlay') acts.push(`<button data-act="movelane">Move to ${lane === 'main' ? 'overlay' : 'main'} track</button>`);
   if (lane === 'overlay') acts.push('<button data-act="back">Send backward</button>', '<button data-act="fwd">Bring forward</button>');
   if (c.compound) acts.unshift('<button data-act="breakcompound" title="Put back the clips it was made of">Break apart</button>');
   acts.push('<button data-act="reset">Reset</button>', '<button data-act="delete">Delete</button>');
   let tools = vid ? `<h4>Smart tools</h4><div class="actions"><button data-act="matte"${m.alpha ? ' disabled' : ''}>Remove background</button><button data-act="removeobj">Remove object</button><select id="rmQuality" title="Best: SAM 2 traces the exact outline and ProPainter fills it (about a minute per 4 s). Fast: the tracked box, filled in seconds"><option value="best">Best</option><option value="fast">Fast</option></select><button data-act="cutobj" title="Any subject (SAM 2): box it once, the clip becomes it on a transparent background">Cut out object</button><button data-act="reframe">Auto reframe</button><button data-act="stabilize">Stabilize</button><button data-act="denoise" title="A cleaned copy of this clip's range (night grain)">Reduce image noise</button><select id="dnStrength" title="How much noise to take out"><option value="light">Light</option><option value="strong">Strong</option></select><button data-act="scenes">Split at scene changes</button>${lane === 'overlay' ? '<button data-act="track">Track motion</button>' : ''}</div>
-    <h4>Speed ramp</h4><div class="row"><span>Curve</span><select id="rampSel">${Object.keys(RAMPS).map(n => `<option value="${n}">${RAMP_NAMES[n]}</option>`).join('')}</select></div>
-    <div class="actions"><button data-act="ramp">Apply ramp</button></div><p class="hint">Splits the clip into 8 parts with ramped speeds; every part stays editable and keeps its keyframes.</p>` : '';
+    <h4>Speed ramp</h4><div class="presets small rampchips">${Object.keys(RAMPS).map(n => `<button data-rampp="${n}"><svg viewBox="0 0 40 14" preserveAspectRatio="none" aria-hidden="true"><path d="${rampPath(rampPts(n), 40, 14)}"/></svg>${RAMP_NAMES[n]}</button>`).join('')}</div>
+    <div class="curvebox rampbox"><svg id="rampSvg" viewBox="-16 -6 222 112" preserveAspectRatio="none"></svg></div><p class="muted ramplen" id="rampLen"></p>
+    <div class="actions"><button data-act="ramp">Apply ramp</button>${c.ramp && c.media === c.ramp.copy ? `<button data-act="rampoff"${M.get(c.ramp.src) ? '' : ' disabled title="Its original file is not in the library any more"'}>Remove ramp</button>` : ''}</div>
+    <p class="hint">Up is faster (the middle line is 1×). Drag a point, click the line to add one, double-click a point to remove it. Rendered once into a copy the clip plays; sound off; undo goes back.</p>` : '';
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
   if (m.kind === 'image') tools += '<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button></div><p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
@@ -949,6 +973,32 @@ function drawCurve(c) {
   const path = Array.from({ length: 101 }, (_, i) => `${i ? 'L' : 'M'}${i},${(100 - f(i / 100) * 100).toFixed(2)}`).join('');
   svg.innerHTML = '<path d="M25,0V100M50,0V100M75,0V100M0,25H100M0,50H100M0,75H100" class="grid"/><path d="M0,100L100,0" class="diag"/>'
     + `<path d="${path}" class="crv" style="stroke:${col}"/>` + pts.map(([x, y], i) => `<circle cx="${x * 100}" cy="${100 - y * 100}" r="3.2" data-pt="${i}"/>`).join('');
+}
+const rampY = s => (Math.log10(s) + 1) / 2; // 0.1x at the bottom, 1x in the middle, 10x at the top
+const rampXY = ([x, y]) => [clamp((x * 222 - 16) / 200, 0, 1), clamp((y * 112 - 6) / 100, 0, 1)]; // box fraction -> curve area (#rampSvg's viewBox leaves room for labels and end points)
+const rampPath = (pts, W, H, n = 100) => { const v = rampSpeed(pts); return Array.from({ length: n + 1 }, (_, i) => `${i ? 'L' : 'M'}${(i / n * W).toFixed(1)},${(H * (1 - rampY(v(i / n)))).toFixed(2)}`).join(''); };
+function drawRamp(c, hot = -1) { // the draft curve (not in P until Apply), the clip's part of the range, and what Apply will make of its length
+  const svg = $('#rampSvg');
+  if (!svg) return;
+  if (S.rampDraft?.id !== c.id) S.rampDraft = { id: c.id, pts: (c.ramp?.pts || rampPts('montage')).map(p => [...p]) };
+  const pts = S.rampDraft.pts, pl = rampPlan(c, pts), D = pl.b - pl.a, u0 = clamp(pl.toSrc(c.in) / D, 0, 1), u1 = clamp(pl.toSrc(c.out) / D, 0, 1), on = c.ramp && c.media === c.ramp.copy;
+  const grid = [[4, '4×'], [2, '2×'], [1, '1×'], [0.5, '½×'], [0.25, '¼×']].map(([s, t]) => `<path d="M0,${100 - rampY(s) * 100}H200" class="${s === 1 ? 'one' : 'grid'}"/><text x="-3" y="${100 - rampY(s) * 100 + 2.4}">${t}</text>`).join('');
+  const shade = (u0 > 0.001 ? `<rect x="0" y="0" width="${u0 * 200}" height="100" class="out"/>` : '') + (u1 < 0.999 ? `<rect x="${u1 * 200}" y="0" width="${200 - u1 * 200}" height="100" class="out"/>` : '');
+  const ghost = on && JSON.stringify(c.ramp.pts) !== JSON.stringify(pts) ? `<path d="${rampPath(c.ramp.pts, 200, 100)}" class="ghost"/>` : ''; // the applied curve, while the draft differs
+  svg.innerHTML = grid + shade + ghost + `<path d="${rampPath(pts, 200, 100, 200)}" class="crv"/>` + pts.map(([u, s], i) => `<circle cx="${u * 200}" cy="${100 - rampY(s) * 100}" r="${i === hot ? 4.6 : 3.4}" class="${i === hot ? 'hot' : ''}" data-pt="${i}"/>`).join(''); // numbers only
+  const after = Math.max(pl.f(c.out) - pl.f(c.in), 1 / P.fps), L = $('#rampLen');
+  if (L) L.textContent = `${len(c).toFixed(2)} s → ${after.toFixed(2)} s${hot >= 0 ? ` · ${pts[hot][1].toFixed(2)}×` : on ? ' · ramp applied' : ''}`;
+  for (const b of $$('#inspector [data-rampp]')) b.classList.toggle('on', JSON.stringify(rampPts(b.dataset.rampp)) === JSON.stringify(pts));
+}
+function curvePts(e, pts, pos, r) { // a curve editor's points ([x, y] fractions, y up): double-click removes one (null), else the dragged one's setter (a click off the points adds one)
+  const [u, v] = pos(e), d = q => Math.hypot((q[0] - u) * r.width, (1 - q[1] - v) * r.height);
+  let i = pts.findIndex(q => d(q) < 14);
+  if (e.detail === 2 && i > 0 && i < pts.length - 1) { pts.splice(i, 1); return null; }
+  if (i < 0) { const nu = +clamp(u, 0.01, 0.99).toFixed(3); if (pts.some(q => Math.abs(q[0] - nu) < 0.01)) return Object.assign(() => {}, { i: -1 }); pts.push([nu, +(1 - v).toFixed(3)]); pts.sort((a, b) => a[0] - b[0]); i = pts.findIndex(q => q[0] === nu); }
+  const lo = i ? pts[i - 1][0] + 0.01 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.01 : 1, ends = i === 0 || i === pts.length - 1;
+  const set = ev => { const [x, y] = pos(ev); pts[i] = [ends ? pts[i][0] : +clamp(x, lo, hi).toFixed(3), +(1 - y).toFixed(3)]; };
+  set.i = i;
+  return set;
 }
 async function importLutFile(f) { // a .cube from this Mac into Movies/Cutroom/luts (checked here first)
   const text = await f.text();
@@ -1043,7 +1093,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if ('log' in el.dataset) { v = 10 ** v; v = Math.abs(v - 1) < 0.02 ? 1 : +v.toFixed(2); } // speed: log slider, 1x has a detent
   if ('db' in el.dataset) v = v <= -60 ? 0 : +(10 ** (v / 20)).toFixed(4); // volume: dB slider
   if (el.dataset.off) v += +el.dataset.off; // text position is shown as an offset from the centre
-  if (el.dataset.k === 'c.speed' && o.speed && v !== o.speed) { const f = o.speed / v; o.kf?.forEach(x => { x.t *= f; }); o.vkf?.forEach(x => { x.t *= f; }); } // they stay on their frames
+  if (el.dataset.k === 'c.speed' && o.speed && v !== o.speed) { const f = o.speed / v; for (const k of ['kf', 'vkf', 'lkf', 'mkf']) o[k]?.forEach(x => { x.t *= f; }); } // they stay on their frames
   if (el.dataset.k === 'c.ease') o.kf?.forEach(x => delete x.ease); // "ease all segments" really means all
   if (root === 'c' && !path.length && KF_PROPS.includes(last)) return setProp(o, last, v);
   if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
@@ -3151,19 +3201,22 @@ async function removeBackground(c) { // Apple Vision: person segmentation for vi
     toast('Background removed. Put it on the overlay track over B-roll.');
   } catch (e) { setStatus(e.message); throw e; }
 }
-function ramp(c, lane, name) { // speed curve baked into 8 editable parts (inner cuts are hard cuts)
-  const curve = RAMPS[name], n = curve.length, step = (c.out - c.in) / n;
-  change(() => {
-    const parts = curve.map((s, i) => ({ ...structuredClone(c), id: i ? hex12() : c.id, in: c.in + i * step, out: c.in + (i + 1) * step, speed: clamp(c.speed * s, 0.1, 100),
-      fadeIn: i ? 0 : c.fadeIn, fadeOut: i === n - 1 ? c.fadeOut : 0, tr: i === n - 1 ? c.tr : undefined, anim: partAnim(c.anim, i === 0, i === n - 1),
-      kf: sliceKf(c, (i * step) / c.speed, ((i + 1) * step) / c.speed, c.speed / clamp(c.speed * s, 0.1, 100)),
-      vkf: sliceEnv(c, (i * step) / c.speed, ((i + 1) * step) / c.speed, c.speed / clamp(c.speed * s, 0.1, 100)) }));
-    if (lane !== 'main') { let t = c.start; for (const p of parts) { p.start = t; t += len(p); } }
-    P[lane].splice(P[lane].indexOf(c), 1, ...parts);
-    S.sel = { lane, id: c.id };
-  });
-  toast(`${RAMP_NAMES[name]} ramp applied`);
+async function applyRamp(c, lane, pts) { // the curve rendered once into a silent library copy the clip plays at 1x (one clip, no inner cuts)
+  try {
+    const plan = rampPlan(c, pts), m = M.get(plan.src), pid = P.id, was = c.media;
+    if (m?.kind !== 'video' || m.alpha || m.trans) throw new Error('Speed ramps work on video clips without transparency');
+    if (plan.b - plan.a < 0.25) throw new Error('The clip is too short for a speed ramp (0.25 s or more)');
+    const j = await job('/api/ramp', { media: plan.src, t0: plan.a, t1: plan.b, map: plan.tbl, fps: P.fps }, 'Rendering the ramp');
+    await loadMedia();
+    c = live(c, pid, was);
+    const d = M.get(j.media)?.duration ?? Infinity;
+    change(() => { reclip(c, x => clamp(plan.f(x), 0, d), 1); c.media = j.media; c.ramp = { src: plan.src, in: plan.a, out: plan.b, pts: pts.map(p => [...p]), copy: j.media }; });
+    S.rampDraft = { id: c.id, pts: pts.map(p => [...p]) };
+    toast('Ramp rendered (sound off; Remove ramp brings it back)');
+    return c;
+  } catch (e) { setStatus(e.message); throw e; }
 }
+const removeRamp = c => { if (c.ramp && c.media === c.ramp.copy && M.get(c.ramp.src)) change(() => unramp(c)); };
 function detachAudio(c) { // the clip's sound moves to the audio track at the same time; the clip goes silent
   change(() => {
     packMain();
@@ -3338,6 +3391,7 @@ async function saveTemplate(name = prompt('Template name', P.name)) { // media b
   const t = structuredClone(P), slots = [], idx = new Map();
   for (const L of LANES) for (const c of t[L.key]) {
     if (!c.media) continue;
+    if (c.ramp) { if (c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c); delete c.ramp; } // a ramp's copy belongs to its own footage: the slot gets the original range
     if (!idx.has(c.media)) { const m = M.get(c.media); idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', need: 0 }); }
     const s = idx.get(c.media);
     slots[s].need = Math.max(slots[s].need, c.out);
@@ -4506,22 +4560,29 @@ function wire() {
 
   const insp = $('#inspector');
   insp.addEventListener('pointerdown', e => { // colour wheels and the curve editor: one undo step per drag
-    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), c = selClip();
-    if (!c || (!wcv && !svg)) return;
+    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), rsv = e.target.closest('#rampSvg'), c = selClip();
+    if (!c || (!wcv && !svg && !rsv)) return;
     e.preventDefault();
-    const before = JSON.stringify(P), el = wcv || svg, r = el.getBoundingClientRect();
+    const before = JSON.stringify(P), el = wcv || svg || rsv, r = el.getBoundingClientRect();
     const pos = ev => [clamp((ev.clientX - r.left) / r.width, 0, 1), clamp((ev.clientY - r.top) / r.height, 0, 1)];
     let set;
+    if (rsv) { // the speed ramp draft: y = log speed, 1x has a detent; nothing is in P (no undo steps, saves or renders) until Apply
+      drawRamp(c);
+      const yp = S.rampDraft.pts.map(([u, s]) => [u, rampY(s)]), mv = curvePts(e, yp, ev => rampXY(pos(ev)), { width: r.width * 200 / 222, height: r.height * 100 / 112 });
+      const put = hot => { S.rampDraft.pts = yp.map(([u, y]) => { const s = 10 ** (y * 2 - 1); return [u, Math.abs(Math.log2(s)) < 0.06 ? 1 : +s.toFixed(3)]; }); drawRamp(c, hot); };
+      if (!mv) return put(-1);
+      mv(e); put(mv.i);
+      const move = ev => { mv(ev); put(mv.i); }, up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); drawRamp(c); };
+      addEventListener('pointermove', move); addEventListener('pointerup', up);
+      return;
+    }
     if (wcv) {
       const k = wcv.dataset.wheel;
       set = ev => { const [u, v] = pos(ev), R = (wcv.width / 2 - 6) / wcv.width; let x = (u - 0.5) / R, y = (0.5 - v) / R; const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; } c.grade ??= {}; c.grade[k] = { ...c.grade[k], x: +x.toFixed(3), y: +y.toFixed(3) }; drawWheels(c); };
     } else {
-      const ch = svg.dataset.ch, pts = (c.grade?.curves?.[ch] || [[0, 0], [1, 1]]).map(q => [...q]), [u, v] = pos(e), d = q => Math.hypot(q[0] - u, 1 - q[1] - v);
-      let i = pts.findIndex(q => d(q) < 0.06);
-      if (e.detail === 2 && i > 0 && i < pts.length - 1) { change(() => { pts.splice(i, 1); c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts }; }); return; }
-      if (i < 0) { const nu = +u.toFixed(3); pts.push([nu, +(1 - v).toFixed(3)]); pts.sort((a, b) => a[0] - b[0]); i = pts.findIndex(q => q[0] === nu); }
-      const lo = i ? pts[i - 1][0] + 0.01 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.01 : 1, ends = i === 0 || i === pts.length - 1;
-      set = ev => { const [x, y] = pos(ev); pts[i] = [ends ? pts[i][0] : +clamp(x, lo, hi).toFixed(3), +(1 - y).toFixed(3)]; c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts.map(q => [...q]) }; drawCurve(c); };
+      const ch = svg.dataset.ch, pts = (c.grade?.curves?.[ch] || [[0, 0], [1, 1]]).map(q => [...q]), mv = curvePts(e, pts, pos, r);
+      if (!mv) { change(() => { c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts }; }); return; }
+      set = ev => { if (mv.i < 0) return; mv(ev); c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts.map(q => [...q]) }; drawCurve(c); };
     }
     set(e); S.dirty = true;
     const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
@@ -4587,7 +4648,9 @@ function wire() {
     else if (d.act === 'removeobj') startRemove(c, S.sel.lane);
     else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
     else if (d.mask) change(() => { if (d.mask === 'none') { delete c.mask; delete c.mkf; } else c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; });
-    else if (d.act === 'ramp') ramp(c, S.sel.lane, $('#rampSel').value);
+    else if (d.act === 'ramp') { drawRamp(c); quiet(applyRamp(c, S.sel.lane, S.rampDraft.pts)); }
+    else if (d.act === 'rampoff') removeRamp(c);
+    else if (d.rampp) { S.rampDraft = { id: c.id, pts: rampPts(d.rampp) }; drawRamp(c); }
     else if (d.act === 'detach') detachAudio(c);
     else if (d.act === 'isovoice' || d.act === 'novoice') quiet(isolateVoice(c, S.sel.lane, d.act === 'isovoice' ? 'voice' : 'music'));
     else if (d.act === 'reverse' || d.act === 'stabilize') quiet(remake(c, d.act));
@@ -4949,6 +5012,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.mkf?.length) o.maskKeyframes = c.mkf.length;
   if (c.mc) o.multicam = { angle: c.mc.a + 1, angles: c.mc.angles.length };
   if (c.compound) o.compound = Object.values(c.compound).filter(Array.isArray).reduce((n, a) => n + a.length, 0);
+  if (c.ramp) o.ramp = c.ramp.pts;
   if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
@@ -5110,12 +5174,16 @@ const REMOTE = {
     await loadMedia(); addMedia(m.id, 'audio', at);
     return brief(...cfind(S.sel.id));
   },
-  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', at, ref }) {
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp = 'montage', curve, at, ref }) {
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), speed_ramp: () => { if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`); ramp(c, L, rp); } }[action];
+      auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), speed_ramp: () => {
+        if (curve !== undefined) { if (!Array.isArray(curve) || curve.length < 2 || curve.length > 12 || curve.some((q, i) => !Array.isArray(q) || !(q[1] >= 0.1 && q[1] <= 10) || !(q[0] >= 0 && q[0] <= 1) || (i && !(q[0] > curve[i - 1][0]))) || curve[0][0] !== 0 || curve.at(-1)[0] !== 1) throw new Error('curve must be 2-12 [u, speed] points: u rising from 0 to 1, speed 0.1-10'); }
+        else if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`);
+        return applyRamp(c, L, curve?.map(q => [+q[0], +q[1]]) ?? rampPts(rp));
+      } }[action];
     if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, auto_duck, auto_adjust (ref = a clip id to match its colours), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
