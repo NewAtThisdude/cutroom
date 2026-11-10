@@ -127,6 +127,7 @@ function packMain() { let f = 0; P.main.forEach((c, i) => { c.start = f / P.fps;
 function total() { packMain(); let t = 0; for (const L of LANES) for (const c of P[L.key]) t = Math.max(t, c.start + tdur(c, L.key)); return t; }
 const snap = t => Math.round(t * P.fps) / P.fps;
 function tc(t) { const fps = Math.round(P.fps), f = Math.round(t * P.fps), s = Math.floor(f / fps); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}:${String(f % fps).padStart(2, '0')}`; }
+const mss = t => { const d = Math.round(t * 10) / 10; return `${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, '0')}`; }; // m:ss.s outside the transport (00:04:12 read as minutes or frames)
 const fmtDur = s => (s > 0 && s < 1 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`); // a sound effect under a second isn't "0:00"
 
 const ss3 = x => x * x * (3 - 2 * x);
@@ -376,8 +377,8 @@ async function saveNow(leaving) {
     if (!saveTimer) scheduleSave([1000, 2000, 5000][Math.min(saveFails, 3) - 1]);
   }
 }
-addEventListener('pagehide', () => flushSave(true));
-document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(true); });
+addEventListener('pagehide', () => { flushSave(true); sendPoster(true); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { flushSave(true); sendPoster(true); } });
 
 // ---------- rendering: chrome ----------
 function renderAll() {
@@ -400,7 +401,7 @@ function renderTimeline() {
   const near = (L, c) => sel.has(`${L}:${c.id}`) || ((c.start + tdur(c, L)) * pps >= wa && c.start * pps <= wb);
   let ruler = '';
   for (let i = Math.max(0, Math.floor(wa / (step * pps))); i * step * pps < Math.min(W, wb); i++) ruler += `<span style="left:${i * step * pps}px">${step < 1 ? (i * step).toFixed(1) : fmtDur(i * step)}</span>`;
-  ruler += P.markers.map(t => `<b class="mk" style="left:${t * pps}px" title="Marker ${tc(t)}"></b>`).join('');
+  ruler += P.markers.map(t => `<b class="mk" style="left:${t * pps}px" title="Marker ${mss(t)}"></b>`).join('');
   // minor ticks: an SVG pattern over the drawn window only. A repeating-linear-gradient of 1 px stripes the whole ruler wide
   // was WebKit's most expensive paint (FillRectWithGradient took 88 % of the GPU process): frames of 0.6-1.5 s while zooming
   const mi = (step * pps) / 5, x0 = Math.max(0, wa), x1 = Math.min(W, wb);
@@ -531,7 +532,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
     return (a || b ? `<svg class="fade" viewBox="0 0 ${w} 100" preserveAspectRatio="none">${a ? `<path d="M0,0H${a}L0,100Z"/>` : ''}${b ? `<path d="M${w},0H${w - b}L${w},100Z"/>` : ''}</svg>` : '')
       + `<i class="fh l" style="left:${clamp(a - 5, 0, w - 10)}px" title="Drag to fade in"></i><i class="fh r" style="right:${clamp(b - 5, 0, w - 10)}px" title="Drag to fade out"></i>`;
   })() : '';
-  const marks = env + fades + (c.kf || []).map(f => `<b class="kfm" style="left:${f.t * pps}px"></b>`).join('')
+  const marks = env + fades + (c.kf || []).map((f, i) => `<b class="kfm" data-k="${i}" style="left:${f.t * pps}px" title="Keyframe: click to go to it, drag to move it"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
   return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}">${m && ((m.grid && m.kind === 'video' && lane !== 'audio') || (m.peaks && (lane === 'audio' || lane === 'main'))) ? '<canvas class="cstrip"></canvas>' : ''}<span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
 }
@@ -799,7 +800,7 @@ function mediaPanel(c, lane) {
       ${lib.length ? `<div class="row"><span>Or use</span><select id="relinkSel">${lib.map(x => `<option value="${x.id}">${esc(short(x.name))}</option>`).join('')}</select></div><div class="actions"><button data-act="relinklib">Use it</button><button data-act="delete">Delete</button></div>` : '<div class="actions"><button data-act="delete">Delete</button></div>'}<p id="clipStatus" class="muted"></p>`;
   }
   const d = tdur(c, lane), pr = propsAt(c, S.t - c.start), cr = c.crop || {}, vis = m.kind !== 'audio', vid = m.kind === 'video', mk = maskAt(c, clamp(S.t - c.start, 0, d)), A = c.anim || {}, a = c.adj || {};
-  const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${tc(d)}${m.kind === 'image' ? '' : ` of ${tc(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
+  const head = `<h3>${esc(m.name)}</h3><p class="muted">${lane} track · ${mss(d)}${m.kind === 'image' ? '' : ` of ${mss(m.duration)}`}${m.hdr ? ' · HDR, tone-mapped on export' : ''}${m.alpha || m.trans ? ' · transparent' : ''}</p>`;
   const fmax = Math.max(0.05, Math.min(3, d), c.fadeIn || 0, c.fadeOut || 0), amax = Math.max(0.2, Math.min(3, d));
   let basic = m.kind !== 'image' ? slider('c.speed', 'Speed', Math.log10(c.speed), -1, 2, 0.005, 'x', ' data-log') + (m.hasAudio ? tick('c.pitch', 'Change pitch with speed', c.pitch) : '') : '';
   if (c.mc) basic = `<h4>Multicam</h4><div class="seg wrap mcangles">${c.mc.angles.map((A, i) => `<button data-mcangle="${i}" class="${i === c.mc.a ? 'on' : ''}" title="${esc(M.get(A.media)?.name || '')}">${i + 1} · ${esc(short(M.get(A.media)?.name || 'missing', 14))}</button>`).join('')}</div><p class="hint">Press 1–${c.mc.angles.length} while it plays to cut to that angle at that moment (the sound stays on one track).</p>` + basic;
@@ -1394,6 +1395,13 @@ function paint() {
     const h = byId.get(x.id);
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
   }
+  if (S.guides) { // dragged text is snapped: the line it snapped to
+    const d = devicePixelRatio || 1, { x: gx, y: gy } = S.guides;
+    ctx.save(); ctx.strokeStyle = '#ff3d9a'; ctx.lineWidth = 1 * d; ctx.beginPath();
+    if (gx != null) { ctx.moveTo(gx * P.w * k, 0); ctx.lineTo(gx * P.w * k, cv.height); }
+    if (gy != null) { ctx.moveTo(0, gy * P.h * k); ctx.lineTo(cv.width, gy * P.h * k); }
+    ctx.stroke(); ctx.restore();
+  }
   if (!S.playing) audioWarm();
   if (G.tab === 'script') scriptNow(t);
   if (SCOPE.on) drawScope();
@@ -1849,7 +1857,7 @@ function fxPlan(w, h) { // the effect steps for the export, sampled at every fra
 }
 function fxPanel(c) {
   const d = FX[c.fx] || { n: c.fx };
-  return `<h3>${esc(d.n)}</h3><p class="muted">Effects track · ${tc(c.dur)} · changes everything under it (text stays on top)</p>
+  return `<h3>${esc(d.n)}</h3><p class="muted">Effects track · ${mss(c.dur)} · changes everything under it (text stays on top)</p>
     ${slider('c.amt', 'Strength', c.amt ?? 1, 0.1, 2, 0.01, '%')}${pick('c.fx', 'Effect', c.fx, Object.entries(FX).map(([k, v]) => [k, v.n]))}
     <p class="hint">Drag its edges on the timeline to change how long it lasts. More effects are in the library on the left.</p>
     <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>`;
@@ -2060,7 +2068,7 @@ async function addSfx(id, at = S.t) {
   const m = await api('/api/sfx/add', { id });
   if (!M.has(m.id)) await loadMedia();
   addMedia(m.id, 'audio', at);
-  toast(`${m.name.replace(/\.wav$/, '')} added at ${tc(at)}`);
+  toast(`${m.name.replace(/\.wav$/, '')} added at ${mss(at)}`);
   return brief(...cfind(S.sel.id));
 }
 function textSwatch(n, s0) { // the style drawn with CSS: close to drawText, for the tile only
@@ -3551,12 +3559,12 @@ function openExport() {
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
-    const f = $('#exFmt').value, d = tc(total()), fps = +P.fps.toFixed(3);
+    const f = $('#exFmt').value, d = mss(total()), fps = +P.fps.toFixed(3);
     $('#exRes').disabled = ['mp3', 'wav', 'srt'].includes(f); $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = ['gif', 'png', 'srt'].includes(f); $('#exLight').disabled = ['mp3', 'wav', 'srt'].includes(f);
     $('#exRate').disabled = !(f === 'hevc' || (f === 'mp4' && $('#exQ').value === 'fast'));
     $('#exHint').textContent = { mp4: `MP4 · H.264 + AAC · ${fps} fps · ${d}`, hevc: `MP4 · HEVC + AAC, about half the size · ${fps} fps · ${d}`,
       prores: `MOV · ProRes 422 + PCM, for further editing (large) · ${d}`, gif: `GIF · 15 fps, up to 640 px wide, no sound, loops · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`, mp3: `Audio only · MP3 · ${d}`,
-      wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${tc(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
+      wav: `Audio only · WAV, uncompressed · ${d}`, srt: `${(P.captions.length ? P.captions : P.text).length} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f];
   };
   $('#exFmt').addEventListener('change', hint); $('#exQ').addEventListener('change', hint); hint();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
@@ -3617,8 +3625,19 @@ function migrate(p) {
   return q;
 }
 function newProject(ratio = '9:16') { const [w, h] = RATIOS[ratio]; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h }); }
+function sendPoster(leaving) { // the projects screen's card = the preview as you left it (its shape, its text), up to 480 px on the long side
+  if (!P || !LANES.some(L => P[L.key].length)) return;
+  const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
+  S.sel = null; S.multi.clear(); S.pickRect = null; // the frame as rendered: no selection box
+  try { paint(); } catch { return; } finally { S.sel = sel; for (const x of multi) S.multi.add(x); S.pickRect = pick; S.dirty = true; }
+  const cv = $('#cv'), k = Math.min(1, 480 / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
+  o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
+  o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
+  return api(`/api/projects/${P.id}/poster`, { jpg: o.toDataURL('image/jpeg', 0.82).split(',')[1] }, 'POST', leaving).catch(() => {});
+}
 function setProject(p) {
   if (S.playing) pause();
+  if (P && p.id !== P.id) sendPoster();
   flushSave(); // the project being left
   P = migrate(p); undo = []; redo = []; S.sel = null; S.multi.clear(); S.t = 0;
   for (const v of pool.values()) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
@@ -3632,6 +3651,7 @@ async function openProject(id) {
   if (gone) toast(`${gone} clip${gone === 1 ? ' has' : 's have'} missing media (striped red): select one to restore or relink it`);
 }
 async function openProjects() { // CapCut's home: a card per project with a frame from it, newest first
+  await sendPoster(); // (this one's card shows it as it is now)
   const list = await api('/api/projects').catch(() => []);
   const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 172800 ? 'yesterday' : new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
@@ -3732,12 +3752,20 @@ function drag(e, lane, c, el) {
   if (S.playing) pause();
   const an = lane === 'main' ? anchors() : []; // linked clips follow a main-track trim live, and a reorder on the drop
   const block = lane === 'main' && isSel(lane, c.id) ? selection().filter(([, l]) => l === 'main').map(([x]) => x).sort((a, b) => P.main.indexOf(a) - P.main.indexOf(b)) : [c];
+  const dropAt = cx => { // main reorder: [the rest, the index the block goes in at]
+    const mid = o.start + (cx - x0) / S.pps + tdur(c, 'main') / 2, rest = P.main.filter(x => !block.includes(x));
+    return [rest, rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length];
+  };
+  let line = null;
   const move = ev => {
     const dx = ev.clientX - x0, dt = dx / S.pps;
     if (!moved && Math.abs(dx) < 3 && !(vert && Math.abs(ev.clientY - y0) >= 3)) return;
     moved = true;
     if (mode === 'move' && lane === 'main') { // reorder on drop (selected main clips go as one block)
       for (const x of block) { const e2 = document.querySelector(`.clip[data-lane="main"][data-id="${x.id}"]`); if (e2) { e2.style.transform = `translateX(${dx}px)`; e2.style.zIndex = 3; } }
+      const [rest, i] = dropAt(ev.clientX), at = i ? rest[i - 1].start + tdur(rest[i - 1], 'main') : 0; // the cut it goes into, as laid out now
+      if (!line?.isConnected) { line = document.createElement('i'); line.className = 'dropline'; $('#lane-main').append(line); }
+      line.style.left = `${at * S.pps}px`; line.dataset.i = i;
       return;
     }
     if (mode === 'r') {
@@ -3773,15 +3801,36 @@ function drag(e, lane, c, el) {
   const up = ev => {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
+    line?.remove();
     if (moved && mode === 'move' && lane === 'main') {
-      const mid = o.start + (ev.clientX - x0) / S.pps + tdur(c, 'main') / 2, rest = P.main.filter(x => !block.includes(x));
-      rest.splice(rest.filter(x => x.start + tdur(x, 'main') / 2 < mid).length, 0, ...block);
+      const [rest, i] = dropAt(ev.clientX);
+      rest.splice(i, 0, ...block);
       P.main = rest;
       reanchor(an);
     }
     if (S.dragLane) { S.dragLane = null; restackTracks(lane); }
     if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
     if (moved && JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } else renderTimeline();
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
+function kfDrag(e, c, el, f) { // a keyframe diamond: click goes to it, drag moves it (on frames, one undo step)
+  if (!f) return;
+  const before = JSON.stringify(P), left = el.getBoundingClientRect().left, x0 = e.clientX;
+  let moved = false;
+  if (S.playing) pause();
+  const move = ev => {
+    if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+    moved = true;
+    f.t = snap(clamp((ev.clientX - left) / S.pps, 0, len(c)));
+    c.kf.sort((a, b) => a.t - b.t);
+    S.t = c.start + f.t; placePlayhead(); S.dirty = true; renderTimeline();
+  };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    if (!moved) return seekTo(c.start + f.t);
+    if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); }
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
@@ -3915,6 +3964,8 @@ function wire() {
     if (b) { change(() => { P.capStyle = { ...TEXT_BASE, ...CAP_PRESETS[b.dataset.cap], y: P.capStyle.y }; }); toast(`Caption style: ${b.dataset.cap}`); }
   });
   $('.rail').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) openTab(b.dataset.tab); });
+  const railFade = () => { const n = $('.rail'); n.classList.toggle('ft', n.scrollTop > 1); n.classList.toggle('fb', n.scrollTop + n.clientHeight < n.scrollHeight - 1); }; // a fade where more tabs are hidden
+  $('.rail').addEventListener('scroll', railFade, { passive: true }); addEventListener('resize', railFade); railFade();
   const panes = $('.panes');
   panes.addEventListener('click', e => { // gallery tiles and rows
     const b = e.target.closest('button');
@@ -4039,8 +4090,8 @@ function wire() {
     }
     if (!isSel(lane, c.id)) S.multi.clear(); // a click on an unselected clip starts over; on a selected one it keeps the group, to drag it
     if (S.sel?.id !== c.id) { S.sel = { lane, id: c.id }; renderInspector(); $$('.clip.sel').forEach(x => { if (!S.multi.has(selKey(x.dataset.lane, x.dataset.id))) x.classList.remove('sel'); }); el.classList.add('sel'); S.dirty = true; }
-    const fh = e.target.closest('.fh');
-    if (fh) fadeDrag(lane, c, el, fh.classList.contains('l')); else drag(e, lane, c, el);
+    const fh = e.target.closest('.fh'), km = e.target.closest('.kfm');
+    if (km) kfDrag(e, c, el, c.kf?.[+km.dataset.k]); else if (fh) fadeDrag(lane, c, el, fh.classList.contains('l')); else drag(e, lane, c, el);
   });
   $('#tlInner').addEventListener('contextmenu', e => { // right-click: the clip's menu, the cut's menu, or paste
     if (!P) return;
@@ -4114,15 +4165,29 @@ function wire() {
     if (!c) return;
     const before = JSON.stringify(P), k = cv.width / P.w, x0 = e.clientX, y0 = e.clientY;
     const o = hit.lane === 'captions' ? { y: P.capStyle.y } : propsAt(c, S.t - c.start);
+    // text snaps (6 px, ⌘ to move freely) its box centre to the frame centre and other text, its edges to the safe margin
+    const SAFE = 0.05, bx = { x: [(hit.x0 + hit.x1) / 2 / k / P.w - o.x, (hit.x1 - hit.x0) / 2 / k / P.w], y: [(hit.y0 + hit.y1) / 2 / k / P.h - o.y, (hit.y1 - hit.y0) / 2 / k / P.h] };
+    const others = hits.filter(h => h.lane === 'text' && h.id !== hit.id);
+    const snapAxis = (a, v, ev) => { // -> [value, guide line] for one axis
+      const [off, half] = bx[a], tol = (6 * px) / k / (a === 'x' ? P.w : P.h), ctr = v + off;
+      const cand = [[0.5, 0.5], ...others.map(h => { const q = a === 'x' ? (h.x0 + h.x1) / 2 / k / P.w : (h.y0 + h.y1) / 2 / k / P.h; return [q, q]; }), [SAFE + half, SAFE], [1 - SAFE - half, 1 - SAFE]];
+      const best = ev.metaKey ? null : cand.map(([to, line]) => [Math.abs(to - ctr), to, line]).filter(q => q[0] <= tol).sort((p, q) => p[0] - q[0])[0];
+      return best ? [best[1] - off, best[2]] : [v, null];
+    };
     const move = ev => {
       const dx = ((ev.clientX - x0) * px) / k / P.w, dy = ((ev.clientY - y0) * px) / k / P.h;
       if (hit.lane === 'captions') P.capStyle.y = clamp(o.y + dy, 0, 1);
-      else { const lim = v => (c.media ? v : clamp(v, 0, 1)); setProp(c, 'x', lim(o.x + dx)); setProp(c, 'y', lim(o.y + dy)); }
+      else if (hit.lane === 'text') {
+        const [nx, gx] = snapAxis('x', o.x + dx, ev), [ny, gy] = snapAxis('y', o.y + dy, ev);
+        setProp(c, 'x', clamp(nx, 0, 1)); setProp(c, 'y', clamp(ny, 0, 1));
+        S.guides = { x: gx, y: gy };
+      } else { const lim = v => (c.media ? v : clamp(v, 0, 1)); setProp(c, 'x', lim(o.x + dx)); setProp(c, 'y', lim(o.y + dy)); }
       S.dirty = true;
     };
     const up = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
+      if (S.guides) { S.guides = null; S.dirty = true; }
       if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); }
     };
     addEventListener('pointermove', move);

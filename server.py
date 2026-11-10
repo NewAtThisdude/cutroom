@@ -2626,11 +2626,11 @@ def list_projects():
 
 
 def poster(pid):
-    """The projects screen's card picture: a frame a little into the first clip you'd see, 480 px wide, remade when the
-    project changes. None when nothing visual is in it yet."""
+    """The projects screen's card picture: the editor's preview as you left the project (POST .../poster), else a frame a
+    little into the first clip you'd see, 480 px wide, remade when the project changes. None when nothing visual is in it yet."""
     f = PROJ / f'{pid}.json'
     out = CACHE / f'poster_{pid}.jpg'
-    if out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
+    if out.exists() and out.stat().st_mtime >= f.stat().st_mtime - 2:  # (the editor sends its poster and the last save together: either may land first)
         return out
     j = json.loads(f.read_text())
     for c in j.get('main', []) + j.get('overlay', []):
@@ -2852,6 +2852,15 @@ class App(BaseHTTPRequestHandler):
                 for f in (HOME / 'luts' / f'{m[1]}.cube', HOME / 'luts' / f'{m[1]}.json'):
                     if f.exists():
                         shutil.move(str(f), str(unique(HOME / 'trash' / 'luts' / f.name)))
+                return self.reply({'ok': True})
+            if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/poster', u.path)) and (PROJ / f'{m[1]}.json').exists():  # the editor's preview as a JPEG, sent when you leave the project
+                jpg = base64.b64decode(str(body.get('jpg', '')), validate=True)
+                if not jpg.startswith(b'\xff\xd8') or len(jpg) > 4 << 20:
+                    raise ValueError('not a JPEG')
+                CACHE.mkdir(parents=True, exist_ok=True)
+                tmp = CACHE / f'.poster_{m[1]}.{uuid.uuid4().hex[:8]}.tmp'  # (two leaves at once each write their own)
+                tmp.write_bytes(jpg)
+                tmp.replace(CACHE / f'poster_{m[1]}.jpg')
                 return self.reply({'ok': True})
             if u.path == '/api/save_subs':  # subtitles (SRT text made by the editor) into the exports folder
                 text = str(body.get('text', ''))
