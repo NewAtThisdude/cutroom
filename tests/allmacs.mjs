@@ -145,7 +145,7 @@ for (const [i, ram] of RAMS.entries()) {
     const plan = (w, h, m, dur) => ({ w, h, fps: 30, duration: dur, name: `allmacs ${w}x${h}`, main: [{ media: m.id, in: 0, out: dur, frames: Math.round(dur * 30), geom: { x: 0, y: 0, w, h } }] });
     const exportJob = async pl => { const r = await job('/api/export', pl); if (r.file) fs.rmSync(`${SCR}/lib-allmacs-${ram}/exports/${r.file}`, { force: true }); return r; };
     const F = [ // name, AI_BUDGET kind (null: not gated), the call
-      ['proxy4k', 'proxy4k', async () => { M4K = await imp(V4K); return (await get('/api/media')).find(x => x.id === M4K.id); }],
+      ['proxy4k', 'proxy4k', async () => { M4K = await imp(V4K); return (await get('/api/media')).find(x => x.id === M4K.id); }], // later jobs use M4K
       ['image', 'image', () => job('/api/ai/image', { prompt: 'a red apple on a wooden table, studio light', w: 1024, h: 1024, steps: 2 })],
       ['voice', 'voice', () => job('/api/ai/voice', { text: 'Every Mac can make this voiceover, from eight gigabytes up.', voice: 'af_heart' })],
       ['voice clone', 'clone', async () => { const r = await job('/api/ai/clone', { media: MT.id, t0: 0, t1: 8, name: 'allmacs', consent: true }); voiceId = r.voice.id;
@@ -177,6 +177,7 @@ for (const [i, ram] of RAMS.entries()) {
       ['export 8K', 'export8k', () => exportJob(plan(7680, 4320, M4K, 1))],
     ];
     results[ram] = [];
+    if (!want('proxy4k')) M4K = await imp(V4K); // the 4K clip the upscale / export jobs read, when the proxy job is filtered out
     for (const [name, kind, fn] of F) {
       if (!want(name)) continue;
       await gpuQuiet();
