@@ -1601,21 +1601,21 @@ def ai_slot(kind, st=None, units=None):
         HEAVY['line'].append(me)
         while HEAVY['run'] or HEAVY['line'][0] is not me:
             if st is not None:
-                if st.get('cancel'):
-                    HEAVY['line'].remove(me)
+                if st.get('cancel'):  # by identity: two waiting jobs of one kind are EQUAL dicts, and list.remove took the other one (queue locked)
+                    HEAVY['line'] = [x for x in HEAVY['line'] if x is not me]
                     cv.notify_all()
                     raise RuntimeError('cancelled')
-                st['note'] = f"Waiting for {(HEAVY['run'] or HEAVY['line'][0])['what']} ({HEAVY['line'].index(me) + bool(HEAVY['run'])} ahead)"
+                st['note'] = f"Waiting for {(HEAVY['run'] or HEAVY['line'][0])['what']} ({next(i for i, x in enumerate(HEAVY['line']) if x is me) + bool(HEAVY['run'])} ahead)"
             cv.wait()
         HEAVY['line'].pop(0)
         HEAVY['run'] = me
         cv.notify_all()  # the ones behind move up a place
     if st is not None:
         st.pop('note', None)
-    if kind not in WORKER_KIND.values():  # a model the AI worker doesn't serve: its idle models (SAM 2, Kokoro...) make room first
-        worker_stop()
     AI_HELD.n = 1
     try:
+        if kind not in WORKER_KIND.values():  # a model the AI worker doesn't serve: its idle models (SAM 2, Kokoro...) make room first
+            worker_stop()  # (inside the try: if it raised, the slot is still given back)
         yield t
     finally:
         AI_HELD.n = 0
@@ -5265,6 +5265,39 @@ def selftest():
     ta.join(5)
     tb.join(5)
     assert order == ['a', 'b'] and 'note' not in sb and HEAVY['run'] is None and not HEAVY['line'], (order, sb, HEAVY)
+    # two waiting jobs of ONE kind, the later one cancelled: the earlier still runs and the line empties (equal dicts: list.remove
+    # once took the other one's place and locked the queue until a restart)
+    go, order, sa, sb2 = threading.Event(), [], {}, {}
+    def holder():
+        with ai_slot('embed'):
+            go.wait(5)
+    def waiter(name, st):
+        try:
+            with ai_slot('llm', st):
+                order.append(name)
+        except RuntimeError as e:
+            order.append(f'{name} {e}')
+    th = threading.Thread(target=holder)
+    th.start()
+    while HEAVY['run'] is None:
+        time.sleep(0.01)
+    tA, tB = threading.Thread(target=waiter, args=('A', sa)), threading.Thread(target=waiter, args=('B', sb2))
+    tA.start()
+    while not sa.get('note'):
+        time.sleep(0.01)
+    tB.start()
+    while not sb2.get('note'):
+        time.sleep(0.01)
+    assert sa['note'].endswith('(1 ahead)') and sb2['note'].endswith('(2 ahead)'), (sa, sb2)
+    sb2['cancel'] = True
+    with HEAVY['cv']:
+        HEAVY['cv'].notify_all()
+    tB.join(5)
+    go.set()
+    th.join(5)
+    tA.join(5)
+    assert order == ['B cancelled', 'A'] and HEAVY['run'] is None and not HEAVY['line'], (order, HEAVY)
+    print('heavy-job queue ok: in order, re-entrant, a cancelled waiter leaves only its own place')
     if RAM_GB < 12:
         try:
             with ai_slot('image'):
