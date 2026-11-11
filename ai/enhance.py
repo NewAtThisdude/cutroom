@@ -92,7 +92,8 @@ def interp(job):
     grid = torch.cat([torch.linspace(-1, 1, pw, device=DEV).view(1, 1, 1, pw).expand(k - 1, 1, ph, pw),
                       torch.linspace(-1, 1, ph, device=DEV).view(1, 1, ph, 1).expand(k - 1, 1, ph, pw)], 1)
     ts = torch.tensor([i / k for i in range(1, k)], device=DEV, dtype=HALF).view(-1, 1, 1, 1).expand(k - 1, 1, ph, pw)
-    E = lambda x: x.expand(k - 1, -1, -1, -1)
+    B = 1 if job.get('one') else k - 1  # in-between frames made at once; one at a time on 8-16 GB (server.py AI_BUDGET): 4x of 1080p ran out of 4 GB
+    E = lambda x: x.expand(B, -1, -1, -1)
     small = lambda x: F.avg_pool2d(x[:, :, :h, :w].float().mean(1, keepdim=True), 8)
     n, i, prev, f = max(1, round(job['dur'] * job['fps'])), 0, None, None
     enc = encoder(job, w, h, job['fps'] * k)
@@ -102,9 +103,9 @@ def interp(job):
             feat = net.encode(img)
             if prev is not None:
                 if (small(prev[0]) - small(img)).abs().mean() > 0.12:  # a cut: nothing made up across it, the earlier frame holds
-                    mids = E(prev[0])
+                    mids = prev[0].expand(k - 1, -1, -1, -1)
                 else:
-                    mids = net(E(prev[0]), E(img), ts, div, grid, E(prev[1]), E(feat))
+                    mids = torch.cat([net(E(prev[0]), E(img), ts[j:j + B], div, grid[:B], E(prev[1]), E(feat)) for j in range(0, k - 1, B)])
                 for j in range(k - 1):
                     enc.stdin.write(to_yuv(mids[j:j + 1, :, :h, :w]))
             enc.stdin.write(f.tobytes())  # the real frames pass through untouched
@@ -161,7 +162,7 @@ def upscale(job):
     enc = encoder(job, W, H, job['fps'])
     with torch.inference_mode():
         for f in frames(job):
-            o = sr(net, to_rgb(f)).float()
+            o = sr(net, to_rgb(f), int(job.get('tile', 480))).float()  # tile: server.py's AI_BUDGET (smaller on 8 GB)
             if s == 2:
                 o = F.avg_pool2d(o, 2)
             enc.stdin.write(to_yuv(o[:, :, :H, :W]))

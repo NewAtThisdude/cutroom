@@ -198,14 +198,32 @@ def sam2_masks(job, n, p0, p1, soft=False):
             run(ci, chunks[ci][0], masks[chunks[ci][0]], (False,))
         for ci in range(kp - 1, -1, -1):
             run(ci, chunks[ci][1], masks[chunks[ci][1]], (True,))
+    del pred  # its GPU memory back before ProPainter starts (the cache kept it: SAM 2 and ProPainter held it together)
+    import gc
+    gc.collect()
+    if dev.type == 'mps':
+        torch.mps.empty_cache()
     return masks
 
 
-def propainter(F, holes, p0, p1):
+def sam2_apart(job, n, p0, p1):
+    """sam2_masks in a process of its own (8 GB Macs: job 'samapart'): SAM 2, torch and their GPU memory (2.9 GB) are gone
+    before the fill allocates its frames. Its progress lines go straight to the server."""
+    with tempfile.TemporaryDirectory(prefix='cutroom-sam-') as td:
+        jf = Path(td) / 'job.json'
+        jf.write_text(json.dumps({'job': job, 'n': n, 'p0': p0, 'p1': p1}))
+        r = subprocess.run([sys.executable, '-I', __file__, '--sam2', str(jf)], stderr=subprocess.PIPE, text=True, errors='replace')
+        if r.returncode:
+            sys.exit((r.stderr.strip().splitlines() or ['SAM 2 failed'])[-1][-300:])
+        return np.load(Path(td) / 'masks.npy')
+
+
+def propainter(F, holes, p0, p1, sizes=((720, 40), (512, 20))):
     """ProPainter (Zhou et al., ICCV 2023) on the crop, at most 720 px: optical flow (RAFT) carries the real background
     in from other frames, even with parallax; a transformer fills what no frame shows, consistently over time.
     Half precision (the same fill as full: 0.1/255 apart) in 40-frame batches, under the GPU memory cap set in AI_ENV
-    (server.py): stock settings took 30 GB on a head-sized hole and swapped the Mac. Still too big: again, smaller."""
+    (server.py): stock settings took 30 GB on a head-sized hole and swapped the Mac. Still too big: again, smaller.
+    sizes: (working px, batch) tries, from the server's AI_BUDGET for this Mac's memory (16 GB starts at 512 px; 8 GB runs none)."""
     n, sh, sw = holes.shape
     with tempfile.TemporaryDirectory(prefix='cutroom-pp-') as td:
         vd, md = Path(td) / 'clip', Path(td) / 'mask'
@@ -214,8 +232,7 @@ def propainter(F, holes, p0, p1):
         for i in range(n):
             cv2.imwrite(str(vd / f'{i:05d}.png'), cv2.cvtColor(F[i], cv2.COLOR_YUV2BGR))
             cv2.imwrite(str(md / f'{i:05d}.png'), holes[i].astype(np.uint8) * 255)
-        small = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') < 15 * 2 ** 30  # an 8 GB Mac starts where a 36 GB one falls back to
-        for px, batch in ((512, 20), (384, 12)) if small else ((720, 40), (512, 20)):
+        for px, batch in sizes:
             k = min(1.0, px / max(sw, sh))
             pw, ph = max(8, int(sw * k) // 8 * 8), max(8, int(sh * k) // 8 * 8)
             proc = subprocess.Popen([sys.executable, '-E', '-s', str(PROPAINTER), '--video', str(vd), '--mask', str(md), '--output', str(Path(td) / 'out'),
@@ -229,9 +246,9 @@ def propainter(F, holes, p0, p1):
                     say(p0 + (p1 - p0) * int(hit[-1][0]) / max(1, int(hit[-1][1])))
             if not proc.wait():
                 break
-            if 'out of memory' not in tail or batch == (12 if small else 20):
+            if 'out of memory' not in tail or batch == sizes[-1][1]:
                 raise RuntimeError('ProPainter failed: ' + tail[-400:])
-            print(f'ProPainter: out of GPU memory at {pw}x{ph}, again at 512 px', flush=True)
+            print(f'ProPainter: out of GPU memory at {pw}x{ph}, again at {sizes[-1][0]} px', flush=True)
         filled = F.copy()
         for i in range(n):
             f = cv2.imread(str(Path(td) / 'out' / 'clip' / 'frames' / f'{i:04d}.png'))
@@ -447,7 +464,7 @@ def main(path):
     best = job.get('engine', 'best') == 'best'
     masks = None
     if best and SAM2_CK.exists() and job.get('box'):
-        masks = sam2_masks(job, n, 0.0, 0.3)
+        masks = (sam2_apart if job.get('samapart') else sam2_masks)(job, n, 0.0, 0.3)
         if masks[int(np.clip(job.get('pick', 0), 0, len(masks) - 1))].sum() < 16:
             masks = None  # SAM 2 found nothing in the box: fall back to the tracked box
     if masks is not None:  # exact outline, grown a little for soft edges and motion blur
@@ -490,7 +507,9 @@ def main(path):
             a, b, c, d = rs[i]
             holes[i, max(0, int((b - y0) * sy)):int(np.ceil((d - y0) * sy)), max(0, int((a - x0) * sx)):int(np.ceil((c - x0) * sx))] = True
     say(0.35)
-    pp = best and PROPAINTER.exists() and (PROPAINTER.parent / 'weights' / 'ProPainter.pth').exists()
+    # an 8 GB Mac (job 'nopp'): no ProPainter (with this process's frames it peaked at 5 GB of the ~4 there are for AI); SAM 2's
+    # outline still drives the aligned copy, exemplar synthesis fills what no frame shows
+    pp = best and not job.get('nopp') and PROPAINTER.exists() and (PROPAINTER.parent / 'weights' / 'ProPainter.pth').exists()
     filled, left, fit = classical(job, F, holes, rs[:n], (x0, y0, sx, sy), 0.35, 0.45 if pp else 0.85, synth=not pp)
     tag = 'sam2+' if masks is not None else ''
     def span(hs):  # ProPainter only over the frames that have something to fill, plus flow context either side
@@ -500,11 +519,11 @@ def main(path):
         print(f'engine {tag}propainter fit={fit:.2f}', flush=True)
         a, b = span(holes)
         filled = F.copy()
-        filled[a:b] = propainter(F[a:b], holes[a:b], 0.45, 0.85)
+        filled[a:b] = propainter(F[a:b], holes[a:b], 0.45, 0.85, job.get('pp') or ((720, 40), (512, 20)))
     elif pp and left.any():  # exact aligned fill where other frames show the background; ProPainter only for the rest
         print(f'engine {tag}aligned+propainter fit={fit:.2f}', flush=True)
         a, b = span(left)
-        filled[a:b] = propainter(filled[a:b], left[a:b], 0.45, 0.85)
+        filled[a:b] = propainter(filled[a:b], left[a:b], 0.45, 0.85, job.get('pp') or ((720, 40), (512, 20)))
     else:
         print(f'engine {tag}aligned fit={fit:.2f}', flush=True)
     say(0.85)
@@ -543,4 +562,8 @@ def main(path):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1])
+    if sys.argv[1] == '--sam2':  # sam2_apart's child: the masks to masks.npy beside the job file
+        a = json.load(open(sys.argv[2]))
+        np.save(Path(sys.argv[2]).with_name('masks.npy'), sam2_masks(a['job'], a['n'], a['p0'], a['p1']))
+    else:
+        main(sys.argv[1])

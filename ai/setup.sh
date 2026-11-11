@@ -3,7 +3,8 @@
 # in RAM) and object removal (ai/remove.py: OpenCV). The image model downloads ~32 GB once; after the 4-bit copy is
 # saved (5.5 GB in ~/Movies/Cutroom/ai) the originals are deleted, so about 6 GB stays on disk in all.
 # The language-model features (shorts, caption translation, hook titles) use Ollama: brew install ollama; then
-# ollama pull qwen3.5:9b (16 GB of memory or more) or qwen3.5:4b (an 8 GB Mac). Cutroom picks the biggest that fits.
+# ollama pull qwen3.5:9b (16 GB of memory or more) or qwen3.5:4b-q4_K_M (8-12 GB Macs: 3.4 GB loaded; plain qwen3.5:4b is
+# an nvfp4 MLX build that takes 4.2 GB). Cutroom picks the biggest that fits.
 set -eu
 cd "$(dirname "$0")"
 env -u PYTHONPATH uv venv --python 3.12 .venv
@@ -50,6 +51,8 @@ env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav
 env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
 # AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
 env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
+# ... and its half-precision copy (vendor/musicgen-small-fp16): music.py loads it straight onto the GPU, 2.4 GB peak instead of 4.2+
+env -u PYTHONPATH HF_HUB_OFFLINE=1 .venv/bin/python -I -c "import sys; sys.path.insert(0, '.'); import music, torch; music.load(torch.device('mps'))"
 # AI enhance (ai/enhance.py, PyTorch on the GPU): RIFE 4.25 frame interpolation for Smooth slow-mo (Practical-RIFE by hzwer,
 # MIT; the model file from HolyWu's vs-rife, MIT, pinned commit; weights from its release), Real-ESRGAN general x4v3 + its
 # -wdn twin for AI upscale (xinntao, BSD-3), Depth Anything V2 Small for relight (Apache-2.0, through transformers). ~130 MB.

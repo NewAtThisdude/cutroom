@@ -9,7 +9,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,7 +55,11 @@ HEX = re.compile(r'#[0-9a-fA-F]{6}')
 JOBS = {}
 # CUTROOM_CORES / CUTROOM_RAM_GB: test a smaller Mac's choices (decoder, models, how much at once) on this one
 CORES = int(os.environ.get('CUTROOM_CORES') or os.cpu_count() or 8)
-RAM_GB = float(os.environ.get('CUTROOM_RAM_GB') or int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True).stdout.strip() or 8 << 30) / 2 ** 30)
+REAL_GB = int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True).stdout.strip() or 8 << 30) / 2 ** 30
+RAM_GB = float(os.environ.get('CUTROOM_RAM_GB') or REAL_GB)
+# GPU cores (time estimates scale by them): a faked 8-core Mac is a base chip (8 GPU cores); CUTROOM_GPU_CORES overrides
+GPU_CORES = int(os.environ.get('CUTROOM_GPU_CORES') or (8 if os.environ.get('CUTROOM_CORES') and CORES <= 8 else 16 if os.environ.get('CUTROOM_CORES') and CORES < 12 else 0)
+          or (re.findall(r'"gpu-core-count" = (\d+)', subprocess.run(['ioreg', '-rc', 'AGXAccelerator', '-d1'], capture_output=True, text=True).stdout) or [8])[0])
 BIG_MAC = CORES >= 12 and RAM_GB >= 24  # Pro/Max chips: CPU decoding is faster there; a base M1 (8 cores, 8 GB) leans on the media engine
 PREP = threading.BoundedSemaphore(2 if BIG_MAC else 1)  # imports prepared at once: each 4K proxy takes ~500 MB, four took 2.4 GB together
 # main clips per ffmpeg graph (longer main tracks pre-render in chunks): every open decoder runs ahead and holds frames, so
@@ -617,7 +621,7 @@ def transcribe(mid, lang='auto', ranges=None):
 
 def listen(f, a, b, lang, prog):
     """whisper.cpp on [a, b] seconds of a PCM copy (s16 48 kHz stereo): words in source time. prog(0..1) as it goes."""
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('captions'), tempfile.TemporaryDirectory(prefix='cutroom-') as td:  # Metal: one heavy job at a time
         wav, base = Path(td) / 'a.wav', Path(td) / 'out'
         if sh(['ffmpeg', '-v', 'error', '-y', '-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', f'{a:.3f}', '-t', f'{b - a:.3f}', '-i', str(f),
                '-ac', '1', '-ar', '16000', str(wav)]).returncode:
@@ -919,7 +923,8 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     if b['w'] < 0.004 or b['h'] < 0.004:
         raise ValueError('draw a box around the object')
     src, pts, lost = str(MEDIA / m['file']), [{'t': t, **b}], False
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    kind = 'cutout' if mode in ('cutout', 'mask') else 'remove' if quality != 'fast' else None  # Fast = OpenCV only (AI_BUDGET: light)
+    with ai_slot(kind, st, t1 - t0) if kind else contextlib.nullcontext({'knobs': {}}) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         if mode in ('cutout', 'mask'):  # SAM 2 follows the subject itself
             pass
         elif t1 - t > 1 / fps:
@@ -951,7 +956,9 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
                 raise ValueError('seed must be a PNG mask')
         jf.write_text(json.dumps({'src': src, 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': m['w'], 'h': m['h'],
                                   'boxes': boxes, 'pick': round((t - t0) * fps), 'box': [b['x'], b['y'], b['w'], b['h']], 'mode': mode,
-                                  'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags, 'seed': str(seed_png) if seed_png else None}))
+                                  'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags, 'seed': str(seed_png) if seed_png else None,
+                                  'pp': size['knobs'].get('pp', [[512, 20], [384, 12]]),
+                                  'samapart': size['knobs'].get('samapart'), 'nopp': size['knobs'].get('nopp')}))
         proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env=AI_ENV)  # one pipe: model warnings can't fill a second one and stall it
         engine, said = 'classical', []
@@ -1028,7 +1035,7 @@ def isolate(st, mid, keep='voice'):
         return {'stems': done['stems']}
     if keep != 'stems' and done.get(keep) and (MEDIA / f"{done[keep]}.json").exists():
         return {'media': done[keep]}
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('isolate', st, m['duration'] * (2 if keep == 'stems' else 1)), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         wav = Path(td) / 'in.wav'
         if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vn', '-ac', '2', '-ar', '44100', str(wav)]).returncode:
             raise RuntimeError('could not read the sound')
@@ -1069,7 +1076,7 @@ def matte(st, mid, t0=None, t1=None):
     WebM/VP9 alpha plays transparent in Chrome and is ~30x smaller than the ProRes 4444 the tool writes.
     With t0/t1 only that range (the part a clip uses) is processed, and the cutout starts at t0."""
     m = meta(mid)
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('matte', st, (t1 - t0) if t1 is not None and t0 is not None else m['duration']), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         pro, out, src = Path(td) / 'cut.mov', Path(td) / 'cut.webm', MEDIA / m['file']
         if t0 is not None and t1 is not None and (t0 > 0.05 or t1 < m['duration'] - 0.05):  # cut the range first (Apple's encoder, near lossless)
             rng = Path(td) / 'range.mov'
@@ -1184,6 +1191,11 @@ def faces(st, mid, t0, t1, mode='largest', rate=5, span=(0.0, 1.0)):
         if not pts:
             raise RuntimeError('found no face and no clear subject in this clip')
         return {'points': pts, 'kind': 'subject'}
+    with ai_slot('faces', st, t1 - t0):
+        return faces_(st, mid, t0, t1, mode, rate, span)
+
+
+def faces_(st, mid, t0, t1, mode, rate, span):
     proc = subprocess.Popen([build_tool('faces'), str(MEDIA / meta(mid)['file']), f'{t0:.4f}', f'{t1:.4f}', str(rate), 'all' if mode == 'samples' else mode],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)  # samples: every face per sample, as found
     pts = []
@@ -1261,7 +1273,7 @@ def retouch_preview(mid, t, p):
         raise ValueError('retouch works on video clips (and needs the on-device AI tools: ai/setup.sh)')
     t = fnum(t, 0, max(0.0, m['duration'] - 1 / (m.get('fps') or 30)))
     lm = CACHE / f'rt_{mid}_{t:.4f}.lm'
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('retouch'), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         jf, out = Path(td) / 'job.json', Path(td) / 'frame.png'
         jf.write_text(json.dumps(retouch_job(m, t, 0, retouch_params(p), out, lm, still=True)))
         r = run_retouch(jf, 'The retouch preview')
@@ -1284,7 +1296,7 @@ def retouch(st, mid, t0, t1, p):
     key = 'retouch:' + hashlib.sha1(json.dumps([mid, round(t0, 6), round(t1, 6), p], sort_keys=True).encode()).hexdigest()
     if hit := find_key(key):
         return {'media': hit['id'], 'cached': True}
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('retouch', st, t1 - t0), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         lm, out, jf = Path(td) / 'lm.jsonl', Path(td) / 'retouched.mp4', Path(td) / 'job.json'
         proc = subprocess.Popen([build_tool('retouch'), str(MEDIA / m['file']), f'{t0:.6f}', f'{t1:.6f}'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         n = found = 0
@@ -1340,12 +1352,15 @@ def enhance(st, mid, t0, t1, op, opt):
         raise ValueError('the range is too short')
     if op == 'upscale' and max(m['w'], m['h']) * opt['scale'] > 7680:
         raise ValueError(f"{opt['scale']}x of {m['w']}x{m['h']} is bigger than 8K")
+    if op == 'upscale' and m['w'] * m['h'] * opt['scale'] ** 2 > 4096 * 2304 and 'refused' in (t8 := tier('export8k')):
+        raise ValueError(t8['refused'] + f": {opt['scale']}x of {m['w']}x{m['h']} is past 4K")
     dec, vf = hdr_decode(m)
     name = {'interp': f"smooth {opt.get('factor')}x", 'upscale': f"upscaled {opt.get('scale')}x", 'relight': 'relit'}[op]
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    units = (t1 - t0) * m['w'] * m['h'] / (1920 * 1080) * ((int(opt.get('factor') or 2) - 1) / 3 if op == 'interp' else 1)  # AI_BUDGET's rates: 4x, 2x, relight
+    with ai_slot(op, st, units) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out, jf = Path(td) / 'enhanced.mp4', Path(td) / 'job.json'
         jf.write_text(json.dumps({'op': op, 'src': str(MEDIA / m['file']), 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': even(m['w']), 'h': even(m['h']),
-                                  'dec': dec, 'vf': vf, 'tags': src_tags(m, dec), **opt}))
+                                  'dec': dec, 'vf': vf, 'tags': src_tags(m, dec), **size['knobs'], **opt}))
         proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'enhance.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # one pipe, as with removal; weights come from setup.sh
         said = []
@@ -1503,26 +1518,139 @@ AI_BIN = AI_DIR / '.venv' / 'bin'
 # PyTorch's GPU cache grows to 1.7x the GPU budget (~48 GB on this 36 GB Mac) before it frees anything, and on a Mac that is
 # system memory: stock ProPainter on a head-sized hole took 30 GB and swapped for 15 minutes. Capped, the cache is freed instead
 # (that job in half precision: 54-55 s at a cap of 0.35 or 0.6), and a job that really needs more fails fast rather than swap.
+# The cap in GB: half the memory on 8-16 GB Macs (0.45 of a 5.5 GB working set left 2.5 GB on 8 GB: MusicGen small needs 3+),
+# 0.45 of the working set (~0.78 of memory) above. The ratio is of THIS Mac's working set, so a faked smaller Mac gets the cap
+# in GB that Mac would have.
+MPS_CAP = max(0.5 * min(RAM_GB, 16), 0.45 * 0.78 * RAM_GB) / (0.78 * REAL_GB)
 AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}",
-          'PYTORCH_MPS_HIGH_WATERMARK_RATIO': '0.45', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': '0.35'}
+          'PYTORCH_MPS_HIGH_WATERMARK_RATIO': f'{MPS_CAP:.3f}', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': f'{MPS_CAP * 0.78:.3f}'}
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
 HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
-AI_LOCK = threading.Lock()  # one generation at a time: two image models at once would push the Mac into swap
+# ---------- what every AI / heavy job needs, on every Apple Silicon Mac (8 to 36+ GB): this one table ----------
+# kind: (what, unit of the time estimate, tiers biggest first). A tier: (the smallest Mac it is used on in GB, the size it runs
+# at, budget GB, seconds per unit on the 36 GB M4 Max (32 GPU cores) on an idle Mac, knobs the job reads). A Mac takes the first
+# tier it has the memory for; below the last one the job is refused with that reason. Budget = the most the job's processes held
+# at once (phys_footprint: GPU memory is system memory on these Macs; Ollama's own size for its model), measured one job at a time
+# by tests/allmacs.mjs on servers acting as 8 and 16 GB Macs (README: Every Mac). Kinds in LIGHT skip the queue (CPU only, tiny).
+AI_BUDGET = {
+    'image': ('Generate an image', 'image', [(12, 'Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps', 9.0, 48, {})]),
+    'voice': ('AI voiceover', 's of speech', [(0, 'Kokoro-82M bf16 (MLX)', 2.0, 0.8, {})]),
+    'clone': ('Voice clone, AI dubbing', 's of speech', [(0, 'Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check', 3.5, 1.0, {})]),
+    'captions': ('Auto captions, transcript', 's of sound', [(0, 'whisper.cpp large-v3-turbo (Metal) + Silero VAD', 1.5, 0.2, {})]),
+    'isolate': ('Isolate voice, stems', 's of sound', [(0, 'Demucs htdemucs (MPS)', 2.5, 0.3, {})]),
+    'remove': ('Remove object (Best)', 's of video', [(24, 'SAM 2.1 small + ProPainter 720 px, 40-frame batches', 12.0, 25, {'pp': [[720, 40], [512, 20]]}),
+                                                     (16, 'SAM 2.1 small + ProPainter 512 px, 20-frame batches', 9.5, 30, {'pp': [[512, 20], [384, 12]], 'samapart': True}),
+                                                     (0, 'SAM 2.1 small outline + aligned copy / exemplar fill (no ProPainter: 5 GB)', 3.0, 42,
+                                                      {'nopp': True, 'samapart': True})]),
+    'cutout': ('Cut out object, AI outline', 's of video', [(0, 'SAM 2.1 small bf16 (MPS)', 3.0, 6, {})]),
+    'interp': ('AI smooth slow-mo (RIFE)', 's of 1080p', [(24, 'RIFE 4.25 fp16 (MPS), all in-between frames at once', 2.0, 3, {}),
+                                                        (0, 'RIFE 4.25 fp16 (MPS), one in-between frame at a time', 3.0, 7, {'one': True})]),
+    'upscale': ('AI upscale (Real-ESRGAN)', 's of 1080p input', [(16, 'Real-ESRGAN x4v3 fp16, 480 px tiles', 3.0, 12, {'tile': 480}),
+                                                            (0, 'Real-ESRGAN x4v3 fp16, 256 px tiles', 2.0, 24, {'tile': 256})]),
+    'relight': ('Relight (depth)', 's of 1080p', [(0, 'Depth Anything V2 Small fp16 (MPS)', 2.0, 5, {})]),
+    'music': ('AI music', 's of music', [(0, 'MusicGen small, fp16 copy loaded straight to the GPU', 2.5, 1.0, {})]),
+    'llm': ('Shorts, translate, hooks, dubbing lines, command bar, smart combine', 'answer',
+            [(24, 'qwen3.5:9b (Ollama, Q4), unloaded after 3 idle min', 8.0, 5, {'b': 9, 'ctx': 16384, 'keep': '3m'}),
+             (16, 'qwen3.5:9b (Ollama, Q4), unloaded at once', 8.0, 5, {'b': 9, 'ctx': 16384, 'keep': 0}),
+             (0, 'qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once', 3.5, 4, {'b': 4, 'ctx': 8192, 'keep': 0, 'tag': '4b-q4_K_M'})]),
+    'embed': ('Smart search', 'query', [(0, 'nomic-embed-text v1.5 (Ollama)', 0.6, 0.05, {})]),
+    'speakers': ('Speaker labels', 's of sound', [(0, 'WavLM base plus SV (MPS)', 1.0, 0.4, {})]),
+    'matte': ('Remove background', 's of video', [(0, 'Vision person segmentation (ANE)', 1.0, 4, {})]),
+    'faces': ('Find faces (blur faces, auto reframe)', 's of video', [(0, 'Vision faces / saliency (ANE)', 0.5, 0.7, {})]),
+    'retouch': ('Retouch (face)', 's of video', [(0, 'Vision landmarks + OpenCV', 1.0, 3, {})]),
+    'track': ('Motion tracking', 's of video', [(0, 'OpenCV corners (CPU), Vision fallback', 0.6, 0.5, {})]),
+    'beats': ('Beat detection', 's of sound', [(0, 'onset envelope (NumPy, CPU)', 0.3, 0.01, {})]),
+    'proxy4k': ('4K import preview copy', 's of 4K', [(0, '720p H.264, media engine (VideoToolbox)', 1.0, 0.3, {})]),
+    'export': ('Export above 1440p (4K)', 's of video', [(0, 'VideoToolbox / x264, CPU threads capped', 3.0, 1.0, {})]),
+    'export8k': ('Export above 4K (up to 8K)', 's of video', [(16, 'HEVC / x264 8K, 8 encoder threads', 9.2, 3, {})]),
+}
+AI_ROOM = RAM_GB - 4  # what one AI job may peak at: macOS and the editor keep ~4 GB (tests/allmacs.mjs holds every job to it)
+LIGHT = {'beats', 'track', 'proxy4k'}  # CPU / media engine only: never queued (proxies have their own PREP limit)
+FF_THREADS = str(max(2, min(8, CORES - 2)))  # ffmpeg's encoders/filters on big jobs: leave two cores to the editor and macOS
+SLOW = 32 / GPU_CORES  # ponytail: estimates scale by GPU cores only (memory bandwidth and thermals ignored)
+HEAVY = {'cv': threading.Condition(), 'line': [], 'run': None}  # the ONE heavy-job queue: waiting turns in order, the running one
+AI_HELD = threading.local()
+
+
+def tier(kind):
+    """This Mac's size for an AI job (AI_BUDGET), or {'refused': the reason}."""
+    what, unit, rows = AI_BUDGET[kind]
+    for need, size, gb, rate, knobs in rows:
+        if RAM_GB >= need:
+            return {'kind': kind, 'what': what, 'unit': unit, 'size': size, 'gb': gb, 'rate': rate * SLOW, 'knobs': knobs, 'smaller': rows[0][1] != size}
+    return {'kind': kind, 'what': what, 'unit': unit, 'refused': f'{what} needs a Mac with {rows[-1][0]} GB of memory (this one has {RAM_GB:.0f} GB)'}
+
+
+@contextlib.contextmanager
+def ai_slot(kind, st=None, units=None):
+    """A heavy job's turn in the ONE queue: GPU / Neural Engine work (every AI model, MPS/MLX, Metal whisper, big exports) runs
+    one job at a time on every Mac, first come first served; two at once had this 36 GB Mac's GPU pinned at 100 % and its fans
+    flat out. Refused (the reason) on a Mac too small for the job. st (the job) gets 'eta' (seconds on this Mac) and, while it
+    waits, a 'note' ('Waiting for AI music (1 ahead)'). Re-entrant: a job's own steps (dubbing's shorter lines) don't queue
+    behind it. Yields the tier."""
+    t = tier(kind)
+    if 'refused' in t:
+        raise RuntimeError(t['refused'])
+    if st is not None and units:
+        st['eta'] = max(1, round(units * t['rate']))
+    if kind in LIGHT or getattr(AI_HELD, 'n', 0):
+        yield t
+        return
+    me, cv = {'what': t['what']}, HEAVY['cv']
+    with cv:
+        HEAVY['line'].append(me)
+        while HEAVY['run'] or HEAVY['line'][0] is not me:
+            if st is not None:
+                if st.get('cancel'):
+                    HEAVY['line'].remove(me)
+                    cv.notify_all()
+                    raise RuntimeError('cancelled')
+                st['note'] = f"Waiting for {(HEAVY['run'] or HEAVY['line'][0])['what']} ({HEAVY['line'].index(me) + bool(HEAVY['run'])} ahead)"
+            cv.wait()
+        HEAVY['line'].pop(0)
+        HEAVY['run'] = me
+        cv.notify_all()  # the ones behind move up a place
+    if st is not None:
+        st.pop('note', None)
+    if kind not in WORKER_KIND.values():  # a model the AI worker doesn't serve: its idle models (SAM 2, Kokoro...) make room first
+        worker_stop()
+    AI_HELD.n = 1
+    try:
+        yield t
+    finally:
+        AI_HELD.n = 0
+        with cv:
+            HEAVY['run'] = None
+            cv.notify_all()
+
+
+def caps():
+    """The AI tab's 'This Mac' panel: every AI / heavy job's size, memory and speed here, or why it is refused."""
+    fake = bool(os.environ.get('CUTROOM_RAM_GB') or os.environ.get('CUTROOM_CORES'))
+    return {'ram': round(RAM_GB, 1), 'cores': CORES, 'gpu': GPU_CORES, 'room': round(AI_ROOM, 1), 'fake': fake, 'real': round(REAL_GB), 'threads': int(FF_THREADS),
+            'queue': 'one heavy job at a time (AI, big exports); the rest wait their turn', 'jobs': [tier(k) for k in AI_BUDGET],
+            'running': HEAVY['run'] and HEAVY['run']['what'], 'waiting': len(HEAVY['line'])}
+
+
 WORKER = {'proc': None, 'n': 0, 'lock': threading.Lock()}
+WORKER_KIND = {'preview': 'cutout', 'relight': 'relight', 'voice': 'voice', 'clone': 'clone', 'embed': 'clone'}  # worker op -> AI_BUDGET kind
 
 
 def ai_worker(op, timeout=180, **req):
     """Ask the long-lived AI process (ai/worker.py), started on demand: it keeps SAM 2's image model, the frame it last
     embedded and Kokoro loaded, so a second outline click on a frame is milliseconds instead of a 3-36 s model load.
-    It quits after 5 idle minutes, at once on a Mac under 16 GB. A worker that died (or just timed out idle) is restarted once."""
-    with WORKER['lock']:
+    It quits after 3 idle minutes on Macs over 16 GB, 30 s on smaller ones (a dub's sentences, a row of outline clicks reuse
+    the loaded model), and at once when another heavy job takes the queue (ai_slot). A worker that died (or just timed out idle) is
+    restarted once. Every op takes its turn in the heavy-job queue (re-entrant: a voiceover job already holds it)."""
+    with ai_slot(WORKER_KIND.get(op, 'cutout')), WORKER['lock']:
         for again in (False, True):
             p = WORKER['proc']
             if p is None or p.poll() is not None:
                 with open(CACHE / 'ai-worker.log', 'w') as log:
-                    p = WORKER['proc'] = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'worker.py'), '300' if RAM_GB >= 16 else '0'],
+                    p = WORKER['proc'] = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'worker.py'), '180' if RAM_GB > 16 else '30'],
                                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True,
-                                                          env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # only the pinned, checksummed weights (ai/worker.py pinned())
+                                                          env={**AI_ENV, 'HF_HUB_OFFLINE': '1', 'CUTROOM_SMALL': '1' if RAM_GB <= 16 else ''})  # pinned weights only (ai/worker.py pinned()); small: one model at a time
+                    threading.Thread(target=p.wait, daemon=True).start()  # reaped when it quits idle (it left a zombie); a blocked wait, no polling
             WORKER['n'] += 1
             hung = []
             kill = threading.Timer(timeout, lambda: (hung.append(1), p.kill()))
@@ -1548,6 +1676,18 @@ def ai_worker(op, timeout=180, **req):
                 break
         log = (CACHE / 'ai-worker.log').read_text(errors='replace').strip().splitlines()
         raise RuntimeError('the AI worker stopped: ' + (log or ['no output'])[-1][-300:])
+
+
+def worker_stop():
+    """The idle AI worker quits (stdin closed: it exits on EOF), its models' memory back for the next job."""
+    with WORKER['lock']:
+        if (p := WORKER['proc']) and p.poll() is None:
+            p.stdin.close()
+            try:
+                p.wait(5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        WORKER['proc'] = None
 
 
 # ---------- sound effects: synthesized on this Mac, deterministic (no sample packs, nothing downloaded) ----------
@@ -1876,7 +2016,7 @@ def ai_music(st, prompt, dur=20, seed=None):
     if not prompt:
         raise ValueError('describe the music')
     job = {'prompt': prompt, 'dur': fnum(dur, 4, 60), 'seed': None if seed is None else int(fnum(seed, 0, 2 ** 31))}
-    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('music', st, job['dur']), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out, jf = Path(td) / 'music.wav', Path(td) / 'job.json'
         jf.write_text(json.dumps({**job, 'out': str(out)}))
         proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'music.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1904,7 +2044,7 @@ def ai_voice(st, text, voice='af_heart', speed=1.0):
     if not text:
         raise ValueError('nothing to say')
     voice = voice if re.fullmatch(r'[a-z]{2}_[a-z]+', str(voice)) else 'af_heart'
-    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('voice', st, len(text) / 15), tempfile.TemporaryDirectory(prefix='cutroom-') as td:  # ~15 characters a second
         f = Path(td) / 'v.wav'  # Kokoro stays loaded in the AI worker between voiceovers
         try:
             ai_worker('voice', timeout=600, text=text, voice=voice, speed=round(fnum(speed, 0.5, 2), 2), out=str(f))
@@ -1979,7 +2119,7 @@ def ai_clone(st, media, t0, t1, name='', consent=False):
         raise RuntimeError(plain('Reading the speech', r.stderr, r.returncode))
     st['progress'] = 0.1
     try:
-        with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        with ai_slot('clone', st, 14), tempfile.TemporaryDirectory(prefix='cutroom-') as td:  # the check line, ~6 s, said 5 times
             chk = voice_check(ref, td)
     except Exception:
         ref.unlink(missing_ok=True)
@@ -2029,7 +2169,7 @@ def ai_dub(st, voice, lang, items):
     if not its:
         raise ValueError('nothing to dub (make captions first)')
     ref, sr, out = str(VOICES / f'{voice}.wav'), 24000, []
-    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('clone', st, sum(max(0.5, i['e'] - i['s']) for i in its)), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         free = 0.0  # where the previous sentence's speech ended (+ a breath): a sentence never starts before it
         for k, it in enumerate(its):
             start = max(it['s'], free)  # at most ~0.13 s late (the one before may run 0.1 s into this slot)
@@ -2515,12 +2655,11 @@ def ai_image(st, prompt, w=1024, h=1024, seed=None, steps=8, sticker=False):
     model = HOME / 'ai' / 'z-image-turbo-4bit'
     if not (model / 'mflux_model.json').exists():
         raise RuntimeError('the on-device image model is not installed (README: On-device AI)')
-    if RAM_GB < 12:  # the 4-bit model alone is 5.5 GB: on 8 GB it swaps for minutes and stalls the whole Mac
-        raise RuntimeError(f'making images needs a Mac with 16 GB of memory (this one has {RAM_GB:.0f} GB)')
     w, h = (int(fnum(v, 256, 2048)) // 16 * 16 for v in (w, h))
     seed = int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 1000000
     full = prompt + (', isolated on a plain light grey background' if sticker else '')  # a plain backdrop lifts cleanly
-    with AI_LOCK, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    # the 4-bit model alone is 5.5 GB: on 8 GB it swaps for minutes and stalls the whole Mac (AI_BUDGET refuses it there)
+    with ai_slot('image', st, w * h / 1024 ** 2 * int(fnum(steps, 1, 20)) / 8), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'img.png'
         proc = subprocess.Popen([str(AI_BIN / 'mflux-generate-z-image-turbo'), '--model', str(model), '--prompt', full, '--width', str(w), '--height', str(h),
                                  '--steps', str(int(fnum(steps, 1, 20))), '--seed', str(seed), '--output', str(out)],
@@ -2546,7 +2685,7 @@ def lift(mid):
     m = meta(mid)
     if m['kind'] != 'image':
         raise ValueError('subject lifting is for photos; videos use Remove background (people)')
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('matte'), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'cut.png'
         r = sh([build_tool('lift'), str(MEDIA / m['file']), str(out)])
         if r.returncode == 2:
@@ -2560,7 +2699,6 @@ def lift(mid):
 
 OLLAMA = shutil.which('ollama') or '/opt/homebrew/bin/ollama'
 LLM_URL = 'http://127.0.0.1:11434'
-LLM_LOCK = threading.Lock()
 
 
 def ollama_up():
@@ -2583,17 +2721,21 @@ def ollama_up():
     return False
 
 
-LLM_MAX_B = 4 if RAM_GB < 16 else 9 if RAM_GB < 48 else 99  # billions of parameters that fit beside the editor: 9B takes 6.6 GB
-LLM_HINT = 'ollama pull qwen3.5:4b' if RAM_GB < 16 else 'ollama pull qwen3.5:9b'
+LLM_MAX_B = tier('llm')['knobs']['b']  # billions of parameters that fit beside the editor (AI_BUDGET): 9B takes 6.6 GB
+LLM_HINT = f"ollama pull qwen3.5:{tier('llm')['knobs'].get('tag', f'{LLM_MAX_B}b')}"
 
 
 def llm_model():
     names = [m['name'] for m in json.loads(urllib.request.urlopen(LLM_URL + '/api/tags', timeout=3).read()).get('models', [])]
     want = os.environ.get('CUTROOM_LLM')
     size = lambda n: float(b[1]) if (b := re.search(r':(\d+(?:\.\d+)?)b', n)) else 0
-    fit = sorted((n for n in names if size(n) <= LLM_MAX_B), key=size, reverse=True)  # the biggest that fits this Mac's memory
+    # the biggest that fits this Mac's memory; of the same size the Q4 GGUF (qwen3.5:4b is Ollama's nvfp4 MLX build: 4.2 GB, Q4 3.4)
+    fit = sorted((n for n in names if size(n) <= LLM_MAX_B), key=lambda n: (size(n), '-q4' in n), reverse=True)
     pick = [n for n in names if n == want] or [n for n in fit if n.startswith('qwen3.5')] or [n for n in fit if n.startswith('qwen')] or fit
     return pick[0] if pick else None
+
+
+NO_FORMAT = set()  # models Ollama serves without structured output
 
 
 def llm(system, user, ctx=8192, images=None):
@@ -2604,17 +2746,25 @@ def llm(system, user, ctx=8192, images=None):
     model = llm_model()
     if not model:
         raise RuntimeError(f'Ollama has no model that fits this Mac\'s {RAM_GB:.0f} GB of memory: {LLM_HINT}')
-    body = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.2, 'num_ctx': int(ctx)},
-            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user, **({'images': images} if images else {})}]}
+    knobs = tier('llm')['knobs']
+    body = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.2, 'num_ctx': min(int(ctx), knobs['ctx'])},
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user, **({'images': images} if images else {})}],
+            'keep_alive': knobs['keep']}  # unloaded after it (at once on 8-16 GB: the next AI step needs that memory)
     if 'qwen3' in model:
         body['think'] = False
-    if RAM_GB < 16:  # unload right after: Ollama keeps a model in memory for 5 minutes, and the next AI step needs that memory
-        body['keep_alive'] = 0
-    with LLM_LOCK:
-        r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/chat', data=json.dumps(body).encode(),
-                                                                    headers={'Content-Type': 'application/json'}), timeout=900).read())
+    ask = lambda b: json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/chat', data=json.dumps(b).encode(),
+                                                                          headers={'Content-Type': 'application/json'}), timeout=900).read())
+    with ai_slot('llm'):
+        try:
+            r = ask({k: v for k, v in body.items() if k != 'format'} if model in NO_FORMAT else body)
+        except urllib.error.HTTPError as e:  # Ollama 0.40 serves qwen3.5:4b without structured output (501): ask in words, read the JSON out
+            if e.code != 501 or model in NO_FORMAT:
+                raise
+            NO_FORMAT.add(model)  # remembered: each 501 cost a model load
+            r = ask({k: v for k, v in body.items() if k != 'format'})
     try:
-        return json.loads(r['message']['content'])
+        txt = r['message']['content']
+        return json.loads(txt[txt.index('{'):txt.rindex('}') + 1] if '{' in txt else txt)
     except (KeyError, ValueError):
         raise RuntimeError('the local model did not answer in JSON')
 
@@ -2965,7 +3115,7 @@ def speakers(st, items, n=0):
             files[mid] = str(f)
         segs.append([files[mid], *(min(max(fnum(it.get(k, 0), -1e6, 1e6), 0.0), m['duration']) for k in ('s', 'e'))])
     st['progress'] = 0.1
-    with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('speakers', st, sum(s[2] - s[1] for s in segs if s)), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         jf = Path(td) / 'job.json'
         jf.write_text(json.dumps({'model': str(SPK_MODEL), 'segs': segs, 'speakers': int(fnum(n, 0, 12))}))
         r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'diarize.py'), str(jf)], capture_output=True, text=True, env={**AI_ENV, 'HF_HUB_OFFLINE': '1'}, timeout=1800)
@@ -3219,10 +3369,11 @@ def embed(texts, query=False):
     """Text -> unit vectors (nomic-embed-text in Ollama, ~20 ms per query once loaded); None when it is not installed."""
     if not texts or not ollama_up():
         return None
-    body = {'model': EMBED, 'input': [('search_query: ' if query else 'search_document: ') + t[:2000] for t in texts], 'keep_alive': '10m'}
+    body = {'model': EMBED, 'input': [('search_query: ' if query else 'search_document: ') + t[:2000] for t in texts], 'keep_alive': '5m' if RAM_GB > 16 else '1m'}
     try:
-        r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/embed', data=json.dumps(body).encode(),
-                                                                     headers={'Content-Type': 'application/json'}), timeout=300).read())
+        with ai_slot('embed'):
+            r = json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/embed', data=json.dumps(body).encode(),
+                                                                         headers={'Content-Type': 'application/json'}), timeout=300).read())
     except (OSError, ValueError):
         return None
     return [[round(x / (math.sqrt(sum(y * y for y in v)) or 1), 5) for x in v] for v in r.get('embeddings') or []] or None
@@ -3398,8 +3549,8 @@ def png_size(b):
 def clean_plan(p):
     """Validate the client's render plan; media ids resolve to files server-side (the client never sends paths)."""
     W, H = int(fnum(p['w'], 16, 8192)), int(fnum(p['h'], 16, 8192))
-    if W * H > 4096 * 2304 and RAM_GB < 16 and p.get('format') not in SOUND:  # an 8K export of two 4K clips peaked at 5.8 GB (HEVC) to 9.2 GB (x264)
-        raise ValueError(f'an export above 4K needs a Mac with 16 GB of memory (this one has {RAM_GB:.0f} GB): choose 4K')
+    if W * H > 4096 * 2304 and p.get('format') not in SOUND and 'refused' in (t := tier('export8k')):  # an 8K export of two 4K clips peaked at 5.8 GB (HEVC) to 9.2 GB (x264)
+        raise ValueError(t['refused'] + ': choose 4K')
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')), 'lufs': p.get('lufs') if p.get('lufs') in LUFS else -14,
@@ -4382,7 +4533,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         enc, pf = ['-c:v', 'libvpx-vp9', '-b:v', kb(0.6, 1200), '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1', *(['-auto-alt-ref', '0'] if A else []),
                    '-c:a', 'libopus', '-b:a', '160k'], 'yuva420p' if A else 'yuv420p'
     elif p['quality'] == 'best' or max(W, H) > 4096:  # the media engine's H.264 stops at 4096 px (8K = error -12903): x264 there
-        enc = ['-c:v', 'libx264', '-preset', 'medium' if p['quality'] == 'best' else 'veryfast', *(['-threads', '8'] if max(W, H) > 4096 else []),  # 8K: 12.5 -> 9.2 GB, 8 % slower
+        enc = ['-c:v', 'libx264', '-preset', 'medium' if p['quality'] == 'best' else 'veryfast',  # FF_THREADS (8 at most): 8K took 12.5 -> 9.2 GB, 8 % slower
                *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
         enc = ['-c:v', 'h264_videotoolbox', *vt('h264'), '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
@@ -4391,8 +4542,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
     gf = Path(td) / f'graph{len(list(Path(td).glob("graph*.txt")))}.txt'
     gf.write_text(fg)
-    return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *ins, '-/filter_complex', str(gf),
-             *vmap, *amap, *enc, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
+    return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-filter_complex_threads', FF_THREADS,
+             *ins, '-/filter_complex', str(gf), *vmap, *amap, *enc, '-threads', FF_THREADS, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
             + (['-movflags', '+faststart'] if FORMATS[fmt] in ('.mp4', '.m4a') and not intermediate else []) + [str(out)])
 
 
@@ -4508,7 +4659,9 @@ def export(job, p):
     try:
         if p.get('format') == 'png' and not p.get('library'):
             p = still_cut(p)
-        with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        px = p['w'] * p['h'] if p.get('format') not in (*SOUND, 'png') else 0  # above 1440p: a heavy job, one at a time with the AI ones
+        big = 'export8k' if px > 4096 * 2304 else 'export' if px > 2560 * 1440 else None
+        with ai_slot(big, st, p['duration']) if big else contextlib.nullcontext(), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
             F, main = p['fps'], p['main']
             chunks = [main[i:i + CHUNK] for i in range(0, len(main), CHUNK)] if len(main) > CHUNK else []
             steps = len(chunks) + 1
@@ -4694,6 +4847,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(m)
             if path == '/api/ai/status':
                 return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
+            if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
+                return self.reply(caps())
             if path == '/api/remote/status':
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
@@ -4968,6 +5123,8 @@ class App(BaseHTTPRequestHandler):
                     JOBS[m[1]]['cancel'] = True
                     if pr := PROCS.get(m[1]):
                         pr.kill()
+                    with HEAVY['cv']:  # one still waiting in the heavy-job queue leaves it
+                        HEAVY['cv'].notify_all()
                 return self.reply({'ok': True})
             if u.path == '/api/export':
                 p, job = clean_plan(body), uuid.uuid4().hex[:12]
@@ -5083,6 +5240,37 @@ def selftest():
     assert not (fx_ok('elf+sv') or fx_ok('dn+sv') or fx_ok('elf+cave') or fx_ok('sv+sv') or fx_ok('x') or fx_ok('dn+'))
     assert clip_fx({'studio': True, 'denoise': True, 'au': {'voice': 'giant'}}, {'hasAudio': True}) == 'sv+giant'
     assert clip_fx({'au': {'voice': 'robot'}}, {'hasAudio': True}) == '' and pack_name('impactWood_medium_003') == 'Impact wood medium 3'
+    # the heavy-job queue: one at a time, in order, the waiting one says so; a job's own nested steps don't wait behind it
+    go, order, sb = threading.Event(), [], {}
+    def first():
+        with ai_slot('embed'):
+            with ai_slot('llm'):  # re-entrant (dubbing asks the model for shorter lines inside its own turn)
+                order.append('a')
+            go.wait(5)
+    def second():
+        with ai_slot('embed', sb):
+            order.append('b')
+    ta = threading.Thread(target=first)
+    ta.start()
+    while HEAVY['run'] is None:
+        time.sleep(0.01)
+    tb = threading.Thread(target=second)
+    tb.start()
+    for _ in range(200):
+        if sb.get('note'):
+            break
+        time.sleep(0.01)
+    assert sb.get('note') == 'Waiting for Smart search (1 ahead)' and order == ['a'], (sb, order)
+    go.set()
+    ta.join(5)
+    tb.join(5)
+    assert order == ['a', 'b'] and 'note' not in sb and HEAVY['run'] is None and not HEAVY['line'], (order, sb, HEAVY)
+    if RAM_GB < 12:
+        try:
+            with ai_slot('image'):
+                raise AssertionError('an 8 GB Mac must refuse image generation')
+        except RuntimeError as e:
+            assert 'needs a Mac with 12 GB' in str(e)
     # language-model features with a stub model: picks snap to sentence edges, padding stops halfway into a pause,
     # overlapping / malformed picks are dropped, two-clause titles keep the first clause, translations keep the line count
     # command bar: 'each' never multiplies steps the model listed itself, nor overrides a clip or time the user named

@@ -8,13 +8,15 @@ loaded between requests. Starting a process per outline click reloaded SAM 2 eve
     {"id": n, "op": "clone", "text", "ref", "lang", "out"}    -> {"id": n, "result": {"sr"}}  (Chatterbox voice clone)
     {"id": n, "op": "embed", "files": [raw s16 16k, ...]}     -> {"id": n, "result": {"sims"}} (speaker cosine vs files[0])
     any failure                                              -> {"id": n, "error": "..."}
-Exits after <idle> seconds without a request (0 = after each answer: a Mac under 16 GB needs that memory back), or when
+Exits after <idle> seconds without a request (0 = after each answer), when the server closes stdin (another heavy job
+needs the memory: server.py worker_stop), or when
 the server goes (stdin closes). Model output and warnings go to stderr: stdout carries only the answers.
 """
 import json
 import os
 import select
 import sys
+from pathlib import Path
 
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
 out = os.fdopen(os.dup(1), 'w', buffering=1)
@@ -24,11 +26,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import remove  # noqa: E402
 
 models = {}
+SMALL = os.environ.get('CUTROOM_SMALL') == '1'  # an 8-16 GB Mac (server.py): one model in memory at a time, Chatterbox in bf16
+
+
+def small_mlx():
+    """Small Mac: MLX keeps at most 256 MB of freed buffers for reuse (it held every step's activations: Chatterbox 4.7 GB peak)."""
+    if SMALL:
+        import mlx.core as mx
+        mx.set_cache_limit(256 << 20)
+
+
+def bf16_copy(src):
+    """A bfloat16 copy of a pinned (already checksummed) MLX model folder, made once in vendor/: loading it peaks at half the
+    float32 file, where loading float32 and casting peaked at 5 GB."""
+    import mlx.core as mx
+    dst = Path(__file__).resolve().parent / 'vendor' / (Path(src).parent.parent.name + '-bf16')
+    if not (dst / 'model.safetensors').exists():
+        tmp = dst.with_name(dst.name + '.tmp')
+        tmp.mkdir(parents=True, exist_ok=True)
+        for f in Path(src).iterdir():
+            if f.name != 'model.safetensors' and not (tmp / f.name).exists():
+                (tmp / f.name).symlink_to(f.resolve())
+        w, meta = mx.load(str(Path(src) / 'model.safetensors'), return_metadata=True)
+        mx.save_safetensors(str(tmp / 'model.safetensors'), {k: v.astype(mx.bfloat16) if v.dtype == mx.float32 else v for k, v in w.items()}, metadata=meta)
+        del w
+        tmp.replace(dst)
+    return str(dst)
+
+
+def only(name):
+    """On a small Mac, drop every other loaded model before this one loads: a clone check loads Chatterbox, Kokoro and WavLM
+    in turn, and all three at once peaked at 6.1 GB (an 8 GB Mac has about 4 for AI)."""
+    if not SMALL or set(models) <= {name}:
+        return
+    import gc
+    for k in [k for k in models if k != name]:
+        del models[k]
+    gc.collect()
+    if 'mlx.core' in sys.modules:
+        sys.modules['mlx.core'].clear_cache()
+    if 'torch' in sys.modules and sys.modules['torch'].backends.mps.is_available():
+        sys.modules['torch'].mps.empty_cache()
 
 
 def voice(req):
     from mlx_audio.tts.generate import generate_audio
     from mlx_audio.tts.utils import load_model
+    only('kokoro')
+    small_mlx()
     if 'kokoro' not in models:
         models['kokoro'] = load_model(model_path=KOKORO)
     base = req['out'][:-4]
@@ -72,9 +117,12 @@ def clone(req):
     import wave
     import numpy as np
     from mlx_audio.tts.utils import load_model
+    only('clone')
+    small_mlx()
     if 'clone' not in models:
         pinned(*S3TOK, main=True)  # mlx-audio loads it as snapshot_download('mlx-community/S3TokenizerV2'): no revision
-        models['clone'] = load_model(model_path=pinned(*CLONE))
+        d = pinned(*CLONE)  # small Mac: its bfloat16 copy (3.5 GB peak, not 6.1; the clone still beats every stock voice: tests/allmacs.mjs)
+        models['clone'] = load_model(model_path=bf16_copy(d) if SMALL else d)
     m = models['clone']
     a = np.concatenate([np.array(r.audio) for r in m.generate(req['text'], ref_audio=req['ref'], lang_code=req['lang'], verbose=False,
                                                               cfg_weight=req.get('cfg', 0.5), exaggeration=req.get('exag', 0.1))])
@@ -91,6 +139,7 @@ def embed(req):
     import numpy as np
     import torch
     from transformers import AutoFeatureExtractor, WavLMForXVector
+    only('wavlm')
     if 'wavlm' not in models:
         d = pinned(*WAVLM)
         net = WavLMForXVector.from_pretrained(d)

@@ -3181,7 +3181,7 @@ async function job(path, body, label, say = setStatus) { // start a server job a
   if (key) running.add(key);
   busy(1);
   const t0 = performance.now();
-  let last = -1, still = t0;
+  let last = -1, still = t0, warned = false;
   try {
     const { job: id } = await api(path, body);
     for (;;) {
@@ -3191,7 +3191,10 @@ async function job(path, body, label, say = setStatus) { // start a server job a
       if (j.state !== 'running') throw new Error(j.error || `${label} failed`); // already one plain sentence
       const pct = Math.round((j.progress || 0) * 100), secs = Math.round((performance.now() - t0) / 1000);
       if (pct !== last) { last = pct; still = performance.now(); }
-      say(pct && performance.now() - still < 1000 ? `${label}… ${pct}%` : `${label}… ${secs} s`); // a step without progress steps (a model loading) still shows it's alive
+      const eta = j.eta >= 20 ? ` · about ${aboutSecs(j.eta)} on this Mac` : ''; // the server's estimate (AI_BUDGET), from the start
+      if (j.eta >= 60 && !warned) { warned = true; toast(`${label} takes about ${aboutSecs(j.eta)} on this Mac`); } // a long one says so up front
+      if (j.note) say(`${label}: ${j.note}… ${secs} s`); // queued: heavy jobs run one at a time on every Mac
+      else say((pct && performance.now() - still < 1000 ? `${label}… ${pct}%` : `${label}… ${secs} s`) + eta); // a step without progress steps (a model loading) still shows it's alive
     }
   } finally { busy(-1); running.delete(key); }
 }
@@ -4301,7 +4304,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       if (j.state === 'cancelled') { S.exporting = null; exportUI(0, 'Export cancelled.'); tell('Export cancelled'); break; }
       if (j.state !== 'running') throw new Error(j.error || 'The export failed');
       S.exporting.pct = pct;
-      exportUI(pct, `Rendering… ${pct}%`);
+      exportUI(pct, j.note ? `${esc(j.note)}…` : `Rendering… ${pct}%${j.eta >= 20 ? ` · about ${aboutSecs(j.eta)} on this Mac` : ''}`); // big exports queue with the AI jobs
     }
   } catch (e) { S.exporting = null; exportUI(0, `Export failed: ${esc(e.message)}`); tell(`Export failed: ${e.message}`); }
   finally { if (S.exporting) { S.exporting = null; exportUI(0); } }
@@ -5598,6 +5601,21 @@ async function loadAI() { // fill the AI tab from what is installed
   G.ai = s; $('#btnMusic').disabled = !s.music;
   if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
   renderMediaList();
+  loadCaps().catch(() => {});
+}
+const aboutSecs = s => s < 1 ? `${s.toFixed(s < 0.1 ? 2 : 1)} s` : s < 90 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`;
+async function loadCaps() { // AI tab > This Mac: what each AI job runs at here (server.py AI_BUDGET), or why it can't
+  const c = await api('/api/ai/caps'), el = (tag, text, cls) => { const e = document.createElement(tag); e.textContent = text; if (cls) e.className = cls; return e; };
+  $('#macSum').textContent = `${c.ram} GB memory · ${c.cores} CPU cores · ${c.gpu} GPU cores. ${c.queue[0].toUpperCase()}${c.queue.slice(1)}; exports use up to ${c.threads} CPU threads. `
+    + (c.running ? `Now: ${c.running}${c.waiting ? `, ${c.waiting} waiting` : ''}. ` : '')
+    + (c.fake ? `Simulated on a ${c.real} GB Mac: the sizes are that smaller Mac's; the times are estimates scaled by GPU cores.` : 'Times are estimates for an idle Mac.');
+  $('#macCaps').replaceChildren(...c.jobs.map(j => {
+    const row = el('div', '', j.refused ? 'mc off' : 'mc');
+    row.dataset.cap = j.kind;
+    row.append(el('b', j.what), ...(j.refused ? [el('span', `Not on this Mac: ${j.refused.replace(/^.*? needs/, 'needs')}`)]
+      : [el('span', j.size + (j.smaller ? ' (smaller on this Mac)' : '')), el('span', `up to ${j.gb} GB · about ${aboutSecs(j.rate)} per ${j.unit.replace(/^s of /, 'second of ')}`)]));
+    return row;
+  }));
 }
 
 // ---------- remote control: Claude Code drives this editor through the Cutroom MCP server ----------

@@ -62,9 +62,8 @@ one for testing). `tests/perf_heavy.mjs` measures import, playback, seeking and 
   undo, tabs, zoom). On the 16-shot 4K60 night-drive edit: 59 of 60 frames a second with no stall over 100 ms; every
   interaction without a frame over 50 ms. The ruler's ticks were a CSS repeating gradient, which WebKit repaints
   stripe by stripe: after playback, zooming the timeline froze for 0.6-1.5 s at a time. They're an SVG pattern now.
-- **On-device AI** picks the language model that fits (qwen3.5:4b below 16 GB, 9b above) and unloads it right after
-  on small Macs; image generation needs 12 GB or more (setup skips its download below that); ProPainter starts at
-  512 px in smaller batches below 16 GB.
+- **On-device AI and big exports** follow one budget table (`AI_BUDGET` in `server.py`, measured below in "Every Mac")
+  and run one at a time on every Mac (the heavy-job queue).
 
 Measured on this M4 Max (14 cores, 36 GB) with synthetic camera files: a DJI-style 4K60 100 Mbit/s H.264 clip (30 s),
 an iPhone-style 4K60 10-bit HLG HEVC clip (30 s), 4K30 ProRes 422 HQ (10 s) and a 10-minute 1080p30 file. "Small-Mac
@@ -80,6 +79,62 @@ and CPU shares are what carry over.
 | Export all four back to back (11 min) at 1080p30 | 59 s, 7.3 cores, 1.5 GB | 62 s, 6.6 cores, 1.3 GB | 71 s, 5.2 cores, 0.7 GB |
 | Export 40 cuts of 4K + a 4K overlay at 1080p | 4.5 GB peak | 4.5 GB, 28 s | 1.3 GB, 40 s |
 | Edit a 1,200-clip timeline (one change) | 116 ms | 6 ms | 6 ms |
+
+## Every Mac: AI and heavy jobs
+
+Cutroom runs on any Apple Silicon Mac from 8 GB up, nothing in the cloud and no PC needed. One table in `server.py`
+(`AI_BUDGET`) says, for every AI or heavy job, what it runs at on each size of Mac and how much memory that takes; a Mac
+too small for a job refuses it with the reason. The AI tab's **This Mac** panel lists the same (`/api/ai/caps`), and a
+job that will take a minute or more says roughly how long when it starts.
+
+- **One heavy job at a time, on every Mac.** AI models (MPS, MLX, Metal whisper, Ollama, Vision) and exports above
+  1440p take turns in one queue; the next waits and says so ("Waiting for AI music (1 ahead)"), the MCP included. Two
+  GPU jobs at once had this 36 GB Mac's GPU at 100 % with the fans flat out. Export encoders and filters get at most
+  8 CPU threads (cores - 2).
+- **Nothing stays loaded when idle.** The AI worker (SAM 2 outline, Kokoro, Chatterbox, WavLM, relight preview) exits
+  after 30 s idle on 8-16 GB (3 min above) and at once when another kind of heavy job starts; on 8-16 GB it holds one
+  model at a time. Ollama models unload right after each answer on 8-16 GB (3 min above). No timers poll while idle.
+- **Smaller Macs get smaller settings**: see the table. GPU memory is capped per job (PyTorch's watermark: half the
+  memory on 8-16 GB, 0.45 of the GPU working set above), so a job that needs more fails fast instead of swapping.
+
+`tests/allmacs.mjs` runs every job's API once on servers that act as 8 and 16 GB Macs (`CUTROOM_RAM_GB`,
+`CUTROOM_CORES=8`), one job at a time (it waits for the GPU to sit under 20 % for 10 s before each), with tiny
+fixtures (1-10 s clips), and holds each job to its budget and to what that Mac has for AI (memory - 4 GB), with no
+pageouts. Peak = the most the job's processes (and Ollama's loaded model) held at once, GPU memory included.
+These run on this M4 Max: the memory is the smaller Mac's choice, the seconds are this Mac's.
+
+| Job (test fixture) | 8 GB: runs as | peak | s | 16 GB: runs as | peak | s | 24-36+ GB runs as (budget) |
+|---|---|---|---|---|---|---|---|
+| proxy4k (2 s 4K60) | 720p H.264, media engine (VideoToolbox) | 0.2 GB | 1.4 | 720p H.264, media engine (VideoToolbox) | 0.1 GB | 1.4 | 720p H.264, media engine (VideoToolbox) (1.0 GB) |
+| image (1024², 2 steps) | refused: 12 GB of memory |  |  | Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps | 8.1 GB | 15 | Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps (9.0 GB) |
+| voice (1 sentence) | Kokoro-82M bf16 (MLX) | 1.9 GB | 3.9 | Kokoro-82M bf16 (MLX) | 2.0 GB | 3.5 | Kokoro-82M bf16 (MLX) (2.0 GB) |
+| voice clone (8 s of speech + check) | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check | 2.7 GB | 9.7 | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check | 2.7 GB | 11.8 | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check (3.5 GB) |
+| dubbing (2 lines, Spanish) | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check | 3.0 GB | 6.4 | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check | 3.0 GB | 6.4 | Chatterbox multilingual (MLX; bf16 copy on 8-16 GB) + WavLM check (3.5 GB) |
+| captions (10 s) | whisper.cpp large-v3-turbo (Metal) + Silero VAD | 0.9 GB | 1.8 | whisper.cpp large-v3-turbo (Metal) + Silero VAD | 0.9 GB | 1.8 | whisper.cpp large-v3-turbo (Metal) + Silero VAD (1.5 GB) |
+| isolate (10 s) | Demucs htdemucs (MPS) | 2.0 GB | 2.8 | Demucs htdemucs (MPS) | 2.0 GB | 3.2 | Demucs htdemucs (MPS) (2.5 GB) |
+| remove (2 s 1080p) | SAM 2.1 small outline + aligned copy / exemplar fill (no ProPainter: 5 GB) | 2.9 GB | 84.3 | SAM 2.1 small + ProPainter 512 px, 20-frame batches | 9.5 GB | 49.6 | SAM 2.1 small + ProPainter 720 px, 40-frame batches (12.0 GB) |
+| remove fast (2 s 1080p) | Vision tracking + OpenCV (no model) | 1.4 GB | 115.6 | the same | 1.4 GB | 117 | the same |
+| cutout (2 s 1080p) | SAM 2.1 small bf16 (MPS) | 2.8 GB | 12.2 | SAM 2.1 small bf16 (MPS) | 2.8 GB | 12.2 | SAM 2.1 small bf16 (MPS) (3.0 GB) |
+| outline preview (1 frame) | SAM 2.1 small bf16 (MPS) | 2.1 GB | 2.1 | SAM 2.1 small bf16 (MPS) | 2.1 GB | 2.1 | SAM 2.1 small bf16 (MPS) (3.0 GB) |
+| interp (1 s 1080p, 4x) | RIFE 4.25 fp16 (MPS), one in-between frame at a time | 2.7 GB | 7.1 | RIFE 4.25 fp16 (MPS), one in-between frame at a time | 2.7 GB | 7.2 | RIFE 4.25 fp16 (MPS), all in-between frames at once (2.0 GB) |
+| upscale (1 s 540p, 2x) | Real-ESRGAN x4v3 fp16, 256 px tiles | 1.5 GB | 6 | Real-ESRGAN x4v3 fp16, 480 px tiles | 1.5 GB | 5 | Real-ESRGAN x4v3 fp16, 480 px tiles (3.0 GB) |
+| upscale to 8K (0.25 s 4K, 2x) | refused: 16 GB of memory |  |  | HEVC / x264 8K, 8 encoder threads | 7.5 GB | 32.8 | HEVC / x264 8K, 8 encoder threads (9.2 GB) |
+| relight (1 s 1080p) | Depth Anything V2 Small fp16 (MPS) | 1.9 GB | 4.9 | Depth Anything V2 Small fp16 (MPS) | 1.9 GB | 5.3 | Depth Anything V2 Small fp16 (MPS) (2.0 GB) |
+| music (8 s) | MusicGen small, fp16 copy loaded straight to the GPU | 2.3 GB | 7.4 | MusicGen small, fp16 copy loaded straight to the GPU | 2.3 GB | 7.1 | MusicGen small, fp16 copy loaded straight to the GPU (2.5 GB) |
+| hooks (llm) (10 s talk) | qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once | 3.1 GB | 2.3 | qwen3.5:9b (Ollama, Q4), unloaded at once | 4.7 GB | 4.4 | qwen3.5:9b (Ollama, Q4), unloaded after 3 idle min (8.0 GB) |
+| translate (llm) (2 lines) | qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once | 3.1 GB | 1.8 | qwen3.5:9b (Ollama, Q4), unloaded at once | 4.7 GB | 2.1 | qwen3.5:9b (Ollama, Q4), unloaded after 3 idle min (8.0 GB) |
+| command bar (llm) (1 instruction) | qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once | 3.1 GB | 6.1 | qwen3.5:9b (Ollama, Q4), unloaded at once | 5.0 GB | 10.3 | qwen3.5:9b (Ollama, Q4), unloaded after 3 idle min (8.0 GB) |
+| search (embed) (1 query; nothing indexed, so no model ran) | nomic-embed-text v1.5 (Ollama) | - | 0.3 | nomic-embed-text v1.5 (Ollama) | - | 0.3 | nomic-embed-text v1.5 (Ollama) (0.6 GB) |
+| speakers (3 x 3 s) | WavLM base plus SV (MPS) | 0.5 GB | 3.6 | WavLM base plus SV (MPS) | 0.5 GB | 3.6 | WavLM base plus SV (MPS) (1.0 GB) |
+| remove background (1 s 720²) | Vision person segmentation (ANE) | 0.3 GB | 1.8 | Vision person segmentation (ANE) | 0.3 GB | 1.8 | Vision person segmentation (ANE) (1.0 GB) |
+| find faces (2 s 720²) | Vision faces / saliency (ANE) | 0.3 GB | 0.7 | Vision faces / saliency (ANE) | 0.3 GB | 0.7 | Vision faces / saliency (ANE) (0.5 GB) |
+| retouch (1 s 720²) | Vision landmarks + OpenCV | 0.3 GB | 0.7 | Vision landmarks + OpenCV | 0.5 GB | 2.2 | Vision landmarks + OpenCV (1.0 GB) |
+| track (2 s 1080p) | OpenCV corners (CPU), Vision fallback | 0.3 GB | 1.1 | OpenCV corners (CPU), Vision fallback | 0.0 GB | 1 | OpenCV corners (CPU), Vision fallback (0.6 GB) |
+| beats (10 s) | onset envelope (NumPy, CPU) | 0.0 GB | 0.3 | onset envelope (NumPy, CPU) | 0.0 GB | 0.3 | onset envelope (NumPy, CPU) (0.3 GB) |
+| export 4K (1 s) | VideoToolbox / x264, CPU threads capped | 0.2 GB | 1 | VideoToolbox / x264, CPU threads capped | 0.2 GB | 1 | VideoToolbox / x264, CPU threads capped (3.0 GB) |
+| export 8K (1 s) | refused: 16 GB of memory |  |  | HEVC / x264 8K, 8 encoder threads | 4.0 GB | 1.8 | HEVC / x264 8K, 8 encoder threads (9.2 GB) |
+
+Queue (both sizes): AI music and a voiceover sent together: the voiceover waited ("Waiting for AI music (1 ahead)") and ran after it. Idle (both sizes): the server and an open editor page, 60 s untouched after the jobs: server 0.02 % CPU, page (5 WebKit processes) 0.07-0.10 % CPU, no AI or model process left, GPU 0 % added. Remove object, Fast takes ~2 min on this 2 s 1080p fixture on every size (OpenCV exemplar synthesis, CPU); Best on 8 GB uses that fill too, with SAM 2's outline.
 
 ## Features
 

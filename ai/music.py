@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import wave
+from pathlib import Path
 
 os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')  # before torch loads: the rare op the GPU lacks runs on the CPU
 os.environ['TQDM_DISABLE'] = '1'
@@ -17,6 +18,7 @@ import torch
 from transformers import AutoProcessor, LogitsProcessor, MusicgenForConditionalGeneration
 
 MODEL, SR, FPS = 'facebook/musicgen-small', 32000, 50  # 50 audio tokens per second
+FP16 = Path(__file__).resolve().parent / 'vendor' / 'musicgen-small-fp16'
 
 
 def say(p):
@@ -34,6 +36,19 @@ class Progress(LogitsProcessor):  # called once per generated step: progress for
         return scores
 
 
+def load(dev):
+    """MusicGen in half precision, loaded straight onto the GPU from a half-precision copy (FP16, made once from the hub's
+    float32 file): 2.4 GB peak for 8 s of music instead of 4.2-4.5 (reading the 2.4 GB float32 file and casting it took the
+    rest), so it fits the ~4 GB an 8 GB Mac has for AI."""
+    if dev.type != 'mps':
+        return MusicgenForConditionalGeneration.from_pretrained(MODEL)
+    if not (FP16 / 'model.safetensors').exists():
+        tmp = FP16.with_name(FP16.name + '.tmp')
+        MusicgenForConditionalGeneration.from_pretrained(MODEL, torch_dtype=torch.float16).save_pretrained(tmp)
+        tmp.replace(FP16)
+    return MusicgenForConditionalGeneration.from_pretrained(FP16, torch_dtype=torch.float16, device_map='mps')
+
+
 def main(path):
     job = json.load(open(path))
     dur = float(min(60.0, max(4.0, job['dur'])))
@@ -41,7 +56,7 @@ def main(path):
         torch.manual_seed(int(job['seed']))
     dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     proc = AutoProcessor.from_pretrained(MODEL)
-    model = MusicgenForConditionalGeneration.from_pretrained(MODEL).to(dev)
+    model = load(dev)
     say(0.05)
     out, keep, plan, made = np.zeros(0, np.float32), 10.0, [], 0.0  # continuation: the last 10 s condition the next part
     while made < dur - 0.01:  # 30 s, then 20 s more per continuation
@@ -71,6 +86,8 @@ def main(path):
             out = np.concatenate([out, new])
         done += step
     out = out[:int(dur * SR)]
+    if not np.isfinite(out).all() or float(np.abs(out).max()) < 1e-4:
+        raise RuntimeError('the music model made no sound (numeric overflow): try again')
     n_in, n_out = min(len(out), int(0.03 * SR)), min(len(out), int(min(2.0, dur / 4) * SR))  # soft start, a real ending
     out[:n_in] *= np.linspace(0, 1, n_in, dtype=np.float32)
     out[-n_out:] *= np.linspace(1, 0, n_out, dtype=np.float32) ** 1.5
