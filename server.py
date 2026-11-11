@@ -4054,6 +4054,26 @@ def graph(p, td):
         f = c.get('sfps') or 0
         return math.floor(c['in'] * f + 1e-6) / f if f and c['kind'] != 'image' else c['in']
 
+    def gpu_size(c):
+        """'w=..:h=..' for scale_vt when a clip lands on the canvas well under its own size and nothing in its chain counts
+        source pixels (blur, sharpen, mosaic, skin, masks, keyframed size): the frame at the size it is shown, in stored
+        orientation. '' = leave it full size. Not for cropped clips: the crop then falls between pixels and the picture is
+        resampled twice (32 dB against the full-size path; an uncropped clip matches it at 46 dB)."""
+        g = c.get('geom')
+        if not c.get('hdr') or not g or not c.get('mw') or c.get('kf') or any((c.get('crop') or {}).values()) or any(c.get(k) for k in ('blur', 'sharp', 'pix', 'beauty', 'mask', 'mask_seq', 'key', 'vig', 'glow')):
+            return ''
+        f = g['w'] / c['mw']  # canvas pixels per source pixel
+        if f > 0.75:
+            return ''
+        w, h = max(2, even(c['mw'] * f)), max(2, even(c['mh'] * f))
+        return f'w={h}:h={w}' if c.get('rot', 0) % 180 else f'w={w}:h={h}'
+
+    def exact(c):
+        """Flags for the scale that sizes a clip. Where the frame is already that size (a GPU-shrunk clip, or a clip as big
+        as its place on the canvas) the filter only converts to RGB, and swscale's plain same-size converter comes out about
+        2 levels dark (89 for 91, on stills and every RGB-path export): accurate rounding there, like the converters ffmpeg inserts itself."""
+        return ':flags=bicubic+accurate_rnd+full_chroma_int' if gpu_size(c) or c.get('mw') and abs(c['geom']['w'] - c['mw']) < 3 else ''
+
     def video(i, c, n):  # tone-mapped, retimed, exactly n frames, cropped, flipped, adjusted, graded
         sp = 1 if c['kind'] == 'image' else c['speed']
         v = f'[{i}:v]'
@@ -4062,7 +4082,8 @@ def graph(p, td):
             # (looks, colour, keys, rotation) still read the frames as BT.601 and shift every colour a look touches
             v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,'
         if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709, or kept as 10-bit HDR; rotation by hand since autorotate can't touch hw frames
-            v += 'hwdownload,format=p010le,format=yuv420p10le,' if hdr else VT_SDR
+            pre = gpu_size(c)  # 4K into a 1080p canvas: shrunk on the GPU, so the CPU never sees the 4K frames
+            v += (f'scale_vt={pre},' if pre else '') + 'hwdownload,format=p010le,format=yuv420p10le,' if hdr else VT_SDR.replace('scale_vt=', f'scale_vt={pre}:', 1) if pre else VT_SDR
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
         # round=up: each output frame shows the last source frame at or before its time, as the preview's <video> does
         # (nearest put 59.94 fps footage in a 60 fps project one frame early for half of every 16.7 s)
@@ -4218,7 +4239,7 @@ def graph(p, td):
                     f"'({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2'",
                     f"'({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2':eval=frame")
         sw, sh = max(2, even(Ew * g['w'] / mw)), max(2, even(Eh * g['w'] / mw))
-        return f',scale={sw}:{sh}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
+        return f',scale={sw}:{sh}{exact(c)}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
 
     def joined(a, b):  # b carries on a's sound: same file, speed and level, from where a stops, with no transition between
         return (all(a.get(x) == b.get(x) for x in ('path', 'speed', 'volume', 'au', 'pitch', 'denoise', 'studio')) and not a.get('vkf') and not b.get('vkf')
@@ -4247,7 +4268,7 @@ def graph(p, td):
         else:
             cx, cy = max(0, -x), max(0, -y)
             cw, ch = min(w - cx, W - max(0, x)), min(h - cy, H - max(0, y))
-            v += (',format=gbrap' if A else '') + (f',scale={w}:{h},crop={cw}:{ch}:{cx}:{cy},pad={W}:{H}:{max(0, x)}:{max(0, y)}:color={BG}' if cw >= 2 and ch >= 2
+            v += (',format=gbrap' if A else '') + (f',scale={w}:{h}{exact(c)},crop={cw}:{ch}:{cx}:{cy},pad={W}:{H}:{max(0, x)}:{max(0, y)}:color={BG}' if cw >= 2 and ch >= 2
                   else f',scale={W}:{H},' + ('colorchannelmixer=aa=0' if A else f'drawbox=c={BG}:t=fill'))  # dragged fully off-canvas
         fa = ':alpha=1' if A else ''  # on a transparent background a fade fades to clear (the preview shows the checkerboard through it)
         if c['fadeIn']:
