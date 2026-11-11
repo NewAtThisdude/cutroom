@@ -3,6 +3,8 @@
 set -eu
 cd "$(dirname "$0")"
 APP="$HOME/Applications/Cutroom.app"
+REPO="$(cd .. && pwd)"
+PYTHON="$(command -v python3)"
 BIN="$(mktemp -d)/Cutroom"
 
 swiftc -O -target arm64-apple-macos14.0 Cutroom.swift -o "$BIN" # fails before the old bundle is touched
@@ -41,6 +43,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
+/usr/libexec/PlistBuddy -c "Add :CutroomRepo string $REPO" -c "Add :CutroomPython string $PYTHON" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --deep -s - "$APP"
 # Re-read the new Info.plist (the old stub was LSUIElement) and icon.

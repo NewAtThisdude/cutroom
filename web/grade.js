@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Colour grading and the GPU colour pipeline, loaded before app.js (uses its globals only inside functions).
 // A clip's grade (colour wheels, curves, HSL, an imported .cube LUT) is baked into one 33-point 3D LUT. The preview
 // applies it on the GPU (WebGL2, with the clip's brightness/contrast/saturation, tone curve, look matrix, filter

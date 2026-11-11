@@ -40,7 +40,7 @@ A few optional models are for non-commercial use only; they are marked there and
   through the render paths and checks the results pixel by pixel.
 - `CUTROOM_PORT` and `CUTROOM_HOME` (the library folder) work for the app, the launcher and the server;
   `CUTROOM_MODEL` points captions at another whisper ggml model.
-- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [MIT](LICENSE).
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [GPL v3 or later](LICENSE): free to use, change and share; versions you distribute stay open under the same terms.
 
 Data lives in `~/Movies/Cutroom/`:
 - `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)

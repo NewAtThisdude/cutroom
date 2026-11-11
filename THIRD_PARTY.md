@@ -1,6 +1,6 @@
 # Third-party software, models and assets
 
-Cutroom's own code is MIT (see LICENSE). It ships very little that isn't its own; most of what is listed here is
+Cutroom's own code is licensed under the GNU General Public License v3.0 or later (see LICENSE). It ships very little that isn't its own; most of what is listed here is
 downloaded by `install.sh`, `ai/setup.sh` or the app on first use, each at a pinned version with a SHA-256 check.
 Nothing here is needed to cut, grade, caption-edit or export; the optional AI tools are what pull the models.
 

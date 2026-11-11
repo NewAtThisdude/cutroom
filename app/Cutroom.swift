@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cutroom.app: a native window (AppKit + WKWebView) around Cutroom's local server.
-// If nothing answers on the port it starts ~/cutroom/server.py (again, if it ever dies), and on quit it stops only a server it started.
+// If nothing answers on the port it starts this checkout's server.py (again, if it ever dies), and on quit it stops only a server it started.
 // Build: app/build.sh -> ~/Applications/Cutroom.app
 import AppKit
 import PhotosUI
@@ -25,8 +26,12 @@ func startServer() -> Process? {
     let log = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    p.arguments = ["-u", "PYTHONPATH", "/opt/homebrew/bin/python3", "-I", NSHomeDirectory() + "/cutroom/server.py"]
-    p.environment = env.merging(["PATH": "/opt/homebrew/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")]) { $1 } // ffmpeg, whisper-cli, swiftc
+    // build.sh writes where this checkout and its python3 are into Info.plist (the app works from any folder, any Homebrew prefix)
+    let info = Bundle.main.infoDictionary ?? [:]
+    let repo = info["CutroomRepo"] as? String ?? NSHomeDirectory() + "/cutroom"
+    let python = info["CutroomPython"] as? String ?? "/opt/homebrew/bin/python3"
+    p.arguments = ["-u", "PYTHONPATH", python, "-I", repo + "/server.py"]
+    p.environment = env.merging(["PATH": (python as NSString).deletingLastPathComponent + ":/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")]) { $1 } // ffmpeg, whisper-cli, swiftc
     p.standardInput = FileHandle.nullDevice
     p.standardOutput = log
     p.standardError = log

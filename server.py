@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Cutroom: a local CapCut-style editor. Stdlib-only backend.
 
   python3 -I server.py             UI on http://127.0.0.1:4610

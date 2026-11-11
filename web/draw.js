@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cutroom: the text and effect-overlay layer's drawing, shared by the preview, the page's export path and the layer
 // workers (web/layer.js importScripts it). Plain script, no DOM at load: P and shown() are the page's (or the worker's own).
 'use strict';

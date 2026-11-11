@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cutroom: timeline model, preview engine and editing UI. No build step, no dependencies.
 // The project is a CapCut-style draft: lanes of clips that reference media by id, times in seconds.
 // The server turns it into one ffmpeg graph; drawText() renders text for preview AND export.

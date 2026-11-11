@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cutroom export: a text-layer worker. Draws frames of the text/effect layer with the preview's own code (draw.js) from
 // the project snapshot the page sends, then scans them (pixel hash + ink box) or encodes and uploads the cropped PNGs.
 // Messages (buildPlan's textLayer): {init: {P, w, h, k, fonts}} -> {ok}; {probe: [font]} -> {px}; {scan: [frame]} -> {res};

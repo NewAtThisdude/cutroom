@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Cutroom effects pack: per-pixel transitions and effects written ONCE as ffmpeg-style expressions, compiled to GLSL for the
 // preview (trGPU / fxGPU in grade.js) and to ffmpeg geq expressions for the export; and film
 // looks as rgb -> rgb maths baked into the clip's one grade table (the export's lut3d). Page only (after grade.js, draw.js).

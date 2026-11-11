@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Cutroom MCP server: Claude Code drives the open Cutroom editor (stdio JSON-RPC, stdlib only).
 
 Commands go to Cutroom's local server, which hands them to the editor page; the page runs them with the

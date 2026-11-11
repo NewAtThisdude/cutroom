@@ -25,3 +25,4 @@ JavaScript for the editor (`web/`), a thin Swift shell (`app/`). No build step, 
 ## Pull requests
 
 One change per PR, with what you measured. Screenshots for UI changes, in both normal and reduced-motion modes.
+Contributions are accepted under the project's licence, GPL v3 or later.

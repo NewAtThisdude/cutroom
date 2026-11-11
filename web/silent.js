@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Test and scratch servers (any port but the app's 4610) serve pages that make no sound: headless test browsers
 // play through the Mac's speakers, and the test tones, pink noise and scrub audio came out as random static.
 // Everything still runs (clocks, taps, analysers): only the final output is silenced. localStorage cutroomSound=1 opts back in.
