@@ -487,7 +487,7 @@ def proxy_cmd(m, src, out, sw=False):
         dec, vf = [], ''
     else:  # the copy's size in the frame's stored orientation (the pixels are turned afterwards, by hand: hw frames can't auto-rotate)
         H = min(tall, m['h'])
-        W = even(m['w'] * H / m['h'])
+        W = int(m['w'] * H / m['h'] / 2 + 0.5) * 2  # halves round up, as ffmpeg's scale=-2 does (406 for a 9:16 iPhone clip, like the copies made before)
         w, h = (H, W) if m.get('rot', 0) % 180 else (W, H)
         dec, vf = hdr_decode(m)
         if dec:
@@ -500,6 +500,11 @@ def proxy_cmd(m, src, out, sw=False):
     return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-fps_mode:v', 'passthrough', '-enc_time_base:v', 'demux',
             '-c:v', 'h264_videotoolbox', '-b:v', '5M' if tall == 720 else '8M',
             '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
+
+
+def last_slot(skip, slot):
+    """Keyframes only, the picture ends at the last keyframe, a slot short of the file: fps left the last thumbnail black. Hold it one slot."""
+    return f'tpad=stop_mode=clone:stop_duration={slot:.3f},' if skip else ''
 
 
 def prepare_(m):
@@ -520,9 +525,10 @@ def prepare_(m):
         # past a minute, keyframes only: a 10-minute 1080p file's strip took 60 s decoding every frame, 4 s this way. Short
         # files (or ones with too few keyframes for the strip: x264 puts one every 250 frames) decode every frame.
         strip = CACHE / f'{mid}.strip.jpg'
-        for skip in ((['-skip_frame', 'nokey'],) if d > 60 else ()) + ([],):
+        # our preview copy has a keyframe every second, all the strip needs: decoding only those is about 20x less work
+        for skip in ((['-skip_frame', 'nokey'],) if d > 60 or px.exists() else ()) + ([],):
             strip.unlink(missing_ok=True)
-            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(px) if px.exists() else src, '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
+            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(px) if px.exists() else src, '-vf', f'{last_slot(skip, d / n)}fps={n}/{d:.3f},scale=-2:72,tile={n}x1',
                        '-frames:v', '1', '-q:v', '5', str(strip)], low=True).returncode and strip.exists():
                 m['stripN'] = n
                 break
@@ -551,8 +557,8 @@ def timeline_assets(m):
         n = max(4, min(300, round(d)))
         cols = min(n, 20)
         out, tmp = CACHE / f'{mid}.grid.jpg', CACHE / f'{mid}.grid.tmp.jpg'
-        for skip in ((['-skip_frame', 'nokey'],) if d > 60 else ()) + ([],):
-            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(src), '-vf', f'fps={n}/{d:.3f},scale=-2:72,tile={cols}x{math.ceil(n / cols)}',
+        for skip in ((['-skip_frame', 'nokey'],) if d > 60 or src == px else ()) + ([],):  # (the preview copy: a keyframe every second)
+            if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(src), '-vf', f'{last_slot(skip, d / n)}fps={n}/{d:.3f},scale=-2:72,tile={cols}x{math.ceil(n / cols)}',
                        '-frames:v', '1', '-q:v', '5', str(tmp)], low=True).returncode and tmp.exists():
                 w = int(sh(['ffprobe', '-v', 'error', '-show_entries', 'stream=width', '-of', 'csv=p=0', str(tmp)]).stdout.strip() or 0)
                 tmp.replace(out)
