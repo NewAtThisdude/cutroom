@@ -20,7 +20,8 @@ HOME = Path(os.environ.get('CUTROOM_HOME', Path.home() / 'Movies' / 'Cutroom'))
 WEB = (Path(__file__).resolve().parent / 'web').resolve()
 MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports', 'cache'))
 WHISPER = os.environ.get('CUTROOM_WHISPER', 'whisper-cli')
-MODEL = os.environ.get('CUTROOM_MODEL', str(Path.home() / 'Library/Application Support/com.prakashjoshipax.VoiceInk/WhisperModels/ggml-large-v3-turbo-q5_0.bin'))
+_M = 'ggml-large-v3-turbo-q5_0.bin'  # install.sh puts it in <library>/models; a copy another app already has (VoiceInk) is used instead of a second 574 MB
+MODEL = os.environ.get('CUTROOM_MODEL') or str(next((f for f in (HOME / 'models' / _M, Path.home() / 'Library/Application Support/com.prakashjoshipax.VoiceInk/WhisperModels' / _M) if f.exists()), HOME / 'models' / _M))
 VAD = os.environ.get('CUTROOM_VAD', str(HOME / 'models' / 'ggml-silero-v5.1.2.bin'))
 # Reduce noise = RNNoise (ffmpeg arnndn), model "conjoined-burgers" (general sound, recording noise) from
 # GregorR/rnnoise-models @3eee541a (not subject to copyright, per its README), bundled and checked by SHA-256
@@ -600,7 +601,7 @@ def transcribe(mid, lang='auto', ranges=None):
                 todo.append([a, b])
         if todo:
             if not shutil.which(WHISPER) or not Path(MODEL).exists():
-                raise RuntimeError('whisper.cpp is not set up: brew install whisper-cpp, and point CUTROOM_MODEL at a ggml model')
+                raise RuntimeError('captions need whisper.cpp and its model: run ./install.sh (or brew install whisper-cpp and set CUTROOM_MODEL to a ggml model)')
             if not (f := pcm(m)):
                 raise RuntimeError('could not read audio')
             total, done = sum(b - a for a, b in todo), 0.0

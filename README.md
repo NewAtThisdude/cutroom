@@ -1,25 +1,46 @@
 # Cutroom
 
-A local, CapCut-style video editor for Mac. Everything runs on this Mac: no account, no uploads,
-no watermark, and no cloud AI (CapCut's captions go to its servers; Cutroom's don't).
+A free video editor for Mac that runs entirely on your machine. No account, no uploads, no watermark,
+no subscription. Captions, voice, cut-outs and the other AI tools run on your Mac too.
 
-## Run it
+![The Cutroom editor: library, preview, inspector and timeline](docs/screenshot.png)
 
-- Double-click **~/Applications/Cutroom.app**: a native Mac window (AppKit + WebKit). If a Cutroom server
-  is already running it uses it; otherwise it starts one and stops it again when you quit (never at login).
-  Rebuild it after editing `app/Cutroom.swift` with `app/build.sh`. `~/cutroom/cutroom` still opens the
-  editor in a Chrome app window instead.
-- Self-check after any engine change: `env -u PYTHONPATH python3 -I server.py --selftest` (about 3 min).
-  It renders synthetic projects through both render paths and checks the results pixel by pixel:
-  all 31 transitions, video effects (frame-exact ranges, per-frame values), keyframes (deep, eased and partially eased),
-  opacity, blend modes, chroma key, masks, HDR, colour tags, every export format, beats, voiceover, freeze frames,
-  silence detection and caption timing.
+- **Edit:** a magnetic main track plus overlay, audio, text, caption and effect tracks; trims, splits, slip / slide / roll,
+  ripple across all tracks, keyframes with easing curves, speed ramps, masks, chroma key, multicam, compound clips.
+- **What you see is what exports:** the preview and the export share their maths, and a test suite compares them frame by frame.
+- **Captions and sound:** auto captions in 18 languages with 22 styles, translation, edit-by-script, noise reduction,
+  voice isolation, auto-duck, a free CC0 sound and music library.
+- **Colour and effects:** wheels, curves, HSL, LUTs, scopes, adjustment layers, 57 transitions, 47 effects, 47 looks.
+- **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms.
+- **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
+  and the editor uses almost no CPU when you are not touching it.
+- **Scriptable:** an MCP server (`mcp/cutroom_mcp.py`) lets an AI assistant drive the open editor.
 
-Requirements: Homebrew `ffmpeg` and `whisper-cpp`, and the Xcode command-line tools (`swiftc`) for the app
-and the Apple Vision helpers (built automatically on first use). Chrome is only needed for the
-`cutroom` launcher. The whisper model is reused from Voicify (`ggml-large-v3-turbo-q5_0.bin`); override it
-with `CUTROOM_MODEL=/path/to/ggml-*.bin`. `CUTROOM_PORT` and `CUTROOM_HOME` work for the app, the launcher
-and the server.
+## Install
+
+Needs an Apple Silicon Mac on macOS 14 or later, with [Homebrew](https://brew.sh).
+
+    brew install ffmpeg whisper-cpp python
+    xcode-select --install        # the Swift compiler, for the app and the Apple Vision helpers
+    git clone <this repository> && cd cutroom
+    ./install.sh                  # checks the tools, fetches the speech models (575 MB, checksummed), builds the app
+
+Then open **~/Applications/Cutroom.app**. `./cutroom` opens the same editor in a Chrome app window instead.
+
+Optional: `ai/setup.sh` installs the on-device AI tools (voices, image generation, object removal, upscaling and
+more; several GB, each model pinned and checksummed). What each one is and its licence: [THIRD_PARTY.md](THIRD_PARTY.md).
+A few optional models are for non-commercial use only; they are marked there and can be left out.
+
+## How it runs
+
+- The app is a native Mac window (AppKit + WebKit) around a local server (`server.py`, Python standard library only,
+  bound to 127.0.0.1). If a Cutroom server is already running the app uses it; otherwise it starts one and stops it
+  when you quit. It never runs at login. Rebuild the app after editing `app/Cutroom.swift` with `app/build.sh`.
+- Self-check after any engine change: `python3 -I server.py --selftest` (about 3 min). It renders synthetic projects
+  through the render paths and checks the results pixel by pixel.
+- `CUTROOM_PORT` and `CUTROOM_HOME` (the library folder) work for the app, the launcher and the server;
+  `CUTROOM_MODEL` points captions at another whisper ggml model.
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [MIT](LICENSE).
 
 Data lives in `~/Movies/Cutroom/`:
 - `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)
