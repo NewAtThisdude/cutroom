@@ -4396,7 +4396,16 @@ def graph(p, td):
                 fg.append(f'[{ca}][a{k}]acrossfade=d={o / F:.6f}[ma{k}]' if o else f'[{ca}][a{k}]concat=n=2:v=0:a=1[ma{k}]')
             elif o:
                 tr, n0 = prev['tr'], n - o  # the overlap is main-stream frames n0 .. n-1; its frame i is at p = i/o
-                if tr == 'custom':  # the overlap's frames of a over b, through geq (threaded, with lets), between the frames before and after
+                if tr == 'custom' and p.get('tr_stack'):  # gpu_transitions(): only the overlap's frames, a over b, for the GPU
+                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0},nullsink;[cb{k}]trim=start_frame={n0},setpts=PTS-STARTPTS[oa{k}];'
+                              f'[v{k}]trim=end_frame={o},setpts=PTS-STARTPTS[ob{k}];[oa{k}][ob{k}]vstack,format=gbrp[vout];'
+                              + ';'.join(f'[a{j}]anullsink' for j in range(len(p['main']))))
+                    return sum(ins, []), ';'.join(fg)
+                elif tr == 'custom' and k in p.get('tr_files', {}):  # made on the GPU beforehand (gpu_transitions): laid in between
+                    ins.append(['-i', p['tr_files'][k]])
+                    fg.append(f'[{cv}]trim=end_frame={n0}[cp{k}];[v{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
+                              f'[{len(ins) - 1}:v]format={RGB},setsar=1,settb=AVTB,setpts=PTS-STARTPTS[ov{k}];[cp{k}][ov{k}][cq{k}]concat=n=3:v=1:a=0[mv{k}]')
+                elif tr == 'custom':  # the overlap's frames of a over b, through geq (threaded, with lets), between the frames before and after
                     ex = ':'.join(f"{c}='" + re.sub(r'\bTO\b', str(o), prev['trx']['e' + c]) + "'" for c in 'rgb')
                     fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0}[cp{k}];[cb{k}]trim=start_frame={n0},setpts=PTS-STARTPTS[oa{k}];'
                               f'[v{k}]split[va{k}][vb{k}];[va{k}]trim=end_frame={o},setpts=PTS-STARTPTS[ob{k}];[vb{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
@@ -4777,24 +4786,76 @@ def fx_gpu():
     return FXGPU[0]
 
 
-def render(p, td, out, report, what='The export', job=None):
+def gpu_transitions(p, td, job):
+    """Each effects-pack transition's overlap made beforehand: ffmpeg gives its frames of a over b (the two clips alone, as
+    the export's graph makes them), fxgpu runs the transition, ffv1 keeps it (lossless) for the graph to lay in. geq took
+    35-38 s of every core for one 1080p transition. -> {index of the incoming clip: file}"""
+    W, H, F, main, out = p['w'], p['h'], p['fps'], p['main'], {}
+    for k in range(1, len(main)):
+        a, b = main[k - 1], main[k]
+        o = overlap(a, b)
+        if a['tr'] != 'custom' or not o:
+            continue
+        # ponytail: the outgoing clip decodes whole for its last o frames; trim its in point if long clips make this slow
+        sub = {**p, 'main': [a, b], 'overlay': [], 'audio': [], 'fx': [], 'frames': [], 'pngs': [], 'tr_stack': True, 'rgb': True, 'tr_files': {}}
+        ins, fg = graph(sub, td)
+        gf, mt, f = Path(td) / f'trs{k}.txt', Path(td) / f'tr{k}.metal', Path(td) / f'tr{k}.mkv'
+        gf.write_text(fg)
+        mt.write_text(msl_effects([{c: re.sub(r'\bTO\b', str(o), a['trx'][c]) for c in ('er', 'eg', 'eb')}]))
+        logs = [open(Path(td) / f'tr{k}.{i}.log', 'w+') for i in range(3)]
+        p1 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
+                               '-map', '[vout]', '-frames:v', str(o), '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=logs[0])
+        p2 = subprocess.Popen([FXGPU[0], str(W), str(2 * H), '3', str(mt), f'0,{o}'], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=logs[1])
+        p1.stdout.close()
+        p3 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-s', f'{W}x{2 * H}',
+                               '-framerate', RATES.get(round(F, 3), f'{F:g}'), '-i', 'pipe:0', '-vf', f'crop={W}:{H}:0:0', '-c:v', 'ffv1', str(f)],
+                              stdin=p2.stdout, stderr=logs[2])
+        p2.stdout.close()
+        if job:
+            PROCS[job] = p3
+        codes = [p3.wait(), p2.wait(), p1.wait()]
+        PROCS.pop(job, None)
+        if job and JOBS.get(job, {}).get('cancel'):
+            raise RuntimeError('cancelled')
+        n = int(sh(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', str(f)]).stdout.strip() or 0) if f.exists() else 0
+        text = ''
+        for lg in logs:
+            lg.seek(0)
+            text += lg.read()
+            lg.close()
+        if any(codes) or n != o:
+            raise RuntimeError(plain('A transition', text or f'{n} of {o} frames', next((c for c in codes if c), 0)))
+        out[k] = str(f)
+    return out
+
+
+def render(p, td, out, report, what='The export', job=None, intermediate=False):
     """One ffmpeg run, or where the plan has effects-pack effects, a chain of stages joined by pipes: ffmpeg makes the
     composite up to the first one, fxgpu (Metal) runs each run of them, ffmpeg carries on, and the last stage adds the text
     layer, the sound (mixed first, apart) and encodes. Same pixels as geq to a level (float vs double), but geq took
     25-150 s of every core for 3 s of 1080p, the GPU about 0.5 s. Without the tool, or if a stage fails, geq does it."""
-    fx = p.get('fx') or []
-    if p.get('format') in SOUND or p.get('hdr') or not any(f['op'] == 'expr' for f in fx) or not fx_gpu():
-        return run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], report, what, job)
+    fx, plain_run = p.get('fx') or [], lambda q: run_ffmpeg(ffmpeg_cmd(q, td, out, intermediate), q['duration'], report, what, job)
+    if p.get('format') in SOUND or p.get('hdr') or not fx_gpu():
+        return plain_run(p)
+    if any(a['tr'] == 'custom' and overlap(a, b) for a, b in zip(p['main'], p['main'][1:])):
+        try:
+            p = {**p, 'tr_files': gpu_transitions(p, td, job)}
+        except RuntimeError as e:
+            if 'cancelled' in str(e) or (job and JOBS.get(job, {}).get('cancel')):
+                raise
+            print(f'{what}: transitions on the GPU failed, geq instead: {e}', file=sys.stderr, flush=True)
+    if not any(f['op'] == 'expr' for f in fx):
+        return plain_run(p)
     try:
-        return render_gpu(p, td, out, report, what, job)
+        return render_gpu(p, td, out, report, what, job, intermediate)
     except RuntimeError as e:
         if 'cancelled' in str(e) or (job and JOBS.get(job, {}).get('cancel')):
             raise
         print(f'{what}: the GPU effects path failed, geq instead: {e}', file=sys.stderr, flush=True)
-        return run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], report, what, job)
+        return plain_run(p)
 
 
-def render_gpu(p, td, out, report, what, job):
+def render_gpu(p, td, out, report, what, job, intermediate=False):
     W, H, F, D, A = p['w'], p['h'], p['fps'], p['duration'], p.get('alpha')
     runs = []  # [(on the GPU, [effects])] in order
     for f in p['fx']:
@@ -4830,7 +4891,7 @@ def render_gpu(p, td, out, report, what, job):
                 prev.close()  # only the next stage holds it: a stage that stops makes the ones before it stop too
             prev = procs[-1][1].stdout
         last = {**p, 'main': [raw], 'overlay': [], 'audio': [], 'fx': runs[-1][1], 'rgb': True, **({'audio_file': str(wav)} if sound else {})}
-        err = run_ffmpeg(ffmpeg_cmd(last, td, out), D, (lambda x: report(0.1 + 0.9 * x)) if sound else report, what, job, stdin=prev)
+        err = run_ffmpeg(ffmpeg_cmd(last, td, out, intermediate), D, (lambda x: report(0.1 + 0.9 * x)) if sound else report, what, job, stdin=prev)
     finally:
         if prev is not subprocess.DEVNULL:
             prev.close()
@@ -4912,7 +4973,7 @@ def export(job, p):
                 frames = sum(c['frames'] for c in part) - sum(overlap(a, b) for a, b in zip(part, part[1:]))
                 sub = {**p, 'main': part, 'overlay': [], 'audio': [], 'frames': [], 'pngs': [], 'fx': [], 'duration': frames / F, 'format': 'mp4'}  # chunks: YUV video (10-bit HDR, or RGBA)
                 f = Path(td) / f'chunk{n}.mkv'
-                run_ffmpeg(ffmpeg_cmd(sub, td, f, True), frames / F, lambda x, n=n: st.update(progress=(n + x) / steps), 'The export', job)
+                render(sub, td, f, lambda x, n=n: st.update(progress=(n + x) / steps), 'The export', job, intermediate=True)
                 chunks[n] = {'path': str(f), 'kind': 'video', 'hasAudio': True, 'in': 0, 'out': frames / F, 'speed': 1, 'volume': 1,
                              'frames': frames, 'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1},
                              'geom': {'x': 0, 'y': 0, 'w': p['w'], 'h': p['h']},
@@ -5814,6 +5875,18 @@ def selftest():
         assert c0[2] > 200 and c0[0] < 50 and c1[0] > 200 and abs(c1[1] - 100) <= 10 and c1[2] > 200 and c2[0] > 200 and c2[2] < 50, ('effects-pack transition (geq on a over b)', chunk, c0, c1, c2)
     CHUNK = 24
     print('transitions ok: an effects-pack transition (geq on the stacked overlap), single graph and chunked')
+    if fx_gpu():  # the overlap made on the GPU beforehand (gpu_transitions) against geq in the graph
+        raw = lambda f: subprocess.run(['ffmpeg', '-v', 'error', '-i', str(f), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True).stdout
+        trp = {**tplan, 'name': 'tr-gpu', 'duration': 3, 'main': [still_clip(B, {'type': 'cube', 'frames': 30, 'expr': tx}), still_clip(R)]}
+        gpu, keep = raw(render(trp, 90)), FXGPU[0]
+        FXGPU[0] = ''
+        try:
+            cpu = raw(render(trp, 90))
+        finally:
+            FXGPU[0] = keep
+        d = max(abs(a - b) for a, b in zip(gpu[::7], cpu[::7]))
+        assert len(gpu) == len(cpu) and d <= 2, ('transition on the GPU == geq', len(gpu), len(cpu), d)
+        print(f'transitions on the GPU ok: the same frames as geq (worst {d} levels)')
     # plain cuts stay 4:2:0 (yuv_ok): BT.709 and untagged HD video (passed through), untagged SD (BT.601), a letterboxed
     # clip and an RGB picture, a dissolve, fades and a background past the main track give the RGB path's picture,
     # BT.709-tagged; Light (VideoToolbox decode) the same again
