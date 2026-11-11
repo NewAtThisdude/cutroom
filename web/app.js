@@ -5948,7 +5948,7 @@ const REMOTE = {
     const q = String(name || '').toLowerCase(), s = G.sfx.find(x => x.id === q || x.name.toLowerCase() === q) || G.sfx.find(x => x.name.toLowerCase().includes(q) || x.id.includes(q));
     if (s) return addSfx(s.id, at);
     G.snd ??= await api('/api/packs');
-    const it = G.snd.items || [], p = it.find(x => x.id.toLowerCase() === q || x.name.toLowerCase() === q) || it.find(x => x.name.toLowerCase().includes(q));
+    const it = G.snd.items || [], p = it.find(x => x.id.toLowerCase() === q || x.name.toLowerCase() === q) || it.find(x => x.id.toLowerCase().endsWith('/' + q)) || it.find(x => x.name.toLowerCase().includes(q)); // the id with or without its folder (music/..., sfx/...)
     if (!p) throw new Error(`no sound called ${name}: synthesized ones are ${G.sfx.map(x => x.name).join(', ')}${G.snd.installed ? '; sound_library lists the rest' : '; sound_library with install=true downloads 600+ more'}`);
     return addPack(p.id, at);
   },
