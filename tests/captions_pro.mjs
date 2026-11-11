@@ -120,14 +120,18 @@ if (run('export')) {
   const se = star(raw, 3), sp = star(r.pv, 4);
   check('emoji caption without word timing: the exported mp4 shows the emoji popped in, as big as the preview', sp > 100 && se / sp > 0.7 && se / sp < 1.4 && r.mode === 'workers', `${se} star px in the export, ${sp} in the preview (640x360), ${r.mode}`);
   // speaker 1's colour is Bold's highlight yellow: the active word must still stand out (drawn in the caption's own white)
+  // the video under the caption is whatever the library has first (export_formats' colour bars have a yellow bar): only pixels
+  // yellow with the caption and not yellow without it count
   const k = await ev(async () => {
     const W = [{ w: 'one', s: 0, e: 0.5 }, { w: 'two', s: 0.5, e: 1 }, { w: 'three', s: 1, e: 1.5 }];
+    const grab = async () => { const r = await REMOTE.snapshot({ t: 1.25, max: 640 }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(im.width, im.height), g = c.getContext('2d'); g.drawImage(im, 0, 0); return g.getImageData(0, 0, im.width, im.height); };
+    P.captions = []; renderAll();
+    const bg = (await grab()).data, Y = (d, i) => d[i] > 235 && d[i + 1] > 190 && d[i + 1] < 230 && d[i + 2] < 40;
+    window.__capY = (d, i) => Y(d, i) && !Y(bg, i); // the caption's own yellow
     P.capStyle = { ...capPreset('Bold'), y: 0.6, spk: true };
     P.captions = [{ id: hex12(), start: 0.5, dur: 1.5, text: 'one two three', words: W, spk: 0 }]; renderAll();
-    const r = await REMOTE.snapshot({ t: 1.25, max: 640 }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob());
-    const c = new OffscreenCanvas(im.width, im.height), g = c.getContext('2d'); g.drawImage(im, 0, 0);
-    const d = g.getImageData(0, 0, im.width, im.height).data, n = { yellow: 0, white: 0 };
-    for (let y = Math.round(im.height * 0.45); y < im.height * 0.75; y++) for (let x = 0; x < im.width; x++) { const i = (y * im.width + x) * 4; if (d[i] > 235 && d[i + 1] > 190 && d[i + 1] < 230 && d[i + 2] < 40) n.yellow++; }
+    const im = await grab(), d = im.data, n = { yellow: 0, white: 0 };
+    for (let y = Math.round(im.height * 0.45); y < im.height * 0.75; y++) for (let x = 0; x < im.width; x++) { const i = (y * im.width + x) * 4; if (__capY(d, i)) n.yellow++; }
     P.capStyle.spk = false; renderAll(); // the same frame without speakers: white words, yellow active word
     return n;
   });
@@ -135,7 +139,7 @@ if (run('export')) {
     const grab = async () => { const r = await REMOTE.snapshot({ t: 1.25, max: 640 }), im = await createImageBitmap(await (await fetch(`data:image/png;base64,${r.image}`)).blob()); const c = new OffscreenCanvas(im.width, im.height), g = c.getContext('2d'); g.drawImage(im, 0, 0); return g.getImageData(0, 0, im.width, im.height); };
     const off = await grab(); P.capStyle.spk = true; renderAll(); const on = await grab();
     let word = 0, still = 0; // the active word's yellow pixels with speakers off: with speakers on they must not be yellow any more
-    for (let i = 0; i < off.data.length; i += 4) if (off.data[i] > 235 && off.data[i + 1] > 190 && off.data[i + 1] < 230 && off.data[i + 2] < 40) { word++; if (on.data[i] > 235 && on.data[i + 1] > 190 && on.data[i + 1] < 230 && on.data[i + 2] < 40) still++; }
+    for (let i = 0; i < off.data.length; i += 4) if (__capY(off.data, i)) { word++; if (__capY(on.data, i)) still++; }
     return [word, still];
   });
   check("speaker labels: the active word stands out from speaker 1's caption colour", wy > 200 && wo / wy < 0.2 && k.yellow > wy, `${wy} active-word px, ${wo} still yellow with speakers on; ${k.yellow} yellow px in the speaker's caption`);
@@ -183,7 +187,8 @@ if ((run('keywords') || run('bilingual')) && pod) {
     const n = await ev(() => [P.captions.filter(c => c.tr).length, P.captions.length, P.captions.every(c => c.words?.length)]);
     console.log(`  translated in ${tt} s:`, tr.first.map(([a, x]) => `"${a}" / "${x}"`).join(' | '));
     check('bilingual: every caption keeps its words and timing and gets its share of the translation', n[0] / n[1] >= 0.9 && n[2], `${n[0]}/${n[1]} captions with a second line, ${tr.sentences} sentences, ${tt} s`);
-    const at = await ev(() => { const c = P.captions.find(x => x.tr && x.tr.length > 8); return c.start + c.dur / 2; });
+    // the caption with the longest second line (the model's wording varies run to run; a short one in Subtitle's small type is few pixels)
+    const [at, trLen] = await ev(() => { const c = P.captions.filter(x => x.tr).reduce((a, x) => x.tr.length > a.tr.length ? x : a); return [c.start + c.dur / 2, c.tr.length]; });
     for (const preset of ['Bold', 'Subtitle', 'Karaoke']) {
       await ev(p => { P.capStyle = { ...capPreset(p), bi: true, biColor: '#9ff0ff' }; renderAll(); }, preset);
       const d = await pixDiff(at);
@@ -193,7 +198,7 @@ if ((run('keywords') || run('bilingual')) && pod) {
       const off = await exportPx(at);
       let changed = 0; // pixels the second line adds to the export
       for (let i = 0; i < on.length; i += 4) if (Math.abs(on[i] - off[i]) + Math.abs(on[i + 1] - off[i + 1]) + Math.abs(on[i + 2] - off[i + 2]) > 60) changed++;
-      check(`bilingual (${preset}): preview == export, and the second line is in the export`, d.mean <= 4 && d.worst <= 28 && changed > 400, `mean ${d.mean}, worst block ${d.worst} @${d.t}s, ${changed} px from the second line`);
+      check(`bilingual (${preset}): preview == export, and the second line is in the export`, d.mean <= 4 && d.worst <= 28 && changed > 12 * trLen, `mean ${d.mean}, worst block ${d.worst} @${d.t}s, ${changed} px from the second line (${trLen} characters)`);
     }
   }
 } else if (run('keywords') || run('bilingual')) check('podcast-episode in the library', false);
