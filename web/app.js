@@ -2603,7 +2603,7 @@ function penMap(c, h) { // a pen mask's units <-> preview canvas pixels (the mas
 }
 function drawPen(ctx, c, h) {
   const map = penMap(c, h), d = cpx();
-  ctx.save(); ctx.fillStyle = '#fff'; ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 2 * d;
+  ctx.save(); ctx.fillStyle = '#fff'; ctx.strokeStyle = '#f0b23e'; ctx.lineWidth = 2 * d;
   for (const p of c.mask.pts || PEN0) { const [px, py] = map.to(p); ctx.beginPath(); ctx.arc(px, py, 5 * d, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
   ctx.restore();
 }
@@ -2633,7 +2633,7 @@ function drawSel(ctx, h, handles) {
     ctx.fillStyle = '#fff';
     for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.beginPath(); ctx.roundRect(u * b.hw - 5 * d, v * b.hh - 5 * d, 10 * d, 10 * d, 2.5 * d); ctx.fill(); }
     ctx.beginPath(); ctx.arc(0, -b.hh - 26 * d, 6 * d, 0, 6.2832); ctx.fill();
-    ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 1.5 * d; ctx.beginPath(); ctx.arc(0, -b.hh - 26 * d, 3 * d, -2.2, 2.4); ctx.stroke();
+    ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#f0b23e'; ctx.lineWidth = 1.5 * d; ctx.beginPath(); ctx.arc(0, -b.hh - 26 * d, 3 * d, -2.2, 2.4); ctx.stroke();
   }
   ctx.restore();
 }
