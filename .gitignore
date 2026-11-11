@@ -11,3 +11,4 @@ tests/out/
 tools/fonts
 tools/retouch
 .claude/
+tools/fxgpu

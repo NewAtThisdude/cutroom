@@ -10,7 +10,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, contextlib, json, math, mimetypes, os, queue, re, shutil, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +39,7 @@ XFADES = {'fade', 'fadeblack', 'fadewhite', 'wipeleft', 'wiperight', 'wipeup', '
 # blur transitions: an xfade underneath, then a blur that peaks half way (sin(pi p)) on those frames; the UI's transition() does the same
 TR_BLUR = {'whipleft': 'slideleft', 'whipright': 'slideright', 'zoomblur': 'fade', 'whipup': 'slideup', 'whipdown': 'slidedown', 'blurfade': 'fade'}
 WHIP, ZOOMB, ZB_K, BLURF = 0.04, 0.25, 8, 0.02  # whip: sigma, x frame width (height for up/down); zoom blur: the last copy's extra zoom; copies averaged; blur dissolve: boxblur radius x height
+RATES = {23.976: '24000/1001', 29.97: '30000/1001', 59.94: '60000/1001'}  # the exact rates behind the rounded ones
 FX_OPS = {'matrix', 'negate', 'blur', 'pixelize', 'rgbshift', 'noise', 'mirror', 'grid', 'transform', 'glow', 'hblur', 'zblur', 'lut', 'expr'}  # video effects: the UI expands each one into these
 # per-pixel expressions from web/fxpack.js (geq: transitions on their stacked overlap frames, effects on the composite): only these names, numbers and + - * / ( ) , ;
 XNAMES = {'X', 'Y', 'W', 'H', 'N', 'PI', 'LF', 'if', 'ifnot', 'lt', 'lte', 'gt', 'gte', 'eq', 'between', 'min', 'max', 'abs', 'floor', 'ceil', 'trunc',
@@ -3768,6 +3769,110 @@ def xexpr(s):
     return s
 
 
+MSL_HEAD = '''#include <metal_stdlib>
+using namespace metal;
+static inline float xmod(float a, float b) { float m = a - b * floor(a / b); return m >= b ? m - b : m < 0.0f ? m + b : m; }
+static inline float xclip(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
+static inline float xbetween(float x, float a, float b) { return float(x >= a && x <= b); }
+static inline float xhypot(float a, float b) { return sqrt(a * a + b * b); }
+'''
+MSL_FN = {'min': 'min', 'max': 'max', 'abs': 'fabs', 'floor': 'floor', 'ceil': 'ceil', 'trunc': 'trunc', 'sqrt': 'sqrt', 'exp': 'exp', 'log': 'log',
+          'sin': 'sin', 'cos': 'cos', 'tan': 'tan', 'atan': 'atan', 'atan2': 'atan2', 'pow': 'pow', 'mod': 'xmod', 'clip': 'xclip', 'between': 'xbetween', 'hypot': 'xhypot'}
+MSL_CMP = {'lt': '<', 'lte': '<=', 'gt': '>', 'gte': '>=', 'eq': '=='}
+MSL_PLANE = {'g': 0, 'b': 1, 'r': 2}  # gbrp's plane order
+
+
+def msl_expr(s):
+    """One geq expression (xexpr-checked) as Metal: ffmpeg's grammar for the names in XNAMES, ; sequences as the comma
+    operator, st/ld as locals L0-L9, r/g/b(x, y) as nearest fetches clamped to the frame (geq's own sampling), if lazy."""
+    toks, i = re.findall(r'[A-Za-z_]\w*|\d+\.?\d*|\.\d+|\S', s), 0
+
+    def peek():
+        return toks[i] if i < len(toks) else ''
+
+    def eat(t=None):
+        nonlocal i
+        if t is not None and peek() != t:
+            raise ValueError(f'expected {t!r} in an effect expression')
+        i += 1
+        return toks[i - 1]
+
+    def seq():
+        parts = [add()]
+        while peek() == ';':
+            eat()
+            parts.append(add())
+        return parts[0] if len(parts) == 1 else '(' + ', '.join(parts) + ')'
+
+    def add():
+        v = mul()
+        while peek() in ('+', '-'):
+            v = f'({v} {eat()} {mul()})'
+        return v
+
+    def mul():
+        v = unary()
+        while peek() in ('*', '/'):
+            v = f'({v} {eat()} {unary()})'
+        return v
+
+    def unary():
+        if peek() in ('-', '+'):
+            return f'({eat()}{unary()})'
+        return prim()
+
+    def prim():
+        t = eat()
+        if t == '(':
+            v = seq()
+            eat(')')
+            return v
+        if t[0].isdigit() or t[0] == '.':
+            return f'{float(t)!r}f'
+        if peek() != '(':
+            return {'PI': 'M_PI_F', 'N': 'LF', 'TO': '1.0f'}.get(t, t)  # X Y W H LF are the kernel's floats
+        eat('(')
+        args = [seq()]
+        while peek() == ',':
+            eat()
+            args.append(seq())
+        eat(')')
+        if t in ('st', 'ld'):
+            k = int(float(args[0].rstrip('f')))
+            if not 0 <= k <= 9:
+                raise ValueError('st/ld index out of range')
+            return f'(L{k} = {args[1]})' if t == 'st' else f'L{k}'
+        if t in ('if', 'ifnot'):
+            a, b = (args + ['0.0f'])[1:3]
+            return f'(({args[0]}) != 0.0f ? {a if t == "if" else b} : {b if t == "if" else a})'
+        if t in MSL_CMP:
+            return f'float({args[0]} {MSL_CMP[t]} {args[1]})'
+        if t in MSL_PLANE:
+            return f'F(s, {MSL_PLANE[t]}, {args[0]}, {args[1]}, w, h)'
+        if t in MSL_FN:
+            return f"{MSL_FN[t]}({', '.join(args)})"
+        raise ValueError(f'{t} is not a function')
+
+    v = seq()
+    if i != len(toks):
+        raise ValueError('trailing tokens in an effect expression')
+    return v
+
+
+def msl_effects(fxs):
+    """Metal source for fxgpu: one kernel fx<i> per effects-pack effect, its three channels from f['er'], f['eg'], f['eb']."""
+    out = [MSL_HEAD, 'static inline float F(device const uchar *s, int p, float x, float y, int w, int h) {\n'
+           '  return float(s[(p * h + int(xclip(y, 0.0f, float(h - 1)))) * w + int(xclip(x, 0.0f, float(w - 1)))]); }\n']
+    for k, f in enumerate(fxs):
+        ch = [f"  {{ float L0 = 0, L1 = 0, L2 = 0, L3 = 0, L4 = 0, L5 = 0, L6 = 0, L7 = 0, L8 = 0, L9 = 0;\n"
+              f"    d[({pl} * h + iy) * w + ix] = uchar(xclip({msl_expr(f['e' + c])}, 0.0f, 255.0f)); }}" for c, pl in (('g', 0), ('b', 1), ('r', 2))]
+        out.append(f'kernel void fx{k}(device const uchar *s [[buffer(0)]], device uchar *d [[buffer(1)]], constant int4 &dm [[buffer(2)]], uint2 id [[thread_position_in_grid]]) {{\n'
+                   '  int w = dm.x, h = dm.y, ix = int(id.x), iy = int(id.y);\n  if (ix >= w || iy >= h) return;\n'
+                   '  float X = float(ix), Y = float(iy), W = float(w), H = float(h), LF = float(dm.w);\n'
+                   + '\n'.join(ch) + '\n  if (dm.z == 4) d[(3 * h + iy) * w + ix] = s[(3 * h + iy) * w + ix];\n}\n')
+    return '\n'.join(out)
+
+
 def zoom_blur(tag, z, W, H):
     """Zoom blur of a W x H stream: ZB_K copies zoomed 1 .. 1+z about the centre, averaged (the preview's zblurInPlace).
     z is an expression; n there is the frame number in this stream (scale eval=frame), so a transition can ramp it."""
@@ -4037,7 +4142,9 @@ def graph(p, td):
     RGB = 'gbrap' if A else 'gbrp'
 
     def inp(c, dur):  # (see ss() for where a video input starts)
-        if c['kind'] == 'image':
+        if c.get('raw'):  # the composite of an earlier stage (render(): effects on the GPU), frame by frame on stdin
+            ins.append(['-f', 'rawvideo', '-pix_fmt', 'gbrap' if A else 'gbrp', '-s', f'{W}x{H}', '-framerate', RATES.get(round(F, 3), f'{F:g}'), '-i', 'pipe:0'])
+        elif c['kind'] == 'image':
             ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', c['path']])
         else:  # input seek: each clip decodes only its own range
             # VideoToolbox inputs get ONE ffmpeg thread: the media engine decodes, and ffmpeg's default frame threads only held
@@ -4442,7 +4549,7 @@ def graph(p, td):
                 continue
             files.append(Path(td) / f't{j}.png')
             files[-1].write_bytes(b)
-        lines, rate = ['ffconcat version 1.0'], {23.976: '24000/1001', 29.97: '30000/1001', 59.94: '60000/1001'}.get(round(F, 3), f'{F:g}')
+        lines, rate = ['ffconcat version 1.0'], RATES.get(round(F, 3), f'{F:g}')
         for fr in p['frames']:  # the project's frame rate as the time base: frame-exact spans stay exact (the default 25 fps rounds them)
             lines += [f"file '{files[fr['i']]}'", f'option framerate {rate}', f"duration {max(0.001, fr['end'] - fr['start']):.9f}"]
         lines += [f"file '{files[p['frames'][-1]['i']]}'", f'option framerate {rate}']  # concat demuxer ignores the last duration otherwise
@@ -4460,7 +4567,9 @@ def graph(p, td):
             else ',alimiter=limit=0.891:attack=1:release=50:level=false:latency=1')
     fg.append('[sil]' + ''.join(mix) + f'amix=inputs={len(mix) + 1}:duration=first:normalize=0:dropout_transition=0{loud}[aout]')
     fmt = p.get('format', 'mp4')
-    if not ao and A and fmt == 'mp4':  # a chunk of a transparent export (ffmpeg_cmd intermediate): RGBA as it is
+    if not ao and p.get('raw_out'):  # a stage of render(): the composite as it is, for the GPU effects
+        fg.append(f"[{cur[0]}]format={'gbrap' if A else 'gbrp'}[vout]")
+    elif not ao and A and fmt == 'mp4':  # a chunk of a transparent export (ffmpeg_cmd intermediate): RGBA as it is
         fg.append(f'[{cur[0]}]format=gbrap[vout]')
     elif not ao and hdr:  # 10-bit HDR as it came (or as PQ): only the labels are set
         fg.append(f"[{cur[0]}]format={'yuv422p10le' if fmt == 'prores' else 'p010le' if fmt == 'hevc' else 'yuv420p10le'},setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc={HDR_TRC[hdr]}:range=tv[vout]")
@@ -4525,6 +4634,11 @@ def h264_level(W, H, F):
 def ffmpeg_cmd(p, td, out, intermediate=False):
     ins, fg = graph(p, td)
     W, H, fmt = p['w'], p['h'], 'mp4' if intermediate else p.get('format', 'mp4')
+    gf = Path(td) / f'graph{len(list(Path(td).glob("graph*.txt")))}.txt'
+    if p.get('raw_out'):  # render(): raw frames on stdout (no -progress there), the sound is made apart
+        gf.write_text(fg + ';[aout]anullsink')
+        return ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
+                '-map', '[vout]', '-threads', FF_THREADS, '-f', 'rawvideo', '-t', f"{p['duration']:.6f}", 'pipe:1']
     hdr, A = p.get('hdr'), p.get('alpha')
     vmap, amap = ['-map', '[vout]'], ['-map', '[aout]']
     F = p['fps'] if intermediate or fmt in ('gif', 'png', *SOUND) or not p.get('efps') else p['efps']
@@ -4579,10 +4693,12 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
                *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
         enc = ['-c:v', 'h264_videotoolbox', *vt('h264'), '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
+    if p.get('audio_file') and amap == ['-map', '[aout]']:  # render(): the mix, made before the picture
+        amap, fg = ['-map', f"{ins.count('-i')}:a"], fg + ';[aout]anullsink'
+        ins = ins + ['-i', p['audio_file']]
     video = fmt not in SOUND
     pix = ['-pix_fmt', pf] + (cs if pf != 'gbrap' else []) if video and fmt not in ('gif', 'png', 'pngseq') else []
     rate = ['-r', f'{F:g}', '-fps_mode', 'cfr'] if video and fmt not in ('gif', 'png') else []
-    gf = Path(td) / f'graph{len(list(Path(td).glob("graph*.txt")))}.txt'
     gf.write_text(fg)
     return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-filter_complex_threads', FF_THREADS,
              *ins, '-/filter_complex', str(gf), *vmap, *amap, *enc, '-threads', FF_THREADS, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
@@ -4624,8 +4740,8 @@ def plain(what, err, code=0):
 PROCS = {}  # job id -> its running ffmpeg (Cancel kills it)
 
 
-def run_ffmpeg(cmd, dur, report, what='Rendering', job=None):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+def run_ffmpeg(cmd, dur, report, what='Rendering', job=None, stdin=None):
+    proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
     if job:
         PROCS[job] = proc
     err = []
@@ -4646,6 +4762,89 @@ def run_ffmpeg(cmd, dur, report, what='Rendering', job=None):
         print(f'{what}: picture input failed: {e[-1500:]}', file=sys.stderr, flush=True)
         raise RuntimeError(f'{what} failed: a text layer picture could not be read')
     return e
+
+
+FXGPU = []  # the built fxgpu tool, or '' when it can't be built (geq then)
+
+
+def fx_gpu():
+    if not FXGPU:
+        try:
+            FXGPU.append(build_tool('fxgpu'))
+        except (OSError, RuntimeError) as e:
+            print(f'effects on the GPU unavailable: {e}', file=sys.stderr, flush=True)
+            FXGPU.append('')
+    return FXGPU[0]
+
+
+def render(p, td, out, report, what='The export', job=None):
+    """One ffmpeg run, or where the plan has effects-pack effects, a chain of stages joined by pipes: ffmpeg makes the
+    composite up to the first one, fxgpu (Metal) runs each run of them, ffmpeg carries on, and the last stage adds the text
+    layer, the sound (mixed first, apart) and encodes. Same pixels as geq to a level (float vs double), but geq took
+    25-150 s of every core for 3 s of 1080p, the GPU about 0.5 s. Without the tool, or if a stage fails, geq does it."""
+    fx = p.get('fx') or []
+    if p.get('format') in SOUND or p.get('hdr') or not any(f['op'] == 'expr' for f in fx) or not fx_gpu():
+        return run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], report, what, job)
+    try:
+        return render_gpu(p, td, out, report, what, job)
+    except RuntimeError as e:
+        if 'cancelled' in str(e) or (job and JOBS.get(job, {}).get('cancel')):
+            raise
+        print(f'{what}: the GPU effects path failed, geq instead: {e}', file=sys.stderr, flush=True)
+        return run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], report, what, job)
+
+
+def render_gpu(p, td, out, report, what, job):
+    W, H, F, D, A = p['w'], p['h'], p['fps'], p['duration'], p.get('alpha')
+    runs = []  # [(on the GPU, [effects])] in order
+    for f in p['fx']:
+        g = f['op'] == 'expr'
+        if runs and runs[-1][0] == g:
+            runs[-1][1].append(f)
+        else:
+            runs.append((g, [f]))
+    if runs[0][0]:
+        runs.insert(0, (False, []))
+    if runs[-1][0]:
+        runs.append((False, []))
+    n = round(D * F)
+    raw = {'path': 'pipe:0', 'raw': True, 'kind': 'video', 'hasAudio': False, 'in': 0, 'out': D, 'speed': 1, 'volume': 1, 'frames': n,
+           'fadeIn': 0, 'fadeOut': 0, 'fit': 'fit', 'opacity': 1, 'adj': {'b': 1, 'c': 1, 's': 1}, 'geom': {'x': 0, 'y': 0, 'w': W, 'h': H},
+           'mw': W, 'mh': H, 'bt709': True, 'tr': None, 'trf': 0, 'trx': None}
+    sound = p.get('format') not in ('png', 'gif', 'pngseq')
+    if sound:  # the mix first, as the one-pass export makes it (its loudness gain included)
+        wav = Path(td) / 'mix.wav'
+        run_ffmpeg(ffmpeg_cmd({**p, 'format': 'wav'}, td, wav), D, lambda x: report(0.1 * x), what, job)
+    procs, prev = [], subprocess.DEVNULL
+    try:
+        for k, (gpu, fxs) in enumerate(runs[:-1]):
+            log = open(Path(td) / f'stage{k}.log', 'w+')
+            if gpu:
+                (Path(td) / f'fx{k}.metal').write_text(msl_effects(fxs))
+                cmd = [FXGPU[0], str(W), str(H), '4' if A else '3', str(Path(td) / f'fx{k}.metal'), ';'.join(f"{f['a']},{f['b']}" for f in fxs)]
+            else:
+                q = {**p, 'fx': fxs, 'frames': [], 'pngs': [], 'format': 'mp4', 'raw_out': True, 'rgb': True}  # (rgb: the composite as the one pass makes it)
+                cmd = ffmpeg_cmd(q if k == 0 else {**q, 'main': [raw], 'overlay': [], 'audio': []}, td, None)
+            procs.append((gpu, subprocess.Popen(cmd, stdin=prev, stdout=subprocess.PIPE, stderr=log), log))
+            if prev is not subprocess.DEVNULL:
+                prev.close()  # only the next stage holds it: a stage that stops makes the ones before it stop too
+            prev = procs[-1][1].stdout
+        last = {**p, 'main': [raw], 'overlay': [], 'audio': [], 'fx': runs[-1][1], 'rgb': True, **({'audio_file': str(wav)} if sound else {})}
+        err = run_ffmpeg(ffmpeg_cmd(last, td, out), D, (lambda x: report(0.1 + 0.9 * x)) if sound else report, what, job, stdin=prev)
+    finally:
+        if prev is not subprocess.DEVNULL:
+            prev.close()
+        for _g, pr, _log in procs:
+            if pr.poll() is None:
+                pr.kill()
+            pr.wait()
+    for gpu, pr, log in procs:  # a stage that failed on its own (not because the last one had all it needed)
+        log.seek(0)
+        e = log.read()
+        log.close()
+        if pr.returncode and pr.returncode != -signal.SIGPIPE and not ('Broken pipe' in e or 'Error writing' in e and not gpu):
+            raise RuntimeError(plain(what, e, pr.returncode))
+    return err
 
 
 def unique(path):
@@ -4725,7 +4924,7 @@ def export(job, p):
             lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
             # rendered aside and moved in when complete: a failed or stopped export left an unplayable file under its name
             out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}"
-            run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda x: st.update(progress=(steps - 1 + x) / steps), 'The export', job)
+            render(p, td, out, lambda x: st.update(progress=(steps - 1 + x) / steps), 'The export', job)
             if p.get('format') == 'pngseq':  # the frames, stored (PNG is compressed already) in a folder named after the export
                 with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
                     for f in sorted((Path(td) / 'seq').glob('*.png')):
@@ -5028,7 +5227,7 @@ class App(BaseHTTPRequestHandler):
                 try:
                     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
                         out = Path(td) / 'frame.png'
-                        run_ffmpeg(ffmpeg_cmd(p, td, out), p['duration'], lambda _x: None)
+                        render(p, td, out, lambda _x: None, 'The frame')
                         if not out.exists():
                             raise RuntimeError('no frame rendered')
                         return self.reply({'image': base64.b64encode(out.read_bytes()).decode()})
@@ -5667,6 +5866,20 @@ def selftest():
         except ValueError:
             pass
     print('effects-pack expressions ok: geq on its frames, LF counts from its start, bad tokens refused')
+    if fx_gpu():  # the GPU stages (render_gpu) against geq on one plan: two runs of effects around a negate, mirrored fetches
+        two = {**tplan, 'name': 'fx-gpu', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}],
+               'fx': [{'op': 'expr', 'a': 5, 'b': 25, 'er': 'r(W-1-X,Y)', 'eg': 'clip(LF*9,0,255)', 'eb': 'if(lt(mod(X-40,64),32),b(X,Y)*0.5,0)'},
+                      {'op': 'negate', 'a': 12, 'b': 18}, {'op': 'expr', 'a': 15, 'b': 30, 'er': 'r(X,Y)', 'eg': 'g(X,Y)', 'eb': '255-b(X,Y)'}]}
+        raw = lambda f: subprocess.run(['ffmpeg', '-v', 'error', '-i', str(f), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True).stdout
+        gpu, keep = raw(render(two, 30)), FXGPU[0]
+        FXGPU[0] = ''
+        try:
+            cpu = raw(render(two, 30))
+        finally:
+            FXGPU[0] = keep
+        d = max(abs(a - b) for a, b in zip(gpu[::7], cpu[::7]))
+        assert len(gpu) == len(cpu) and d <= 2, ('effects on the GPU == geq', len(gpu), len(cpu), d)
+        print(f'effects on the GPU ok: the same frames as geq (worst {d} levels), around a negate in between')
     gen('-f', 'lavfi', '-i', 'color=red:s=320x320,drawbox=x=200:y=0:w=120:h=320:color=blue:t=fill', '-frames:v', '1', str(HOME / 'box.png'))
     out = render({**tplan, 'name': 'fx-zblur', 'duration': 1, 'main': [{**still_clip(imp('box.png')), 'frames': 30}], 'fx': [{'op': 'zblur', 's': 0.5, 'a': 10, 'b': 20}]}, 30)
     z5, z15, z25 = at(5, 210), at(15, 210), at(25, 210)  # blue from x = 195; zoomed copies (up to 1.5x about x = 135) push it out to 225
