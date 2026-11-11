@@ -477,13 +477,24 @@ def proxy(m, src, out, sw=False):
 
 
 def proxy_cmd(m, src, out, sw=False):
-    """720p H.264 with a keyframe every second (quick seeks while editing). Decoding by the media engine (VideoToolbox)
-    took a tenth of the CPU of ffmpeg's decoder threads on a DJI 4K60 clip (0.6 cores vs 6.3, 2x the time on a 14-core M4
-    Max), so only big Macs decode H.264 in software. HDR goes through the export's tone mapping."""
-    dec, vf = hdr_decode(m)
-    if not dec and not sw and not (BIG_MAC and m.get('codec') == 'h264'):
-        dec = ['-hwaccel', 'videotoolbox', '-threads', '1']  # one thread: ffmpeg's frame threads would only hold frames
+    """720p H.264 with a keyframe every second (quick seeks while editing), made on the media engine: VideoToolbox decodes
+    and scales (and tone-maps HDR) on the GPU, so only preview-sized frames reach the CPU. Measured on this M4 Max, 20 s of
+    footage: iPhone 4K120 HLG 91 -> 6 CPU-s (it used to download every 4K frame and convert, turn and shrink it on the CPU);
+    DJI 4K60 H.264 42 -> 1.5 CPU-s (software decode was 2.5x quicker on the clock and took 8.7 cores doing it). sw: the
+    fallback for what the media engine can't decode (10-bit / 4:2:2 H.264...), all on the CPU, auto-rotated."""
     tall = 720 if heavy(m) else 1080  # 4K60 at 720p (decoding speed); a long-GOP 1080p phone clip keeps its size
+    if sw or m.get('alpha'):
+        dec, vf = [], ''
+    else:  # the copy's size in the frame's stored orientation (the pixels are turned afterwards, by hand: hw frames can't auto-rotate)
+        H = min(tall, m['h'])
+        W = even(m['w'] * H / m['h'])
+        w, h = (H, W) if m.get('rot', 0) % 180 else (W, H)
+        dec, vf = hdr_decode(m)
+        if dec:
+            vf = vf.replace('scale_vt=', f'scale_vt=w={w}:h={h}:', 1)
+        else:
+            dec = ['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1']
+            vf = f'scale_vt=w={w}:h={h},hwdownload,format=nv12|p010le,format=yuv420p,' + TURN.get(-m.get('rot', 0) % 360, '')
     # each frame keeps its own time: on a 1/fps time base iPhone 120 fps frames (on a 1/600 s grid, with gaps) moved up to a
     # frame, and the preview showed a later frame than the export (which reads the original) at 3 of 5 test times
     return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-fps_mode:v', 'passthrough', '-enc_time_base:v', 'demux',
@@ -770,13 +781,15 @@ def beats(mid):
 VT_SDR = ('scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
           'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,')
 
+TURN = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}  # stored pixels -> upright, by the clip's rotation
+
 
 def hdr_decode(m):
     """HLG/PQ -> SDR BT.709 the way the export does it (VideoToolbox; rotation by hand, autorotate can't touch hw
     frames): ffmpeg input args + filters ending in ','. Empty for SDR."""
     if not m.get('hdr') or m.get('alpha'):
         return [], ''
-    tr = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-m.get('rot', 0) % 360, '')
+    tr = TURN.get(-m.get('rot', 0) % 360, '')
     # -display_rotation 0: the pixels are turned by hand, so files made from them must not carry the phone's rotation too
     return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1'], VT_SDR + tr)
 
