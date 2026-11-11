@@ -4388,6 +4388,8 @@ def graph(p, td):
                   + f',setsar=1,settb=AVTB[v{k}]')
         fg.append(snd)
     if p['main']:  # cuts concatenate; transitions overlap the two clips (xfade + acrossfade), like CapCut
+        # (a over b: both timed by frame number. From their own stamps, rounded to microseconds, vstack paired a's frame with the
+        # b frame before it whenever a's landed a microsecond late: a frame doubled in the overlap, two to four in each 30)
         cv, ca, n = 'v0', 'a0', p['main'][0]['frames']
         for k in range(1, len(p['main'])):
             prev, c = p['main'][k - 1], p['main'][k]
@@ -4397,18 +4399,18 @@ def graph(p, td):
             elif o:
                 tr, n0 = prev['tr'], n - o  # the overlap is main-stream frames n0 .. n-1; its frame i is at p = i/o
                 if tr == 'custom' and p.get('tr_stack'):  # gpu_transitions(): only the overlap's frames, a over b, for the GPU
-                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0},nullsink;[cb{k}]trim=start_frame={n0},setpts=PTS-STARTPTS[oa{k}];'
-                              f'[v{k}]trim=end_frame={o},setpts=PTS-STARTPTS[ob{k}];[oa{k}][ob{k}]vstack,format=gbrp[vout];'
+                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0},nullsink;[cb{k}]trim=start_frame={n0},setpts=N/({F:g}*TB)[oa{k}];'
+                              f'[v{k}]trim=end_frame={o},setpts=N/({F:g}*TB)[ob{k}];[oa{k}][ob{k}]vstack,format=gbrp[vout];'
                               + ';'.join(f'[a{j}]anullsink' for j in range(len(p['main']))))
                     return sum(ins, []), ';'.join(fg)
                 elif tr == 'custom' and k in p.get('tr_files', {}):  # made on the GPU beforehand (gpu_transitions): laid in between
                     ins.append(['-i', p['tr_files'][k]])
                     fg.append(f'[{cv}]trim=end_frame={n0}[cp{k}];[v{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
-                              f'[{len(ins) - 1}:v]format={RGB},setsar=1,settb=AVTB,setpts=PTS-STARTPTS[ov{k}];[cp{k}][ov{k}][cq{k}]concat=n=3:v=1:a=0[mv{k}]')
+                              f'[{len(ins) - 1}:v]format={RGB},setsar=1,setpts=PTS-STARTPTS,fps={F:g},settb=AVTB[ov{k}];[cp{k}][ov{k}][cq{k}]concat=n=3:v=1:a=0[mv{k}]')
                 elif tr == 'custom':  # the overlap's frames of a over b, through geq (threaded, with lets), between the frames before and after
                     ex = ':'.join(f"{c}='" + re.sub(r'\bTO\b', str(o), prev['trx']['e' + c]) + "'" for c in 'rgb')
-                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0}[cp{k}];[cb{k}]trim=start_frame={n0},setpts=PTS-STARTPTS[oa{k}];'
-                              f'[v{k}]split[va{k}][vb{k}];[va{k}]trim=end_frame={o},setpts=PTS-STARTPTS[ob{k}];[vb{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
+                    fg.append(f'[{cv}]split[ca{k}][cb{k}];[ca{k}]trim=end_frame={n0}[cp{k}];[cb{k}]trim=start_frame={n0},setpts=N/({F:g}*TB)[oa{k}];'
+                              f'[v{k}]split[va{k}][vb{k}];[va{k}]trim=end_frame={o},setpts=N/({F:g}*TB)[ob{k}];[vb{k}]trim=start_frame={o},setpts=PTS-STARTPTS[cq{k}];'
                               f'[oa{k}][ob{k}]vstack,geq=interpolation=nearest:{ex},crop={W}:{H}:0:0[ov{k}];[cp{k}][ov{k}][cq{k}]concat=n=3:v=1:a=0[mv{k}]')
                 else:
                     fg.append(f"[{cv}][v{k}]xfade=transition={TR_BLUR.get(tr, tr)}:duration={o / F:.6f}:offset={n0 / F:.6f}[mv{k}]")
@@ -4647,7 +4649,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     if p.get('raw_out'):  # render(): raw frames on stdout (no -progress there), the sound is made apart
         gf.write_text(fg + ';[aout]anullsink')
         return ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
-                '-map', '[vout]', '-threads', FF_THREADS, '-f', 'rawvideo', '-t', f"{p['duration']:.6f}", 'pipe:1']
+                '-map', '[vout]', '-threads', FF_THREADS, '-fps_mode', 'passthrough', '-f', 'rawvideo', '-t', f"{p['duration']:.6f}", 'pipe:1']  # passthrough: every frame once (cfr re-timed microsecond-rounded stamps: a frame doubled, the next dropped)
     hdr, A = p.get('hdr'), p.get('alpha')
     vmap, amap = ['-map', '[vout]'], ['-map', '[aout]']
     F = p['fps'] if intermediate or fmt in ('gif', 'png', *SOUND) or not p.get('efps') else p['efps']
@@ -4796,7 +4798,14 @@ def gpu_transitions(p, td, job):
         o = overlap(a, b)
         if a['tr'] != 'custom' or not o:
             continue
-        # ponytail: the outgoing clip decodes whole for its last o frames; trim its in point if long clips make this slow
+        m, sf = a['frames'] - 2 * o - 2 - (a.get('mb') or 0), a.get('sfps') or 0  # frames it can skip (motion blur reaches back mb; overlap() wants 2 o)
+        # a whole number of source frames too: then every frame keeps its arithmetic and its picture (59.94 fps footage in a 60 fps
+        # project shifted by 268 frames picked the neighbouring source frame in 28 of 30; there it skips in steps of 1000)
+        m = next((j for j in range(m, max(0, m - 2000), -1) if abs(j * a['speed'] * sf / F - round(j * a['speed'] * sf / F)) < 1e-6), 0) if sf else 0
+        if m > 0 and a['kind'] == 'video' and not any(a.get(x) for x in ('kf', 'lkf', 'mask_seq')) and a['fadeIn'] * F <= m:
+            # start it m frames later, so only its tail is decoded (keyframes and mask runs count from the clip's start: those keep
+            # the whole clip; a fade-in that ends before the tail goes)
+            a = {**a, 'in': a['in'] + m * a['speed'] / F, 'frames': a['frames'] - m, 'fadeIn': 0}
         sub = {**p, 'main': [a, b], 'overlay': [], 'audio': [], 'fx': [], 'frames': [], 'pngs': [], 'tr_stack': True, 'rgb': True, 'tr_files': {}}
         ins, fg = graph(sub, td)
         gf, mt, f = Path(td) / f'trs{k}.txt', Path(td) / f'tr{k}.metal', Path(td) / f'tr{k}.mkv'
@@ -4804,7 +4813,7 @@ def gpu_transitions(p, td, job):
         mt.write_text(msl_effects([{c: re.sub(r'\bTO\b', str(o), a['trx'][c]) for c in ('er', 'eg', 'eb')}]))
         logs = [open(Path(td) / f'tr{k}.{i}.log', 'w+') for i in range(3)]
         p1 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
-                               '-map', '[vout]', '-frames:v', str(o), '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=logs[0])
+                               '-map', '[vout]', '-frames:v', str(o), '-fps_mode', 'passthrough', '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=logs[0])
         p2 = subprocess.Popen([FXGPU[0], str(W), str(2 * H), '3', str(mt), f'0,{o}'], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=logs[1])
         p1.stdout.close()
         p3 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-s', f'{W}x{2 * H}',
