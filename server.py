@@ -3609,6 +3609,8 @@ def clean_plan(p):
                                                           '-of', 'csv=p=0', k['path']]).stdout.strip()),  # HLG / PQ (items imported before 'trc' was kept: read from the file)
                  flip=bool(c.get('flip')), denoise=bool(c.get('denoise')), pitch=bool(c.get('pitch')), heavy=heavy(m))
         k['studio'] = c.get('studio') if c.get('studio') in (True, 'music') else False
+        jn = c.get('jn') if isinstance(c.get('jn'), list) and len(c['jn']) == 2 else (0, 0)
+        k['jn'] = (bool(jn[0]), bool(jn[1]))  # J / L cuts: the side where this clip's sound carries on in another piece (no 3 ms edge fade there)
         if fx := clip_fx(c, m):  # the sound the preview plays: the same processed PCM file (Reduce noise, Studio voice, a character)
             if not (f := pcm(m, fx=fx)):
                 raise ValueError(f"{m.get('name') or 'A clip'}: processing its sound failed")
@@ -4241,6 +4243,8 @@ def graph(p, td):
         vol = f"asetnsamples=n=64:p=0,volume='{c['volume']:.4f}*({pw(c['vkf'], 'v')})':eval=frame" if c.get('vkf') else f"volume={c['volume']:.3f}"
         tempo = f"aresample=48000,asetrate={48000 * c['speed']:.3f},aresample=48000" if c.get('pitch') and c['speed'] != 1 else atempo(c['speed'])
         lead = c['in'] - ss(c)
+        jn = c.get('jn') or (False, False)
+        joins = (joins[0] or jn[0], joins[1] or jn[1])
         if live and c.get('dn'):  # Reduce noise: its own input, the denoised PCM (raw samples: the seek is exact)
             ins.append(['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', f"{ss(c):.6f}", '-t', f"{c['out'] - ss(c):.6f}", '-i', c['dn']])
             i = len(ins) - 1
@@ -4258,7 +4262,7 @@ def graph(p, td):
             end = min(dur, (c['out'] - c['in']) / c['speed'])
             a += f",afade=t=out:st={max(0, end - 0.003):.6f}:d=0.003:curve=hsin"
         if delay:
-            a += f',adelay={round(delay * 1000)}:all=1'
+            a += f',adelay={round(delay * 48000)}S:all=1'  # in samples: whole ms put a clip at 1/30 s up to 24 samples off the preview
         return a
 
     def grade(c, fmt=',format=rgb24,'):  # the UI's grade table as a .cube for lut3d (trilinear, like the preview's 3D texture)

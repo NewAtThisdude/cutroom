@@ -523,7 +523,7 @@ function renderTimeline() {
       heads += `<div class="th${h < L.h ? ' thin' : ''}" style="height:${h}px"><span title="${name}">${name}</span><span class="tb"><button class="lt${off ? ' on' : ''}" data-${multi ? 'tk' : 'lt'}="${multi ? `${L.key}:${r}` : L.key}" title="${snd ? 'Mute' : 'Hide'} ${name}" aria-pressed="${off}">${snd ? 'M' : 'H'}</button>`
         + `<button class="lt lk${T.lock ? ' on' : ''}" data-lk="${L.key}:${r}" title="Lock ${name}" aria-label="Lock ${name}" aria-pressed="${!!T.lock}">${lockSvg}</button></span></div>`;
     }
-    el.innerHTML = P[L.key].filter(c => near(L.key, c)).map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles(wa, wb) : '');
+    el.innerHTML = P[L.key].filter(c => near(L.key, c)).map(c => clipHTML(L.key, c, (R.row.get(c.id) || 0) * L.h, L.h)).join('') + (L.key === 'main' ? trHandles(wa, wb) + jlHTML(L.h) : '');
     if (multi) for (const [k, v] of Object.entries(P.tracks || {})) if (k.startsWith(`${L.key}:`) && (v.off || v.lock)) { const r = +k.split(':')[1]; if (r < R.n) el.insertAdjacentHTML('beforeend', `<div class="tshade${v.off ? ' off' : ''}${v.lock ? ' lock' : ''}" style="top:${r * h}px;height:${h}px"></div>`); }
     else if (P.tracks?.[`${L.key}:0`]?.lock) el.insertAdjacentHTML('beforeend', `<div class="tshade lock" style="top:0;height:${h}px"></div>`);
   }
@@ -572,19 +572,31 @@ function drawStrips() {
       }
     }
     const pk = wave && peaksOf(m);
-    if (pk) {
-      const wh = h - vh, mid = vh + wh / 2;
-      const path = new Path2D(); // one fill for all the columns (a fillRect each doubled the timeline's render time)
-      for (let x = 0; x < cw; x++) {
-        const lt = (x0 + x) / pps, s0 = c.in + lt * c.speed, b0 = Math.floor(s0 * 100), b1 = Math.max(b0 + 1, Math.ceil((s0 + c.speed / pps) * 100));
-        let v = 0;
-        for (let b = b0; b < b1 && b < pk.length; b++) if (pk[b] > v) v = pk[b];
-        const a = (Math.sqrt(Math.min(1, (v / 255) * volAt(c, lt) * fadeAt(c, lt, d))) * wh) / 2;
-        if (a > 0.25) path.rect(x, mid - a, 1, a * 2);
-      }
-      g.fillStyle = '#7ee0c3'; g.fill(path);
-    }
+    if (pk) { g.fillStyle = '#7ee0c3'; g.fill(wavePath(pk, c, x0, cw, vh, h - vh, lt => volAt(c, lt) * fadeAt(c, lt, d))); }
   }
+  const jx = document.querySelectorAll('#lanes .jlx canvas'), parts = jx.length ? new Map(jlParts().map(c => [c.id, c])) : null;
+  for (const cv of jx) { // the J / L sound past the clip's edge
+    const el = cv.parentElement, c = parts.get(el.dataset.id), pk = c && peaksOf(M.get(c.media)), cw = el.clientWidth, h = el.clientHeight;
+    if (!pk || !cw || !h) continue;
+    cv.width = Math.ceil(cw * dpr); cv.height = Math.ceil(h * dpr);
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = '#7ee0c3'; g.fill(wavePath(pk, c, 0, cw, 0, h, () => c.volume));
+  }
+}
+function wavePath(pk, c, x0, cw, top, wh, gain) { // the sound's peaks as columns, one fill for all (a fillRect each doubled the timeline's render time)
+  const path = new Path2D(), pps = S.pps, mid = top + wh / 2;
+  for (let x = 0; x < cw; x++) {
+    const lt = (x0 + x) / pps, s0 = c.in + lt * c.speed, b0 = Math.floor(s0 * 100), b1 = Math.max(b0 + 1, Math.ceil((s0 + c.speed / pps) * 100));
+    let v = 0;
+    for (let b = b0; b < b1 && b < pk.length; b++) if (pk[b] > v) v = pk[b];
+    const a = (Math.sqrt(Math.min(1, (v / 255) * gain(lt))) * wh) / 2;
+    if (a > 0.25) path.rect(x, mid - a, 1, a * 2);
+  }
+  return path;
+}
+function jlHTML(h) { // the J / L sound drawn past its clip's edge, on the lower (sound) part of the neighbour
+  const t = 3 + Math.round((h - 6) * 0.68);
+  return jlParts().map(c => `<div class="jlx" data-id="${c.id}" style="left:${c.start * S.pps}px;width:${Math.max(1, len(c) * S.pps)}px;top:${t}px;height:${h - 3 - t}px"><canvas></canvas></div>`).join('');
 }
 const MULTI = ['overlay', 'audio', 'text', 'fx']; // lanes with several tracks
 function rows(lane) { // each clip on its track (c.track: dragged up or down); one that would overlap another there goes a track further. Later in the array = drawn on top
@@ -635,7 +647,8 @@ function clipHTML(lane, c, top = 0, h = 42) {
   const fades = m ? (() => { // fade ramps shaded over the clip, plus round knobs on its top corners to drag them
     const w = Math.max(3, tdur(c, lane) * pps), a = (c.fadeIn || 0) * pps, b = (c.fadeOut || 0) * pps;
     return (a || b ? `<svg class="fade" viewBox="0 0 ${w} 100" preserveAspectRatio="none">${a ? `<path d="M0,0H${a}L0,100Z"/>` : ''}${b ? `<path d="M${w},0H${w - b}L${w},100Z"/>` : ''}</svg>` : '')
-      + `<i class="fh l" style="left:${clamp(a - 5, 0, w - 10)}px" title="Drag to fade in"></i><i class="fh r" style="right:${clamp(b - 5, 0, w - 10)}px" title="Drag to fade out"></i>`;
+      + `<i class="fh l" style="left:${clamp(a - 5, 0, w - 10)}px" title="Drag to fade in"></i><i class="fh r" style="right:${clamp(b - 5, 0, w - 10)}px" title="Drag to fade out"></i>`
+      + (lane === 'main' && m.hasAudio ? '<i class="jh l" title="Drag left: the sound starts early (J cut)"></i><i class="jh r" title="Drag right: the sound runs on (L cut)"></i>' : '');
   })() : '';
   const marks = env + fades + (c.kf || []).map((f, i) => `<b class="kfm" data-k="${i}" style="left:${f.t * pps}px" title="Keyframe: click to go to it, drag to move it"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
@@ -974,6 +987,11 @@ function mediaPanel(c, lane) {
   }
   basic += `<h4>Fade</h4>${slider('c.fadeIn', 'Fade in', c.fadeIn, 0, fmax, 0.05, 's')}${slider('c.fadeOut', 'Fade out', c.fadeOut, 0, fmax, 0.05, 's')}`
     + (vis ? `<p class="hint">${lane === 'main' ? 'Main-track fades go through black.' : 'Overlay fades turn see-through.'}</p>` : '');
+  if (lane === 'main' && m.hasAudio) {
+    const [ja, jb] = jlOf(P.main.indexOf(c)), used = (v, u) => (v > 0 && Math.abs(v - u) > 0.5 / P.fps ? ` (${u ? `${u.toFixed(2)} s fits` : 'not at this cut'})` : '');
+    basic += `<h4>Sound over the cut</h4>${slider('c.sndLead', 'Sound starts early', c.sndLead || 0, 0, 5, 0.05, 's')}${slider('c.sndTail', 'Sound runs on', c.sndTail || 0, 0, 5, 0.05, 's')}`
+      + `<p class="hint">J and L cuts: this clip's own sound plays over the clip before or after it, mixed with that clip's sound. Only at a plain cut, not a transition${used(c.sndLead, ja)}${used(c.sndTail, jb)}.</p>`;
+  }
   const animate = vis ? `<h4>In</h4>${animTiles('c.anim.in', A.in || 'none', CLIP_ANIMS)}${A.in && A.in !== 'none' ? slider('c.anim.ind', 'Duration', A.ind ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
     + `<h4>Out</h4>${animTiles('c.anim.out', A.out || 'none', CLIP_ANIMS)}${A.out && A.out !== 'none' ? slider('c.anim.outd', 'Duration', A.outd ?? 0.5, 0.1, amax, 0.05, 's') : ''}`
     + `<h4>Combo</h4>${animTiles('c.anim.loop', A.loop || 'none', LOOP_ANIMS)}${A.loop && A.loop !== 'none' ? slider('c.anim.amt', 'Strength', A.amt ?? 1, 0.1, 3, 0.05, '%') : ''}`
@@ -1423,6 +1441,27 @@ function joined(a, b) { // b carries on a's sound (a split): it plays straight t
     && !!a.denoise === !!b.denoise && (a.studio || false) === (b.studio || false) && JSON.stringify(a.au || {}) === JSON.stringify(b.au || {}) && !trF(P.main.indexOf(a))
     && Math.abs(a.in + tdur(a, 'main') * a.speed - b.in) < 0.5 / P.fps;
 }
+// J and L cuts: a main clip's own sound starts before its picture (sndLead, s) or runs on after it (sndTail) over the
+// neighbour, whose sound keeps playing under it. Whole frames, only at a plain cut (a transition crossfades instead, a split
+// already plays through), within the source's sound before in / after the picture and the neighbour's length.
+function jlOf(i) {
+  const c = P.main[i], a = P.main[i - 1], b = P.main[i + 1], m = M.get(c?.media), F = P.fps;
+  if (!m?.hasAudio || !(c.sndLead > 0 || c.sndTail > 0)) return [0, 0];
+  const d = frames(c) / F;
+  const lead = c.sndLead > 0 && a && !trF(i - 1) && !joined(a, c) ? Math.min(Math.round(c.sndLead * F), Math.floor((c.in / c.speed) * F + 1e-6), frames(a)) : 0;
+  const tail = c.sndTail > 0 && b && !trF(i) && !joined(c, b) ? Math.min(Math.round(c.sndTail * F), Math.floor(((m.duration - c.in) / c.speed - d) * F + 1e-6), frames(b)) : 0;
+  return [Math.max(0, lead) / F, Math.max(0, tail) / F];
+}
+function jlParts() { // the J / L sound as audio-track clips: the export's plan and the preview's scheduler play them alike
+  if (!P || P.mute.main) return [];
+  packMain();
+  return P.main.flatMap((c, i) => {
+    const [a, b] = jlOf(i), d = tdur(c, 'main');
+    const s = { media: c.media, speed: c.speed, volume: c.volume, pitch: c.pitch, denoise: c.denoise, studio: c.studio, au: c.au, fadeIn: 0, fadeOut: 0, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, adj: { b: 1, c: 1, s: 1 } };
+    return [a && { ...s, id: `${c.id}<`, start: c.start - a, in: Math.max(0, c.in - a * c.speed), out: c.in, jn: [false, true] },
+      b && { ...s, id: `${c.id}>`, start: c.start + d, in: c.in + d * c.speed, out: c.in + (d + b) * c.speed, jn: [true, false] }].filter(Boolean);
+  });
+}
 function audioTick(wall) { // while playing: (re)anchor timeline to audio clock, schedule the next second of every sounding clip
   if (!actx || actx.state !== 'running' || !S.playing || S.stuck || S.rate !== 1) return audioStop(); // a held clock: the sound waits with the picture (and a shuttle is silent)
   // the audio-clock time whose sample leaves the speakers at the frame's wall time: so the sound of S.t is HEARD at S.t
@@ -1432,7 +1471,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
   if (S.aA0 === undefined || Math.abs(S.aT0 + (out - S.aA0) - S.t) > 0.04) { audioStop(); S.aA0 = out; S.aT0 = S.t; } // a hold, a seek or clock drift
   const seen = new Set(), t1 = S.t + 1;
   packMain();
-  for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
+  for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')], ['jl', jlParts()]]) for (const c of list) {
     const m = M.get(c.media), d = tdur(c, lane);
     if (!m?.hasAudio || !(c.volume > 0) || c.start >= t1 || c.start + d <= S.t) continue;
     seen.add(c.id);
@@ -1442,7 +1481,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
     if (S.t >= c.start) v.n.out.gain.setTargetAtTime(clipGain(c, lane, S.t), now, 0.012);
     const tempo = c.pitch || Math.abs(c.speed - 1) < 1e-6 ? 1 : +c.speed.toFixed(4), pbr = c.speed / tempo;
     const sp = pcmSpan(c, tempo), f = t => (c.in - sp[0] + (t - c.start) * c.speed) / tempo, tl = x => c.start + (x * tempo + sp[0] - c.in) / c.speed; // timeline <-> PCM seconds
-    const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d), i = lane === 'main' ? P.main.indexOf(c) : -1;
+    const a = Math.max(S.t, c.start), b = Math.min(t1, c.start + d), i = lane === 'main' ? P.main.indexOf(c) : -1, jn = c.jn || (i >= 0 ? jlOf(i).map(x => x > 0) : []);
     for (let k = Math.floor(f(Math.max(a, t1)) / PCM_S); k * PCM_S < f(Math.min(S.t + 3, c.start + d)); k++) pcmChunk(c.media, tempo, k, sp, sndFx(c)); // fetched 3 s ahead
     for (let k = Math.floor(f(a) / PCM_S); k * PCM_S < f(b); k++) {
       if (v.srcs.has(k)) continue;
@@ -1453,13 +1492,13 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
       const s1 = Math.min(tl(k * PCM_S + p.buf.duration), c.start + d), late = when < now;
       // 3 ms in where sound starts from nothing (play, a re-sync, a clip's start after a cut) and out at a clip's end, like
       // the export: a hard edge clicks. Not between chunks, nor across a split where the same sound carries on
-      const fadeIn = late || s0 === S.t || (s0 === c.start ? !(i > 0 && joined(P.main[i - 1], c)) : s0 !== tl(k * PCM_S));
+      const fadeIn = late || s0 === S.t || (s0 === c.start ? !(jn[0] || i > 0 && joined(P.main[i - 1], c)) : s0 !== tl(k * PCM_S));
       if (late) { s0 += now - when; when = now; }
       if (s1 - s0 < 1e-3) { v.srcs.set(k, null); continue; }
       const n = actx.createBufferSource(), g = n.g = actx.createGain(), e = when + (s1 - s0);
       n.buffer = p.buf; n.playbackRate.value = pbr; n.connect(g).connect(v.n.src);
       if (fadeIn) { g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(1, when + 0.003); }
-      if (s1 === c.start + d && !(i >= 0 && joined(c, P.main[i + 1]))) { g.gain.setValueAtTime(1, Math.max(when + 0.003, e - 0.003)); g.gain.linearRampToValueAtTime(0, e); }
+      if (s1 === c.start + d && !(jn[1] || i >= 0 && joined(c, P.main[i + 1]))) { g.gain.setValueAtTime(1, Math.max(when + 0.003, e - 0.003)); g.gain.linearRampToValueAtTime(0, e); }
       n.start(when, f(s0) - k * PCM_S, (s1 - s0) * pbr);
       v.srcs.set(k, n);
     }
@@ -4177,6 +4216,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if (lane === 'main' && trF(i)) o.tr = trPlan(c.tr.type, trF(i));
     if (c.vkf?.length) o.vkf = c.vkf;
     if (c.au) o.au = c.au;
+    if (c.jn) o.jn = c.jn;
+    else if (lane === 'main' && jlOf(i).some(x => x > 0)) o.jn = jlOf(i).map(x => x > 0);
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
     return o;
   };
@@ -4212,7 +4253,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
-    audio: P.mute.audio ? [] : await Promise.all(shown('audio').map(c => clip(c, 'audio'))) };
+    audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }
 function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
@@ -4609,6 +4650,20 @@ function fadeDrag(lane, c, el, isIn) { // a fade knob: drag it into the clip to 
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 }
+function jlDrag(e, c, isIn) { // a sound knob on a main clip's lower corner: drag it out past the edge for a J (left) or L (right) cut, in frames
+  const before = JSON.stringify(P), k = isIn ? 'sndLead' : 'sndTail', i = P.main.indexOf(c), x0 = e.clientX;
+  if (S.playing) pause();
+  const keep = c[k], from = jlOf(i)[isIn ? 0 : 1]; c[k] = 1e6; const most = jlOf(i)[isIn ? 0 : 1]; // the longest it can be here
+  if (keep === undefined) delete c[k]; else c[k] = keep;
+  const move = ev => {
+    const x = clamp(from + ((isIn ? -1 : 1) * (ev.clientX - x0)) / S.pps, 0, most);
+    if (x > 0) c[k] = Math.round(x * P.fps) / P.fps; else delete c[k];
+    S.dirty = true; renderTimeline(); renderInspector();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
 function setZoom(pps, anchorX) {
   const sc = $('#tlScroll'), x = anchorX ?? sc.clientWidth / 2, t = (sc.scrollLeft + x) / S.pps;
   S.pps = clamp(pps, Math.min(8, (sc.clientWidth - 60) / Math.max(1, total())), 600); // out far enough that a long edit fits
@@ -4896,8 +4951,8 @@ function wire() {
     }
     if (!isSel(lane, c.id)) S.multi.clear(); // a click on an unselected clip starts over; on a selected one it keeps the group, to drag it
     if (S.sel?.id !== c.id) { S.sel = { lane, id: c.id }; renderInspector(); $$('.clip.sel').forEach(x => { if (!S.multi.has(selKey(x.dataset.lane, x.dataset.id))) x.classList.remove('sel'); }); el.classList.add('sel'); S.dirty = true; }
-    const fh = e.target.closest('.fh'), km = e.target.closest('.kfm');
-    if (km) kfDrag(e, c, el, c.kf?.[+km.dataset.k]); else if (fh) fadeDrag(lane, c, el, fh.classList.contains('l')); else drag(e, lane, c, el);
+    const fh = e.target.closest('.fh'), km = e.target.closest('.kfm'), jh = e.target.closest('.jh');
+    if (km) kfDrag(e, c, el, c.kf?.[+km.dataset.k]); else if (jh) jlDrag(e, c, jh.classList.contains('l')); else if (fh) fadeDrag(lane, c, el, fh.classList.contains('l')); else drag(e, lane, c, el);
   });
   $('#tlInner').addEventListener('contextmenu', e => { // right-click: the clip's menu, the cut's menu, or paste
     if (!P) return;
@@ -5701,7 +5756,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.duck) o.duck = c.duck;
   return o;
 }
-const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease',
+const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease', 'sndLead', 'sndTail',
   'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
@@ -5775,10 +5830,12 @@ const REMOTE = {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
     if (set.fx !== undefined && !FX[set.fx] && set.fx !== 'adjust') throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}, adjust`);
-    const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt', 'mb'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
+    const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt', 'mb', 'sndLead', 'sndTail'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
     if (nan.length) throw new Error(`${nan.join(', ')} must be numbers`);
     if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
     if (set.mb != null && !(set.mb >= 0 && set.mb <= 1)) throw new Error('mb (motion blur) must be 0-1');
+    if (['sndLead', 'sndTail'].some(k => set[k] != null && !(set[k] >= 0 && set[k] <= 60))) throw new Error('sndLead / sndTail must be 0-60 seconds');
+    if ((set.sndLead || set.sndTail) && L !== 'main') throw new Error('sndLead / sndTail (J and L cuts) are for main-track clips');
     if ((set.in ?? c.in) >= (set.out ?? c.out) && c.media) throw new Error('in must be before out');
     if (set.dur !== undefined && !(set.dur > 0)) throw new Error('dur must be above 0');
     if (set.grade !== undefined && set.grade !== null) {
