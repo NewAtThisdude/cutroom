@@ -262,6 +262,10 @@ TOOLS = [
                      'index=true first describes those with the local vision model (slow the first time, cached).',
      S({'q': txt, 'index': boo}, ['q']), 'search_media'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
+    ('versions', 'The open project\'s version history: list (snapshots kept every few minutes of editing plus named versions: id, t, name, '
+                 'dur, clips), save a named version of it as it is now, or restore one by id (the current state is kept as a version first, '
+                 'and the restore is one undo step).',
+     S({'action': {'type': 'string', 'enum': ['list', 'save', 'restore']}, 'name': txt, 'version': txt}), 'versions'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
