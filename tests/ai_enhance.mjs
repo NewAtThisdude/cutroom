@@ -16,6 +16,8 @@ const B = process.env.B || 'http://127.0.0.1:4754', H = { 'X-Cutroom': '1', 'Con
 const PH = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
 const OUT = new URL('./out/ai_enhance/', import.meta.url).pathname, FLICKER = 1;
 fs.mkdirSync(OUT, { recursive: true });
+const NEED = ['IMG_4700.MOV', 'IMG_4581.MOV', 'IMG_4703.MOV'].filter(f => !fs.existsSync(`${PH}/${f}`)); // real iPhone clips (people walking, handheld, a car on a lift)
+if (NEED.length) { console.log(`SKIP: real footage missing in ${PH}: ${NEED.join(', ')}`); process.exit(0); }
 const res = [], made = new Set(), pids = new Set();
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };
 const note = s => console.log(`     ${s}`);

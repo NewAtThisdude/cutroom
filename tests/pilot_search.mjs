@@ -105,7 +105,9 @@ if (ONLY !== 'search') {
 }
 
 // ---------- 2. smart search ----------
-if (ONLY !== 'pilot') {
+const NEED = ['IMG_4581.MOV', 'IMG_4663.MOV', 'IMG_3032.MOV'].filter(f => !fs.existsSync(`${PHOTOS}/${f}`)); // real iPhone clips the search is judged on
+if (NEED.length && ONLY !== 'pilot') console.log(`SKIP smart search: real footage missing in ${PHOTOS}: ${NEED.join(', ')}`);
+else if (ONLY !== 'pilot') {
   const imp = {};
   for (const f of ['IMG_4581.MOV', 'IMG_4663.MOV', 'IMG_3032.MOV']) imp[f] = (await api('/api/import_path', { path: `${PHOTOS}/${f}` })).id;
   const id = { bday: imp['IMG_4581.MOV'], mech: imp['IMG_4663.MOV'], cars: imp['IMG_3032.MOV'], bmx: byName('bmx-trees.mp4'), cafe: byName('cafe-and-dinner.mp4'), hike: byName('mountain-hike.mp4'),
