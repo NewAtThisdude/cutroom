@@ -111,7 +111,7 @@ TOOLS = [
     ('projects', 'List saved projects.', S(), 'projects'),
     ('open_project', 'Open a project by id or (part of its) name.', S({'project': txt}, ['project']), 'open_project'),
     ('new_project', 'Start a new empty project.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt}), 'new_project'),
-    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
+    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), markers (list of seconds: the timeline markers, also the YouTube chapter starts), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
     ('add_clip', 'Put a library item on a track. Main clips append (or insert at start); overlay/audio clips start at start (default: playhead).',
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
     ('update_clip', 'Change any clip setting. ' + CLIP_PROPS, S({'id': txt, 'set': obj}, ['id', 'set']), 'update_clip'),
@@ -266,8 +266,10 @@ TOOLS = [
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
-    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt '
-               '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption); '
+    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
+               '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption; '
+               'fcpxml = the whole timeline for Final Cut Pro / DaVinci Resolve; edl = a CMX3600 EDL of the main track; '
+               'chapters = YouTube chapter lines from the markers, returned as `text`, with `notes` when YouTube would refuse them); '
                'resolution 720p|1080p|1440p|4K|8K (8K needs 16 GB of memory); quality fast|best; bitrate 1|1.6|2.5, or mbps = a custom bitrate in Mbps; '
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
