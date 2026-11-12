@@ -21,7 +21,7 @@ Times are seconds on the timeline; a clip's in/out are seconds in its source fil
 clips play back to back), overlay (picture-in-picture, free start), audio, text, captions, fx (video effects: they change
 everything under them for their duration; text stays on top). Call options for valid values (transitions, looks, effects,
 sound effects, animations, text and caption presets, fonts, voices, formats).
-Exports land in ~/Movies/Cutroom/exports."""
+Exports land in the library's exports folder (~/Movies/Cutroom/exports unless CUTROOM_HOME says otherwise)."""
 
 CLIP_PROPS = """Clip properties (objects merge, null deletes a key):
 speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit fit|fill|blur (blur = blurred background, main only)

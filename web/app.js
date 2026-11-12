@@ -4285,7 +4285,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
     if (SUB_FMT.includes(fmt)) {
       const file = await saveSRT(name, fmt);
       S.exporting = null;
-      exportUI(100, `Saved <b>${esc(file)}</b> in Movies/Cutroom/exports`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
+      exportUI(100, `Saved <b>${esc(file)}</b> in ${esc(S.exportsDir || 'the exports folder')}`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
       return;
     }
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
@@ -4297,9 +4297,9 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       await new Promise(r => setTimeout(r, 400));
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
-        S.exporting = null;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in Movies/Cutroom/exports${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
-        tell(`Exported ${j.file} (Movies/Cutroom/exports)`);
+        S.exporting = null; S.exportsDir = j.dir || S.exportsDir;
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        tell(`Exported ${j.file} (${S.exportsDir || 'the exports folder'})`);
         break;
       }
       if (j.state === 'cancelled') { S.exporting = null; exportUI(0, 'Export cancelled.'); tell('Export cancelled'); break; }

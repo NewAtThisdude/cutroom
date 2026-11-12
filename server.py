@@ -865,11 +865,15 @@ def import_font(name, data):
     return info
 
 
+JOB_ST = threading.local()  # the job this thread runs (run_job): llm() shows its wait in the queue on it
+
+
 def run_job(fn, *args):
     job = uuid.uuid4().hex[:12]
     JOBS[job] = {'state': 'running', 'progress': 0.0}
 
     def go():
+        JOB_ST.st = JOBS[job]
         try:
             JOBS[job].update(state='done', progress=1.0, **fn(JOBS[job], *args))
         except Exception as e:  # surfaced to the UI
@@ -2776,7 +2780,7 @@ def llm(system, user, ctx=8192, images=None):
         body['think'] = False
     ask = lambda b: json.loads(urllib.request.urlopen(urllib.request.Request(LLM_URL + '/api/chat', data=json.dumps(b).encode(),
                                                                           headers={'Content-Type': 'application/json'}), timeout=900).read())
-    with ai_slot('llm'):
+    with ai_slot('llm', getattr(JOB_ST, 'st', None)):  # in a job: 'Waiting for ...' on it while another heavy job runs
         try:
             r = ask({k: v for k, v in body.items() if k != 'format'} if model in NO_FORMAT else body)
         except urllib.error.HTTPError as e:  # Ollama 0.40 serves qwen3.5:4b without structured output (501): ask in words, read the JSON out
@@ -5008,7 +5012,7 @@ def export(job, p):
                 return
             dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
             shutil.move(out, dst)
-        st.update(state='done', progress=1.0, file=dst.name, **({'sdr': p['sdr']} if p.get('sdr') else {}))
+        st.update(state='done', progress=1.0, file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}))  # dir: the page names the folder (a library elsewhere has its own)
     except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
         if st.get('cancel'):
             st.update(state='cancelled')
@@ -5576,6 +5580,16 @@ def selftest():
             break
         time.sleep(0.01)
     assert sb.get('note') == 'Waiting for Smart search (1 ahead)' and order == ['a'], (sb, order)
+
+    def asks(_st):  # a job's language-model step (llm() takes its slot with the job run_job gave this thread)
+        with ai_slot('llm', getattr(JOB_ST, 'st', None)):
+            return {}
+    lj = run_job(asks)
+    for _ in range(200):
+        if JOBS[lj].get('note'):
+            break
+        time.sleep(0.01)
+    assert JOBS[lj].get('note', '').startswith('Waiting for Smart search (2 ahead)'), JOBS[lj]
     go.set()
     ta.join(5)
     tb.join(5)
