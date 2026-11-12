@@ -675,7 +675,7 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
 const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
   ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'], ['V  Y  U  N', 'Tool: select · slip · slide · roll (⌥-drag: slip a clip, roll a cut)'],
   ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
-  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
+  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['G', 'Scopes: waveform, parade, vectorscope, histogram'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
 const TOOL_KEYS = { KeyV: 'select', KeyY: 'slip', KeyU: 'slide', KeyN: 'roll' };
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
@@ -1668,6 +1668,7 @@ function paint() {
   S.live = live;
   if (!fxDone) fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
+  if (SCOPE.on && (!S.playing || performance.now() - SCOPE.at >= 60)) drawScope(); // the finished frame, before the selection box; ~15 Hz while playing
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
@@ -1690,7 +1691,6 @@ function paint() {
   }
   if (!S.playing) audioWarm();
   if (G.tab === 'script') scriptNow(t);
-  if (SCOPE.on) drawScope();
   $('#tc').textContent = `${tc(S.t)} / ${tc(S.playing ? S.end : end)}`;
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
@@ -2655,6 +2655,13 @@ function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: r
   const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+function setScope({ on = SCOPE.on, kind = SCOPE.kind }, keep = true) { // the scopes panel (G): open or not, which scope; kept per Mac
+  SCOPE.on = !!on; if ($(`[data-scope="${kind}"]`)) SCOPE.kind = kind;
+  $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on);
+  for (const x of $$('#scope [data-scope]')) x.classList.toggle('on', x.dataset.scope === SCOPE.kind);
+  if (keep) store.set('cutroom.scope', JSON.stringify({ on: SCOPE.on, kind: SCOPE.kind }));
+  S.dirty = true;
 }
 function toggleTheater(on = !document.body.classList.contains('theater')) { // the preview fills the window (F, Esc to leave)
   document.body.classList.toggle('theater', on);
@@ -4780,8 +4787,9 @@ function wire() {
   $('#btnRipple').addEventListener('click', () => { if (P.rippleAll) delete P.rippleAll; else P.rippleAll = true; scheduleSave(); renderAll(); toast(P.rippleAll ? 'Ripple all: cutting or trimming the main track moves every track after it, linked or not' : 'Ripple all off: only linked clips follow the main track'); });
   $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
-  $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
-  $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) { SCOPE.kind = b.dataset.scope; for (const x of $('#scope').querySelectorAll('[data-scope]')) x.classList.toggle('on', x === b); S.dirty = true; } });
+  $('#btnScope').addEventListener('click', () => setScope({ on: !SCOPE.on }));
+  $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) setScope({ kind: b.dataset.scope }); });
+  try { setScope(JSON.parse(store.get('cutroom.scope')) || {}, false); } catch { /* none kept */ }
 
   $('#mediaList').addEventListener('click', async e => {
     const b = e.target.closest('[data-add]'), rm = e.target.closest('[data-rm]');
@@ -5234,6 +5242,7 @@ function wire() {
     else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
     else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
     else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
+    else if (!mod && !e.altKey && e.code === 'KeyG') { e.preventDefault(); setScope({ on: !SCOPE.on }); }
     else if ((key === 'backspace' || key === 'delete') && G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) { e.preventDefault(); cutScript(); }
     else if (!mod && !e.altKey && TOOL_KEYS[e.code]) { e.preventDefault(); setTool(TOOL_KEYS[e.code]); }
     else if ((mod && key === 'b') || (!mod && key === 's')) { e.preventDefault(); split(); }
@@ -5982,6 +5991,15 @@ const REMOTE = {
   async generate_video(args) { return aiVideo({ ...args, say: undefined }); },
   async compound_clip({ ids }) { if (!Array.isArray(ids) || ids.length < 2) throw new Error('ids: two or more clip ids'); const sel = ids.map(id => cfind(id)); S.sel = { lane: sel[0][1], id: sel[0][0].id }; S.multi = new Set(sel.slice(1).map(([c, L]) => selKey(L, c.id))); return makeCompound(sel); },
   async break_compound({ id }) { breakCompound(cfind(id)[0]); return (await REMOTE.timeline()).tracks.main; },
+  async scopes({ show, kind } = {}) { // open / switch the scopes panel; returns the levels of the frame the preview shows
+    if (kind != null && !$(`[data-scope="${kind}"]`)) throw new Error('kind: wave, parade, vec or hist');
+    if (show != null || kind != null) setScope({ on: show ?? SCOPE.on, kind });
+    if (S.playing) pause();
+    const sel = S.sel, pick0 = S.pickRect;
+    S.sel = null; S.pickRect = null; // the frame as rendered: no selection box
+    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; S.dirty = true; }
+    return { t: r3(S.t), open: SCOPE.on, kind: SCOPE.kind, ...scopeLevels() };
+  },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
   async snapshot({ t, max = 720, preview = false }) {

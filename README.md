@@ -192,7 +192,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Crop, mirror, rotation, opacity on any clip, chroma key with a colour picker | The picker reads the clip's own graded pixel under the click. The key uses ffmpeg `colorkey`'s exact formula |
 | | Masks: circle, rectangle, linear, mirror; feather and invert; **keyframed** (Animate the mask) | One canvas routine draws the preview and the export's mask PNG; a keyframed mask exports as a frame sequence (repeats reused) |
 | | **Colour grading** (Color tab): shadows / midtones / highlights wheels with levels, curves (luma, R, G, B), HSL for 8 colours, imported **.cube LUTs** with strength, and **strength over time** for all of a clip's colour | Baked into one 33-point 3D LUT that the preview applies on the GPU and the export through `lut3d` (trilinear both): the same table, so they agree by construction (parity 0.8-1.7 levels) |
-| | **Scopes**: waveform, histogram, vectorscope over the preview | Drawn from a 256 px copy of the frame, only while open |
+| | **Scopes** (G, or the button under the preview): luma waveform, RGB parade, vectorscope with the 75 % colour-bar targets and a skin-tone line, RGB histogram; open or closed and which scope are remembered | Drawn from a 256 px copy of the finished frame (without the selection box): about 1 ms per update (`tests/scopes.mjs`), at most 15 updates a second while playing, one per seek or edit while paused, nothing while closed. The `scopes` MCP tool returns the levels (luma spread in IRE, clipped black / white, mean RGB) |
 | | **Beauty** (smooth skin), per-clip **blur**, **glow / neon** around cutouts, **body effects** (blur, mono or dim the background behind a person; glow or neon around them) | Skin: luma bilateral mixed in by a skin-colour key (`bilateral` + `chromakey` in the export, one GPU pass in the preview). Body effects cut the person out with Apple Vision (only the part of the clip used) onto the track above |
 | | Overlay blend modes (11) and bring forward / send backward | Canvas `globalCompositeOperation` in the preview; the export runs the same W3C formulas through `lut2` (ffmpeg's own `blend` modes differ) |
 | | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
@@ -238,7 +238,7 @@ the preview frame as an image), and exports. The 41 tools cover projects, media 
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo, snapshots, export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
-object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
+object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions`, `hook_titles` and `scopes` (the frame's levels).
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -412,6 +412,7 @@ libass/freetype, and drawing text once in the browser also guarantees the export
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
 - **Audio timing:** ffmpeg's input seek in M4A files lands 800-2700 samples off (differently at each point), and MP3 seeks are approximate, so the export reads audio files from a lossless FLAC copy made at import (`cache/<id>.exact.flac`); MP4/MOV video sound seeks exactly. `atempo=1` is skipped (it wandered 7 ms on speech).
+- **Scopes** read the preview's 8-bit SDR picture, so an HDR export is judged on its SDR preview; the waveform maps full range 0-255 to 0-100 IRE (no studio-range scale), and the source viewer and library skimming do not update them.
 - **Preview pitch shift** adds up to 50 ms of delay while it is on, and is a simpler algorithm than the export's.
 - **Edit by script** follows the main track only (not voiceovers on the audio track). Caption text you edited by hand is
   re-made from the transcript after a cut (undo brings your edits back). Words are as good as whisper's timing: a cut
