@@ -7,7 +7,7 @@ import { webkit } from 'playwright';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${os.homedir()}/Movies/Cutroom/exports`;
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`, EXP = `${HOME}/exports`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
@@ -26,7 +26,7 @@ const TALK = await imp(`${tmp}/mcp-talk.mp4`), PIC = await imp(`${tmp}/mcp-pic.p
 fs.rmSync(tmp, { recursive: true });
 
 // ---------- the MCP server: tools map onto REMOTE; read-only tools answer through the real path ----------
-const mcp = spawn('/opt/homebrew/bin/python3', ['-I', `${os.homedir()}/cutroom/mcp/cutroom_mcp.py`], { env: { ...process.env, PYTHONPATH: '' } });
+const mcp = spawn('python3', ['-I', new URL('../mcp/cutroom_mcp.py', import.meta.url).pathname], { env: { ...process.env, PYTHONPATH: '', CUTROOM_PORT: new URL(B).port || '4610' } }); // the MCP server talks to the server under test
 let buf = '';
 const waiting = new Map();
 mcp.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(line); waiting.get(m.id)?.(m); } catch { /* not json */ } } });
@@ -234,8 +234,8 @@ const after = { p: await get('/api/projects'), m: await get('/api/media') };
 const made = { p: after.p.filter(x => !before.p.has(x.id)), m: after.m.filter(x => !before.m.has(x.id)), e: fs.readdirSync(EXP).filter(f => !before.e.has(f)) };
 for (const p of made.p) await fetch(`${B}/api/projects/${p.id}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const m of made.m) await fetch(`${B}/api/media/${m.id}/trash`, { method: 'POST', headers: H, body: '{}' });
-fs.mkdirSync(`${os.homedir()}/Movies/Cutroom/trash/exports`, { recursive: true });
-for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${os.homedir()}/Movies/Cutroom/trash/exports/${f}`);
+fs.mkdirSync(`${HOME}/trash/exports`, { recursive: true });
+for (const f of made.e) fs.renameSync(`${EXP}/${f}`, `${HOME}/trash/exports/${f}`);
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed; trashed ${made.p.length} projects, ${made.m.length} media, ${made.e.length} exports`);
 process.exit(res.includes(false) ? 1 : 0);
 

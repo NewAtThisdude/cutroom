@@ -10,7 +10,7 @@ const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-perf-`), f = `${tmp}/perf-108
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=30:d=12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', f]);
 const V = await (await fetch(`${B}/api/import?name=perf-1080.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
 fs.rmSync(tmp, { recursive: true });
-const pids = () => execFileSync('sh', ['-c', "pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:4610 -sTCP:LISTEN"]).toString().split(/\s+/).filter(Boolean);
+const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:${new URL(B).port || '4610'} -sTCP:LISTEN`]).toString().split(/\s+/).filter(Boolean);
 const cpu = () => pids().reduce((s, p) => { try { const t = execFileSync('ps', ['-o', 'time=', '-p', p]).toString().trim(); const [a, b] = t.split(':'); return s + (+a) * 60 + parseFloat(b); } catch { return s; } }, 0);
 const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
