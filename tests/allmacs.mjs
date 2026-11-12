@@ -254,7 +254,7 @@ for (const [i, ram] of RAMS.entries()) {
       await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 30000 });
       const web = execFileSync('ps', ['-A', '-o', 'pid=,command=']).toString().trim().split('\n').map(l => l.trim().match(/^(\d+)\s+(.*)$/))
         .filter(m => m && !before.has(+m[1]) && /webkit|playwright/i.test(m[2])).map(m => +m[1]);
-      await sleep(40000); // the AI worker's 30 s idle exit (180 s past 16 GB), page load work settles
+      await sleep(ram > 16 ? 190000 : 40000); // the AI worker's idle exit (30 s; 180 s past 16 GB: it waited 40 s there too and found it still up), page load work settles
       const live = () => tree(srv.pid);
       const cmd = p => { try { return execFileSync('ps', ['-o', 'command=', '-p', String(p)]).toString().trim(); } catch { return ''; } };
       const workers = live().filter(p => p !== srv.pid && !/ollama/.test(cmd(p)));
