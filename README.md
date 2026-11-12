@@ -44,7 +44,7 @@ A few optional models are for non-commercial use only; they are marked there and
 
 Data lives in `~/Movies/Cutroom/`:
 - `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)
-- `projects/`: one JSON per project
+- `projects/`: one JSON per project, and `<id>.versions/` beside it: its version history
 - `exports/`
 - `cache/`: filmstrips, waveforms, proxies, transcripts, beats
 - `sfx/`: the synthesized sound effects (made on first use)
@@ -163,6 +163,9 @@ The preview and the export share one geometry, colour and text pipeline. Renderi
 and comparing pixels gave 0–2 levels of difference for transitions, clip animations, filters, masks and
 blend modes, about 2.6 levels for text, and 0.5–5 levels for the video effects, in Chrome and in WebKit (the app's engine).
 
+On a first start (an empty library) a short **tour** points at each part of the window in eight steps (Enter / → next,
+← back, Esc skips); the shortcut sheet (?) replays it.
+
 The window works like CapCut's: a library rail on the left (Media, Audio, Text, Stickers, Effects, Transitions,
 Filters, Captions, Script, AI), each opening a gallery whose tiles show what they do (effects and transitions animate; with
 Reduce motion on they show a still and move when you point at them), the preview with its transport in the middle,
@@ -192,7 +195,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Crop, mirror, rotation, opacity on any clip, chroma key with a colour picker | The picker reads the clip's own graded pixel under the click. The key uses ffmpeg `colorkey`'s exact formula |
 | | Masks: circle, rectangle, linear, mirror; feather and invert; **keyframed** (Animate the mask) | One canvas routine draws the preview and the export's mask PNG; a keyframed mask exports as a frame sequence (repeats reused) |
 | | **Colour grading** (Color tab): shadows / midtones / highlights wheels with levels, curves (luma, R, G, B), HSL for 8 colours, imported **.cube LUTs** with strength, and **strength over time** for all of a clip's colour | Baked into one 33-point 3D LUT that the preview applies on the GPU and the export through `lut3d` (trilinear both): the same table, so they agree by construction (parity 0.8-1.7 levels) |
-| | **Scopes**: waveform, histogram, vectorscope over the preview | Drawn from a 256 px copy of the frame, only while open |
+| | **Scopes** (G, or the button under the preview): luma waveform, RGB parade, vectorscope with the 75 % colour-bar targets and a skin-tone line, RGB histogram; open or closed and which scope are remembered | Drawn from a 256 px copy of the finished frame (without the selection box): about 1 ms per update (`tests/scopes.mjs`), at most 15 updates a second while playing, one per seek or edit while paused, nothing while closed. The `scopes` MCP tool returns the levels (luma spread in IRE, clipped black / white, mean RGB) |
 | | **Beauty** (smooth skin), per-clip **blur**, **glow / neon** around cutouts, **body effects** (blur, mono or dim the background behind a person; glow or neon around them) | Skin: luma bilateral mixed in by a skin-colour key (`bilateral` + `chromakey` in the export, one GPU pass in the preview). Body effects cut the person out with Apple Vision (only the part of the clip used) onto the track above |
 | | Overlay blend modes (11) and bring forward / send backward | Canvas `globalCompositeOperation` in the preview; the export runs the same W3C formulas through `lut2` (ffmpeg's own `blend` modes differ) |
 | | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
@@ -209,11 +212,14 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | **AI music** from a description or a style (upbeat pop, lo-fi, cinematic, hip hop, EDM, acoustic, corporate, ambient, funk, trap), 4-60 s; smart combine can make its own ("AI music, made to fit": the style's sound, as long as the edit) | MusicGen on this Mac, faster than real time. Detected beats drive the cuts like any song's |
 | | Volume in dB (mute to +20 dB), fades you can hear in the preview (drag the round knobs on a clip's top corners, or the Fade sliders), auto-duck from −6 to −24 dB under speech on any track | The duck envelope multiplies the clip volume, so the Volume slider keeps working after auto-duck |
 | | Remove pauses, reduce noise, export loudness −14 (social) / −16 (podcast) / −23 LUFS (EBU) or off, detach audio, smooth slow-mo | `silencedetect`, `afftdn`, `loudnorm`, `minterpolate` |
+| | **J and L cuts** on the main track, without detaching anything: a clip's own sound starts before its picture ("Sound starts early": you hear the next shot first) or runs on after it ("Sound runs on"), over the neighbouring clip, whose sound keeps playing under it. Drag the small green knob on a clip's lower corner out past the edge, or set the two fields; the timeline draws that sound past the edge | Whole frames, at plain cuts only, limited by the source's sound before the in point / after the picture and by the neighbour's length. The extra sound is two audio pieces in the export's mix (`adelay` in samples), each spliced to the clip's own sound with no 3 ms edge fade at the seam; the preview schedules the same pieces on the audio clock. `tests/jlcuts.mjs`: beeps land on the exact sample, the preview's scheduled starts equal the export's, no dip at the seams |
+| | **Loudness meter** by the preview (the bars button): momentary (400 ms), short-term (3 s) and integrated LUFS of what has played since Reset, sample peak per channel with peak hold, a warning over −1 dBFS, marks at −23 / −16 / −14 with the export's target in amber (it follows the export's Loudness setting); remembered, and readable by Claude (`meter`) | EBU R128 / ITU-R BS.1770: K-weighting with libebur128's own coefficients (IIR filters at the context's rate), 100 ms blocks summed in an AudioWorklet on a copy of the master output, gating at −70 LUFS and −10 LU. Hidden, it has no audio nodes at all. Against ffmpeg `ebur128` / `astats` on the WAV export of a sine + pink noise edit: momentary 0.00-0.01 LU, integrated 0.08-0.09 LU, peaks 0.00 dB apart (`tests/meter.mjs`) |
 | | **Sound per clip**: voice effects (chipmunk, deep, robot, echo, hall, telephone), pitch in semitones that keeps the timing, 3-band EQ (bass 100 Hz, mid 1 kHz, treble 8 kHz, ±12 dB), pan, volume points you set at the playhead (drawn on the clip), **split into stems** (vocals, drums, bass, other: four clips in sync) | The preview runs the export's chain in Web Audio: the EQ shelves are the Web Audio spec's biquads, sent to ffmpeg's `biquad` as coefficients (its own `bass`/`treble` overshoot); pan is StereoPanner's equal-power formula as `pan`; the hall is one seeded impulse response for both `ConvolverNode` and `afir`. Exported WAV vs the preview's own chain rendered offline: 64-86 dB SNR for every setting (`tests/audio_e2e.mjs`). Pitch: an AudioWorklet in the preview, `asetrate`+`atempo` in the export (same note, not the same samples). Stems: Demucs htdemucs; they add back up to the original at 24 dB SNR |
 | | **Studio voice** (off / on / with the music removed first) and **8 voice characters**: elf, giant, monster, alien (pitch and formants moved apart), radio, megaphone, cave, underwater | Rendered on this Mac into the clip's sound file, which the preview plays and the export reads (export vs preview: 184-188 dB SNR, the same samples). Studio voice: RNNoise (lag taken out), rumble cut, de-ess, a downward expander, a compressor, presence EQ, one gain to −16 LUFS; nothing looks ahead (0 samples of delay). Studio + remove music runs Demucs first. Characters: the WORLD vocoder (pyworld) for elf/giant/monster/alien, ffmpeg filters for the rest; each is set back to the loudness (LUFS) it went in at, true peak under −1.5 dBTP (`tests/audio_packs.mjs`) |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three quality levels (VideoToolbox constant quality) or a custom bitrate; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
-| Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
+| Library | **Version history**: Versions (top bar, or a project card) lists snapshots kept while you edit and versions you name; Restore any of them, in place | A snapshot every 5 minutes of editing, plus the state before any change of 5 or more clips, gzipped in `projects/<id>.versions/` (the last 60; named ones until you delete them). A restore first keeps the state it replaces ("Before restore") and is one undo step. Deleting a project moves its versions to the trash with it |
+| | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
@@ -221,6 +227,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | **Cut out object**: any subject, not only people | Box it once; SAM 2 follows its outline through the clip and the clip becomes it on a transparent background (soft edges, VP9 alpha) |
 | | **Isolate voice / Remove voice** | Demucs (htdemucs) splits a clip's sound into the voice and everything else; the result goes on the audio track, locked to the clip, and the clip is muted |
 | | **AI video**: animate a photo, or a video's frame, into ~5 s of video | Wan 2.2 14B image-to-video (Lightning, 4 steps) on the RTX 4090 PC through an SSH tunnel, so the Mac stays cool: about 2 minutes, plus a minute to start ComfyUI there. Cutroom stops that ComfyUI 10 minutes after the last video, and when it quits |
+| | **Timeline hand-off** (Export > Format): the edit as **FCPXML 1.10** for Final Cut Pro and DaVinci Resolve, a **CMX3600 EDL** of the main track, and **YouTube chapters** from the markers (`0:00 Intro` lines, named after the text on screen; says when YouTube would refuse them: first not at 0:00, one under 10 s, fewer than three) | Times are whole project frames (23.976 / 29.97 / 59.94 as 1001-based rationals, the EDL in drop-frame at 29.97 / 59.94). The main track is the spine (a gap where it ends early), overlays, sounds, titles and captions are connected clips on lanes, clips point at the library's files (`file://`); in/out, speed (a `timeMap`), volume, opacity, dissolves, titles' text and markers come over. See Limits |
 | | Subtitles: import SRT / WebVTT onto the captions track, export SRT; **relink** clips whose file left the library (restore from trash, another file, or a library item) | |
 | | **Smart combine**: tick several clips and get one edit | Every scene of every clip is scored 4× a second for sharpness and exposure (ffmpeg `blurdetect`, `signalstats`), and the local vision model describes its best frame. Cutroom keeps the best window of each scene, orders the shots (a story from what they show, or as filmed), fits them to the length, snaps the cuts to the music's beats and picks each transition from what changes: a hard cut inside one take, a dip to black or white on a big brightness jump, the style's transition between places. Shots of another shape fill the canvas with face reframing. Styles: balanced, energetic, calm, cinematic |
 | | **Long video → Shorts**, caption translation, hook titles | A local language model (Ollama, qwen3.5:9b) reads the on-device transcript. Shorts: its picks snap to sentence edges, and each becomes a 9:16 project with face reframing, captions and a hook title. Translation works on whole sentences, then re-cuts them into captions over the same time (by character for Chinese and Japanese) |
@@ -237,8 +244,8 @@ between every clip and export 1080p". Claude reads the timeline, edits, looks at
 the preview frame as an image), and exports. The 41 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
-undo/redo, snapshots, export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
-object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions` and `hook_titles`.
+undo/redo, version history (`versions`: list, save, restore), snapshots, the loudness meter (`meter`), export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
+object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions`, `hook_titles` and `scopes` (the frame's levels).
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
 them with the same functions as the buttons, so every change is visible live and is one undo step. Delivery is
@@ -379,6 +386,11 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Preview-only differences:** noise reduction and loudness are applied on export only, and are
   labelled that way. In the app (WebKit), the blurred background is a fast approximation; the export
   blurs for real. Chrome shows HDR its own way, while the export is tone-mapped.
+- **Loudness meter:** it measures the preview, so it shows the mix before the export's loudness gain and its −1 dBFS
+  limiter, and only while it is shown (integrated counts what played since Reset, pauses gated out as silence). Peaks are
+  sample peaks, not true peaks (no 4x oversampling): a true-peak reading can be up to about 0.5 dB higher. Clips whose
+  speed changes the pitch are resampled by the browser (linear interpolation) and play a little duller there than in the
+  export; normal and kept-pitch clips start on the context's sample grid, so they play the export's samples.
 - **Background removal:** people only (Vision person segmentation), frame by frame. Expect some edge
   flicker. It was verified on a 3D-avatar clip, not on a real person; hair edges are unverified. A cutout
   of HDR footage is not tone-mapped.
@@ -390,6 +402,9 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Speed ramps** are smooth curves (six presets, or your own points) rendered as a retimed copy of the clip, so
   preview and export show the same frames; the first play of a fresh ramp can start about 0.1 s late. Speed goes
   from 0.1x to 100x. A chroma key on a clip that is already transparent replaces its alpha in the export.
+- **J and L cuts** apply at plain cuts only: at a transition the sound crossfades instead, and the clip's fades and volume
+  points shape its own picture length, not the extra sound (that plays at the clip's volume). Reverb and echo restart
+  at the seam. At a speed other than 1x the extra sound is retimed separately, so the seam is close, not sample-continuous.
 - **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only.
 - **Mic recording** is untested end to end: the test browsers have no microphone.
 - **The app's** confirm/prompt dialogs, file picker, drag and drop, export player window and microphone
@@ -412,6 +427,7 @@ libass/freetype, and drawing text once in the browser also guarantees the export
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
 - **Audio timing:** ffmpeg's input seek in M4A files lands 800-2700 samples off (differently at each point), and MP3 seeks are approximate, so the export reads audio files from a lossless FLAC copy made at import (`cache/<id>.exact.flac`); MP4/MOV video sound seeks exactly. `atempo=1` is skipped (it wandered 7 ms on speech).
+- **Scopes** read the preview's 8-bit SDR picture, so an HDR export is judged on its SDR preview; the waveform maps full range 0-255 to 0-100 IRE (no studio-range scale), and the source viewer and library skimming do not update them.
 - **Preview pitch shift** adds up to 50 ms of delay while it is on, and is a simpler algorithm than the export's.
 - **Edit by script** follows the main track only (not voiceovers on the audio track). Caption text you edited by hand is
   re-made from the transcript after a cut (undo brings your edits back). Words are as good as whisper's timing: a cut
@@ -435,7 +451,17 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Language model:** a 9B local model. Its picks for shorts were right on a clear multi-topic talk; hook titles sometimes
   ignore the word limit (two-clause titles are cut to the first clause). Translation is good in Spanish and Russian;
   Japanese had an occasional wrong word (Chinese 咖啡 for "coffee").
+- **Version history** keeps whole project files, not the media: a version whose clips' media was removed from the library
+  restores with those clips striped red (relink them). Snapshots follow edits that are saved, so a pause of an hour
+  and one edit makes one snapshot; `CUTROOM_VERSION_GAP` (seconds) changes the 5 minutes.
 - **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
+- **Timeline hand-off** (FCPXML, EDL) carries the edit, not the look: effects, filters, grades, masks, keys, crop, position and
+  scale of overlays, keyframes (volume envelopes too), clip animations, fades and text styling stay in Cutroom (titles come over
+  as plain Basic Titles with their text). Every transition becomes a cross dissolve of the same length, split evenly round the cut.
+  Speed is a linear `timeMap`; speed ramps come over as the rendered copy they play. The files are checked by
+  `tests/interchange.mjs` (parsed, frame-exact against the project, every file there), not yet imported into Final Cut Pro or
+  Resolve (neither is on the test Mac). The EDL is the main track's picture only, its source timecode counts from 00:00:00:00
+  (a camera file's own timecode is ignored), and 23.976 is written non-drop.
 - **Talking photo** (a person from a photo and a voice) is Wan 2.2 S2V on the 4090 PC; **lip sync** of real footage is LatentSync there.
 - **The Apple GPU does the preview's per-pixel work** (colour, grade, key, mask, vignette, skin smoothing) in one WebGL2 pass; clip blur and the blurred background still run as small box blurs on the CPU at reduced size. Smooth skin finds skin by colour, not faces: skin-coloured walls get smoothed too.
 - **Remove object** processes only the clip's range and only a crop around the object; ProPainter runs only over the frames that have something to fill (plus context), and the cleaned copy is encoded by Apple's hardware encoder. Reverse, stabilize and slow-mo renders use it too.

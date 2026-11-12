@@ -118,7 +118,7 @@ const run = async (o, label) => { // o: {fmt, res, fps, mbps}
   const t0 = Date.now();
   await page.click('#exGo');
   await page.waitForFunction(() => !S.exporting && /Saved|failed/.test(document.querySelector('#exStatus')?.textContent || ''), null, { timeout: 900000 });
-  const s = await page.textContent('#exStatus'), file = /Saved (.+?) in Movies/.exec(s)?.[1];
+  const s = await page.textContent('#exStatus'), file = /Saved (.+?) in /.exec(s)?.[1];
   return { file: file && `${EXP}/${file}`, secs: (Date.now() - t0) / 1000, status: s };
 };
 const vinfo = f => { const j = probe(f), v = j.streams.find(s => s.codec_type === 'video'), a = j.streams.find(s => s.codec_type === 'audio'); return { j, v, a, dur: +j.format.duration }; };

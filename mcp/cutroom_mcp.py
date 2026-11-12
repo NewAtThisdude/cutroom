@@ -28,6 +28,8 @@ speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit 
 scale (1 = fitted size) | x, y: offset in canvas fractions, 0 = centred (text clips: 0..1 position, 0.5 = centre) | rot degrees | opacity 0-1
 blend (overlay only): normal|multiply|screen|overlay|darken|lighten|color-dodge|color-burn|hard-light|soft-light|difference|exclusion
 fadeIn, fadeOut seconds | flip bool (mirror) | denoise bool (RNNoise, heard in preview and export)
+sndLead, sndTail seconds (main track only): J / L cut, the clip's own sound starts before its picture / runs on after it, over the neighbour (mixed with its sound);
+  whole frames, only at a plain cut (no transition), limited by the source's sound and the neighbour's length
 studio: false | true (Studio voice: RNNoise, de-ess, compressor, presence EQ, -16 LUFS) | 'music' (the same after Demucs takes the music out); wins over denoise
 au: {voice none|robot|echo|hall|telephone|elf|giant|monster|alien|radio|megaphone|cave|underwater (elf..alien move pitch and formants apart, WORLD vocoder), semi -12..12 (pitch in semitones, timing kept; chipmunk = 6, deep = -5), bass, mid, treb: EQ dB -12..12 (100 Hz / 1 kHz / 8 kHz), pan -1 (left)..1 (right)}
 vkf: [{t: seconds into the clip, v: volume multiplier}] volume points (linear ramps; one point = the whole clip)
@@ -111,7 +113,7 @@ TOOLS = [
     ('projects', 'List saved projects.', S(), 'projects'),
     ('open_project', 'Open a project by id or (part of its) name.', S({'project': txt}, ['project']), 'open_project'),
     ('new_project', 'Start a new empty project.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt}), 'new_project'),
-    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
+    ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), markers (list of seconds: the timeline markers, also the YouTube chapter starts), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
     ('add_clip', 'Put a library item on a track. Main clips append (or insert at start); overlay/audio clips start at start (default: playhead).',
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
     ('update_clip', 'Change any clip setting. ' + CLIP_PROPS, S({'id': txt, 'set': obj}, ['id', 'set']), 'update_clip'),
@@ -262,12 +264,26 @@ TOOLS = [
                      'index=true first describes those with the local vision model (slow the first time, cached).',
      S({'q': txt, 'index': boo}, ['q']), 'search_media'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
+    ('scopes', 'Read the levels of the frame the preview shows (at the playhead): luma low/median/high in IRE (1st, 50th, 99th percentile), '
+               'the share of clipped black and white pixels (%) and the mean R, G, B (0-255). Use it to judge exposure and colour casts before and after a grade. '
+               'show=true/false opens or closes the scopes panel in the editor; kind wave|parade|vec|hist picks the scope shown.',
+     S({'show': boo, 'kind': {'type': 'string', 'enum': ['wave', 'parade', 'vec', 'hist']}}), 'scopes'),
+    ('versions', 'The open project\'s version history: list (snapshots kept every few minutes of editing plus named versions: id, t, name, '
+                 'dur, clips), save a named version of it as it is now, or restore one by id (the current state is kept as a version first, '
+                 'and the restore is one undo step).',
+     S({'action': {'type': 'string', 'enum': ['list', 'save', 'restore']}, 'name': txt, 'version': txt}), 'versions'),
+    ('meter', 'The preview\'s loudness meter (EBU R128): momentary (400 ms), short-term (3 s) and integrated (since reset) LUFS of what has played, '
+              'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
+              'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
+     S({'show': boo, 'reset': boo, 'target': num}), 'meter'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
-    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt '
-               '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption); '
+    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
+               '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption; '
+               'fcpxml = the whole timeline for Final Cut Pro / DaVinci Resolve; edl = a CMX3600 EDL of the main track; '
+               'chapters = YouTube chapter lines from the markers, returned as `text`, with `notes` when YouTube would refuse them); '
                'resolution 720p|1080p|1440p|4K|8K (8K needs 16 GB of memory); quality fast|best; bitrate 1|1.6|2.5, or mbps = a custom bitrate in Mbps; '
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '

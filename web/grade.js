@@ -452,32 +452,56 @@ void main() {
   });
 }
 
-// ---------- scopes: waveform, histogram, vectorscope of the preview ----------
-const SCOPE = { on: false, kind: 'wave' };
+// ---------- scopes: waveform, RGB parade, vectorscope, histogram of the preview ----------
+// From a 256 px copy of the finished frame (before the selection box and guides): one small readback per update, at most
+// ~15 a second while playing (paint), nothing at all while the panel is closed. ms = the last update's cost.
+const SCOPE = { on: false, kind: 'wave', at: 0, ms: 0 };
+const ycc = (r, g, b) => { const y = 0.2126 * r + 0.7152 * g + 0.0722 * b; return [y, (b - y) / 1.8556, (r - y) / 1.5748]; }; // BT.709, 0-1
+function scopeFrame() {
+  const cv = $('#cv'), W = 256, H = Math.max(8, Math.round((256 * cv.height) / cv.width)), sx = scratch(W, H, 'scope').getContext('2d', { willReadFrequently: true });
+  sx.drawImage(cv, 0, 0, W, H);
+  return { d: sx.getImageData(0, 0, W, H).data, W, H };
+}
 function drawScope() {
   const out = $('#scopeCv');
   if (!SCOPE.on || !out) return;
-  const cv = $('#cv'), W = 256, H = Math.max(8, Math.round((256 * cv.height) / cv.width)), sx = scratch(W, H, 'scope').getContext('2d', { willReadFrequently: true });
-  sx.drawImage(cv, 0, 0, W, H);
-  const d = sx.getImageData(0, 0, W, H).data, o = out.getContext('2d'), OW = out.width, OH = out.height;
-  o.fillStyle = '#0b0d12'; o.fillRect(0, 0, OW, OH);
+  const t0 = performance.now(), { d, W, H } = scopeFrame(), o = out.getContext('2d'), OW = out.width, OH = out.height;
+  o.fillStyle = '#0e0e0f'; o.fillRect(0, 0, OW, OH);
   const img = o.getImageData(0, 0, OW, OH), px = img.data, add = (x, y, r, g, b) => { if (x < 0 || y < 0 || x >= OW || y >= OH) return; const i = (y * OW + x) * 4; px[i] = Math.min(255, px[i] + r); px[i + 1] = Math.min(255, px[i + 1] + g); px[i + 2] = Math.min(255, px[i + 2] + b); };
+  const Y = v => Math.round((1 - v / 255) * (OH - 1)); // 0 IRE at the bottom row, 100 at the top
+  const cx = OW / 2, cy = OH / 2, R = Math.min(cx, cy) - 4, vec = (r, g, b) => { const [, cb, cr] = ycc(r, g, b); return [cx + cb * 2 * R, cy - cr * 2 * R]; }; // 100 % saturation = the rim
   if (SCOPE.kind === 'hist') {
     const hs = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
     for (let i = 0; i < d.length; i += 4) { hs[0][d[i]]++; hs[1][d[i + 1]]++; hs[2][d[i + 2]]++; }
     let mx = 1;
-    for (const h of hs) for (let v = 2; v < 254; v++) mx = Math.max(mx, h[v]);
+    for (const h of hs) for (let v = 2; v < 254; v++) mx = Math.max(mx, h[v]); // (clipped ends would flatten the rest)
     for (let ch = 0; ch < 3; ch++) for (let v = 0; v < 256; v++) { const x = Math.floor((v * OW) / 256), h = Math.min(OH, Math.round((hs[ch][v] / mx) * OH)); for (let y = OH - h; y < OH; y++) add(x, y, ch === 0 ? 110 : 0, ch === 1 ? 110 : 0, ch === 2 ? 130 : 0); }
   } else if (SCOPE.kind === 'wave') { // luma by column: where the brightness of each part of the frame sits
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; add(Math.floor((x * OW) / W), Math.round((1 - l / 255) * (OH - 1)), 22, 44, 22); }
-  } else { // vectorscope: hue = angle, saturation = distance (BT.709 Cb/Cr)
-    const cx = OW / 2, cy = OH / 2, R = Math.min(cx, cy) - 4;
-    for (let i = 0; i < d.length; i += 4) { const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255, yy = 0.2126 * r + 0.7152 * g + 0.0722 * b, cb = (b - yy) / 1.8556, cr = (r - yy) / 1.5748; add(Math.round(cx + cb * 2 * R), Math.round(cy - cr * 2 * R), 34, 34, 34); }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4; const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; add(Math.floor((x * OW) / W), Y(l), 30, 30, 30); }
+  } else if (SCOPE.kind === 'parade') { // the same, R, G and B side by side
+    const pw = OW / 3;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, c = Math.floor((x * pw) / W); add(c, Y(d[i]), 60, 8, 8); add(Math.floor(pw) + c, Y(d[i + 1]), 8, 60, 8); add(Math.floor(2 * pw) + c, Y(d[i + 2]), 14, 14, 70); }
+  } else { // vectorscope: hue = angle, saturation = distance
+    for (let i = 0; i < d.length; i += 4) { const [x, y] = vec(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255); add(Math.round(x), Math.round(y), 34, 34, 34); }
   }
   o.putImageData(img, 0, 0);
-  o.strokeStyle = 'rgba(255,255,255,.12)'; o.lineWidth = 1;
-  if (SCOPE.kind === 'vec') { o.beginPath(); o.arc(OW / 2, OH / 2, Math.min(OW, OH) / 2 - 4, 0, 6.2832); o.stroke(); }
-  else for (let i = 1; i < 4; i++) { o.beginPath(); o.moveTo(0, Math.round((OH * i) / 4) + 0.5); o.lineTo(OW, Math.round((OH * i) / 4) + 0.5); o.stroke(); }
+  o.strokeStyle = 'rgba(237,237,237,.14)'; o.lineWidth = 1;
+  const line = (x0, y0, x1, y1) => { o.beginPath(); o.moveTo(x0, y0); o.lineTo(x1, y1); o.stroke(); };
+  if (SCOPE.kind === 'vec') {
+    o.beginPath(); o.arc(cx, cy, R, 0, 6.2832); o.stroke(); line(cx - R, cy, cx + R, cy); line(cx, cy - R, cx, cy + R);
+    o.strokeStyle = 'rgba(237,237,237,.45)';
+    for (const c of [[1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1], [1, 0, 1]]) { const [x, y] = vec(...c.map(v => v * 0.75)); o.strokeRect(Math.round(x) - 3.5, Math.round(y) - 3.5, 7, 7); } // 75 % colour bars
+    const a = (123 * Math.PI) / 180; o.strokeStyle = 'rgba(240,178,62,.7)'; line(cx, cy, cx + Math.cos(a) * R, cy - Math.sin(a) * R); // skin tones fall on this line, whatever the skin
+  } else if (SCOPE.kind === 'parade') { for (const i of [1, 2]) line(Math.floor((OW * i) / 3) + 0.5, 0, Math.floor((OW * i) / 3) + 0.5, OH); for (let i = 1; i < 4; i++) line(0, Math.round((OH * i) / 4) + 0.5, OW, Math.round((OH * i) / 4) + 0.5); }
+  else for (let i = 1; i < 4; i++) line(0, Math.round((OH * i) / 4) + 0.5, OW, Math.round((OH * i) / 4) + 0.5);
+  SCOPE.at = performance.now(); SCOPE.ms = SCOPE.at - t0;
+}
+function scopeLevels() { // the numbers behind the picture, for the MCP: luma spread in IRE, clipped share, mean R G B
+  const { d } = scopeFrame(), h = new Uint32Array(256), m = [0, 0, 0], n = d.length / 4;
+  for (let i = 0; i < d.length; i += 4) { h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++; m[0] += d[i]; m[1] += d[i + 1]; m[2] += d[i + 2]; }
+  const pct = q => { let s = 0; for (let v = 0; v < 256; v++) if ((s += h[v]) >= q * n) return Math.round((v / 255) * 100); return 100; };
+  let lo = 0, hi = 0; for (let v = 0; v < 256; v++) { if (v <= 4) lo += h[v]; if (v >= 251) hi += h[v]; }
+  return { luma: { low: pct(0.01), median: pct(0.5), high: pct(0.99) }, clippedBlack: +((lo / n) * 100).toFixed(1), clippedWhite: +((hi / n) * 100).toFixed(1), meanRGB: m.map(v => Math.round(v / n)) };
 }
 
 // ---------- effect steps on the GPU ----------
