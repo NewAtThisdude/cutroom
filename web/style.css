@@ -478,3 +478,17 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .maccaps .mc b { font-weight: 550; font-size: 12.5px; }
 .maccaps .mc span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .maccaps .mc.off b { color: var(--muted); }
+
+/* first-start tour (tour.js): the page dimmed around a ring on one part, a card beside it */
+#tour { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+#tour.solo { background: rgba(6, 6, 7, .62); display: grid; place-items: center; }
+#tour .tring { position: fixed; border: 2px solid var(--accent); border-radius: var(--r); box-shadow: 0 0 0 9999px rgba(6, 6, 7, .62); }
+#tour .tring[hidden] { display: none; }
+#tour .tcard { position: fixed; width: 320px; padding: 20px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 14px; pointer-events: auto; }
+#tour.solo .tcard { position: static; width: 380px; }
+#tour .tstep { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+#tour h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+#tour .td { margin: 0 0 20px; color: var(--muted); line-height: 1.5; }
+#tour .actions { display: flex; gap: 8px; justify-content: flex-end; }
+#tour .actions .ghost { margin-right: auto; }
+@media (prefers-reduced-motion: no-preference) { #tour .tring, #tour .tcard { transition: left .2s, top .2s, width .2s, height .2s; } }

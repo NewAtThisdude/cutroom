@@ -693,7 +693,7 @@ const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwa
 const TOOL_KEYS = { KeyV: 'select', KeyY: 'slip', KeyU: 'slide', KeyN: 'roll' };
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
-function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-close>Close</button></div>`); }
+function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-tour>Take the tour</button><button data-close>Close</button></div>`); $('#modal [data-tour]').addEventListener('click', () => { closeModal(); tourShow(0); }); }
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
 function thumbStyle(m) {
@@ -6391,6 +6391,7 @@ Object.assign(REMOTE, {
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);
     else { setProject(newProject('9:16')); scheduleSave(); }
+    tourMaybe(); // tour.js: once, on a first start (an empty library)
     loadVoices();
     loadAI();
     const ping = await api('/api/ping');
