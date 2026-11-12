@@ -5624,7 +5624,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function cfind(id) { for (const L of LANES) { const c = P[L.key].find(x => x.id === id); if (c) return [c, L.key]; } throw new Error(`no clip with id ${id}`); }
 function mediaBy(q) {
   const s0 = String(q).toLowerCase(), all = [...M.values()];
-  const m = M.get(q) || all.find(x => x.name === q) || all.find(x => x.name.toLowerCase().includes(s0));
+  const stem = x => x.name.replace(/\.[^.]+$/, '').toLowerCase(); // 'podcast-episode' is podcast-episode.mp4, not its 'podcast-episode (voice).m4a'
+  const m = M.get(q) || all.find(x => x.name === q) || all.find(x => stem(x) === s0) || all.find(x => x.name.toLowerCase().includes(s0));
   if (!m) throw new Error(`no media "${q}" in the library (call media to list it, or import_media)`);
   return m;
 }
