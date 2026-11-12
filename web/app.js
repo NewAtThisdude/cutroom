@@ -108,10 +108,11 @@ const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wig
 const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'],
   ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
   ['pngseq', 'PNG sequence (zip)'], ['mp3', 'Audio · MP3'], ['m4a', 'Audio · AAC (M4A)'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'],
-  ['srt', 'Subtitles · SRT (captions)'], ['vtt', 'Subtitles · WebVTT'], ['txt', 'Transcript · TXT with times']];
+  ['srt', 'Subtitles · SRT (captions)'], ['vtt', 'Subtitles · WebVTT'], ['txt', 'Transcript · TXT with times'],
+  ['fcpxml', 'Timeline · FCPXML (Final Cut Pro, DaVinci Resolve)'], ['edl', 'Timeline · EDL (CMX3600, main track)'], ['chapters', 'YouTube chapters (from the markers)']];
 const ALPHA_FMTS = ['prores4444', 'webm', 'gif', 'pngseq', 'png']; // keep a transparent background (server.py ALPHA_FORMATS)
 const HDR_NAMES = { sdr: 'SDR', hlg: 'HDR · HLG', pq: 'HDR · PQ (HDR10)' };
-const SOUND_FMT = ['mp3', 'm4a', 'wav'], SUB_FMT = ['srt', 'vtt', 'txt'], EXPORT_FPS = [24, 25, 30, 50, 60, 120];
+const SOUND_FMT = ['mp3', 'm4a', 'wav'], SUB_FMT = ['srt', 'vtt', 'txt'], HAND_FMT = ['fcpxml', 'edl', 'chapters'], EXPORT_FPS = [24, 25, 30, 50, 60, 120];
 // platform presets: they fill the dialog's fields, which stay editable. Bitrates (Mbps at 30 / 60 fps) are YouTube's published
 // SDR upload numbers and the usual range for TikTok / Reels (they re-encode everything anyway); vertical ones want a 9:16 canvas
 const EX_PRESETS = {
@@ -4026,6 +4027,7 @@ function importSubs(txt, name = 'subtitles') { // onto the captions track (repla
   return cues.length;
 }
 async function saveSRT(name, kind = 'srt') { const r = await api('/api/save_subs', { name: name || P.name, text: toSRT(kind), ext: kind }); return r.file; }
+const handOff = (name, format) => api('/api/interchange', { format, name: name || P.name, project: P }); // FCPXML / EDL / chapters, made by the server from the project as it is now
 function importFiles(files) {
   for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
   files = [...files].filter(x => !/\.(srt|vtt|txt)$/i.test(x.name));
@@ -4230,7 +4232,7 @@ function openExport() {
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
-    const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f), still = ['gif', 'png'].includes(f);
+    const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
     $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
     const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
@@ -4258,7 +4260,10 @@ function openExport() {
       gif: `GIF · 15 fps, up to 640 px wide, no sound, loops${P.alpha ? ', clear or solid pixels only' : ''} · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`,
       mp3: `Audio only · MP3 · ${d}`, m4a: `Audio only · AAC 256 kb/s (M4A) · ${d}`, wav: `Audio only · WAV, uncompressed · ${d}`,
       srt: `${n} subtitles from the ${P.captions.length ? 'captions' : 'text clips'}, for YouTube and players`, vtt: `${n} subtitles as WebVTT, for the web and players`,
-      txt: `${n} lines of text, each with its time ([start --> end] text); it imports back as captions`, png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f], ...notes].join(' ');
+      txt: `${n} lines of text, each with its time ([start --> end] text); it imports back as captions`,
+      fcpxml: `Every track as an FCPXML 1.10 timeline at ${+P.fps.toFixed(3)} fps that points at the library's files: cuts, trims, speed, volume, opacity, dissolves, titles and markers. Effects, masks, keyframes and text styling stay in Cutroom.`,
+      edl: `The main track's cuts and dissolves as a CMX3600 EDL at ${+P.fps.toFixed(3)} fps${[29.97, 59.94].includes(+P.fps.toFixed(2)) ? ' drop-frame' : ''}, for apps that read EDLs.`,
+      chapters: P.markers.length ? `${P.markers.length} marker${P.markers.length === 1 ? '' : 's'} as YouTube chapters ("0:00 Intro" lines, named after the text on screen), to paste in the description` : 'No markers yet: press M where each chapter starts.', png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f], ...notes].join(' ');
   };
   const preset = () => { // fills the fields; any of them can still be changed afterwards
     const k = $('#exPreset').value;
@@ -4293,6 +4298,12 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       const file = await saveSRT(name, fmt);
       S.exporting = null;
       exportUI(100, `Saved <b>${esc(file)}</b> in ${esc(S.exportsDir || 'the exports folder')}`, `<button data-reveal="${esc(file)}">Show in Finder</button>`);
+      return;
+    }
+    if (HAND_FMT.includes(fmt)) {
+      const r = await handOff(name, fmt);
+      S.exporting = null;
+      exportUI(100, `Saved <b>${esc(r.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${r.notes.length ? `<br>${esc(r.notes.join(' '))}` : ''}`, `<button data-reveal="${esc(r.file)}">Show in Finder</button>`);
       return;
     }
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
@@ -5718,8 +5729,9 @@ const REMOTE = {
         if (k === 'ratio') { if (!RATIOS[v]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`); [P.w, P.h] = RATIOS[v]; }
         else if (['name', 'fps', 'bg'].includes(k)) P[k] = v;
         else if (k === 'capStyle') merge(P.capStyle, v);
+        else if (k === 'markers') { if (!Array.isArray(v) || v.some(t => !(+t >= 0))) throw new Error('markers must be a list of times in seconds'); P.markers = v.map(t => snap(+t)); }
         else if (k === 'rippleAll' || k === 'unlinked') { if (v) P[k] = true; else delete P[k]; } // ripple every track on main-track edits; unlink the tracks
-        else throw new Error(`can't set project.${k} (name, ratio, fps, bg, capStyle, rippleAll, unlinked)`);
+        else throw new Error(`can't set project.${k} (name, ratio, fps, bg, capStyle, markers, rippleAll, unlinked)`);
       }
     });
     fitStage();
@@ -6028,6 +6040,7 @@ const REMOTE = {
     if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
     if (at !== undefined) S.t = +at;
     if (SUB_FMT.includes(format)) { const file = await saveSRT(name, format); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
+    if (HAND_FMT.includes(format)) { const r = await handOff(name, format); return { file: r.file, path: `~/Movies/Cutroom/exports/${r.file}`, format, notes: r.notes, ...(r.text ? { text: r.text } : {}) }; }
     S.exporting = true;
     try {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS

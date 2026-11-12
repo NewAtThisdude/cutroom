@@ -12,6 +12,8 @@ rasterized by the same canvas code as the preview, so export matches what you sa
 """
 import base64, bisect, contextlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
+from fractions import Fraction
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -4954,6 +4956,213 @@ def still_cut(p):
             'still': still, 'duration': still + 2 / F}
 
 
+# ---------- timeline hand-off: FCPXML (Final Cut Pro, DaVinci Resolve), CMX3600 EDL, YouTube chapters ----------
+
+HANDOFF = {'fcpxml': '.fcpxml', 'edl': '.edl', 'chapters': ' chapters.txt'}
+DISSOLVE = ('Cross Dissolve', 'FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265')
+CROSSFADE = ('Audio Crossfade', 'FFAudioTransition')
+BASIC_TITLE = ('Basic Title', '.../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti')
+
+
+def frame_dur(fps):  # 29.97 -> 1001/30000 s: the NTSC rates are 1001-based, not the rounded number
+    n = round(fps)
+    return Fraction(1001, n * 1000) if abs(fps - n) > 1e-3 and abs(fps - n * 1000 / 1001) < 0.01 else Fraction(1, n) if abs(fps - n) < 1e-3 else Fraction(1 / fps).limit_denominator(100000)
+
+
+def timecode(f, fps):
+    """Frame count -> HH:MM:SS:FF. At 29.97 / 59.94 drop-frame (HH:MM:SS;FF): the labels :00-:01 (:00-:03 at 59.94) are skipped every minute but each tenth."""
+    n, df = round(fps), frame_dur(fps).numerator == 1001 and round(fps) in (30, 60)
+    if df:
+        d = n // 15
+        q, r = divmod(f, n * 600 - 9 * d)
+        f += 9 * d * q + (d * ((r - d) // (n * 60 - d)) if r > d else 0)
+    return f"{f // (n * 3600):02d}:{f // (n * 60) % 60:02d}:{f // n % 60:02d}{';' if df else ':'}{f % n:02d}"
+
+
+def marks(p, F, T):
+    """The markers inside the edit, in order: [(seconds, name)]. A marker is named after the text clip on screen there ('' if none)."""
+    texts = [c for c in p.get('text') or [] if str(c.get('text', '')).strip()]
+    out = []
+    for t in sorted(fnum(t, 0, 6 * 3600) for t in p.get('markers') or []):
+        if t < T / F:
+            on = min((c for c in texts if c['start'] <= t + 0.5 / F < c['start'] + c['dur']), key=lambda c: c['start'], default=None)
+            out.append((t, ' '.join(str(on['text']).split())[:60] if on else ''))
+    return out
+
+
+def chapters(p, F, T):
+    """YouTube chapter lines ("0:00 Intro") from the markers -> (lines, notes on what YouTube will refuse)"""
+    s = lambda t: f'{t // 3600}:{t // 60 % 60:02d}:{t % 60:02d}' if t >= 3600 else f'{t // 60}:{t % 60:02d}'
+    ch = {}
+    for t, name in marks(p, F, T):  # YouTube reads whole seconds: two markers in one second are one chapter
+        ch.setdefault(math.floor(t + 1e-6), name)
+    if not ch:
+        raise ValueError('no markers: put one where each chapter starts (M), then export the chapters')
+    notes = []
+    if 0 not in ch:
+        ch[0] = 'Intro'
+        notes.append('Added "0:00 Intro": YouTube needs the first chapter at 0:00.')
+    ts = sorted(ch)
+    short = [f'{s(a)} to {s(b)}' for a, b in zip(ts, ts[1:] + [math.floor(T / F + 1e-6)]) if b - a < 10]
+    if short:
+        notes.append(f"YouTube needs each chapter to last at least 10 s; these don't: {', '.join(short)}.")
+    if len(ts) < 3:
+        notes.append('YouTube needs at least three chapters.')
+    return [f"{s(t)} {ch[t] or ('Intro' if i == 0 else f'Chapter {i + 1}')}" for i, t in enumerate(ts)], notes
+
+
+def interchange(p, kind):
+    """The project's timeline for other editors (FCPXML 1.10, a CMX3600 EDL of the main track) or YouTube chapters -> (text, notes).
+    Every time is a whole number of project frames, laid out like the editor: main clips packed as packMain() does (a transition
+    overlaps the clips), the other lanes on rows as rows() puts them."""
+    F = fnum(p.get('fps') or 30, 1, 120)
+    fd, name = frame_dur(F), str(p.get('name') or 'Cutroom')
+    sec = lambda x: '0s' if not x else f'{x.numerator}s' if x.denominator == 1 else f'{x.numerator}/{x.denominator}s'
+    tf = lambda k: sec(k * fd)
+    spd = lambda c: fnum(c.get('speed', 1), 0.1, 100)
+    rnd = lambda x: math.floor(x + 0.5)  # JavaScript's Math.round (the editor's frames()); Python's round() takes 12.5 to 12
+    ln = lambda c: fnum(c['dur'], 0, 6 * 3600) if 'dur' in c else (fnum(c.get('out', 0), -1e6, 1e6) - fnum(c.get('in', 0), -1e6, 1e6)) / spd(c)
+    nf = lambda c: max(1, rnd(ln(c) * F))
+    metas = {}
+
+    def med(mid):
+        if mid not in metas:
+            try:
+                metas[mid] = meta(mid)
+            except FileNotFoundError:
+                raise ValueError('a clip points at media that is not in the library; delete or relink it first') from None
+        return metas[mid]
+    tracks, mute = p.get('tracks') or {}, p.get('mute') or {}
+    off = lambda lane, r: bool(mute.get(lane) and lane != 'main') or bool((tracks.get(f'{lane}:{r}') or {}).get('off'))
+    main = [c for c in p.get('main') or [] if c.get('media')]
+    fr = [nf(c) for c in main]
+    trf = [min(max(rnd(fnum((c.get('tr') or {}).get('d') or 0.5, 0, 60) * F), 1), min(fr[i], fr[i + 1]) // 2)
+           if i + 1 < len(main) and (c.get('tr') or {}).get('type') not in (None, 'none') else 0 for i, c in enumerate(main)]
+    st = [0]
+    for i in range(len(main) - 1):
+        st.append(st[-1] + fr[i] - trf[i])
+    end = st[-1] + fr[-1] if main else 0
+
+    def rows(lane):  # (clip, row, first frame, frames), hidden ones included (they come over disabled)
+        placed = []
+        for c in p.get(lane) or []:
+            a = max(0, math.ceil(fnum(c.get('start', 0), 0, 6 * 3600) * F - 1e-6))
+            b, r = a + nf(c), int(fnum(c.get('track') or 0, 0, 99))
+            while any(q == r and qa < b and a < qb for _, q, qa, qb in placed):
+                r += 1
+            placed.append((c, r, a, b))
+        keep = (lambda c: c.get('media')) if lane in ('overlay', 'audio') else (lambda c: str(c.get('text', '')).strip())
+        return [(c, r, a, b - a) for c, r, a, b in placed if keep(c)]
+    lanes = {L: rows(L) for L in ('overlay', 'text', 'captions', 'audio')}
+    T = max([end, *(a + d for L in lanes.values() for _, _, a, d in L)])
+    if not T:
+        raise ValueError('the timeline is empty')
+    df = frame_dur(F).numerator == 1001 and round(F) in (30, 60)
+    if kind == 'chapters':
+        lines, notes = chapters(p, F, T)
+        return '\n'.join(lines) + '\n', notes
+    odd = sorted({main[i]['tr']['type'] for i in range(len(main)) if trf[i]} - {'fade', 'dissolve', 'blurfade'})
+    notes = [f"Transitions other than dissolves ({', '.join(odd)}) come over as cross dissolves of the same length."] if odd else []
+    src0 = lambda c: 0 if med(c['media'])['kind'] == 'image' else rnd(fnum(c.get('in', 0), 0, 1e6) / spd(c) * F)  # first frame used, in the clip's retimed frames
+
+    if kind == 'edl':  # picture cuts and dissolves; source timecode counts from 00:00:00:00 at the project's rate
+        out = [f"TITLE: {re.sub(r'[^ -~]', '', name)[:70]}", f"FCM: {'DROP FRAME' if df else 'NON-DROP FRAME'}", '']
+        for i, c in enumerate(main):
+            m, sp = med(c['media']), spd(c)
+            s_in = 0 if m['kind'] == 'image' else rnd(fnum(c.get('in', 0), 0, 1e6) * F)
+            r_in, r_out = st[i], st[i + 1] if i + 1 < len(main) else st[i] + fr[i]
+            ev = lambda how, n, a, b, r0, r1: f"{i + 1:03d}  {'AX':<8} {'V':<5} {how:<4} {n} {timecode(a, F)} {timecode(b, F)} {timecode(r0, F)} {timecode(r1, F)}"
+            if i and trf[i - 1]:  # the outgoing clip held to the dissolve's start (zero length), then the dissolve into this one
+                pm, pin = main[i - 1], 0 if med(main[i - 1]['media'])['kind'] == 'image' else rnd(fnum(main[i - 1].get('in', 0), 0, 1e6) * F)
+                at = pin + rnd((st[i] - st[i - 1]) * spd(pm))
+                out.append(ev('C', '   ', at, at, r_in, r_in))
+                out.append(ev('D', f'{trf[i - 1]:03d}', s_in, s_in + rnd((r_out - r_in) * sp), r_in, r_out))
+            else:
+                out.append(ev('C', '   ', s_in, s_in + rnd((r_out - r_in) * sp), r_in, r_out))
+            if abs(sp - 1) > 1e-6 and m['kind'] != 'image':
+                out.append(f"M2   {'AX':<8} {F * sp:05.1f}                {timecode(s_in, F)}")
+            out += [f"* FROM CLIP NAME: {m.get('name') or m['file']}", f"* SOURCE FILE: {MEDIA / m['file']}", '']
+        return '\n'.join(out), notes + (['An EDL holds the main track only: FCPXML carries every track.'] if any(lanes.values()) else [])
+
+    root = ET.Element('fcpxml', version='1.10')
+    res = ET.SubElement(root, 'resources')
+    rid = lambda: f'r{len(res) + 1}'
+    ET.SubElement(res, 'format', id=rid(), frameDuration=sec(fd), width=str(int(fnum(p.get('w', 1920), 16, 8192))), height=str(int(fnum(p.get('h', 1080), 16, 8192))))
+    assets, fmts, effects = {}, {}, {}
+
+    def effect(e):
+        if e not in effects:
+            effects[e] = ET.SubElement(res, 'effect', id=rid(), name=e[0], uid=e[1]).get('id')
+        return effects[e]
+
+    def asset(m):
+        if m['id'] not in assets:
+            a = {'name': m.get('name') or m['file'], 'start': '0s', 'duration': '0s' if m['kind'] == 'image' else tf(math.ceil(fnum(m.get('duration', 0), 0, 1e6) * F - 1e-6))}
+            if m['kind'] != 'audio':
+                k = (m.get('w'), m.get('h'))
+                if k not in fmts:
+                    fmts[k] = ET.SubElement(res, 'format', id=rid(), width=str(m.get('w', 0)), height=str(m.get('h', 0))).get('id')
+                a.update(hasVideo='1', format=fmts[k], videoSources='1')
+            if m.get('hasAudio') or m['kind'] == 'audio':
+                a.update(hasAudio='1', audioSources='1')
+            el = ET.SubElement(res, 'asset', {'id': rid(), **a})
+            ET.SubElement(el, 'media-rep', kind='original-media', src=(MEDIA / m['file']).as_uri())
+            assets[m['id']] = el.get('id')
+        return assets[m['id']]
+
+    def clip(parent, c, at, n, skip, lane=0, hidden=False, silent=False):  # -> (element, its first frame in its own time)
+        m, sp = med(c['media']), spd(c)
+        k0 = src0(c) + skip
+        el = ET.SubElement(parent, 'video' if m['kind'] == 'image' else 'asset-clip', {'ref': asset(m), **({'lane': str(lane)} if lane else {}),
+                           'offset': tf(at), 'name': m.get('name') or m['file'], 'start': tf(k0), 'duration': tf(n), **({'enabled': '0'} if hidden else {})})
+        if abs(sp - 1) > 1e-6 and m['kind'] != 'image':  # speed as a time map: clip time -> file time, a straight line through 0
+            tm, t1 = ET.SubElement(el, 'timeMap'), (math.ceil(fnum(m.get('duration', 0), 0, 1e6) / sp * F) + 1) * fd
+            ET.SubElement(tm, 'timept', time='0s', value='0s', interp='linear')
+            ET.SubElement(tm, 'timept', time=sec(t1), value=sec(t1 * Fraction(sp).limit_denominator(10000)), interp='linear')
+        if m['kind'] != 'audio' and (op := fnum(c.get('opacity', 1), 0, 1)) < 1:
+            ET.SubElement(el, 'adjust-blend', amount=f'{op:g}')
+        v = 0 if silent else fnum(c.get('volume', 1), 0, 10)
+        if (m.get('hasAudio') or m['kind'] == 'audio') and abs(v - 1) > 1e-6:
+            ET.SubElement(el, 'adjust-volume', amount='-96dB' if v <= 0.0001 else f'{20 * math.log10(v):.2f}dB')
+        return el, k0
+
+    proj = ET.SubElement(ET.SubElement(ET.SubElement(root, 'library'), 'event', name='Cutroom'), 'project', name=name)
+    seq = ET.SubElement(proj, 'sequence', format='r1', duration=tf(T), tcStart='0s', tcFormat='DF' if df else 'NDF', audioLayout='stereo', audioRate='48k')
+    spine, items = ET.SubElement(seq, 'spine'), []  # (element, first frame, end frame, its own time at the first frame)
+    for i, c in enumerate(main):  # a dissolve straddles the cut: each side keeps half of it as a handle
+        a = st[i] + (trf[i - 1] // 2 if i else 0)
+        b = st[i + 1] + trf[i] // 2 if i + 1 < len(main) else st[i] + fr[i]
+        el, k0 = clip(spine, c, a, b - a, a - st[i], hidden=off('main', 0), silent=bool(mute.get('main')))
+        items.append((el, a, b, k0))
+        if trf[i]:
+            t = ET.SubElement(spine, 'transition', name=DISSOLVE[0], offset=tf(st[i + 1]), duration=tf(trf[i]))
+            ET.SubElement(t, 'filter-video', ref=effect(DISSOLVE), name=DISSOLVE[0])
+            ET.SubElement(t, 'filter-audio', ref=effect(CROSSFADE), name=CROSSFADE[0])
+    if T > end:
+        items.append((ET.SubElement(spine, 'gap', name='Gap', offset=tf(end), duration=tf(T - end)), end, T, 0))
+    under = lambda f: next((x for x in items if x[1] <= f < x[2]), items[-1])  # the spine item a connected clip hangs from
+    nrow = lambda L: 1 + max((r for _, r, _, _ in lanes[L]), default=-1)
+    nts = []  # text-style ids, unique in the document
+    base = {'overlay': 1, 'text': 1 + nrow('overlay'), 'captions': 1 + nrow('overlay') + nrow('text'), 'audio': -1}
+    for L, cs in lanes.items():
+        for c, r, a, n in cs:
+            pe, pa, _, pk = under(a)
+            lane, at = base[L] - r if L == 'audio' else base[L] + r, pk + a - pa
+            if L in ('overlay', 'audio'):
+                clip(pe, c, at, n, 0, lane, off(L, r))
+                continue
+            t = ET.SubElement(pe, 'title', {'ref': effect(BASIC_TITLE), 'lane': str(lane), 'offset': tf(at), 'name': ' '.join(str(c['text']).split())[:40],
+                                            'duration': tf(n), **({'enabled': '0'} if off(L, r) else {})})
+            nts.append(sid := f'ts{len(nts) + 1}')
+            ET.SubElement(ET.SubElement(t, 'text'), 'text-style', ref=sid).text = str(c['text']).strip()
+            ET.SubElement(ET.SubElement(t, 'text-style-def', id=sid), 'text-style', font='Helvetica', fontSize='63', fontColor='1 1 1 1', alignment='center')
+    for i, (t, mk) in enumerate(marks(p, F, T)):
+        pe, pa, _, pk = under(k := rnd(t * F))
+        ET.SubElement(pe, 'marker', start=tf(pk + k - pa), duration=tf(1), value=mk or f'Marker {i + 1}')
+    ET.indent(root)
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n\n' + ET.tostring(root, encoding='unicode') + '\n', notes
+
+
 LUFS = (-14, -16, -23)  # export loudness targets: social (reels, YouTube), podcast, EBU R128 broadcast
 
 
@@ -5249,7 +5458,7 @@ class App(BaseHTTPRequestHandler):
                 return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.aimask/\d{5}\.png)', path):  # AI mask frames
                 return self.file(CACHE / m[1])
-            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|gif|mp3|wav|m4a|png|srt|vtt|txt))', path):
+            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|gif|mp3|wav|m4a|png|srt|vtt|txt|fcpxml|edl))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
             if WEB in f.parents and f.is_file():
@@ -5346,6 +5555,19 @@ class App(BaseHTTPRequestHandler):
                 f = unique(EXPORTS / f"{stem}.{body.get('ext') if body.get('ext') in ('vtt', 'txt') else 'srt'}")
                 f.write_text(text, encoding='utf-8')
                 return self.reply({'file': f.name})
+            if u.path == '/api/interchange':  # the timeline for other editors, or YouTube chapters, into the exports folder
+                if body.get('format') not in HANDOFF:
+                    raise ValueError(f"format must be one of {', '.join(HANDOFF)}")
+                if not isinstance(p := body.get('project'), dict):  # the editor sends its project as it is now; else a saved one by id
+                    if not ID.fullmatch(str(body.get('id'))):
+                        raise ValueError('send the project, or its id')
+                    p = json.loads((PROJ / f"{body['id']}.json").read_text())
+                text, notes = interchange(p, body['format'])
+                stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(body.get('name') or p.get('name') or 'Cutroom')).strip(' .')[:120] or 'Cutroom'
+                EXPORTS.mkdir(parents=True, exist_ok=True)
+                f = unique(EXPORTS / f"{stem}{HANDOFF[body['format']]}")
+                f.write_text(text, encoding='utf-8')
+                return self.reply({'file': f.name, 'notes': notes, **({'text': text} if body['format'] == 'chapters' else {})})
             if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
                 return self.reply(sfx_media(str(body.get('id', ''))))
             if u.path == '/api/packs/add':  # a pack sound or track into the media library
@@ -5557,6 +5779,8 @@ def selftest():
     # sound processing keys (noise step first, one character last) and pack names; tests/audio_packs.mjs checks the sound
     assert fx_ok('') and fx_ok('dn') and fx_ok('svm') and fx_ok('sv+elf') and fx_ok('cave') and fx_ok('dn+underwater')
     assert not (fx_ok('elf+sv') or fx_ok('dn+sv') or fx_ok('elf+cave') or fx_ok('sv+sv') or fx_ok('x') or fx_ok('dn+'))
+    assert timecode(1800, 29.97) == '00:01:00;02' and timecode(17982, 29.97) == '00:10:00;00' and timecode(1799, 29.97) == '00:00:59;29'  # drop-frame
+    assert timecode(3600, 59.94) == '00:01:00;04' and timecode(90, 25) == '00:00:03:15' and frame_dur(23.976) == Fraction(1001, 24000) and frame_dur(25) == Fraction(1, 25)
     assert clip_fx({'studio': True, 'denoise': True, 'au': {'voice': 'giant'}}, {'hasAudio': True}) == 'sv+giant'
     assert clip_fx({'au': {'voice': 'robot'}}, {'hasAudio': True}) == '' and pack_name('impactWood_medium_003') == 'Impact wood medium 3'
     # the heavy-job queue: one at a time, in order, the waiting one says so; a job's own nested steps don't wait behind it
