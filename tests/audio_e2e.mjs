@@ -129,7 +129,7 @@ if (mix) {
 }
 check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 for (const id of made) await fetch(`${B}/api/projects/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
-{ const X = `${LIB}/exports/`; for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash
+{ const X = `${LIB}/exports/`; fs.mkdirSync(`${X}../trash/exports`, { recursive: true }); for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash
 for (const id of stemIds) await fetch(`${B}/api/media/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await fetch(`${B}/api/media/${media.id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);

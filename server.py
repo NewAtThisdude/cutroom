@@ -5891,7 +5891,7 @@ def selftest():
     tb = threading.Thread(target=second)
     tb.start()
     for _ in range(200):
-        if sb.get('note'):
+        if sb.get('note') and order:  # (order: 'a' is appended just after the slot is taken: read too soon it was still empty)
             break
         time.sleep(0.01)
     assert sb.get('note') == 'Waiting for Smart search (1 ahead)' and order == ['a'], (sb, order)

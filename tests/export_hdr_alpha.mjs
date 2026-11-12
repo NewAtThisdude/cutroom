@@ -74,7 +74,7 @@ for (const rm of ['no-preference', 'reduce']) {
     if (hdr) await page.selectOption('#exHdr', hdr);
     await page.click('#exGo');
     await page.waitForFunction(() => !S.exporting && /Saved|failed/.test(document.querySelector('#exStatus')?.textContent || ''), null, { timeout: 600000 });
-    const st = await page.textContent('#exStatus'), f = st.match(/Saved (.+?) in Movies/)?.[1];
+    const st = await page.textContent('#exStatus'), f = st.match(/Saved (.+?) in /)?.[1];
     if (f) files.push(`${HOME}/exports/${f}`);
     return { file: f && `${HOME}/exports/${f}`, st };
   };
