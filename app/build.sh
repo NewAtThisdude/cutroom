@@ -2,7 +2,7 @@
 # Builds ~/Applications/Cutroom.app (native AppKit + WebKit window around server.py) from Cutroom.swift.
 set -eu
 cd "$(dirname "$0")"
-APP="$HOME/Applications/Cutroom.app"
+APP="${CUTROOM_APP:-$HOME/Applications/Cutroom.app}"  # CUTROOM_APP: build somewhere else (a test from a fresh clone)
 REPO="$(cd .. && pwd)"
 PYTHON="$(command -v python3)"
 BIN="$(mktemp -d)/Cutroom"
