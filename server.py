@@ -5106,6 +5106,10 @@ class App(BaseHTTPRequestHandler):
             # at most RANGE_CAP per answer (a 206 may be shorter than asked; the player asks for the rest). WebKit asks for the
             # whole rest of the file at every seek and drops it at the next: scrubbing streamed hundreds of MB it threw away
             end = min(end, size - 1, start + RANGE_CAP - 1)
+            if start > end and path.suffix == '.pcm':  # the preview asks for its sound in 4 s chunks and can't know where a short
+                self.send_response(204)  # one ends (a 0.08 s file at 100x): nothing there, not an error in the page's console
+                self.end_headers()
+                return
             if start > end:
                 self.send_response(416)
                 self.send_header('Content-Range', f'bytes */{size}')

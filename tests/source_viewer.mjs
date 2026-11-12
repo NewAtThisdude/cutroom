@@ -29,7 +29,8 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
     // search
     await page.click('#mediaSearch'); await page.keyboard.type('pod');
     let n = await names();
-    check("typing 'pod' in search leaves only podcast-episode", n.length === 1 && n[0] === 'podcast-episode.mp4', n.join(', '));
+    // (its own copies, e.g. 'podcast-episode (voice).m4a' from Isolate voice in an earlier test, match too)
+    check("typing 'pod' in search leaves only podcast-episode", n.includes('podcast-episode.mp4') && n.every(x => x.startsWith('podcast-episode')), n.join(', '));
     await page.fill('#mediaSearch', 'DJI_0482_001');
     n = await names();
     check('searching DJI_0482_001 finds its card (and only names with it)', n.includes('DJI_0482_001.MP4') && n.every(x => x.includes('DJI_0482_001')), n.join(', ')); // freeze-frame stills of it match too
