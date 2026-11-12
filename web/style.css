@@ -427,7 +427,23 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .scope[hidden] { display: none; }
 .scope .seg button { padding: 3px 8px; font-size: 11px; }
 .scope canvas { width: 256px; height: 150px; border-radius: 6px; }
-#btnScope.on { color: var(--text); background: var(--raised); }
+#btnScope.on, #btnMeter.on { color: var(--text); background: var(--raised); }
+.meter { position: absolute; right: 12px; bottom: 12px; z-index: 4; width: 212px; background: rgba(14, 14, 15,.92); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.meter[hidden] { display: none; }
+.meter .mhead { display: flex; align-items: center; gap: 2px; color: var(--muted); }
+.meter .mhead span { flex: 1; }
+.meter .mhead button { padding: 2px 6px; font-size: 11px; }
+.meter .mbar { position: relative; flex: 1; min-height: 8px; height: 8px; border-radius: 2px; background: var(--raised); overflow: hidden; }
+.meter .mbar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--muted); }
+.meter .mbar b { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--faint); }
+.meter .mbar b.on { width: 2px; background: var(--accent); }
+.meter .mbar u { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: var(--text); display: none; }
+.meter .mnums { display: flex; justify-content: space-between; color: var(--muted); }
+.meter .mnums b, .meter .mpk b { color: var(--text); font-weight: 500; }
+.meter .mpk { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.meter .mpk b { width: 34px; text-align: right; }
+.meter .mpk.over b, .meter .mclip { color: var(--hot); }
+.meter .mpk.over u { background: var(--hot); }
 #clipStatus:empty { display: none; }
 .keys { border-collapse: collapse; margin: 6px 0 12px; font-size: 13px; }
 .keys td { padding: 4px 10px 4px 0; vertical-align: top; }
