@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4732', HOME = process.env.CUTROOM_HOME, QUICK = process.argv[2] === 'quick';
 if (!HOME || /:4610\b/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port>');
-const EXP = `${HOME}/exports`, PHONE = process.env.PHONE || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos/IMG_4697.MOV';
+const EXP = `${HOME}/exports`, PHONE = process.env.PHONE || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos/IMG_4697.MOV`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const api = async (path, body) => (await fetch(B + path, body ? { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { headers: { 'X-Cutroom': '1' } })).json();

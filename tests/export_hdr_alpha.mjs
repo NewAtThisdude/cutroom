@@ -1,5 +1,5 @@
 // HDR and transparent exports through the real dialog, headless WebKit, both motion modes.
-// HDR: Marat's iPhone clip (4K 120 fps HLG, portrait by rotation) trimmed + faded in, in a 120 fps 9:16 project, exported
+// HDR: a real iPhone clip (4K 120 fps HLG, portrait by rotation) trimmed + faded in, in a 120 fps 9:16 project, exported
 // as HEVC Main 10 HLG and PQ: labels, 10-bit, upright, 120 fps, hvc1, and its luma against the source at 5 frames (10-bit
 // codes). Known values: a lossless HLG patch clip exported HLG keeps its code values, exported PQ lands on BT.2100's maths.
 // Honest labels: the preview says it is SDR, the dialog says what forces SDR. Alpha: text + sticker (PNG) + cut-out clip
@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
-const DIR = process.env.PHOTOS || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos', SRC = `${DIR}/IMG_4705.MOV`;
+const DIR = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`, SRC = `${DIR}/IMG_4705.MOV`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };

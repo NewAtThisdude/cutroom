@@ -15,7 +15,8 @@ JavaScript for the editor (`web/`), a thin Swift shell (`app/`). No build step, 
 - **Run the checks.** `python3 -I server.py --selftest` after engine changes (about 3 minutes, pixel checks);
   `node tests/ui_smoke.mjs` and `node tests/ui_audit.mjs` after UI changes. Tests need a server on a scratch library:
   `CUTROOM_HOME=/tmp/cutroom-test CUTROOM_PORT=4620 python3 -I server.py`, then `B=http://127.0.0.1:4620 node tests/...`.
-  Never point tests at your real library.
+  Never point tests at your real library. Tests that need real footage (iPhone HDR clips and the like) read it from
+  `$CUTROOM_SCRATCH/photos` (default `/tmp/cutroom-scratch/photos`) and skip when it isn't there.
 - **Light on the machine.** Heavy jobs go through the one queue (`ai_slot`) and get a row in the budget table
   (`AI_BUDGET`); nothing polls in the background; models unload when idle.
 - **Everything local.** No telemetry, no accounts, no network calls except downloads the user starts, each pinned

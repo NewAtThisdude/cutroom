@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
-const DIR = process.env.PHOTOS || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos';
+const DIR = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
 const CLIPS = ['IMG_4705.MOV', 'IMG_4697.MOV'];
 if (!CLIPS.every(f => fs.existsSync(`${DIR}/${f}`))) { console.log(`SKIP: iPhone clips not found in ${DIR}`); process.exit(0); }
 const res = [];

@@ -1,4 +1,4 @@
-// AI enhance, measured on Marat's real iPhone footage (4K120 HLG, tone mapped to 1080x1920 SDR here, like the editor's proxy):
+// AI enhance, measured on real iPhone footage (4K120 HLG, tone mapped to 1080x1920 SDR here, like the editor's proxy):
 //   interp    RIFE vs minterpolate on held-out real frames: a 120 fps clip with every other frame dropped (60 fps), each
 //             method makes the missing frames back (2x), PSNR / SSIM against the dropped ones; then a 4x slow-mo of a 60 fps 1080p clip renders
 //   upscale   Real-ESRGAN 2x / 4x vs lanczos on a downscaled-then-upscaled truth (PSNR / SSIM), and its speed (frames per second)
@@ -13,7 +13,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4754', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
-const PH = process.env.PHOTOS || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos';
+const PH = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
 const OUT = new URL('./out/ai_enhance/', import.meta.url).pathname, FLICKER = 1;
 fs.mkdirSync(OUT, { recursive: true });
 const res = [], made = new Set(), pids = new Set();

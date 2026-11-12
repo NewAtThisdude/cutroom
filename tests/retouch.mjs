@@ -130,7 +130,7 @@ side(grab(file(TWM), T0 + t5, `${OUT}/retouch_face_before.png`), `${OUT}/retouch
 await pv(TWM.id, T0 + t5, { lips: 0.8, lipc: '#9e1030', blush: 0.8, blushc: '#ff5577' }, `${tmp}/mk.png`);
 side(`${OUT}/retouch_face_before.png`, `${tmp}/mk.png`, `${OUT}/retouch_makeup_before_after.png`);
 
-// 6. body: slim body + longer legs on Marat's iPhone footage (4K120 HLG), re-detected pose
+// 6. body: slim body + longer legs on real iPhone footage (4K120 HLG), re-detected pose
 let BODY = media.find(m => m.name === 'IMG_4700.MOV');
 if (!BODY && process.env.PHOTOS && fs.existsSync(`${process.env.PHOTOS}/IMG_4700.MOV`)) BODY = await post('/api/import_path', { path: `${process.env.PHOTOS}/IMG_4700.MOV` });
 if (!BODY) console.log('SKIP body: no IMG_4700.MOV in the library (set PHOTOS=<dir>)');

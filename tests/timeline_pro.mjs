@@ -2,14 +2,14 @@
 // shapes (heart, star, polygon, pen) and the AI subject mask (SAM 2), and the preview quality setting. Preview == export is
 // checked by rendering the same frame both ways (MCP snapshot: canvas vs /api/still_frame), like video_parity.
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node timeline_pro.mjs [only]   (never the 4610 server)
-// only: ease | ripple | tools | mask | ai | quality (default: all). PHOTOS=<dir with Marat's iPhone MOVs> for ai + quality.
+// only: ease | ripple | tools | mask | ai | quality (default: all). PHOTOS=<dir with iPhone MOVs> for ai + quality.
 import { webkit } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4753', only = process.argv[2];
 if (/:4610\b/.test(B)) throw new Error('run this on a scratch server, not 4610');
-const PHOTOS = process.env.PHOTOS || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos';
+const PHOTOS = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
 const on = k => !only || only === k;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };

@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 const parts = process.argv.slice(2).length ? process.argv.slice(2) : ['exact', 'parity', 'perf', 'tiles', 'export'];
-const REAL = '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos/IMG_0324.MOV'; // read-only: uploaded as a copy
+const REAL = `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos/IMG_0324.MOV`; // read-only: uploaded as a copy
 const OUT = new URL('./out/fx_pack/', import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
 const NEW_TR = ['blurfade', 'whipup', 'whipdown', 'flashwhite', 'flashblack', 'lightleak', 'filmburn', 'cube', 'flip', 'punchin', 'zoomout', 'spin', 'glitchcut', 'rgbsplit',

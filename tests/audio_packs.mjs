@@ -122,7 +122,7 @@ const rows = p => p.evaluate(() => [...document.querySelectorAll('#sfxList .sfxr
 // ---------- 1. the CC0 library ----------
 if (run('packs')) {
   let idx = await get('/api/packs');
-  if (!idx.installed) { // the button in the Audio rail, as Marat would
+  if (!idx.installed) { // the button in the Audio rail, as a user would
     await page.click('[data-tab="audio"]');
     const t0 = Date.now();
     await page.click('#btnPacks');

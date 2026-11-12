@@ -7,7 +7,7 @@
 import { webkit } from 'playwright';
 import fs from 'node:fs';
 const B = process.env.B || 'http://127.0.0.1:4774', HOME = process.env.CUTROOM_HOME, ONLY = process.env.ONLY || '';
-const PHOTOS = process.env.PHOTOS || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/photos';
+const PHOTOS = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
 if (/:4610\b/.test(B) || !HOME) throw new Error('run on a scratch server (B=, CUTROOM_HOME=), never 4610');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const REPO = new URL('..', import.meta.url).pathname, OUT = new URL('./out/', import.meta.url).pathname;
-const SCR = process.env.SCR || '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad';
+const SCR = process.env.SCR || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}`;
 const RAMS = (process.argv[2] || '8,16').split(',').map(Number), only = process.argv[3], want = n => !only || new RegExp(`^(${only})$`).test(n);
 const FIX = `${SCR}/allmacs-fixtures`, PAGE = 16384, SWAP_MB = 256; // a job may page out at most this much (other agents share this Mac)
 fs.mkdirSync(FIX, { recursive: true });
