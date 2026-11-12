@@ -44,7 +44,7 @@ A few optional models are for non-commercial use only; they are marked there and
 
 Data lives in `~/Movies/Cutroom/`:
 - `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)
-- `projects/`: one JSON per project
+- `projects/`: one JSON per project, and `<id>.versions/` beside it: its version history
 - `exports/`
 - `cache/`: filmstrips, waveforms, proxies, transcripts, beats
 - `sfx/`: the synthesized sound effects (made on first use)
@@ -213,7 +213,8 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | **Studio voice** (off / on / with the music removed first) and **8 voice characters**: elf, giant, monster, alien (pitch and formants moved apart), radio, megaphone, cave, underwater | Rendered on this Mac into the clip's sound file, which the preview plays and the export reads (export vs preview: 184-188 dB SNR, the same samples). Studio voice: RNNoise (lag taken out), rumble cut, de-ess, a downward expander, a compressor, presence EQ, one gain to −16 LUFS; nothing looks ahead (0 samples of delay). Studio + remove music runs Demucs first. Characters: the WORLD vocoder (pyworld) for elf/giant/monster/alien, ffmpeg filters for the rest; each is set back to the loudness (LUFS) it went in at, true peak under −1.5 dBTP (`tests/audio_packs.mjs`) |
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three quality levels (VideoToolbox constant quality) or a custom bitrate; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
-| Library | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
+| Library | **Version history**: Versions (top bar, or a project card) lists snapshots kept while you edit and versions you name; Restore any of them, in place | A snapshot every 5 minutes of editing, plus the state before any change of 5 or more clips, gzipped in `projects/<id>.versions/` (the last 60; named ones until you delete them). A restore first keeps the state it replaces ("Before restore") and is one undo step. Deleting a project moves its versions to the trash with it |
+| | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
 | On-device AI | Text-to-image and stickers, natural AI voiceover in 9 languages, background removal for photos (any subject) | Z-Image-Turbo (4-bit, MLX), Kokoro-82M (MLX), Apple Vision subject lifting. All on this Mac; see below |
@@ -238,7 +239,7 @@ between every clip and export 1080p". Claude reads the timeline, edits, looks at
 the preview frame as an image), and exports. The 41 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
-undo/redo, snapshots, export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
+undo/redo, version history (`versions`: list, save, restore), snapshots, export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
 object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions`, `hook_titles` and `scopes` (the frame's levels).
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
@@ -437,6 +438,9 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Language model:** a 9B local model. Its picks for shorts were right on a clear multi-topic talk; hook titles sometimes
   ignore the word limit (two-clause titles are cut to the first clause). Translation is good in Spanish and Russian;
   Japanese had an occasional wrong word (Chinese 咖啡 for "coffee").
+- **Version history** keeps whole project files, not the media: a version whose clips' media was removed from the library
+  restores with those clips striped red (relink them). Snapshots follow edits that are saved, so a pause of an hour
+  and one edit makes one snapshot; `CUTROOM_VERSION_GAP` (seconds) changes the 5 minutes.
 - **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
 - **Timeline hand-off** (FCPXML, EDL) carries the edit, not the look: effects, filters, grades, masks, keys, crop, position and
   scale of overlays, keyframes (volume envelopes too), clip animations, fades and text styling stay in Cutroom (titles come over

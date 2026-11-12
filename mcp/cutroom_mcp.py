@@ -266,6 +266,10 @@ TOOLS = [
                'the share of clipped black and white pixels (%) and the mean R, G, B (0-255). Use it to judge exposure and colour casts before and after a grade. '
                'show=true/false opens or closes the scopes panel in the editor; kind wave|parade|vec|hist picks the scope shown.',
      S({'show': boo, 'kind': {'type': 'string', 'enum': ['wave', 'parade', 'vec', 'hist']}}), 'scopes'),
+    ('versions', 'The open project\'s version history: list (snapshots kept every few minutes of editing plus named versions: id, t, name, '
+                 'dur, clips), save a named version of it as it is now, or restore one by id (the current state is kept as a version first, '
+                 'and the restore is one undo step).',
+     S({'action': {'type': 'string', 'enum': ['list', 'save', 'restore']}, 'name': txt, 'version': txt}), 'versions'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',

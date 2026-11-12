@@ -10,7 +10,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, contextlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, gzip, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from fractions import Fraction
 import xml.etree.ElementTree as ET
@@ -5239,6 +5239,12 @@ def has_file(mid):  # a library item whose file is there (not trashed or moved)
         return False
 
 
+def proj_stats(j):  # a project's length and clip count, for its card and its versions
+    span = lambda c: c.get('dur') or (c.get('out', 0) - c.get('in', 0)) / (c.get('speed') or 1)
+    dur = max([sum(span(c) for c in j.get('main', []))] + [c.get('start', 0) + span(c) for k in ('overlay', 'audio', 'text', 'captions') for c in j.get(k, [])])
+    return {'dur': round(dur, 2), 'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions'))}
+
+
 def list_projects():
     out = []
     for f in PROJ.glob('*.json'):
@@ -5246,12 +5252,65 @@ def list_projects():
             j = json.loads(f.read_text())
         except ValueError:
             continue
-        span = lambda c: c.get('dur') or (c.get('out', 0) - c.get('in', 0)) / (c.get('speed') or 1)
-        dur = max([sum(span(c) for c in j.get('main', []))] + [c.get('start', 0) + span(c) for k in ('overlay', 'audio', 'text', 'captions') for c in j.get(k, [])])
-        out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, 'dur': round(dur, 2),
-                    'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions')),
+        out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, **proj_stats(j),
                     'pic': (CACHE / f'poster_{f.stem}.jpg').exists() or any(has_file(c.get('media')) for c in j.get('main', []) + j.get('overlay', []))})  # it can have a poster (else the card asks and gets a 404)
     return sorted(out, key=lambda p: -p['updated'])
+
+
+# ---------- version history: projects/<id>.versions/<ms><a|n>.json.gz = {"name", "p": the project as saved} ----------
+VERSION_GAP = float(os.environ.get('CUTROOM_VERSION_GAP', 300))  # seconds of editing between automatic snapshots (tests shorten it)
+VERSION_KEEP = 60  # automatic ones; named ones are kept until deleted
+VERSION_LOCK = threading.Lock()  # ponytail: one lock for every project's versions; saves are small and the lock is held for milliseconds
+
+
+def versions_dir(pid):
+    return PROJ / f'{pid}.versions'
+
+
+def read_version(pid, vid):
+    if not re.fullmatch(r'\d{13}[an]', vid) or not (f := versions_dir(pid) / f'{vid}.json.gz').is_file():
+        raise ValueError('no such version')
+    return json.loads(gzip.decompress(f.read_bytes()))
+
+
+def write_version(pid, proj, name=None, named=False):
+    d = versions_dir(pid)
+    d.mkdir(exist_ok=True)
+    t = int(time.time() * 1000)
+    while list(d.glob(f'{t}?.json.gz')):  # two in the same millisecond
+        t += 1
+    vid = f"{t}{'n' if named else 'a'}"
+    tmp = d / f'.{vid}.tmp'
+    tmp.write_bytes(gzip.compress(json.dumps({'name': name, 'p': proj}).encode()))
+    tmp.replace(d / f'{vid}.json.gz')
+    for f in sorted(d.glob('*a.json.gz'))[:-VERSION_KEEP]:
+        f.unlink()
+    return vid
+
+
+def list_versions(pid):
+    out = []
+    for f in sorted(versions_dir(pid).glob('*.json.gz'), reverse=True):
+        try:
+            v = read_version(pid, f.name[:14])
+        except (OSError, ValueError):
+            continue
+        out.append({'id': f.name[:14], 't': int(f.name[:13]) / 1000, 'name': v.get('name'), 'named': f.name[13] == 'n', **proj_stats(v['p'])})
+    return out
+
+
+def keep_version(pid, old, new):
+    """Called on every save (old: the project as it was on disk, or None). A big change (5+ clips more or fewer) keeps the state
+    before it; otherwise the saved state is kept once the newest version is VERSION_GAP old. A state equal to the newest isn't kept twice."""
+    vs = sorted(versions_dir(pid).glob('*.json.gz'))
+    if old and abs(proj_stats(old)['clips'] - proj_stats(new)['clips']) >= 5:
+        keep = old
+    elif not vs or time.time() - int(vs[-1].name[:13]) / 1000 >= VERSION_GAP:
+        keep = new
+    else:
+        return
+    if not vs or keep != read_version(pid, vs[-1].name[:14])['p']:
+        write_version(pid, keep)
 
 
 def poster(pid):
@@ -5390,6 +5449,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(voices())
             if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})', path):
                 return self.file(PROJ / f'{m[1]}.json')
+            if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions', path):
+                return self.reply(list_versions(m[1]))
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/poster\.jpg', path)) and (PROJ / f'{m[1]}.json').exists():
                 if f := poster(m[1]):
                     return self.file(f)
@@ -5736,8 +5797,28 @@ class App(BaseHTTPRequestHandler):
                 f = (PROJ if m[1] == 'projects' else HOME / 'templates') / f'{m[2]}.json'
                 if f.exists():
                     (HOME / 'trash').mkdir(exist_ok=True)
-                    shutil.move(str(f), str(unique(HOME / 'trash' / f.name)))
+                    with VERSION_LOCK:
+                        shutil.move(str(f), str(to := unique(HOME / 'trash' / f.name)))
+                        if m[1] == 'projects' and versions_dir(m[2]).is_dir():  # its history goes with it: trash/<id> (2).versions beside trash/<id> (2).json
+                            shutil.move(str(versions_dir(m[2])), str(unique(to.with_suffix('.versions'))))
                 return self.reply({'ok': True})
+            if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions(?:/(\d{13}[an])/(restore|delete))?', u.path)) and (PROJ / f'{m[1]}.json').exists():
+                f = PROJ / f'{m[1]}.json'
+                with VERSION_LOCK:
+                    if not m[2]:  # a named version of the project as it is now
+                        name = str(body.get('name') or '').strip()[:80] or time.strftime('Version %b %-d, %H:%M')
+                        return self.reply({'id': write_version(m[1], json.loads(f.read_text()), name, True), 'name': name})
+                    if m[3] == 'delete':
+                        read_version(m[1], m[2])
+                        (versions_dir(m[1]) / f'{m[2]}.json.gz').unlink()
+                        return self.reply({'ok': True})
+                    p = read_version(m[1], m[2])['p']
+                    if (cur := json.loads(f.read_text())) != p:  # restore is undoable: the state it replaces becomes a version first
+                        write_version(m[1], cur, 'Before restore')
+                    tmp = PROJ / f'.{m[1]}.tmp'
+                    tmp.write_text(json.dumps(p))
+                    tmp.replace(f)
+                return self.reply(p)
             if u.path == '/api/reveal':  # Show in Finder, or play: open it in the Mac's default player (QuickTime)
                 f = EXPORTS / Path(str(body.get('file', ''))).name
                 if f.is_file():
@@ -5763,9 +5844,15 @@ class App(BaseHTTPRequestHandler):
             folder.mkdir(exist_ok=True)
             if m[1] == 'projects' and not (folder / f'{m[2]}.json').exists() and next((HOME / 'trash').glob(f'{m[2]}*.json'), None):
                 return self.reply({'ok': True, 'trashed': True})  # a save still on its way for a project just put in the trash: it stays there
-            tmp = folder / f'.{m[2]}.tmp'
-            tmp.write_text(json.dumps(body))
-            tmp.replace(folder / f'{m[2]}.json')  # atomic: a crash mid-save never truncates the file
+            tmp, f = folder / f'.{m[2]}.tmp', folder / f'{m[2]}.json'
+            with VERSION_LOCK:
+                if m[1] == 'projects':
+                    try:
+                        keep_version(m[2], json.loads(f.read_text()) if f.exists() else None, body)
+                    except (OSError, ValueError) as e:  # history is a bonus: it never blocks a save
+                        print(f'version of {m[2]} not kept: {e}', file=sys.stderr, flush=True)
+                tmp.write_text(json.dumps(body))
+                tmp.replace(f)  # atomic: a crash mid-save never truncates the file
             self.reply({'ok': True})
         except ValueError as e:
             self.reply({'error': str(e)}, 400)

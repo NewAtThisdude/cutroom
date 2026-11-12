@@ -4365,17 +4365,39 @@ async function openProject(id) {
   const gone = LANES.reduce((n, L) => n + P[L.key].filter(c => c.media && !M.get(c.media)).length, 0);
   if (gone) toast(`${gone} clip${gone === 1 ? ' has' : 's have'} missing media (striped red): select one to restore or relink it`);
 }
+const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 172800 ? 'yesterday' : new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
 async function openProjects() { // CapCut's home: a card per project with a frame from it, newest first
   await sendPoster(); // (this one's card shows it as it is now)
   const list = await api('/api/projects').catch(() => []);
-  const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 172800 ? 'yesterday' : new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
   modal(`<div class="phead"><h2>Projects</h2><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div>
     <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb">${p.pic ? `<img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
-      + `<span class="pacts"><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
+      + `<span class="pacts"><button class="pdel" data-versions="${p.id}" title="Versions" aria-label="Versions of ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg></button><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
     <div class="actions"><button data-close>Close</button></div>`, 'wide');
 }
 
+async function openVersions(id = P.id) { // CapCut keeps no history: snapshots while you edit, versions you name, each restorable
+  if (id === P?.id) await flushSave(); // (the list and a new version start from what's on screen)
+  const list = await api(`/api/projects/${id}/versions`).catch(() => []);
+  modal(`<h2>Versions</h2><p class="hint">A snapshot is kept every few minutes while you edit (the last 60), and every version you save. Restoring keeps the current state as a version first.</p>
+    <div class="vsave"><input id="verName" maxlength="80" placeholder="Name (optional)" aria-label="Version name"><button class="primary" data-vsave="${id}">Save version</button></div>
+    <div class="vlist">${list.map(v => `<div class="vrow"><span title="${new Date(v.t * 1000).toLocaleString()}"><b>${esc(v.name || 'Snapshot')}</b><small>${ago(v.t)} · ${fmtDur(v.dur || 0)} · ${v.clips} clip${v.clips === 1 ? '' : 's'}</small></span><button data-vrestore="${v.id}" data-pid="${id}">Restore</button>`
+      + (v.named ? `<button class="pdel" data-vdel="${v.id}" data-pid="${id}" title="Delete version" aria-label="Delete ${esc(v.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : '<i></i>') + '</div>').join('') || '<p class="hint">None yet: the first snapshot is kept with your next edit.</p>'}</div>
+    <div class="actions"><button data-close>Close</button></div>`);
+}
+async function saveVersion(id, name) {
+  if (id === P?.id) await flushSave();
+  const v = await api(`/api/projects/${id}/versions`, { name });
+  toast(`Saved "${v.name}"`);
+  return v;
+}
+async function restoreVersion(id, vid) {
+  if (id === P?.id) await flushSave(); // the state being replaced is on disk, so the server keeps it as "Before restore"
+  const p = await api(`/api/projects/${id}/versions/${vid}/restore`, {});
+  if (id !== P?.id) await openProject(id);
+  else { undo.push(JSON.stringify(P)); redo = []; P = migrate(p); S.sel = null; S.multi.clear(); fitStage(); touched(); } // one undo step, no page reload
+  return p;
+}
 async function trashProject(id, name) { // reversible: the server moves it to Movies/Cutroom/trash
   if (!confirm(`Delete "${name}"? It moves to Movies/Cutroom/trash, so it can be recovered.`)) return;
   if (id === P?.id) { clearTimeout(saveTimer); saveTimer = 0; } // (a pending save would put it back)
@@ -4708,6 +4730,7 @@ function wire() {
     await api(`/api/ai/clones/${o.value}/trash`, {}); await loadAI(); $('#dubStatus').textContent = 'Voice moved to the Trash.';
   });
   $('#btnTemplates').addEventListener('click', openTemplates);
+  $('#btnVersions').addEventListener('click', () => openVersions().catch(err => toast(err.message)));
   $('#heads').addEventListener('click', e => {
     const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
     if (!b) return;
@@ -5211,6 +5234,10 @@ function wire() {
     else if (b.id === 'exGo') runExport();
     else if (b.id === 'exCancel' && S.exporting?.job) { b.disabled = true; api(`/api/jobs/${S.exporting.job}/cancel`, {}).catch(() => {}); }
     else if (d.trash) trashProject(d.trash, d.name).catch(err => toast(err.message));
+    else if (d.versions) openVersions(d.versions);
+    else if (d.vsave) { await saveVersion(d.vsave, $('#verName').value); openVersions(d.vsave); }
+    else if (d.vrestore) { await restoreVersion(d.pid, d.vrestore); closeModal(); toast('Version restored. Undo (⌘Z) brings the last state back.'); }
+    else if (d.vdel) { if (confirm('Delete this version? It cannot be recovered.')) { await api(`/api/projects/${d.pid}/versions/${d.vdel}/delete`, {}); openVersions(d.pid); } }
     else if (d.dup) { const p = await api(`/api/projects/${d.dup}`); p.id = hex12(); p.name = `${p.name} (copy)`; await api(`/api/projects/${p.id}`, p, 'PUT'); openProjects(); }
     else if ('savetpl' in d) { await saveTemplate(); openTemplates(); }
     else if (d.tpl) showTemplate(d.tpl);
@@ -6013,6 +6040,13 @@ const REMOTE = {
     return { t: r3(S.t), open: SCOPE.on, kind: SCOPE.kind, ...scopeLevels() };
   },
   async seek({ t }) { seekTo(+t); return { playhead: r3(S.t) }; },
+  async versions({ action = 'list', name, version }) { // the project's history (see openVersions)
+    if (action === 'list') return api(`/api/projects/${P.id}/versions`);
+    if (action === 'save') return saveVersion(P.id, name);
+    if (action !== 'restore') throw new Error('action: list, save or restore');
+    await restoreVersion(P.id, version);
+    return REMOTE.status();
+  },
   async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
   async snapshot({ t, max = 720, preview = false }) {
     if (S.playing) pause();
