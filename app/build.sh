@@ -20,7 +20,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 <dict>
   <key>CFBundleName</key><string>Cutroom</string>
   <key>CFBundleDisplayName</key><string>Cutroom</string>
-  <key>CFBundleIdentifier</key><string>com.marat.cutroom</string>
+  <key>CFBundleIdentifier</key><string>io.cutroom.app</string>
   <key>CFBundleExecutable</key><string>Cutroom</string>
   <key>CFBundleIconFile</key><string>Cutroom</string>
   <key>CFBundlePackageType</key><string>APPL</string>
