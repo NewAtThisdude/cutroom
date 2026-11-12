@@ -281,27 +281,12 @@ The full-precision image model needs more than 30 GB while it loads and pushes a
 per image). That is why Cutroom keeps a 4-bit copy, which loads in about 4 s.
 
 
-## How CapCut works (teardown of /Applications/CapCut.app 9.7.1)
+## Design
 
-Static triage only: bundle layout, linked frameworks, string literals and my own project file.
-No decompiling and no CapCut code or assets copied. Cutroom is a clean-room build.
-
-| CapCut layer | What the bundle shows | Cutroom's version |
-|---|---|---|
-| App shell | 217 KB launcher over 1.7 GB of frameworks. UI is **Qt 6.2.2 / QML**, plus ByteDance **Lynx** panels and an embedded **Chromium** (454 MB) for the asset-store web panels. Sparkle updates | HTML/CSS/JS in a Chrome app window (`web/`) |
-| Edit engine | ByteDance **VE SDK**: `libVECreator` (352 MB), `libvideoeditor` (86 MB), `libcccreator` (132 MB business layer), separate `VEHelper.app` process | `server.py` builds one ffmpeg filtergraph per export |
-| Decode / encode | **FFmpeg** dylibs, ByteDance's own **ByteVC1** decoder, dav1d | Homebrew ffmpeg + VideoToolbox |
-| GPU render | **AGFX** on **Metal** plus **ANGLE** (`libGLESv2`), so mobile GLSL effects run on the Mac | canvas 2D in the preview, ffmpeg filters in the export |
-| Effects | downloaded, encrypted packages (`libEffectPlatform`, `libres_pool`, `libvecryptor`) | built-in looks, transitions and presets |
-| Project format | `com.lveditor.draft/<name>/draft_info.json`: plain JSON in **microseconds**. `tracks[] → segments[]`, each with `source_timerange` / `target_timerange`, referencing a `materials{}` registry of 55 kinds. Every draft also stores the Mac's `mac_address` / `hard_disk_id` | `projects/<id>.json`: lanes of clips referencing media by id, in seconds. Main clips snap to whole frames |
-| On-device AI | ~75 `.model` files on ByteDance's **ByteNN** engine: matting, tracking, depth, frame interpolation, beats, denoise | Apple Vision (segmentation, tracking), whisper.cpp, Silero VAD, ffmpeg DSP |
-| Auto captions | **cloud ASR** (`asr_online`, `/api/v1/asr/ws`). No speech model in the bundle | on-device whisper.cpp |
-| Cloud | cloud drafts, uploads, AIGC, C2PA credentials, an AI agent on a bundled **Bun** runtime | none |
-
-The design idea carried over is a plain declarative timeline that one engine renders. Cutroom splits that
-engine in two. The browser draws the preview and the **text layer** as PNGs, using the same `drawText()` call
-for both. ffmpeg composites and encodes. This Homebrew ffmpeg has no libass/freetype, and drawing text
-once in the browser also guarantees the export matches the preview.
+A plain declarative timeline (JSON) that one engine renders, split in two. The browser draws the preview and
+the **text layer** as PNGs, using the same `drawText()` call for both. ffmpeg composites and encodes; effects-pack
+effects and transitions run as Metal kernels between ffmpeg stages (`tools/fxgpu.swift`). Homebrew ffmpeg has no
+libass/freetype, and drawing text once in the browser also guarantees the export matches the preview.
 
 ## Engineering notes (each one bit once and is now pinned by the self-check)
 
@@ -397,13 +382,14 @@ once in the browser also guarantees the export matches the preview.
 - **Background removal:** people only (Vision person segmentation), frame by frame. Expect some edge
   flicker. It was verified on a 3D-avatar clip, not on a real person; hair edges are unverified. A cutout
   of HDR footage is not tone-mapped.
-- **Motion tracking:** follows position only (not the target's scale or rotation). Verified on synthetic
-  motion only.
-- **HDR:** verified on synthetic HLG, including rotation. Real iPhone Dolby Vision metadata is ignored
-  (its HLG base layer is used).
-- **Speed ramps** are stepped (8 parts), and speed tops out at 10× (CapCut goes to 100×). Masks and filters
-  are static (not keyframeable). A chroma key on a clip that is already transparent replaces its alpha in
-  the export.
+- **Motion tracking:** follows position, scale and rotation (OpenCV corners; without the AI tools Apple Vision follows
+  position and size only). Checked against ground truth on synthetic motion (`tests/track_truth.py`), not yet on
+  hard real footage (fast blur, occlusion).
+- **HDR:** checked on real iPhone 4K120 HLG footage (portrait by rotation), preview against export and against Apple's
+  own SDR rendering (`tests/hdr_iphone.mjs`). Dolby Vision metadata is ignored (its HLG base layer is used).
+- **Speed ramps** are smooth curves (six presets, or your own points) rendered as a retimed copy of the clip, so
+  preview and export show the same frames; the first play of a fresh ramp can start about 0.1 s late. Speed goes
+  from 0.1x to 100x. A chroma key on a clip that is already transparent replaces its alpha in the export.
 - **Stabilize** is ffmpeg `deshake`: basic, and it zooms in 8%. **Auto reframe** follows faces only.
 - **Mic recording** is untested end to end: the test browsers have no microphone.
 - **The app's** confirm/prompt dialogs, file picker, drag and drop, export player window and microphone
@@ -412,8 +398,8 @@ once in the browser also guarantees the export matches the preview.
   the server.
 - **On-device AI:** image quality is close to the cloud generators, but each image takes 25-50 s. Kokoro sounds
   best in English; the other languages have fewer, plainer voices. A subject cut-out can drop thin details (steam,
-  smoke). Video generation (image-to-video) is not built: on this Mac it would take minutes per few-second clip,
-  well below CapCut's cloud quality. The 4090 box (Wan 2.2) is the better place for that.
+  smoke). Video generation and lip sync are not part of the Mac app (too heavy for it); they run only on an optional
+  RTX 4090 PC.
 - **Remove object:** Best is slower than CapCut's cloud on long clips (minutes for a 10 s handheld shot). ProPainter
   works on the crop at up to 720 px, so on 4K the filled area is a little softer than its surroundings. What no frame
   shows is the model's invention: convincing on walls, foliage, roads and shelves, but it can't know what was really
@@ -432,10 +418,10 @@ once in the browser also guarantees the export matches the preview.
   can clip a fast word's tail.
 - **Auto adjust** looks at one frame (the playhead's, or the clip's middle), so a clip whose lighting changes a lot
   gets a grade for that moment. Match colour copies brightness and colour balance, not a full look.
-- **Video effects:** 30, against CapCut's downloadable library of hundreds. In the app (WebKit) the blur and glow
-  previews are a close stand-in (box blurs at reduced size; there is no `ctx.filter`), and grain is random, so the preview
-  and the export match in look, not pixel for pixel. Effect and transition tiles show stand-in footage (a drawn sunset
-  and night sea), not your clip; the filter tiles do show your frame.
+- **Video effects:** about 30, plus 11 per-pixel effects-pack effects and 20 effects-pack transitions that export on the
+  GPU. In the app (WebKit) the blur and glow previews are a close stand-in (box blurs at reduced size; there is no
+  `ctx.filter`), and grain is random, so the preview and the export match in look, not pixel for pixel. Effect and
+  transition tiles show stand-in footage, not your clip; the filter tiles do show your frame.
 - **Sound effects**: the 19 built-in ones are synthesized: punchy and clean for UI-style sounds (pop, click, ding,
   whoosh, riser, boom), plainer for applause and typing. The CC0 library adds recorded foley (Kenney), but no
   ambiences, crowds or weather, and 22 music tracks is a short list next to CapCut's catalogue.
