@@ -77,7 +77,9 @@ const cpuSecs = pids => { // cumulative CPU seconds of these processes (ps time 
 const pageouts = () => +execFileSync('vm_stat').toString().match(/Pageouts:\s+(\d+)/)[1];
 async function measured(root, fn) { // [result | error, seconds, peak GB, pageouts MB, load average]
   const base = await foot(tree(root)), seen = new Map(), names = new Map(), po = pageouts(), t0 = Date.now(), load = os.loadavg()[0];
-  let on = true, together = 0, llmGB = 0; // llmGB: Ollama's own count of its loaded models (llama.cpp maps its weights: footprint misses them)
+  let on = true, together = 0, llmGB = 0; // llmGB: what Ollama loaded DURING the job, by its own count (llama.cpp maps its weights: footprint misses them)
+  const llmNow = async () => { try { return ((await (await fetch('http://127.0.0.1:11434/api/ps')).json()).models || []).reduce((a, m) => a + (m.size || 0), 0) / 2 ** 30; } catch { return 0; } };
+  const llm0 = await llmNow(); // a model already loaded (an earlier job's, kept warm, or another app's) is not this job's: it was charged to every job after it
   const sampler = (async () => {
     while (on) {
       const pids = tree(root);
@@ -89,7 +91,7 @@ async function measured(root, fn) { // [result | error, seconds, peak GB, pageou
         sum += Math.max(0, f.cur - (b0?.cur || 0));
       }
       together = Math.max(together, sum);
-      try { llmGB = Math.max(llmGB, ((await (await fetch('http://127.0.0.1:11434/api/ps')).json()).models || []).reduce((a, m) => a + (m.size || 0), 0) / 2 ** 30); } catch {}
+      llmGB = Math.max(llmGB, (await llmNow()) - llm0);
       await sleep(300);
     }
   })();
