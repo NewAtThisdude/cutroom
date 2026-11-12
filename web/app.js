@@ -1318,6 +1318,7 @@ function audioOn() { // needs a user gesture; loads the pitch shifter and the ha
       actx = new AudioContext();
       actx.audioWorklet?.addModule('/pitch.js').then(() => { pitchReady = true; resound(); }).catch(() => {});
       fetch('/ir/hall.wav').then(r => r.arrayBuffer()).then(b => actx.decodeAudioData(b)).then(buf => { hallIR = buf; resound(); }).catch(() => {});
+      meterTap();
     }
     if (actx.state !== 'running') actx.resume().catch(() => {});
   } catch { actx = null; }
@@ -1341,9 +1342,10 @@ function soundChain(v, A = actx, src = A.createMediaElementSource(v)) { // per m
   const n = { A, src, head: A.createGain(), bass: bq('lowshelf', 100, 0), mid: bq('peaking', 1000, 1), treb: bq('highshelf', 8000, 0),
     hp: bq('allpass', 400, -3.0103), lp: bq('allpass', 3200, -3.0103), ring: A.createGain(), dry: A.createGain(), sum: A.createGain(), pan: A.createStereoPanner(), out: A.createGain(), key: '' };
   Object.assign(n.head, { channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' }); // mono doubled to stereo, like the export's aformat
-  n.src.connect(n.head).connect(n.bass).connect(n.mid).connect(n.treb).connect(n.hp).connect(n.lp).connect(n.ring).connect(n.dry).connect(n.sum).connect(n.pan).connect(n.out).connect(A.destination);
+  n.src.connect(n.head).connect(n.bass).connect(n.mid).connect(n.treb).connect(n.hp).connect(n.lp).connect(n.ring).connect(n.dry).connect(n.sum).connect(n.pan).connect(n.out).connect(A === actx ? bus() : A.destination);
   return n; // highpass/lowpass Q is in dB in Web Audio: -3.01 dB = Q 0.707, the export's Butterworth
 }
+const bus = () => (actx.bus ??= (g => (g.connect(actx.destination), g))(actx.createGain())); // the preview's master output: what the meter taps
 function setSound(n, au) { // a clip's sound settings onto its element's chain (skipped when unchanged); effects that are off are disconnected, so they cost nothing
   const s = { ...AU0, ...au }, key = JSON.stringify([s, pitchReady, !!hallIR]);
   if (n.key === key) return;
@@ -1454,6 +1456,9 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
       // the export: a hard edge clicks. Not between chunks, nor across a split where the same sound carries on
       const fadeIn = late || s0 === S.t || (s0 === c.start ? !(i > 0 && joined(P.main[i - 1], c)) : s0 !== tl(k * PCM_S));
       if (late) { s0 += now - when; when = now; }
+      // the chunk's samples on the context's sample grid (under 1 sample later): started between two, they are interpolated,
+      // a lowpass that had pink noise 0.4-0.8 LU quieter than the export (the loudness meter showed it)
+      if (pbr === 1) { const q = (when - (f(s0) - k * PCM_S)) * actx.sampleRate; when += (Math.ceil(q) - q) / actx.sampleRate; }
       if (s1 - s0 < 1e-3) { v.srcs.set(k, null); continue; }
       const n = actx.createBufferSource(), g = n.g = actx.createGain(), e = when + (s1 - s0);
       n.buffer = p.buf; n.playbackRate.value = pbr; n.connect(g).connect(v.n.src);
@@ -1476,6 +1481,83 @@ function audioWarm() { // paused: the chunks at the playhead, so play starts wit
     // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
     if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
   }
+}
+// ---------- loudness meter: EBU R128 / ITU-R BS.1770 of the preview's master output ----------
+// K-weighting is BS.1770's two biquads as IIRFilterNodes, their coefficients worked out for the context's sample rate the
+// way libebur128 (ffmpeg's ebur128) does: a BiquadFilter high shelf is the cookbook's, 0.26 dB off at 1 kHz. The worklet sums squares per 100 ms block and keeps each channel's sample peak (unweighted); the page makes the
+// 400 ms and 3 s windows and the integrated gating (-70 LUFS absolute, -10 LU relative). Built when shown, torn down when
+// hidden, so a hidden meter runs nothing. It reads a copy of the bus: what you hear is untouched.
+const METER_JS = `registerProcessor('cutroom-meter', class extends AudioWorkletProcessor {
+  constructor() { super(); this.n = 0; this.a = [0, 0, 0, 0]; this.on = true; this.port.onmessage = () => { this.on = false; }; }
+  process([k, x]) {
+    const a = this.a, B = Math.round(sampleRate / 10), len = (k[0] || x[0] || []).length || 128;
+    for (let i = 0; i < len; i++) {
+      for (let c = 0; c < 2; c++) {
+        const kc = k[c] || k[0], xc = x[c] || x[0];
+        if (kc) a[c] += kc[i] * kc[i];
+        if (xc && Math.abs(xc[i]) > a[c + 2]) a[c + 2] = Math.abs(xc[i]);
+      }
+      if (++this.n === B) { this.port.postMessage([a[0] / B, a[1] / B, a[2], a[3]]); this.n = 0; a.fill(0); }
+    }
+    return this.on;
+  } });`;
+const MTR = { on: store.get('cutroom.meter') === '1', target: [-14, -16, -23].includes(+store.get('cutroom.meterTarget')) ? +store.get('cutroom.meterTarget') : -14,
+  node: null, kw: null, blk: [], gate: [], M: -Infinity, S: -Infinity, I: -Infinity, now: [-Infinity, -Infinity], hold: [-Infinity, -Infinity], clip: false };
+let meterMod;
+const lufs = z => -0.691 + 10 * Math.log10(z), dbfs = x => 20 * Math.log10(x);
+async function meterTap() {
+  if (!MTR.on || !actx || MTR.node) return;
+  const A = actx;
+  try { await (meterMod ??= A.audioWorklet.addModule(URL.createObjectURL(new Blob([METER_JS], { type: 'text/javascript' })))); } catch { return; }
+  if (!MTR.on || MTR.node) return; // hidden (or built) while the module loaded
+  const k1 = Math.tan(Math.PI * 1681.974450955533 / A.sampleRate), q1 = 0.7071752369554196, vh = 10 ** (3.999843853973347 / 20), vb = vh ** 0.4996667741545416;
+  const k2 = Math.tan(Math.PI * 38.13547087602444 / A.sampleRate), q2 = 0.5003270373238773, d2 = 1 + k2 / q2 + k2 * k2;
+  const hs = new IIRFilterNode(A, { feedforward: [vh + vb * k1 / q1 + k1 * k1, 2 * (k1 * k1 - vh), vh - vb * k1 / q1 + k1 * k1], feedback: [1 + k1 / q1 + k1 * k1, 2 * (k1 * k1 - 1), 1 - k1 / q1 + k1 * k1] });
+  const hp = new IIRFilterNode(A, { feedforward: [1, -2, 1], feedback: [1, 2 * (k2 * k2 - 1) / d2, (1 - k2 / q2 + k2 * k2) / d2] });
+  const node = new AudioWorkletNode(A, 'cutroom-meter', { numberOfInputs: 2, channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
+  node.port.onmessage = e => meterTick(e.data);
+  bus().connect(hs).connect(hp).connect(node, 0, 0); bus().connect(node, 0, 1);
+  node.connect(A.destination); // its output is silence; connected so the graph pulls it
+  Object.assign(MTR, { node, kw: hs });
+}
+function meterOff() {
+  if (!MTR.node) return;
+  MTR.node.port.postMessage(0); bus().disconnect(MTR.kw); bus().disconnect(MTR.node); MTR.kw.disconnect(); MTR.node.disconnect();
+  MTR.node = MTR.kw = null; MTR.blk = [];
+}
+function meterTick([l, r, pl, pr]) { // one 100 ms block: K-weighted mean squares and sample peaks of both channels
+  const b = MTR.blk, mean = n => b.slice(-n).reduce((s, z) => s + z, 0) / Math.min(n, b.length);
+  b.push(l + r); if (b.length > 30) b.shift();
+  MTR.M = b.length >= 4 ? lufs(mean(4)) : -Infinity; MTR.S = lufs(mean(30));
+  if (MTR.M > -70) MTR.gate.push(mean(4)); // 400 ms blocks, 75 % overlap
+  // ponytail: integrated re-sums every gated block each 100 ms (36,000 after an hour); a histogram if hours of play matter
+  const g = MTR.gate, avg = a => a.reduce((s, z) => s + z, 0) / a.length, rel = g.length ? lufs(avg(g)) - 10 : 0, k = g.filter(z => lufs(z) > rel);
+  MTR.I = k.length ? lufs(avg(k)) : -Infinity;
+  MTR.now = [dbfs(pl), dbfs(pr)]; MTR.hold = MTR.hold.map((h, c) => Math.max(h, MTR.now[c]));
+  if (Math.max(pl, pr) > 10 ** (-1 / 20)) MTR.clip = true;
+  meterShow();
+}
+function meterShow() {
+  const el = $('#meter'), txt = x => (x > -100 ? x.toFixed(1).replace('-', '−') : '–'), pct = x => `${clamp((x + 40) / 40, 0, 1) * 100}%`;
+  $('#mtBar').style.width = pct(MTR.M);
+  $('#mtM').textContent = txt(MTR.M); $('#mtS').textContent = txt(MTR.S); $('#mtI').textContent = txt(MTR.I);
+  $$('.mpk', el).forEach((row, c) => {
+    row.querySelector('i').style.width = pct(MTR.now[c]);
+    const u = row.querySelector('u'); u.style.display = MTR.hold[c] > -40 ? 'block' : ''; u.style.left = `calc(${pct(MTR.hold[c])} - 2px)`;
+    row.querySelector('b').textContent = txt(MTR.hold[c]); row.classList.toggle('over', MTR.hold[c] > -1);
+  });
+  $('#mtClip').hidden = !MTR.clip;
+}
+function meterTarget(t) {
+  MTR.target = t; store.set('cutroom.meterTarget', String(t));
+  $('#mtTarget').textContent = `${String(t).replace('-', '−')} LUFS`;
+  for (const m of $$('#meter .mbar b')) { m.style.left = `${(+m.dataset.t + 40) / 40 * 100}%`; m.classList.toggle('on', +m.dataset.t === t); }
+}
+function meterReset() { Object.assign(MTR, { gate: [], I: -Infinity, hold: [-Infinity, -Infinity], clip: false }); meterShow(); }
+function meterSet(on) {
+  MTR.on = on; store.set('cutroom.meter', on ? '1' : '0');
+  $('#meter').hidden = !on; $('#btnMeter').classList.toggle('on', on); $('#btnMeter').setAttribute('aria-pressed', on);
+  if (on) { meterTarget(MTR.target); meterShow(); meterTap(); } else meterOff();
 }
 const layerCv = [];
 function layer(n) {
@@ -4261,6 +4343,7 @@ function openExport() {
     $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? '-14' : 'off';
     hint();
   };
+  $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
   for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
   $('#exPreset').addEventListener('change', preset); hint();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
@@ -4433,7 +4516,7 @@ function scrubSound() { // 70 ms of what is under the playhead, at most every 40
     const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, sndFx(c)), g0 = clipGain(c, lane, S.t);
     if (!p.buf || !g0) continue; // loading: the next move has it
     const n = actx.createBufferSource(), g = actx.createGain();
-    n.buffer = p.buf; n.playbackRate.value = c.speed; n.connect(g).connect(actx.destination);
+    n.buffer = p.buf; n.playbackRate.value = c.speed; n.connect(g).connect(bus());
     g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(g0, now + 0.005); g.gain.setValueAtTime(g0, now + 0.065); g.gain.linearRampToValueAtTime(0, now + 0.07);
     n.start(now, Math.max(0, s - k * PCM_S), 0.07 * c.speed);
   }
@@ -4781,6 +4864,10 @@ function wire() {
   $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => { SCOPE.on = !SCOPE.on; $('#scope').hidden = !SCOPE.on; $('#btnScope').classList.toggle('on', SCOPE.on); $('#btnScope').setAttribute('aria-pressed', SCOPE.on); S.dirty = true; });
+  $('#btnMeter').addEventListener('click', () => { meterSet(!MTR.on); if (MTR.on) audioOn(); });
+  $('#mtTarget').addEventListener('click', () => meterTarget({ '-14': -16, '-16': -23 }[MTR.target] ?? -14));
+  $('#mtReset').addEventListener('click', meterReset);
+  if (MTR.on) meterSet(true);
   $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) { SCOPE.kind = b.dataset.scope; for (const x of $('#scope').querySelectorAll('[data-scope]')) x.classList.toggle('on', x === b); S.dirty = true; } });
 
   $('#mediaList').addEventListener('click', async e => {
@@ -5999,6 +6086,15 @@ const REMOTE = {
     o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
     o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
     return { t: r3(S.t), image: o.toDataURL('image/png').split(',')[1] };
+  },
+  async meter({ show, reset, target } = {}) {
+    if (target !== undefined && ![-14, -16, -23].includes(+target)) throw new Error('target must be -14, -16 or -23 (LUFS)');
+    if (show !== undefined && !!show !== MTR.on) meterSet(!!show);
+    if (target !== undefined) meterTarget(+target);
+    if (reset) meterReset();
+    const r1 = x => (x > -100 ? Math.round(x * 10) / 10 : null);
+    return { shown: MTR.on, listening: !!MTR.node && actx?.state === 'running', momentary: r1(MTR.M), shortTerm: r1(MTR.S), integrated: r1(MTR.I),
+      peak: { left: r1(MTR.hold[0]), right: r1(MTR.hold[1]) }, clipped: MTR.clip, target: MTR.target };
   },
   async export(a) {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);

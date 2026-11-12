@@ -262,6 +262,10 @@ TOOLS = [
                      'index=true first describes those with the local vision model (slow the first time, cached).',
      S({'q': txt, 'index': boo}, ['q']), 'search_media'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
+    ('meter', 'The preview\'s loudness meter (EBU R128): momentary (400 ms), short-term (3 s) and integrated (since reset) LUFS of what has played, '
+              'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
+              'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
+     S({'show': boo, 'reset': boo, 'target': num}), 'meter'),
     ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
