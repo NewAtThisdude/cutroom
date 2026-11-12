@@ -5580,6 +5580,7 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
     made.push({ id: P.id, name: P.name, start: h.start, end: h.end, reason: h.reason });
   }
   if (made.length) await openProject(made[0].id);
+  const st = $('#hlStatus'); // (the panel's status line: the shorts it made, as buttons; absent when Claude asked via MCP)
   if (st) st.innerHTML = made.map(x => `<button class="wide" data-openproj="${x.id}" title="${esc(x.reason)}">${esc(x.name)} · ${fmtDur(x.end - x.start)}</button>`).join('');
   return { shorts: made };
 }
