@@ -163,6 +163,9 @@ The preview and the export share one geometry, colour and text pipeline. Renderi
 and comparing pixels gave 0–2 levels of difference for transitions, clip animations, filters, masks and
 blend modes, about 2.6 levels for text, and 0.5–5 levels for the video effects, in Chrome and in WebKit (the app's engine).
 
+On a first start (an empty library) a short **tour** points at each part of the window in eight steps (Enter / → next,
+← back, Esc skips); the shortcut sheet (?) replays it.
+
 The window works like CapCut's: a library rail on the left (Media, Audio, Text, Stickers, Effects, Transitions,
 Filters, Captions, Script, AI), each opening a gallery whose tiles show what they do (effects and transitions animate; with
 Reduce motion on they show a still and move when you point at them), the preview with its transport in the middle,
