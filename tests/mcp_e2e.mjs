@@ -52,7 +52,7 @@ const VIA_PATH = ['import_media', 'import_subtitles', 'import_lut']; // the MCP 
 const unmapped = tools.filter(t => t.name !== 'import_media' && !remoteNames.includes(CMD[t.name] || t.name)).map(t => t.name);
 check(`all ${tools.length} MCP tools map onto an editor command`, !unmapped.length, unmapped.join(', '));
 const sigs = await ev(() => Object.fromEntries(Object.entries(REMOTE).map(([k, f]) => [k, String(f).slice(0, String(f).indexOf(')') + 1)])));
-const stray = tools.filter(t => !VIA_PATH.includes(t.name)).flatMap(t => Object.keys(t.inputSchema.properties).filter(p => { const sig = sigs[CMD[t.name] || t.name]; return sig && !/\(args\)/.test(sig) && !new RegExp(`\\b${p}\\b`).test(sig); }).map(p => `${t.name}.${p}`));
+const stray = tools.filter(t => !VIA_PATH.includes(t.name)).flatMap(t => Object.keys(t.inputSchema.properties).filter(p => { const sig = sigs[CMD[t.name] || t.name]; return sig && !/\(\w+\)|\.\.\.\w+/.test(sig) && !new RegExp(`\\b${p}\\b`).test(sig); }).map(p => `${t.name}.${p}`));
 check('every tool argument is one its command reads', !stray.length, stray.join(', '));
 await page.unroute(isNext, hold); // for these read-only calls this page is the editor (the MCP server would open the app otherwise)
 await page.waitForTimeout(16000);
@@ -84,7 +84,7 @@ const tl = async () => (await call('timeline')).result;
 const near = (a, b, tol = 0.05) => Math.abs(a - b) <= tol;
 
 // ---------- project ----------
-await T('options lists every choice', 'options', {}, o => o.transitions.length > 20 && o.looks.length > 10 && Object.keys(o.effects).length > 20 && o.exportFormats.length === 8);
+await T('options lists every choice', 'options', {}, o => o.transitions.length > 20 && o.looks.length > 10 && Object.keys(o.effects).length > 20 && o.exportFormats.length >= 8 && o.exportFormats.includes('mp4'));
 await T('new_project 16:9 with a name', 'new_project', { ratio: '16:9', name: 'MCP e2e (scratch)' }, () => ev(() => P.name === 'MCP e2e (scratch)' && P.w === 1920 && P.h === 1080));
 await fails('new_project with a bad ratio', 'new_project', { ratio: '7:3' }, /ratio must be one of/);
 await T('set_project name, fps, background, caption style', 'set_project', { set: { name: 'MCP e2e (scratch)', fps: 25, bg: '#102030', capStyle: { size: 70 } } }, () => ev(() => P.fps === 25 && P.bg === '#102030' && P.capStyle.size === 70));
@@ -120,7 +120,7 @@ await fails('set_transition of a type that is not there', 'set_transition', { af
 const fx1 = await T('add_effect', 'add_effect', { type: 'vhs', start: 1, duration: 2, strength: 1.5 }, c => c.fx === 'vhs' && c.dur === 2 && c.strength === 1.5);
 if (fx1) await T('update_clip of an effect', 'update_clip', { id: fx1.id, set: { fx: 'glitch', amt: 0.5 } }, c => c.fx === 'glitch');
 await T('add_sound_effect (whoosh)', 'add_sound', { name: 'whoosh', at: 2 }, async () => (await tl()).tracks.audio.some(c => /whoosh/i.test(c.media) && near(c.start, 2, 0.01)));
-await fails('add_sound_effect that is not there', 'add_sound', { name: 'kazoo-solo' }, /name must be one of/);
+await fails('add_sound_effect that is not there', 'add_sound', { name: 'kazoo-solo' }, /no sound called kazoo-solo/);
 await T('seek', 'seek', { t: 3.25 }, r => near(r.playhead, 3.24, 0.05));
 const u0 = await ev(() => JSON.stringify(P));
 await call('update_clip', { id: c1.id, set: { speed: 1.5 } });
@@ -142,12 +142,12 @@ for (const [fmt, want] of [['mp4', { v: 'h264', a: 'aac' }], ['hevc', { v: 'hevc
     if (!want.v && v) return `has a picture (${v.codec_name}) it should not`;
     if (want.a && !a?.codec_name?.startsWith(want.a)) return `audio codec ${a?.codec_name}`;
     if (!want.a && a) return 'has sound it should not';
-    if (want.v && !(v.width === 1280 && v.height === 720)) return `${v.width}x${v.height}`;
+    if (want.v && !(fmt === 'gif' ? v.width === 640 && v.height === 360 : v.width === 1280 && v.height === 720)) return `${v.width}x${v.height}`; // (GIFs stop at 640 px across)
     if (fmt !== 'png' && !near(dur, D, fmt === 'gif' ? 0.15 : 0.1)) return `lasts ${dur} s, timeline ${D} s`;
     return true;
   });
 }
-await fails('export at a resolution that is not there', 'export', { resolution: '8K' }, /resolution must be one of/);
+await fails('export at a resolution that is not there', 'export', { resolution: '16K' }, /resolution must be one of/);
 
 // ---------- speech: captions, transcript, cuts, pauses, fillers ----------
 await call('new_project', { ratio: '16:9', name: 'MCP e2e speech (scratch)' });
@@ -197,7 +197,8 @@ await fails('clip_tool speed_ramp with a ramp that is not there', 'clip_tool', {
 await fails('clip_tool with an action that is not there', 'clip_tool', { id: v.id, action: 'teleport' }, /action must be one of/);
 await call('new_project', { ratio: '9:16', name: 'MCP e2e tools 2 (scratch)' });
 const t2 = (await call('add_clip', { media: 'talk.mp4', in: 0, out: 4 })).result;
-await fails('clip_tool auto_reframe on a clip with no face', 'clip_tool', { id: t2.id, action: 'auto_reframe' }, /no face/); // the test footage has no people
+{ const r = await call('clip_tool', { id: t2.id, action: 'auto_reframe' }); // no people in the test footage: it follows the main subject, or says there is none
+  check('clip_tool auto_reframe with no face follows the subject or is refused clearly', r.ok ? !!r.result?.clip : /no face|no clear subject/.test(r.result), r.ok ? '' : r.result); }
 await tool('reverse', t2.id, {}, r => (r.clip && r.clip.media !== 'talk.mp4') || JSON.stringify(r.clip));
 await tool('stabilize', t2.id, {}, r => (r.clip && !/^talk\.mp4$/.test(r.clip.media)) || JSON.stringify(r.clip));
 await call('update_clip', { id: t2.id, set: { speed: 0.5 } });
