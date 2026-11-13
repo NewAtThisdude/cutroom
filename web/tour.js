@@ -72,4 +72,59 @@ addEventListener('keydown', e => { // ahead of the editor's own keys while the t
 }, true);
 
 // app.js boot(): a first start is an empty library on a Mac that hasn't seen the tour
-function tourMaybe() { if (!store.get('cutroom.tour') && !M.size) tourShow(0); }
+function tourMaybe() {
+  if ($('#capLang') && PREFS.lang) $('#capLang').value = PREFS.lang;
+  if (!store.get('cutroom.setup') && !M.size) { setupAns = {}; setupShow(0); } else if (!store.get('cutroom.tour') && !M.size) tourShow(0);
+}
+
+// ---------- first-start setup: three questions that set the defaults (new project shape and frame rate, export preset,
+// extra export shapes, caption language), kept per computer in localStorage 'cutroom.prefs'; replayable from the ? sheet
+const SETUP = [
+  { key: 'kind', q: 'What do you make most?', opts: [['short', 'Short vertical videos', 'TikTok, Reels, Shorts · 9:16'], ['youtube', 'YouTube videos', 'Wide · 16:9'],
+    ['both', 'Both', 'Vertical, and a wide copy with each export'], ['square', 'Square posts', 'Feeds · 1:1']] },
+  { key: 'fps', q: 'How should motion look?', opts: [[30, 'Standard', '30 frames a second, most videos'], [60, 'Extra smooth', '60 frames a second, sports and gaming'], [24, 'Cinematic', '24 frames a second, the film look']] },
+  { key: 'lang', q: 'Captions, when you add them', opts: [['auto', 'In the language I speak', 'Detected from the sound'], ['en', 'English', 'Always English'], ['off', 'I rarely use captions', 'Language detected when you do']] },
+];
+const KIND = { short: { ratio: '9:16', preset: 'tiktok', also: [] }, youtube: { ratio: '16:9', preset: 'yt1080', also: [] }, both: { ratio: '9:16', preset: 'shorts', also: ['16:9'] }, square: { ratio: '1:1', preset: 'reels', also: [] } };
+let setupAns = {};
+
+function setupShow(i) {
+  tourAt = -1;
+  let box = $('#tour');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'tour';
+    document.body.append(box);
+  }
+  box.className = 'solo';
+  const s = SETUP[i], first = i === 0;
+  box.innerHTML = `<div class="tcard setup" role="dialog" aria-modal="true" aria-labelledby="setupQ"><p class="tstep">${first ? 'Welcome to Cutroom · ' : ''}Question ${i + 1} of ${SETUP.length}</p>`
+    + `<h3 id="setupQ">${esc(s.q)}</h3>${first ? '<p class="td">Three quick answers set up new projects and exports for what you make. You can change any of it later.</p>' : ''}`
+    + `<div class="sopts" role="radiogroup" aria-labelledby="setupQ">${s.opts.map(([v, n, d]) => `<button class="sopt" role="radio" aria-checked="false" data-s="${esc(String(v))}"><b>${esc(n)}</b><span>${esc(d)}</span></button>`).join('')}</div>`
+    + `<div class="actions"><button data-x="skip" class="ghost">Skip, use the defaults</button>${i ? '<button data-x="back">Back</button>' : ''}</div></div>`;
+  box.onclick = e => {
+    const o = e.target.closest('[data-s]'), x = e.target.closest('[data-x]');
+    if (o) { setupAns[s.key] = s.key === 'fps' ? +o.dataset.s : o.dataset.s; if (i + 1 < SETUP.length) setupShow(i + 1); else setupDone(true); }
+    else if (x?.dataset.x === 'back') setupShow(i - 1);
+    else if (x?.dataset.x === 'skip') setupDone(false);
+  };
+  box.onkeydown = e => { // arrows move between the answers, Enter / Space picks
+    const all = $$('.sopt', box), at = all.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length].focus(); }
+  };
+  $('.sopt', box).focus();
+}
+
+function setupDone(answered) {
+  const k = KIND[setupAns.kind] || KIND.short;
+  if (answered) {
+    Object.assign(PREFS, { kind: setupAns.kind, ratio: k.ratio, preset: k.preset, also: k.also, fps: setupAns.fps || 30, lang: setupAns.lang === 'en' ? 'en' : 'auto' });
+    store.set('cutroom.prefs', JSON.stringify(PREFS));
+  }
+  store.set('cutroom.setup', answered ? 'done' : 'skipped');
+  if (PREFS.lang && $('#capLang')) $('#capLang').value = PREFS.lang;
+  if (answered && !P.main.length && !P.overlay.length && !P.audio.length && !P.text.length) { setProject(newProject()); scheduleSave(); } // the empty first project takes the answers
+  const box = $('#tour');
+  if (box) { box.onclick = null; box.onkeydown = null; box.parentNode.removeChild(box); }
+  if (store.get('cutroom.tour') !== 'done') tourShow(1); // then the tour (its welcome was the setup's)
+}

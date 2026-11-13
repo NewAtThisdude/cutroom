@@ -534,3 +534,9 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .exq .qbot { display: flex; align-items: center; gap: 2px; min-height: 26px; font-size: 12px; }
 .exq .qbot span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .exq .qbot button { padding: 2px 8px; font-size: 12px; }
+
+#tour .sopts { display: grid; gap: 8px; margin: 12px 0 16px; }
+#tour .sopt { display: grid; justify-items: start; gap: 2px; text-align: left; padding: 10px 12px; border: 1px solid var(--line2); border-radius: var(--r); background: var(--raised); }
+#tour .sopt b { font-weight: 500; }
+#tour .sopt span { color: var(--muted); font-size: 12px; }
+#tour .sopt:hover, #tour .sopt:focus-visible { border-color: var(--accent); outline: none; }

@@ -15,7 +15,19 @@ for (const rm of ['no-preference', 'reduce']) {
   const errs = []; page.on('pageerror', e => errs.push(e.message));
   const open = async url => { await page.goto(`${url}/`, { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P, null, { timeout: 20000 }); await page.waitForTimeout(400); };
   await open(B);
-  check(`${rm}: an empty library on a first start opens the tour`, await page.isVisible('#tour .tcard'));
+  // the three setup questions first: YouTube, extra smooth, English
+  const q1 = await page.evaluate(() => $('#setupQ')?.textContent);
+  check(`${rm}: an empty library on a first start asks the setup questions first`, q1 === 'What do you make most?', q1);
+  await page.click('#tour .sopt[data-s="youtube"]'); await page.keyboard.press('ArrowDown'); // (arrows move between answers)
+  await page.click('#tour .sopt[data-s="60"]'); await page.click('#tour .sopt[data-s="en"]');
+  const set = await page.evaluate(() => ({ prefs: JSON.parse(store.get('cutroom.prefs') || '{}'), w: P.w, h: P.h, fps: P.fps, lang: $('#capLang').value, at: tourAt }));
+  check(`${rm}: the answers set the defaults: a 16:9 60 fps project, YouTube 1080p export, English captions; then the tour`,
+    set.prefs.ratio === '16:9' && set.prefs.preset === 'yt1080' && set.prefs.fps === 60 && set.w === 1920 && set.h === 1080 && set.fps === 60 && set.lang === 'en' && set.at === 1, JSON.stringify(set));
+  await page.evaluate(async () => { await REMOTE.add_text({ text: 'Setup check', start: 0, duration: 2 }); openExport(); }); // (Export needs something on the timeline)
+  const ex = await page.evaluate(() => [$('#exPreset')?.value, $('#exFps')?.value]);
+  await page.evaluate(() => { closeModal(); restore(undo, redo); });
+  check(`${rm}: the Export dialog starts on the YouTube 1080p preset`, ex[0] === 'yt1080', JSON.stringify(ex));
+  await page.evaluate(() => tourShow(0));
   const n = await page.evaluate(() => TOUR.length), bad = [];
   for (let i = 0; i < n; i++) {
     await page.waitForTimeout(rm === 'reduce' ? 50 : 300); // (the ring glides there without reduced motion)
@@ -45,6 +57,10 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.keyboard.press('?'); await page.click('#modal [data-tour]');
   check(`${rm}: the shortcut sheet replays it`, await page.isVisible('#tour .tcard') && (await page.evaluate(() => tourAt)) === 0);
   await page.keyboard.press('Escape');
+  await page.keyboard.press('?'); await page.click('#modal [data-setup]');
+  const again = await page.evaluate(() => $('#setupQ')?.textContent); await page.click('#tour [data-x="skip"]');
+  check(`${rm}: the shortcut sheet asks the setup questions again; Skip keeps the answers`, again === 'What do you make most?' && JSON.parse(await page.evaluate(() => store.get('cutroom.prefs'))).ratio === '16:9');
+  if (await page.$('#tour')) await page.keyboard.press('Escape');
   check(`${rm}: Esc closes it (skipped)`, !(await page.$('#tour')) && (await page.evaluate(() => store.get('cutroom.tour'))) === 'skipped');
   if (B2) { // a fresh Mac (nothing stored) on a library that already has media: no tour
     const c2 = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), p2 = await c2.newPage();

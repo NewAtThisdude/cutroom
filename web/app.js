@@ -862,7 +862,7 @@ function shortcuts(keep, focus) { // the sheet; click a key to change it (kept p
   modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels). Ctrl works wherever ⌘ is shown.</p>`
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
-    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
+    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
   const dlg = $('#modal .dialog');
   dlg.scrollTop = top;
   (focus && dlg.querySelector(`[data-keyfor="${focus}"]`))?.focus();
@@ -870,6 +870,7 @@ function shortcuts(keep, focus) { // the sheet; click a key to change it (kept p
     const b = e.target.closest('button'), d = b?.dataset;
     if (!b) return;
     if ('tour' in d) { closeModal(); tourShow(0); return; }
+    if ('setup' in d) { closeModal(); setupAns = {}; setupShow(0); return; }
     if (d.keyfor) { KC.for = KC.for === d.keyfor ? null : d.keyfor; KC.conf = null; KC.msg = KC.for ? `Press the new key for ${KEYDEF[d.keyfor][1].toLowerCase()}` : ''; }
     else if ('keyswap' in d) { // the other action takes this one's old key (if it had one)
       const { id, k, other } = cf, mine = keysOf(id)[0];
@@ -4728,7 +4729,10 @@ function openExport() {
   };
   $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
   for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr', '#exAlso']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
-  $('#exPreset').addEventListener('change', preset); hint();
+  $('#exPreset').addEventListener('change', preset);
+  if (PREFS.preset && EX_PRESETS[PREFS.preset]) { $('#exPreset').value = PREFS.preset; preset(); } // the first-start answers
+  for (const x of $$('#exAlso input')) if ((PREFS.also || []).includes(x.value)) x.checked = true;
+  hint();
   S.qHide = false; qDraw();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
 }
@@ -4799,7 +4803,8 @@ function migrate(p) {
   }
   return q;
 }
-function newProject(ratio = '9:16') { const [w, h] = RATIOS[ratio]; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h }); }
+const PREFS = (() => { try { return JSON.parse(store.get('cutroom.prefs')) || {}; } catch { return {}; } })(); // the first-start answers (tour.js): shape, frame rate, export preset, captions
+function newProject(ratio = PREFS.ratio || '9:16') { const [w, h] = RATIOS[ratio] || RATIOS['9:16']; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h, ...(PREFS.fps ? { fps: PREFS.fps } : {}) }); }
 function sendPoster(leaving) { // the projects screen's card = the preview as you left it (its shape, its text), up to 480 px on the long side
   if (!P || !LANES.some(L => P[L.key].length)) return;
   const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
@@ -4862,7 +4867,7 @@ async function trashProject(id, name) { // reversible: the server moves it to Mo
   if (!confirm(`Delete "${name}"? It moves to Movies/Cutroom/trash, so it can be recovered.`)) return;
   if (id === P?.id) { clearTimeout(saveTimer); saveTimer = 0; } // (a pending save would put it back)
   await api(`/api/projects/${id}/trash`, {});
-  if (id === P?.id) { const list = await api('/api/projects'); if (list[0]) await openProject(list[0].id); else { setProject(newProject('9:16')); scheduleSave(); } }
+  if (id === P?.id) { const list = await api('/api/projects'); if (list[0]) await openProject(list[0].id); else { setProject(newProject()); scheduleSave(); } }
   openProjects();
 }
 
@@ -5958,7 +5963,7 @@ async function makeShorts({ media, count = 3, min = 15, max = 45, captions = tru
   const made = [];
   for (const [i, h] of clips.entries()) {
     say(`Building short ${i + 1} of ${clips.length}: ${h.title || ''}`);
-    setProject(newProject('9:16'));
+    setProject(newProject());
     P.name = h.title || `${m.name} short ${i + 1}`;
     addMedia(m.id, 'main');
     const c = P.main[0];
@@ -6808,7 +6813,7 @@ Object.assign(REMOTE, {
     const list = await api('/api/projects'), last = store.get('cutroom.last');
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);
-    else { setProject(newProject('9:16')); scheduleSave(); }
+    else { setProject(newProject()); scheduleSave(); }
     tourMaybe(); // tour.js: once, on a first start (an empty library)
     loadVoices();
     loadAI();
