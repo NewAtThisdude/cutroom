@@ -41,7 +41,7 @@ anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd 
 text clips: text, style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
   align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, anim pop|fade|slide|type, out pop|fade|slide|type, loop bounce|pulse|wiggle, animT, outT}
 track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease, bz}] (replaces them;
-  ease = the segment after it: linear|ease-in|ease-out|ease-in-out (or true/false); bz: [x1, y1, x2, y2] a custom cubic-bezier, x 0..1)
+  ease = the segment after it: linear|ease-in|ease-out|ease-in-out|back (or true/false); bz: [x1, y1, x2, y2] a custom cubic-bezier, x 0..1)
 effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)
 grade (colour grading, video/photo clips): {lift|gamma|gain: {x, y: colour wheel offset -1..1 (x = towards red, y = towards green-yellow), l: level -1..1},
   curves: {m|r|g|b: [[x, y], ...] points 0..1 (m = luma)}, hsl: {red|orange|yellow|green|aqua|blue|purple|magenta: {h, s, l} -1..1},

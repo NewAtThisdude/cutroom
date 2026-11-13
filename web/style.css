@@ -398,13 +398,14 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #curveSvg .diag { stroke: rgba(255,255,255,.12); stroke-width: .4; stroke-dasharray: 2 2; fill: none; }
 #curveSvg .crv { stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
 #curveSvg circle { fill: #fff; stroke: #000; stroke-width: .6; }
-.easerow { display: flex; gap: 8px; align-items: center; margin: 6px 0 2px; }
-.easerow .presets { flex: 1; min-width: 0; }
-#easeSvg { flex: none; border: 1px solid var(--line); border-radius: 8px; background: #111111; cursor: grab; touch-action: none; }
-#easeSvg .ez-box { fill: none; stroke: rgba(255,255,255,.12); stroke-width: .6; }
-#easeSvg .ez-arm { stroke: rgba(255,255,255,.4); stroke-width: 1; fill: none; }
-#easeSvg .ez-curve { stroke: var(--accent2); stroke-width: 2; fill: none; }
-#easeSvg .ez-h { fill: #fff; stroke: var(--accent); stroke-width: 1.5; }
+.presets.kgpre { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 6px 0; }
+#kfGraph { display: block; width: 100%; height: 132px; border: 1px solid var(--line); border-radius: 8px; background: #111112; cursor: crosshair; touch-action: none; }
+#kfGraph:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.kglegend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.kglegend span { display: inline-flex; align-items: center; gap: 5px; }
+.kglegend i { width: 10px; height: 2px; border-radius: 1px; }
+.kglegend .kgsel { margin-left: auto; color: var(--text); }
+.kglegend .kgsel i { background: var(--accent); }
 .tl-inner[data-tool=slip] .clip, .tl-inner[data-tool=slide] .clip[data-lane=main] { cursor: ew-resize; }
 .tl-inner[data-tool=roll] .clip[data-lane=main] { cursor: col-resize; }
 .transport select.pq { font-size: 11px; padding: 2px 20px 2px 7px; margin: 0 6px; }

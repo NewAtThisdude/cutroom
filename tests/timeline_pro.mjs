@@ -88,11 +88,12 @@ if (on('ease')) for (const rm of ['no-preference', 'reduce']) {
   await page.click('#inspector [data-ease="out"]');
   const k1 = await ev(page, () => ({ kind: easeKind(P.main[0], P.main[0].kf[0]), bz: P.main[0].kf[0].bz }));
   check(`${rm}: the Ease out preset sets cubic-bezier(0, 0, 0.58, 1)`, k1.kind === 'out' && JSON.stringify(k1.bz) === '[0,0,0.58,1]', JSON.stringify(k1));
-  const box = await page.locator('#easeSvg').boundingBox(), u0 = await ev(page, () => undo.length);
-  const hx = box.x + (20 + 0 * 80) / 120 * box.width, hy = box.y + (80 - 0 * 64) / 96 * box.height; // handle 1 of ease-out sits at (0, 0)
-  await page.mouse.move(hx, hy); await page.mouse.down(); await page.mouse.move(hx + box.width * 0.2, hy - box.height * 0.5, { steps: 6 }); await page.mouse.up();
-  const k2 = await ev(page, () => ({ kind: easeKind(P.main[0], P.main[0].kf[0]), bz: P.main[0].kf[0].bz, undos: undo.length, svg: document.querySelectorAll('#easeSvg circle').length }));
-  check(`${rm}: dragging a handle makes a custom curve in one undo step`, k2.kind === 'custom' && k2.undos === u0 + 1 && k2.bz[0] > 0.1 && k2.bz[1] > 0.3 && k2.svg === 2, JSON.stringify(k2));
+  await page.locator('#kfGraph').scrollIntoViewIfNeeded();
+  const box = await ev(page, () => { const c = P.main[0], cv = $('#kfGraph'), r = cv.getBoundingClientRect(), h = kgHandles(c, kgGeo(c, cv))[0]; return { hx: r.left + cv.clientLeft + h[2], hy: r.top + cv.clientTop + h[3], width: cv.clientWidth, height: cv.clientHeight }; }), u0 = await ev(page, () => undo.length);
+  const { hx, hy } = box; // handle 1 of ease-out sits at (0, 0) of the segment
+  await page.mouse.move(hx, hy); await page.mouse.down(); await page.mouse.move(hx + box.width * 0.2, hy - box.height * 0.3, { steps: 6 }); await page.mouse.up();
+  const k2 = await ev(page, () => ({ kind: easeKind(P.main[0], P.main[0].kf[0]), bz: P.main[0].kf[0].bz, undos: undo.length, drawn: $('#kfGraph')?.width > 0 }));
+  check(`${rm}: dragging a handle makes a custom curve in one undo step`, k2.kind === 'custom' && k2.undos === u0 + 1 && k2.bz[0] > 0.1 && k2.bz[1] > 0.3 && k2.drawn, JSON.stringify(k2));
   await ev(page, () => flushSave());
   await page.waitForTimeout(600);
   const saved = (await (await fetch(`${B}/api/projects/${pid}`, { headers: { 'X-Cutroom': '1' } })).json()).main[0].kf[0].bz;

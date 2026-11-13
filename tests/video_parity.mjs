@@ -65,7 +65,7 @@ add('fit in 9:16', 'ratio("9:16"); main(A); T = 1.5');
 add('fill in 9:16', 'ratio("9:16"); main(A).fit = "fill"; T = 1.5');
 add('blur bg in 9:16', 'ratio("9:16"); main(A).fit = "blur"; T = 1.5');
 add('keyframes, half way', 'const c = main(A); c.kf = [{ t: 0, scale: 1, x: 0, y: 0, opacity: 1, rot: 0 }, { t: 2, scale: 1.8, x: 0.3, y: 0.2, opacity: 0.6, rot: 30 }]; T = 1');
-for (const [k, bz] of [['ease-in', [0.42, 0, 1, 1]], ['ease-out', [0, 0, 0.58, 1]], ['ease-in-out', null], ['custom bezier', [0.3, 1.6, 0.7, 1.2]]])
+for (const [k, bz] of [['ease-in', [0.42, 0, 1, 1]], ['ease-out', [0, 0, 0.58, 1]], ['ease-in-out', null], ['back', [0.34, 1.56, 0.64, 1]], ['custom bezier', [0.3, 1.6, 0.7, 1.2]]])
   add(`keyframes ${k}, a third of the way`, `const c = main(A); c.kf = [{ t: 0, scale: 0.6, x: -0.25, y: 0, opacity: 1, rot: 0, ease: true${bz ? `, bz: ${JSON.stringify(bz)}` : ''} }, { t: 2, scale: 1.2, x: 0.25, y: 0.1, opacity: 1, rot: 10 }]; T = 0.7`);
 add('overlay picture-in-picture', 'main(A); Object.assign(ov(B), { scale: 0.45, x: 0.22, y: -0.2, rot: 12, opacity: 0.8 }); T = 1.5');
 add('overlay image', 'main(A); Object.assign(ov(I), { fit: "fit", scale: 0.5, x: -0.2 }); T = 1.5');

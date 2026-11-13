@@ -906,7 +906,7 @@ function renderInspector() {
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   if (c?.media) drawRamp(c);
-  if (c) drawEase(c);
+  kgRO.disconnect(); if ($('#kfGraph')) kgRO.observe($('#kfGraph'));
   syncToolbar();
   if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
@@ -922,10 +922,12 @@ function trPanel(c) {
 }
 function kfRow(c, lane) {
   const lt = S.t - c.start, on = c.kf?.find(f => Math.abs(f.t - lt) < 0.5 / P.fps), inside = lt >= 0 && lt <= tdur(c, lane);
-  const sg = easeSeg(c, lt), kind = sg && easeKind(c, sg);
-  const ease = sg ? `<div class="easerow"><div class="presets small">${[['linear', 'Linear'], ['in', 'Ease in'], ['out', 'Ease out'], ['inout', 'In-out']].map(([v, n]) => `<button data-ease="${v}" class="${kind === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
-    + `<svg id="easeSvg" data-k="${c.kf.indexOf(sg)}" viewBox="0 0 120 96" width="120" height="96" aria-label="Easing curve: drag the two handles"></svg></div>`
-    + `<p class="hint">Easing from keyframe ${c.kf.indexOf(sg) + 1}${kind === 'custom' ? ' (custom curve)' : ''}: drag the dots for your own curve.</p>` : '';
+  const sg = easeSeg(c, lt), kind = sg && easeKind(c, sg), moving = sg ? KG_PROPS.filter(([p]) => c.kf.some(f => (f[p] ?? 0) !== (c.kf[0][p] ?? 0))) : [];
+  const ease = sg ? `<div class="presets small kgpre">${[['linear', 'Linear'], ['in', 'Ease in'], ['out', 'Ease out'], ['inout', 'In-out'], ['back', 'Back']].map(([v, n]) => `<button data-ease="${v}" class="${kind === v ? 'on' : ''}">${n}</button>`).join('')}</div>`
+    + '<canvas id="kfGraph" tabindex="0" aria-label="Keyframe curves: click to pick a segment, drag its handles. Arrow keys nudge a handle, 1 and 2 pick it, [ and ] the segment"></canvas>'
+    + `<div class="kglegend">${moving.map(([, n, col]) => `<span><i style="background:${col}"></i>${n}</span>`).join('')}<span class="kgsel"><i></i>Segment ${c.kf.indexOf(sg) + 1}${kind === 'custom' ? ', custom' : ''}</span></div>`
+    + `<div class="actions"><button data-act="kfcopy">Copy curve</button><button data-act="kfpaste"${S.curve ? '' : ' disabled'}>Paste curve</button></div>`
+    + '<p class="hint">Each line is one property, from its lowest to its highest keyframe. Click a segment and drag its amber handles. With the graph focused, arrow keys nudge a handle (⇧: more), 1 / 2 pick it, [ ] change segment.</p>' : '';
   return `<h4>Keyframes</h4><div class="actions">${c.kf?.length ? '<button data-act="kfprev" title="Previous keyframe" aria-label="Previous keyframe">‹</button><button data-act="kfnext" title="Next keyframe" aria-label="Next keyframe">›</button>' : ''}${on ? '<button data-act="kfdel">Remove keyframe</button>' : `<button data-act="kfadd"${inside ? '' : ' disabled'}>Add keyframe at playhead</button>`}${c.kf?.length ? `<button data-act="kfclear">Clear ${c.kf.length}</button>` : ''}</div>${ease}${c.kf?.length ? tick('c.ease', 'Ease all segments', c.ease) : ''}
     <p class="hint">${c.kf?.length ? 'Scale, position and opacity animate between the diamonds. Changing them at the playhead edits or adds a keyframe there.' : 'Add a keyframe, move the playhead, then change scale or position: zoom, pan, punch-in.'}</p>`;
 }
@@ -933,20 +935,68 @@ const easeSeg = (c, lt) => { const k = c.kf; if (!(k?.length > 1)) return null; 
 function easeKind(c, f) {
   if (!(f.ease ?? c.ease)) return 'linear';
   if (!f.bz) return 'inout';
-  return ['in', 'out'].find(k => EASES[k].every((v, i) => Math.abs(v - f.bz[i]) < 1e-6)) || 'custom';
+  return ['in', 'out', 'back'].find(k => EASES[k].every((v, i) => Math.abs(v - f.bz[i]) < 1e-6)) || 'custom';
 }
-function setEase(c, f, kind) { // a preset on one keyframe's segment
+function setEase(c, f, kind) { // a preset on one keyframe's segment (a split's part of a curve [eu0, eu1] becomes the whole new one)
+  delete f.eu0; delete f.eu1;
   if (kind === 'linear') { f.ease = false; delete f.bz; } else if (kind === 'inout') { f.ease = true; delete f.bz; } else { f.ease = true; f.bz = [...EASES[kind]]; }
 }
-const EZ = { x: v => 20 + v * 80, y: v => 80 - v * 64, ix: p => (p - 20) / 80, iy: p => (80 - p) / 64 }; // curve units <-> SVG (y -0.25..1.25: overshoot shows)
-function drawEase(c) { // the segment's curve and its two cubic-bezier handles (numbers only go into the markup)
-  const svg = $('#easeSvg'), f = svg && c.kf?.[+svg.dataset.k];
-  if (!f) return;
-  const kind = easeKind(c, f), bz = kind === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout, E = u => (kind === 'linear' ? u : f.bz ? bezE(f.bz, u) : ss3(u));
-  const path = Array.from({ length: 41 }, (_, i) => `${i ? 'L' : 'M'}${EZ.x(i / 40).toFixed(1)},${EZ.y(E(i / 40)).toFixed(1)}`).join('');
-  svg.replaceChildren();
-  svg.insertAdjacentHTML('beforeend', `<rect x="20" y="16" width="80" height="64" class="ez-box"/><path d="M${EZ.x(0)},${EZ.y(0)}L${EZ.x(bz[0])},${EZ.y(bz[1])}M${EZ.x(1)},${EZ.y(1)}L${EZ.x(bz[2])},${EZ.y(bz[3])}" class="ez-arm"/>`
-    + `<path d="${path}" class="ez-curve"/><circle cx="${EZ.x(bz[0])}" cy="${EZ.y(bz[1])}" r="5" class="ez-h"/><circle cx="${EZ.x(bz[2])}" cy="${EZ.y(bz[3])}" r="5" class="ez-h"/>`);
+const setBz = (f, b) => { f.ease = true; f.bz = b; delete f.eu0; delete f.eu1; };
+// the keyframe graph: clip time across, each segment's eased progress up (room above and below for overshoot)
+const KG_PROPS = [['scale', 'Scale', '#7f9dd0'], ['x', 'Position X', '#6fb39a'], ['y', 'Position Y', '#ad91cf'], ['opacity', 'Opacity', '#c4c4c9'], ['rot', 'Rotate', '#cf9b76']];
+const KG_LO = -0.4, KG_HI = 1.6, KG_P = 8;
+const kgBz = (c, f) => (easeKind(c, f) === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout); // the handles drawn for a segment
+function kgGeo(c, cv) { // CSS px <-> clip time / progress
+  const W = cv.clientWidth, H = cv.clientHeight, D = Math.max(tdur(c, S.sel.lane), c.kf.at(-1).t) || 1, w = W - 2 * KG_P, h = H - 2 * KG_P;
+  return { W, H, D, w, h, X: t => KG_P + (t / D) * w, Y: p => H - KG_P - ((p - KG_LO) / (KG_HI - KG_LO)) * h, iX: px => ((px - KG_P) / w) * D };
+}
+function kgHandles(c, g) { // [segment, 0 | 2, x, y] for every segment's two handles
+  const k = c.kf, out = [];
+  for (let i = 0; i + 1 < k.length; i++) { const b = kgBz(c, k[i]), s = k[i + 1].t - k[i].t; for (const j of [0, 2]) out.push([i, j, g.X(k[i].t + b[j] * s), g.Y(clamp(b[j + 1], KG_LO, KG_HI))]); }
+  return out;
+}
+function drawGraph(c) {
+  const cv = $('#kfGraph');
+  if (!cv || !c.kf?.length || !cv.clientWidth) return;
+  const dpr = devicePixelRatio || 1, g = kgGeo(c, cv), x = cv.getContext('2d'), k = c.kf, si = k.indexOf(easeSeg(c, S.t - c.start)), hot = S.kgH || 0;
+  cv.width = Math.round(g.W * dpr); cv.height = Math.round(g.H * dpr);
+  x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, g.W, g.H); x.lineCap = x.lineJoin = 'round';
+  const crisp = v => Math.round(v * dpr) / dpr + 0.5 / dpr; // hairlines on the device pixel grid
+  const hair = (x0, y0, x1, y1, col) => { x.strokeStyle = col; x.lineWidth = 1 / dpr; x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1, y1); x.stroke(); };
+  if (si >= 0) { x.fillStyle = 'rgba(240,178,62,.07)'; x.fillRect(g.X(k[si].t), KG_P, g.X(k[si + 1].t) - g.X(k[si].t), g.h); }
+  for (const p of [0, 1]) hair(KG_P, crisp(g.Y(p)), g.W - KG_P, crisp(g.Y(p)), 'rgba(237,237,237,.1)');
+  for (const f of k) hair(crisp(g.X(f.t)), KG_P, crisp(g.X(f.t)), g.H - KG_P, 'rgba(237,237,237,.12)');
+  const n = Math.max(2, Math.round(g.w / 2)), t0 = k[0].t, t1 = k.at(-1).t;
+  for (const [p, , col] of KG_PROPS) { // the values the preview uses (propsAt), each from its lowest to its highest keyframe
+    const lo = Math.min(...k.map(f => f[p] ?? 0)), hi = Math.max(...k.map(f => f[p] ?? 0)), v = q => (q - lo) / (hi - lo);
+    if (hi - lo < 1e-9) continue;
+    x.strokeStyle = col; x.globalAlpha = 0.85; x.lineWidth = 1.25; x.beginPath();
+    for (let i = 0; i <= n; i++) { const t = t0 + ((t1 - t0) * i) / n; x[i ? 'lineTo' : 'moveTo'](g.X(t), g.Y(v(propsAt(c, t)[p]))); }
+    x.stroke(); x.globalAlpha = 1; x.fillStyle = col;
+    for (const f of k) { x.beginPath(); x.arc(g.X(f.t), g.Y(v(f[p] ?? 0)), 2.5, 0, 6.2832); x.fill(); }
+  }
+  for (let i = 0; i + 1 < k.length; i++) { // each segment's own curve and handles, amber for the selected one
+    const a = k[i], b = k[i + 1], on = i === si, bz = kgBz(c, a), e = !!(a.ease ?? c.ease), s = b.t - a.t, m = Math.max(8, Math.round((g.X(b.t) - g.X(a.t)) / 2));
+    x.strokeStyle = on ? '#f0b23e' : 'rgba(237,237,237,.28)'; x.lineWidth = on ? 2 : 1; x.beginPath();
+    for (let j = 0; j <= m; j++) x[j ? 'lineTo' : 'moveTo'](g.X(a.t + (s * j) / m), g.Y(e ? easeU(j / m, a.eu0 ?? 0, a.eu1 ?? 1, a.bz) : j / m));
+    x.stroke();
+    const hs = [[g.X(a.t + bz[0] * s), g.Y(clamp(bz[1], KG_LO, KG_HI))], [g.X(a.t + bz[2] * s), g.Y(clamp(bz[3], KG_LO, KG_HI))]];
+    x.strokeStyle = on ? 'rgba(240,178,62,.55)' : 'rgba(237,237,237,.16)'; x.lineWidth = 1; x.beginPath();
+    x.moveTo(g.X(a.t), g.Y(0)); x.lineTo(...hs[0]); x.moveTo(g.X(b.t), g.Y(1)); x.lineTo(...hs[1]); x.stroke();
+    hs.forEach(([hx, hy], j) => {
+      const ring = on && j * 2 === hot; // the handle the arrow keys move
+      x.beginPath(); x.arc(hx, hy, on ? 4.5 : 3, 0, 6.2832); x.fillStyle = on ? '#f0b23e' : '#2c2c2f'; x.fill();
+      x.strokeStyle = ring ? '#ededed' : on ? '#17130a' : 'rgba(237,237,237,.4)'; x.lineWidth = ring ? 1.5 : 1; x.stroke();
+    });
+  }
+  const lt = S.t - c.start;
+  if (lt >= 0 && lt <= g.D) hair(crisp(g.X(lt)), KG_P, crisp(g.X(lt)), g.H - KG_P, 'rgba(237,237,237,.5)');
+}
+const kgRO = new ResizeObserver(() => { const c = selClip(); if (c) drawGraph(c); }); // drawn once it has a size (a hidden tab has none), again when the pane resizes
+const curveCopy = (c, f) => { S.curve = { ease: !!(f.ease ?? c.ease), bz: f.bz && [...f.bz], eu0: f.eu0, eu1: f.eu1 }; toast('Curve copied'); renderInspector(); };
+function curvePaste(c, f) {
+  if (!S.curve) return toast('Copy a curve first');
+  change(() => { f.ease = S.curve.ease; for (const q of ['bz', 'eu0', 'eu1']) { if (S.curve[q] == null) delete f[q]; else f[q] = q === 'bz' ? [...S.curve.bz] : S.curve[q]; } });
 }
 const RATIO_NAMES = { '9:16': 'TikTok', '16:9': 'YouTube', '1:1': 'Square', '4:5': 'Instagram', '3:4': 'Portrait', '4:3': 'Classic', '21:9': 'Cinema' };
 function projectPanel() {
@@ -5349,19 +5399,28 @@ function wire() {
 
   const insp = $('#inspector');
   insp.addEventListener('pointerdown', e => { // colour wheels and the curve editor: one undo step per drag
-    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), rsv = e.target.closest('#rampSvg'), esv = e.target.closest('#easeSvg'), c = selClip();
-    if (!c || (!wcv && !svg && !rsv && !esv)) return;
+    const wcv = e.target.closest('canvas[data-wheel]'), svg = e.target.closest('#curveSvg'), rsv = e.target.closest('#rampSvg'), kg = e.target.closest('#kfGraph'), c = selClip();
+    if (!c || (!wcv && !svg && !rsv && !kg)) return;
     e.preventDefault();
-    const before = JSON.stringify(P), el = wcv || svg || rsv || esv, r = el.getBoundingClientRect();
+    const before = JSON.stringify(P), el = wcv || svg || rsv || kg, r = el.getBoundingClientRect();
     const pos = ev => [clamp((ev.clientX - r.left) / r.width, 0, 1), clamp((ev.clientY - r.top) / r.height, 0, 1)];
     let set;
-    if (esv) { // the easing graph: drag the nearer handle; the segment becomes that cubic-bezier (x 0..1, y may overshoot)
-      const f = c.kf?.[+esv.dataset.k];
-      if (!f) return;
-      const at = ev => [(ev.clientX - r.left) / r.width * 120, (ev.clientY - r.top) / r.height * 96];
-      const bz0 = easeKind(c, f) === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout, [px, py] = at(e);
-      const h = Math.hypot(px - EZ.x(bz0[0]), py - EZ.y(bz0[1])) <= Math.hypot(px - EZ.x(bz0[2]), py - EZ.y(bz0[3])) ? 0 : 2;
-      set = ev => { const [qx, qy] = at(ev), b = [...(f.bz || bz0)]; b[h] = +clamp(EZ.ix(qx), 0, 1).toFixed(3); b[h + 1] = +clamp(EZ.iy(qy), -0.25, 1.25).toFixed(3); f.ease = true; f.bz = b; drawEase(c); };
+    if (kg) { // the keyframe graph: a handle drags (its segment becomes that cubic-bezier, x 0..1, y may overshoot); anywhere else seeks there
+      const g = kgGeo(c, kg), px = e.clientX - r.left - kg.clientLeft, py = e.clientY - r.top - kg.clientTop, lane = S.sel.lane;
+      const [d, [i, j] = []] = kgHandles(c, g).reduce((m, q) => { const dd = Math.hypot(q[2] - px, q[3] - py); return dd < m[0] ? [dd, q] : m; }, [Infinity]);
+      if (!(d <= 9)) { seekTo(c.start + clamp(g.iX(px), 0, tdur(c, lane))); $('#kfGraph')?.focus({ preventScroll: true }); return; }
+      const f = c.kf[i], s = c.kf[i + 1].t - f.t;
+      S.kgH = j;
+      if (easeSeg(c, S.t - c.start) !== f) seekTo(c.start + f.t + s / 2); // that handle's segment becomes the selected one
+      else drawGraph(c);
+      const b0 = kgBz(c, f), x0 = b0[j], y0 = clamp(b0[j + 1], KG_LO, KG_HI);
+      set = ev => {
+        if (ev === e) return;
+        const b = [...b0];
+        b[j] = +clamp(x0 + ((ev.clientX - e.clientX) / g.w) * (g.D / s), 0, 1).toFixed(3);
+        b[j + 1] = +clamp(y0 - ((ev.clientY - e.clientY) / g.h) * (KG_HI - KG_LO), KG_LO, KG_HI).toFixed(3);
+        setBz(f, b); drawGraph(c);
+      };
     } else if (rsv) { // the speed ramp draft: y = log speed, 1x has a detent; nothing is in P (no undo steps, saves or renders) until Apply
       drawRamp(c);
       const yp = S.rampDraft.pts.map(([u, s]) => [u, rampY(s)]), mv = curvePts(e, yp, ev => rampXY(pos(ev)), { width: r.width * 200 / 222, height: r.height * 100 / 112 });
@@ -5372,7 +5431,7 @@ function wire() {
       addEventListener('pointermove', move); addEventListener('pointerup', up);
       return;
     }
-    if (esv) { /* set above */ } else if (wcv) {
+    if (kg) { /* set above */ } else if (wcv) {
       const k = wcv.dataset.wheel;
       set = ev => { const [u, v] = pos(ev), R = (wcv.width / 2 - 6) / wcv.width; let x = (u - 0.5) / R, y = (0.5 - v) / R; const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; } c.grade ??= {}; c.grade[k] = { ...c.grade[k], x: +x.toFixed(3), y: +y.toFixed(3) }; drawWheels(c); };
     } else {
@@ -5381,8 +5440,23 @@ function wire() {
       set = ev => { if (mv.i < 0) return; mv(ev); c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts.map(q => [...q]) }; drawCurve(c); };
     }
     set(e); S.dirty = true;
-    const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
+    const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } if (kg) $('#kfGraph')?.focus({ preventScroll: true }); };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  });
+  insp.addEventListener('keydown', e => { // the focused keyframe graph: arrows nudge the handle (⇧: x10), 1 / 2 pick it, [ ] the segment, ⌘C / ⌘V its curve
+    const c = selClip(), f = e.target.id === 'kfGraph' && c && easeSeg(c, S.t - c.start), mod = e.metaKey || e.ctrlKey;
+    if (!f) return;
+    const k = c.kf, i = k.indexOf(f), dir = { ArrowLeft: -1, ArrowRight: 1, ArrowDown: -1, ArrowUp: 1 }[e.key];
+    if (dir && !mod && !e.altKey) {
+      const b = [...kgBz(c, f)], j = (S.kgH || 0) + (e.key === 'ArrowUp' || e.key === 'ArrowDown' ? 1 : 0);
+      b[j] = +clamp(b[j] + dir * (e.shiftKey ? 0.1 : 0.01), j % 2 ? KG_LO : 0, j % 2 ? KG_HI : 1).toFixed(3);
+      change(() => setBz(f, b));
+    } else if ((e.key === '[' || e.key === ']') && !mod) { const n = clamp(i + (e.key === '[' ? -1 : 1), 0, k.length - 2); seekTo(c.start + (k[n].t + k[n + 1].t) / 2); }
+    else if ((e.key === '1' || e.key === '2') && !mod) { S.kgH = e.key === '1' ? 0 : 2; drawGraph(c); }
+    else if (mod && !e.shiftKey && (e.code === 'KeyC' || e.code === 'KeyV')) (e.code === 'KeyC' ? curveCopy : curvePaste)(c, f);
+    else return;
+    e.preventDefault(); e.stopPropagation(); // not the timeline's keys
+    $('#kfGraph')?.focus({ preventScroll: true }); // the inspector was redrawn
   });
   insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
   insp.addEventListener('input', e => {
@@ -5440,6 +5514,7 @@ function wire() {
     else if (d.look) change(() => { if (d.look === 'none') delete c.look; else c.look = { name: d.look, amount: c.look?.amount ?? 1 }; });
     else if (['kfadd', 'kfdel', 'kfclear'].includes(d.act)) kfOp(c, S.sel.lane, d.act.slice(2));
     else if (d.ease) change(() => { const f = easeSeg(c, S.t - c.start); if (f) setEase(c, f, d.ease); });
+    else if (d.act === 'kfcopy' || d.act === 'kfpaste') { const f = easeSeg(c, S.t - c.start); if (f) (d.act === 'kfcopy' ? curveCopy : curvePaste)(c, f); }
     else if (d.act === 'beats') quiet(detectBeats(c));
     else if (d.act === 'beatsync') beatSync(c, +$('#beatEvery').value);
     else if (d.act === 'freeze') quiet(freeze(c, S.sel.lane));
@@ -6100,11 +6175,11 @@ const REMOTE = {
       if (set[k] === undefined || set[k] === null) continue;
       if (!Array.isArray(set[k]) || set[k].some(f => !f || need.some(q => !Number.isFinite(f[q])) || Object.values(f).some(v => typeof v === 'number' && !Number.isFinite(v)))) throw new Error(`${k} must be a list of {${need.join(', ')}${k === 'kf' ? ', scale, x, y, opacity, rot' : ''}} with numbers`);
     }
-    for (const f of set.kf || []) { // ease: true|false or linear|ease-in|ease-out|ease-in-out; bz: [x1, y1, x2, y2] = a custom cubic-bezier
+    for (const f of set.kf || []) { // ease: true|false or linear|ease-in|ease-out|ease-in-out|back; bz: [x1, y1, x2, y2] = a custom cubic-bezier
       if (f.bz != null && !(Array.isArray(f.bz) && f.bz.length === 4 && f.bz.every((v, i) => Number.isFinite(v) && (i % 2 ? Math.abs(v) <= 5 : v >= 0 && v <= 1)))) throw new Error('kf bz must be [x1, y1, x2, y2]: x1, x2 in 0..1, y1, y2 in -5..5');
       if (typeof f.ease === 'string') {
-        const k = { linear: 'linear', 'ease-in': 'in', in: 'in', 'ease-out': 'out', out: 'out', 'ease-in-out': 'inout', inout: 'inout' }[f.ease];
-        if (!k) throw new Error('kf ease must be linear, ease-in, ease-out, ease-in-out (or true / false), bz [x1, y1, x2, y2] for a custom curve');
+        const k = { linear: 'linear', 'ease-in': 'in', in: 'in', 'ease-out': 'out', out: 'out', 'ease-in-out': 'inout', inout: 'inout', back: 'back', 'ease-back': 'back' }[f.ease];
+        if (!k) throw new Error('kf ease must be linear, ease-in, ease-out, ease-in-out, back (or true / false), bz [x1, y1, x2, y2] for a custom curve');
         const bz = f.bz; setEase(c, f, k); if (bz) f.bz = bz;
       } else if (f.bz) f.ease = true;
     }
