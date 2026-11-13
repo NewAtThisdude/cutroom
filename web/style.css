@@ -12,6 +12,8 @@
   --accent: #f0b23e; --accent2: #f3c268; --hot: #e5484d; --ok: #4cc38a; --on: #17130a;
   --grad: var(--text);
   --c-main: #262b66; --c-overlay: #47257a; --c-audio: #0b443a; --c-text: #5f370c; --c-captions: #65163f; --c-fx: #144d63;
+  /* clip labels: muted, told apart from each other and from the track colours under them */
+  --lab-red: #d0625c; --lab-orange: #d08a4a; --lab-yellow: #cdb85a; --lab-green: #6fae74; --lab-blue: #5f93d0; --lab-violet: #a07fd0;
   --r: 10px;
   color-scheme: dark;
 }
@@ -458,6 +460,21 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #btnExport.busy { background: linear-gradient(90deg, var(--accent) var(--pct), var(--text) var(--pct)); } /* an export running with its dialog closed */
 #btnLink.on { color: var(--text); border-color: var(--line2); background: var(--raised); }
 .clip canvas.cstrip { position: absolute; top: 0; pointer-events: none; } /* drawn by drawStrips for the part in view */
+.clip .lab { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; pointer-events: none; z-index: 3; box-shadow: 0 -1px 0 rgba(0, 0, 0, .45); } /* the clip's colour label */
+.labrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 2px; }
+.labrow > span { color: var(--muted); font-size: 12.5px; margin-right: 4px; }
+.labrow .sw { width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid rgba(0, 0, 0, .35); }
+.labrow .sw.none { background: transparent; border-color: var(--line2); color: var(--faint); }
+.labrow .sw.none svg.i { width: 12px; height: 12px; }
+.labrow .sw.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--text); }
+.labrow .sl { flex-basis: 100%; justify-content: flex-start; padding: 4px 0; font-size: 12.5px; }
+.ctxmenu .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: -1px; }
+.keys button.kb { padding: 2px 4px; gap: 4px; background: transparent; border-color: transparent; min-width: 64px; justify-content: flex-start; }
+.keys button.kb:hover { border-color: var(--line2); }
+.keys button.kb.on { border-color: var(--accent); color: var(--accent); }
+.keys td:last-child button { padding: 2px 8px; font-size: 12px; }
+.keyconf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; }
+.keyconf span { flex: 1 1 200px; }
 .rlimg { display: block; width: 100%; max-height: 300px; object-fit: contain; background: #0e0e0f; border-radius: 6px; margin: 6px 0; } /* the relight panel's one-frame preview */
 /* command bar (⌘K) and smart search */
 #btnAsk kbd { font: 600 10px ui-monospace, monospace; color: var(--faint); border: 1px solid var(--line2); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
