@@ -3426,7 +3426,7 @@ async function job(path, body, label, say = setStatus) { // start a server job a
   const t0 = performance.now();
   let last = -1, still = t0, warned = false;
   try {
-    const { job: id } = await api(path, body);
+    const { job: id } = await (typeof path === 'function' ? path() : api(path, body)); // (a function: an upload that answers with the job)
     for (;;) {
       await new Promise(r => setTimeout(r, 500));
       const j = await api(`/api/jobs/${id}`);
@@ -4264,7 +4264,8 @@ async function saveSRT(name, kind = 'srt') { const r = await api('/api/save_subs
 const handOff = (name, format) => api('/api/interchange', { format, name: name || P.name, project: P }); // FCPXML / EDL / chapters, made by the server from the project as it is now
 function importFiles(files) {
   for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
-  files = [...files].filter(x => !/\.(srt|vtt|txt)$/i.test(x.name));
+  for (const f of [...files].filter(x => /\.cutroom$/i.test(x.name))) openPackageFile(f).catch(e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -4541,7 +4542,7 @@ function openExport() {
     <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
     <p class="muted" id="exHint"></p><p class="muted" id="exHdrHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
-    <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
+    <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-pkg="${P.id}" title="The project and every file it uses in one .cutroom, for another Mac or an archive">Package project…</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
@@ -4690,9 +4691,9 @@ async function openProjects() { // CapCut's home: a card per project with a fram
   await sendPoster(); // (this one's card shows it as it is now)
   const list = await api('/api/projects').catch(() => []);
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
-  modal(`<div class="phead"><h2>Projects</h2><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div>
+  modal(`<div class="phead"><h2>Projects</h2><div class="pnew"><label class="btn" title="A .cutroom made by Package project, on this Mac or another">Open package…<input type="file" id="pkgIn" hidden accept=".cutroom"></label><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div></div>
     <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb">${p.pic ? `<img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
-      + `<span class="pacts"><button class="pdel" data-versions="${p.id}" title="Versions" aria-label="Versions of ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg></button><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
+      + `<span class="pacts"><button class="pdel" data-versions="${p.id}" title="Versions" aria-label="Versions of ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg></button><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-pkg="${p.id}" title="Package project…" aria-label="Package ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
     <div class="actions"><button data-close>Close</button></div>`, 'wide');
 }
 
@@ -4724,6 +4725,40 @@ async function trashProject(id, name) { // reversible: the server moves it to Mo
   await api(`/api/projects/${id}/trash`, {});
   if (id === P?.id) { const list = await api('/api/projects'); if (list[0]) await openProject(list[0].id); else { setProject(newProject('9:16')); scheduleSave(); } }
   openProjects();
+}
+
+// ---------- packages: a project and every file it uses in one .cutroom, for another Mac or an archive (CapCut can't, offline) ----------
+const PKG_HOW = { copy: 'cut by stream copy', encode: 're-encoded (trimmed)', whole: 'whole' };
+function openPackage(id = P?.id) {
+  modal(`<h2>Package project</h2><p class="hint">One .cutroom file with the project, every file it uses and its imported fonts and LUTs. On another Mac, Projects › Open package… (or drop the file on the window) brings it all in.</p>
+    <label class="row chk" title="Each used part plus 1 s either side, stream copied where the format allows, else re-encoded at high quality"><span>Trim to what is used</span><input id="pkTrim" type="checkbox"></label>
+    <p id="pkStatus" class="muted"></p>
+    <div class="actions"><span id="pkDone"></span><button data-close>Close</button><button id="pkGo" class="primary" data-pkgo="${id}">Package</button></div>`);
+}
+async function packageProject(id, trim, say = setStatus) {
+  if (id === P?.id) await flushSave(); // (what's on screen is what goes in)
+  const r = await job('/api/package', { id, trim }, 'Packaging', say), n = k => r.items.filter(x => x.how === k).length;
+  r.summary = `${r.items.length} file${r.items.length === 1 ? '' : 's'}${r.items.length && n('whole') !== r.items.length ? ` (${Object.keys(PKG_HOW).filter(n).map(k => `${n(k)} ${PKG_HOW[k]}`).join(', ')})` : ''}`
+    + (r.fonts ? ` · ${r.fonts} font${r.fonts === 1 ? '' : 's'}` : '') + (r.luts ? ` · ${r.luts} LUT${r.luts === 1 ? '' : 's'}` : '') + (r.missing ? ` · ${r.missing} missing (not in the library)` : '');
+  return r;
+}
+async function openPackageFile(f, say = setStatus) { // the bytes go up with progress, then the server unpacks them (a job)
+  const up = () => new Promise((ok, no) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', `/api/package/open?name=${encodeURIComponent(f.name)}`);
+    x.setRequestHeader('X-Cutroom', '1');
+    x.upload.onprogress = e => { if (e.lengthComputable) say(`Reading ${f.name}… ${Math.round(e.loaded / e.total * 100)}%`); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch {} if (x.status === 200) ok(j); else no(new Error(j.error || 'the package could not be read')); };
+    x.onerror = () => no(new Error('the package could not be read'));
+    x.send(f);
+  });
+  return packageOpened(await job(up, undefined, 'Opening the package', say));
+}
+async function packageOpened(r) {
+  await Promise.all([loadMedia(), loadFonts(), api('/api/luts').then(l => { G.luts = l; }).catch(() => {})]);
+  await openProject(r.project);
+  toast(`Opened "${r.name}": ${r.media} file${r.media === 1 ? '' : 's'}${r.reused ? ` (${r.reused} already in the library)` : ''}${r.fonts ? `, ${r.fonts} font${r.fonts === 1 ? '' : 's'}` : ''}${r.luts ? `, ${r.luts} LUT${r.luts === 1 ? '' : 's'}` : ''}`);
+  return r;
 }
 async function loadVoices() {
   const vs = await api('/api/voices').catch(() => []), pref = store.get('cutroom.voice') || 'Samantha';
@@ -5615,10 +5650,24 @@ function wire() {
     else if (d.tpl) showTemplate(d.tpl);
     else if (d.usetpl) useTemplate(d.usetpl);
     else if (d.deltpl) { if (confirm('Delete this template? It moves to Movies/Cutroom/trash.')) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+    else if (d.pkg) openPackage(d.pkg);
+    else if (d.pkgo) { // the dialog may be closed meanwhile: then the result is a toast
+      const out = (msg, file) => {
+        if (!$('#pkStatus')) { if (file) toast(msg); return; }
+        $('#pkStatus').textContent = msg;
+        if (file) { const r = document.createElement('button'); r.dataset.reveal = file; r.textContent = 'Show in Finder'; $('#pkDone').replaceChildren(r); }
+      };
+      b.disabled = true;
+      try {
+        const r = await packageProject(d.pkgo, $('#pkTrim').checked, out);
+        out(`Saved ${r.file} (${(r.size / 1e6).toFixed(r.size < 1e7 ? 1 : 0)} MB) in ${r.dir}: ${r.summary}`, r.file);
+      } catch (err) { out(err.message); } finally { b.disabled = false; }
+    }
     else if (d.reveal) api('/api/reveal', { file: d.reveal }).catch(err => toast(err.message));
     else if (d.play) open(`/exports/${encodeURIComponent(d.play)}`, '_blank', 'noopener');
   };
   $('#modal').addEventListener('click', e => { modalClick(e).catch(err => toast(err.message)); });
+  $('#modal').addEventListener('change', e => { if (e.target.id === 'pkgIn' && e.target.files[0]) { const f = e.target.files[0]; closeModal(); openPackageFile(f).catch(err => toast(err.message)); } });
 
   addEventListener('keydown', e => {
     if (!P) return;
@@ -6102,6 +6151,12 @@ async function waitFrame() { // the preview shows the frame at S.t: every elemen
   paint();
   for (let i = 0; S.mbFill && i < 6; i++) { await S.mbFill; paint(); } // motion blur: the frames before this one, drawn (each paint may ask for another clip's)
 }
+async function projectId(project) { // a saved project by id, exact name, or part of its name
+  const list = await api('/api/projects'), q = String(project).toLowerCase();
+  const p = list.find(x => x.id === project) || list.find(x => x.name === project) || list.find(x => x.name.toLowerCase().includes(q));
+  if (!p) throw new Error(`no project "${project}"`);
+  return p.id;
+}
 const REMOTE = {
   async status() { packMain(); return { project: { id: P.id, name: P.name, w: P.w, h: P.h, fps: P.fps, duration: r3(total()) }, playhead: r3(S.t), playing: S.playing, selected: S.sel, clips: Object.fromEntries(LANES.map(L => [L.key, P[L.key].length])) }; },
   async options() {
@@ -6118,11 +6173,16 @@ const REMOTE = {
   async media() { await loadMedia(); return [...M.values()].map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
   async projects() { return api('/api/projects'); },
   async open_project({ project }) {
-    const list = await api('/api/projects'), q = String(project).toLowerCase();
-    const p = list.find(x => x.id === project) || list.find(x => x.name === project) || list.find(x => x.name.toLowerCase().includes(q));
-    if (!p) throw new Error(`no project "${project}"`);
-    await openProject(p.id);
+    await openProject(await projectId(project));
     return REMOTE.status();
+  },
+  async package_project({ project, trim = false }) { // the project (default: the open one) and every file it uses in one .cutroom in the exports folder
+    return packageProject(project == null ? P.id : await projectId(project), trim === true, () => {});
+  },
+  async open_package({ path }) {
+    if (!path) throw new Error('path: a .cutroom file on this Mac');
+    const r = await packageOpened(await job('/api/package/open', { path: String(path) }, 'Opening the package', () => {}));
+    return { ...r, now: await REMOTE.status() };
   },
   async new_project({ ratio = '9:16', name }) {
     if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
