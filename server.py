@@ -6183,6 +6183,10 @@ def selftest():
     go.set()
     ta.join(5)
     tb.join(5)
+    for _ in range(500):  # the language-model job queued third finishes too (asserting at once raced it: HEAVY still showed it)
+        if JOBS[lj]['state'] != 'running':
+            break
+        time.sleep(0.01)
     assert order == ['a', 'b'] and 'note' not in sb and HEAVY['run'] is None and not HEAVY['line'], (order, sb, HEAVY)
     # two waiting jobs of ONE kind, the later one cancelled: the earlier still runs and the line empties (equal dicts: list.remove
     # once took the other one's place and locked the queue until a restart)
