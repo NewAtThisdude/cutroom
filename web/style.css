@@ -492,3 +492,21 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #tour .actions { display: flex; gap: 8px; justify-content: flex-end; }
 #tour .actions .ghost { margin-right: auto; }
 @media (prefers-reduced-motion: no-preference) { #tour .tring, #tour .tcard { transition: left .2s, top .2s, width .2s, height .2s; } }
+/* Export > Also export as, and the Exports panel (the one queue: every export, rendered one at a time; above the dialog's backdrop) */
+.exalso { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.exalso label { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.exq { position: fixed; right: 14px; top: 60px; z-index: 21; width: min(300px, calc(100vw - 28px)); max-height: 50vh; overflow: auto; background: var(--panel2); border: 1px solid var(--line2); border-radius: 12px; padding: 6px 10px 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); }
+.exq[hidden] { display: none; }
+.exq .qhead { display: flex; align-items: center; gap: 2px; font-weight: 600; }
+.exq .qhead span { flex: 1; }
+.exq .qhead button { padding: 3px 8px; font-size: 12px; }
+.exq .qhead button.sq { width: 26px; height: 26px; margin-left: 0; }
+.exq .qrow { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; }
+.exq .qtop { display: flex; align-items: baseline; gap: 8px; }
+.exq .qtop b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.exq .qtop small { flex: none; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.exq .progress { height: 4px; margin: 6px 0 2px; }
+.exq [data-state=cancelled] .progress div, .exq [data-state=error] .progress div { background: var(--faint); }
+.exq .qbot { display: flex; align-items: center; gap: 2px; min-height: 26px; font-size: 12px; }
+.exq .qbot span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.exq .qbot button { padding: 2px 8px; font-size: 12px; }

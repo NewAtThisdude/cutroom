@@ -1590,7 +1590,7 @@ AI_BUDGET = {
     'track': ('Motion tracking', 's of video', [(0, 'OpenCV corners (CPU), Vision fallback', 0.6, 0.5, {})]),
     'beats': ('Beat detection', 's of sound', [(0, 'onset envelope (NumPy, CPU)', 0.3, 0.01, {})]),
     'proxy4k': ('4K import preview copy', 's of 4K', [(0, '720p H.264, media engine (VideoToolbox)', 1.0, 0.3, {})]),
-    'export': ('Export above 1440p (4K)', 's of video', [(0, 'VideoToolbox / x264, CPU threads capped', 3.0, 1.0, {})]),
+    'export': ('Export (above 1440p, or queued)', 's of video', [(0, 'VideoToolbox / x264, CPU threads capped', 3.0, 1.0, {})]),
     'export8k': ('Export above 4K (up to 8K)', 's of video', [(16, 'HEVC / x264 8K, 8 encoder threads', 9.2, 3, {})]),
 }
 AI_ROOM = RAM_GB - 4  # what one AI job may peak at: macOS and the editor keep ~4 GB (tests/allmacs.mjs holds every job to it)
@@ -3583,7 +3583,7 @@ def clean_plan(p):
     out = {'w': W - W % 2, 'h': H - H % 2, 'fps': fnum(p['fps'], 1, 120), 'duration': fnum(p['duration'], 0.04, 6 * 3600),
            'bg': p['bg'] if HEX.fullmatch(str(p.get('bg', ''))) else '#000000',
            'quality': 'best' if p.get('quality') == 'best' else 'fast', 'loud': bool(p.get('loud')), 'lufs': p.get('lufs') if p.get('lufs') in LUFS else -14,
-           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'hdr': p.get('hdr') if p.get('hdr') in ('hlg', 'pq') else None, 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
+           'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'hdr': p.get('hdr') if p.get('hdr') in ('hlg', 'pq') else None, 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'queue': bool(p.get('queue')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'efps': p['efps'] if p.get('efps') in EXPORT_FPS else 0, 'mbps': fnum(p.get('mbps') or 0, 0, 400),  # 0 = the project's fps / bitrate from the preset
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
 
@@ -5189,8 +5189,9 @@ def export(job, p):
         if p.get('format') == 'png' and not p.get('library'):
             p = still_cut(p)
         px = p['w'] * p['h'] if p.get('format') not in (*SOUND, 'png') else 0  # above 1440p: a heavy job, one at a time with the AI ones
-        big = 'export8k' if px > 4096 * 2304 else 'export' if px > 2560 * 1440 else None
+        big = 'export8k' if px > 4096 * 2304 else 'export' if px > 2560 * 1440 or p.get('queue') else None  # queue: the Exports panel's, one render at a time
         with ai_slot(big, st, p['duration']) if big else contextlib.nullcontext(), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+            st['started'] = time.time()
             F, main = p['fps'], p['main']
             chunks = [main[i:i + CHUNK] for i in range(0, len(main), CHUNK)] if len(main) > CHUNK else []
             steps = len(chunks) + 1
@@ -5226,12 +5227,12 @@ def export(job, p):
                 return
             dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
             shutil.move(out, dst)
-        st.update(state='done', progress=1.0, file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}))  # dir: the page names the folder (a library elsewhere has its own)
+        st.update(state='done', progress=1.0, ended=time.time(), file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}))  # dir: the page names the folder (a library elsewhere has its own)
     except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
         if st.get('cancel'):
-            st.update(state='cancelled')
+            st.update(state='cancelled', ended=time.time())
         else:
-            st.update(state='error', error=str(e))
+            st.update(state='error', error=str(e), ended=time.time())
     finally:
         if p.get('layer_dir'):  # the uploaded text layer (still_cut and the chunk plans keep the key)
             shutil.rmtree(p['layer_dir'], ignore_errors=True)

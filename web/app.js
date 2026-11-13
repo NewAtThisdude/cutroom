@@ -4337,6 +4337,80 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
     audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }
+// ---------- export for every platform: the plan re-laid for another canvas, and the one export queue ----------
+const SHAPES = ['9:16', '16:9', '1:1', '4:5'];
+const shapeOf = (w, h) => Object.keys(RATIOS).find(r => Math.abs(RATIOS[r][0] / RATIOS[r][1] - w / h) < 0.01) || `${w}×${h}`;
+function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main clips (and full-canvas overlays) keep their fit mode and the source
+  // point at the canvas centre stays at the centre (an auto-reframe path keeps following its subject); fill never shows bars there.
+  // Picture-in-picture overlays keep their place as a fraction of the canvas and scale with its short side, as text already does
+  const p = structuredClone(p0), W = p0.w, H = p0.h, k = Math.min(W2, H2) / Math.min(W, H);
+  const rel = (m, c, f, w, h) => { const g = geom(m, c, w, h, { scale: f.scale ?? 1, x: 0, y: 0 }); return [g.w / w, g.h / h]; };
+  for (const lane of ['main', 'overlay']) for (const c of p[lane]) {
+    const m = M.get(c.media);
+    if (!m?.w) continue;
+    const full = lane === 'main' || (c.fit === 'fill' && rel(m, c, c, W, H).every(v => v > 0.999)); // an overlay that covers the canvas acts as a main clip
+    for (const f of [c, ...(c.kf || [])]) {
+      const [a, b] = rel(m, c, f, W, H), [a2, b2] = rel(m, c, f, W2, H2);
+      if (full) {
+        const move = (v, r, r2) => { const x = (v * r2) / r, lim = Math.max(0, (r2 - 1) / 2); return c.fit === 'fill' && Math.abs(v) <= (r - 1) / 2 + 1e-6 ? clamp(x, -lim, lim) : x; };
+        if (f.x != null) f.x = move(f.x, a, a2);
+        if (f.y != null) f.y = move(f.y, b, b2);
+      } else if (f === c || f.scale != null) f.scale = (f.scale ?? 1) * ((a * W * k) / (a2 * W2));
+    }
+  }
+  return Object.assign(p, { w: W2, h: H2 });
+}
+async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+  const P0 = P;
+  S.hold = true; // ponytail: borrowed like a compound clip's plan; an edit made during these seconds lands on the copy
+  try { P = reshape(P0, ...RATIOS[ratio]); const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return await buildPlan(w, h, ...args); }
+  finally { P = P0; S.hold = false; S.dirty = true; }
+}
+S.q = []; // the Exports panel: every export the page started, in order; the server renders them one at a time (ai_slot)
+const node = (tag, cls, parent, text = '') => { const e = parent.appendChild(document.createElement(tag)); e.className = cls; e.textContent = text; return e; };
+async function enqueue(plan, shape) { // -> its row; row.done resolves with the finished job
+  const { job } = await api('/api/export', { ...plan, queue: true });
+  const q = { job, name: plan.name, w: plan.w, h: plan.h, st: { state: 'running', progress: 0 } }, row = node('div', 'qrow', $('#exqList')), top = node('div', 'qtop', row);
+  q.row = row; row.dataset.q = job;
+  q.nameEl = node('b', '', top, plan.name); node('small', '', top, `${shape} · ${plan.w}×${plan.h}`);
+  q.bar = node('div', '', node('div', 'progress', row));
+  const bot = node('div', 'qbot', row);
+  q.say = node('span', 'muted', bot); q.cancel = node('button', 'ghost', bot, 'Cancel'); q.reveal = node('button', 'ghost', bot, 'Show in Finder');
+  q.cancel.dataset.qcancel = job;
+  q.done = new Promise((ok, no) => { q.ok = ok; q.no = no; });
+  q.done.catch(() => {});
+  S.q.push(q); S.qHide = false; qDraw(); qPoll();
+  return q;
+}
+let qTimer = 0;
+function qPoll() { // only while something is waiting or rendering
+  if (qTimer) return;
+  qTimer = setTimeout(async () => {
+    const live = S.q.filter(q => q.st.state === 'running');
+    await Promise.all(live.map(async q => {
+      q.st = await api(`/api/jobs/${q.job}`).catch(() => q.st);
+      if (q.st.state === 'done') { S.exportsDir = q.st.dir || S.exportsDir; q.ok(q.st); }
+      else if (q.st.state !== 'running') q.no(new Error(q.st.state === 'cancelled' ? 'Export cancelled' : q.st.error || 'The export failed'));
+    }));
+    qTimer = 0; qDraw();
+    if (S.q.some(q => q.st.state === 'running')) qPoll();
+  }, 500);
+}
+function qDraw() {
+  const box = $('#exq'), now = Date.now() / 1000;
+  box.hidden = !S.q.length || !!S.qHide;
+  for (const q of S.q) {
+    const j = q.st, p = j.state === 'done' ? 1 : j.progress || 0, run = j.state === 'running', wait = run && !j.started && j.note, el = j.started ? now - j.started : 0;
+    const left = p >= 0.03 && el > 2 ? (el / p) * (1 - p) : j.eta, ahead = (j.note || '').match(/\((\d+) ahead\)/); // from its own speed once it has some, else the server's estimate
+    q.say.textContent = j.state === 'done' ? 'Saved' : j.state === 'cancelled' ? 'Cancelled' : !run ? `Failed: ${j.error || j.state}` : wait ? `Waiting${ahead ? ` · ${ahead[1]} ahead` : ''}` : !j.started ? 'Starting…'
+      : `${Math.round(p * 100)}%${left >= 1 ? ` · about ${aboutSecs(left)} left` : ''}`;
+    q.say.title = j.note || j.error || '';
+    q.row.dataset.state = wait ? 'waiting' : j.state;
+    q.bar.style.width = `${Math.round(p * 100)}%`;
+    q.cancel.hidden = !run; q.reveal.hidden = j.state !== 'done';
+    if (j.file) { q.nameEl.textContent = q.nameEl.title = j.file; q.reveal.dataset.reveal = j.file; }
+  }
+}
 function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
   modal(`<h2>Export</h2>
@@ -4351,6 +4425,7 @@ function openExport() {
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+    <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
     <p class="muted" id="exHint"></p><p class="muted" id="exHdrHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
     <div class="actions" id="exActions"><span id="exDone"></span><button id="exCancel" hidden>Cancel export</button><button data-close>Close</button><button id="exGo" class="primary">Export</button></div>`);
@@ -4368,6 +4443,7 @@ function openExport() {
       : !$('#exHdr').disabled && hk !== 'sdr' ? (why ? `Exports SDR: ${why}. HDR keeps cuts, trims, speed, crop, flips, fades and dissolves of HDR clips only.`
         : `${tr}, 10-bit: ${f === 'prores' ? 'ProRes 422 HQ' : 'HEVC Main 10 (hvc1)'}, BT.2020${hk === 'pq' ? ', HLG footage mapped to PQ for a 1000-nit display' : ''}. The preview shows SDR.`) : '';
     $('#exMbpsRow').hidden = $('#exRate').value !== 'custom'; $('#exMbps').disabled = $('#exRate').disabled;
+    for (const x of $$('#exAlso input')) x.disabled = snd || sub || f === 'png';
     const rate = !$('#exRate').disabled && $('#exRate').value === 'custom' ? ` · ${+$('#exMbps').value || 0} Mbps` : '', vid = `${fps} fps${rate} · ${d}`;
     const notes = [];
     if (!snd && !sub && f !== 'gif' && src && w * h > src[0] * src[1] * 1.01) notes.push(`${rl} is above the largest source (${src[0]}×${src[1]}): it is upscaled, no detail is added.`);
@@ -4375,7 +4451,8 @@ function openExport() {
     if (!snd && !sub && !still && efps && efps < P.fps - 0.01) notes.push(`${efps} fps drops frames of the ${+P.fps.toFixed(3)} fps project.`);
     if (!snd && !sub && f !== 'gif' && w * h > 4096 * 2304) notes.push(`8K renders slowly and needs a Mac with 16 GB of memory${f === 'mp4' ? '; H.264 at 8K uses x264 (the Mac\'s H.264 engine stops at 4096 px); HEVC there is about twice as fast with half the memory' : ''}.`);
     const pk = $('#exPreset').value, px = EX_PRESETS[pk];
-    if (px?.tall && P.w >= P.h) notes.push(`${px.name} wants a vertical 9:16 canvas; this project is ${P.w}×${P.h} (change the ratio to fill the screen).`);
+    if (px?.tall && P.w >= P.h) notes.push(`${px.name} wants a vertical 9:16 canvas; this project is ${P.w}×${P.h} (change the ratio to fill the screen, or tick 9:16 below Also export as).`);
+    if ($$('#exAlso input:checked:not(:disabled)').length) notes.push('Each extra shape is a copy of the edit laid out for it. They render one after another in the Exports panel, which stays open when this window closes.');
     $('#exHint').textContent = [{ mp4: hdr ? `MP4 · HEVC Main 10 + AAC · ${vid}` : `MP4 · H.264 + AAC · ${vid}`, hevc: `MP4 · HEVC${hdr ? ' Main 10' : ''} + AAC, about half the size · ${vid}`, av1: `MP4 · AV1 + AAC, the smallest; slower to make and to play on older devices · ${vid}`,
       av1webm: `WebM · AV1 + Opus, for the web (Safari plays it on recent Macs and iPhones only) · ${vid}`, webm: `WebM · VP9 + Opus, for the web and Chrome / Firefox; the slowest to make${P.alpha ? '; keeps transparency' : ''} · ${vid}`,
       prores: `MOV · ProRes 422${hdr ? ' HQ' : ''} + PCM, for further editing (large) · ${fps} fps · ${d}`, prores4444: `MOV · ProRes 4444 + PCM, for editing apps (large) · ${fps} fps · ${d}`,
@@ -4397,8 +4474,9 @@ function openExport() {
     hint();
   };
   $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
-  for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
+  for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr', '#exAlso']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
   $('#exPreset').addEventListener('change', preset); hint();
+  S.qHide = false; qDraw();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
 }
 function exportUI(pct, msg, done) { // the dialog when it's open (it can be closed and opened again while rendering) and the Export button
@@ -4413,7 +4491,8 @@ function exportUI(pct, msg, done) { // the dialog when it's open (it can be clos
 }
 async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
   if (S.exporting) return;
-  const [, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
+  const [res, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
+  const also = $$('#exAlso input:checked:not(:disabled)').map(x => x.value);
   S.exporting = { pct: 0 };
   exportUI(0, 'Rendering text layer…', '');
   const tell = msg => { if ($('#modal').hidden || !$('#exStatus')) toast(msg); };
@@ -4433,14 +4512,18 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
     const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
-    const { job } = await api('/api/export', plan);
+    const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
     S.exporting.job = job;
+    for (const r of also) { // queued behind it; the dialog's own progress stays this one's
+      exportUI(0, `Laying out ${r}…`);
+      await enqueue({ ...(await shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt)), ...same }, r);
+    }
     for (;;) {
       await new Promise(r => setTimeout(r, 400));
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
         S.exporting = null; S.exportsDir = j.dir || S.exportsDir;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
         tell(`Exported ${j.file} (${S.exportsDir || 'the exports folder'})`);
         break;
       }
@@ -4776,6 +4859,13 @@ function wire() {
   $('#btnFillers').addEventListener('click', () => quiet(removeFillers()));
   $('#btnCaptions').addEventListener('click', () => quiet(autoCaptions()));
   $('#btnExport').addEventListener('click', openExport);
+  $('#exq').addEventListener('click', e => {
+    const b = e.target.closest('button'), d = b?.dataset || {};
+    if (d.qcancel) { b.disabled = true; api(`/api/jobs/${d.qcancel}/cancel`, {}).catch(() => {}); }
+    else if (d.reveal) api('/api/reveal', { file: d.reveal }).catch(err => toast(err.message));
+    else if (b?.id === 'exqClear') { S.q = S.q.filter(q => q.st.state === 'running' || (q.row.remove(), false)); qDraw(); }
+    else if (b?.id === 'exqHide') { S.qHide = true; qDraw(); }
+  });
   $('#btnProjects').addEventListener('click', openProjects);
   $('#btnTts').addEventListener('click', addVoiceover);
   $('#btnRec').addEventListener('click', toggleRecord);
@@ -6222,7 +6312,8 @@ const REMOTE = {
   async export(a) {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
     const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
-    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false } = a;
+    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [] } = a;
+    if (!Array.isArray(also) || also.some(r => !SHAPES.includes(r))) throw new Error(`also must be a list of shapes: ${SHAPES.join(', ')}`);
     if (fps && !EXPORT_FPS.includes(+fps)) throw new Error(`fps must be one of ${EXPORT_FPS.join(', ')} (or 0 = the project's)`);
     const sz = exportSizes().find(x => x[0] === resolution);
     if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
@@ -6234,9 +6325,12 @@ const REMOTE = {
     try {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS
       plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
-      const jb = await job('/api/export', plan, 'Exporting');
+      const own = shapeOf(sz[1], sz[2]), rest = [...new Set(also)].filter(r => r !== own), q = await enqueue(plan, own), more = [];
+      for (const r of rest) more.push(await enqueue({ ...(await shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format)), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
+      const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}) };
+      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
+        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `~/Movies/Cutroom/exports/${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
     } finally { S.exporting = false; }
   },
 };

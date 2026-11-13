@@ -288,9 +288,13 @@ TOOLS = [
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
                'loudness: false | true (-14 LUFS) | -14 (social) | -16 (podcast) | -23 (EBU broadcast): one gain for the whole edit. '
-               'show=true opens the result in the Mac\'s player when it is done.',
+               'show=true opens the result in the Mac\'s player when it is done. '
+               'also = more shapes to export in the same go, e.g. ["9:16", "1:1"] (of 9:16|16:9|1:1|4:5): each is a copy of the edit laid out for that canvas '
+               '(main clips keep their fit, overlays and text keep their place and scale with the short side); every export renders one after another '
+               'in the editor\'s Exports panel, and the result lists them under `also`.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt,
-        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo}), 'export'),
+        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo,
+        'also': {'type': 'array', 'items': {'type': 'string', 'enum': ['9:16', '16:9', '1:1', '4:5']}, 'description': 'more shapes, rendered in the same queue'}}), 'export'),
 ]
 SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]
 CMD = {n: c for n, _, _, c in TOOLS}
