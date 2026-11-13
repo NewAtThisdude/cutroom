@@ -4649,7 +4649,9 @@ function qPoll() { // only while something is waiting or rendering
 }
 function qDraw() {
   const box = $('#exq'), now = Date.now() / 1000;
+  if (box.parentElement.id !== 'stage') $('#stage').append(box); // over the preview's corner: fixed under Export it covered the inspector and blocked its clicks
   box.hidden = !S.q.length || !!S.qHide;
+  if (!S.q.some(q => q.st.state === 'running') && !box.hidden && !S.qIdle) S.qIdle = setTimeout(() => { S.qIdle = 0; if (!S.q.some(q => q.st.state === 'running')) { S.qHide = true; qDraw(); } }, 10000); // all done: it steps aside after 10 s (the next export brings it back)
   for (const q of S.q) {
     const j = q.st, p = j.state === 'done' ? 1 : j.progress || 0, run = j.state === 'running', wait = run && !j.started && j.note, el = j.started ? now - j.started : 0;
     const left = p >= 0.03 && el > 2 ? (el / p) * (1 - p) : j.eta, ahead = (j.note || '').match(/\((\d+) ahead\)/); // from its own speed once it has some, else the server's estimate

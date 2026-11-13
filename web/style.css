@@ -519,7 +519,7 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 /* Export > Also export as, and the Exports panel (the one queue: every export, rendered one at a time; above the dialog's backdrop) */
 .exalso { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .exalso label { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
-.exq { position: fixed; right: 14px; top: 60px; z-index: 21; width: min(300px, calc(100vw - 28px)); max-height: 50vh; overflow: auto; background: var(--panel2); border: 1px solid var(--line2); border-radius: 12px; padding: 6px 10px 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); }
+.exq { position: absolute; right: 12px; top: 12px; z-index: 5; width: min(300px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; background: var(--panel2); border: 1px solid var(--line2); border-radius: 12px; padding: 6px 10px 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); }
 .exq[hidden] { display: none; }
 .exq .qhead { display: flex; align-items: center; gap: 2px; font-weight: 600; }
 .exq .qhead span { flex: 1; }
