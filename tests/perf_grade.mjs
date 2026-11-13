@@ -1,7 +1,8 @@
 // CPU while playing a graded 1080p clip (look + adjustments + grade + vignette + mask), with the GPU colour pass and
 // with it switched off (the per-pixel JavaScript fallback). Cores = CPU seconds per wall second of WebKit + the server.
 //   node perf_grade.mjs   (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_grade: process probes (ps, pgrep, lsof) of a Mac');
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +13,7 @@ const V = await (await fetch(`${B}/api/import?name=perf-1080.mp4`, { method: 'PO
 fs.rmSync(tmp, { recursive: true });
 const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:${new URL(B).port || '4610'} -sTCP:LISTEN`]).toString().split(/\s+/).filter(Boolean);
 const cpu = () => pids().reduce((s, p) => { try { const t = execFileSync('ps', ['-o', 'time=', '-p', p]).toString().trim(); const [a, b] = t.split(':'); return s + (+a) * 60 + parseFloat(b); } catch { return s; } }, 0);
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

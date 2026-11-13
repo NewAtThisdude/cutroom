@@ -6,7 +6,7 @@
 // ui (both motion modes): an older outline answer arriving late is dropped; a low-confidence box says so; a refine click's time.
 // voice: Kokoro voiceovers through the worker. captions: the night-drive project transcribes only its used spans (+1 s), not
 // the 431 s of source. pauses: warm click < 0.3 s. Fixtures: tests/fox_truth.py (AI venv) scores outlines and fills.
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -72,7 +72,7 @@ if (run('voice')) { // Kokoro stays loaded in the worker: the second voiceover s
 }
 
 if (run('ui') || run('captions') || run('pauses')) {
-  const b = await webkit.launch();
+  const b = await browser.launch();
   for (const rm of (run('ui') ? ['no-preference', 'reduce'] : ['reduce'])) {
     const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
     const errs = []; page.on('pageerror', e => errs.push(e.message)); page.on('dialog', d => d.accept());

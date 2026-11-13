@@ -1,9 +1,10 @@
 // How the editor FEELS: input -> visible response, on a real project (default: the night-drive edit).
 // Reports per interaction the latency to a settled, painted frame and the main-thread frames over 50 ms (jank).
 //   B=http://127.0.0.1:4620 node perf_feel.mjs [project name regex]
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_feel: process probes (ps, pgrep, lsof) of a Mac');
 const B = process.env.B || 'http://127.0.0.1:4610', want = new RegExp(process.argv[2] || 'Midnight Highway');
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 page.on('pageerror', e => console.log('PAGE ERROR', e.message));
 const t0 = Date.now();
 await page.goto(B + '/', { waitUntil: 'load' });

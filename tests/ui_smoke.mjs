@@ -1,10 +1,10 @@
 // Headless WebKit smoke test of the on-demand preview: nothing redraws at rest, a seek draws the frame, playback paints at
 // the project frame rate and stops on pause, gallery tiles are still and only the hovered one plays. Both motion modes.
 //   node ui_smoke.mjs     (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

@@ -1,11 +1,11 @@
 // Layout audit, headless WebKit at the app's window size: every rail tab, every inspector tab for each kind of clip, the
 // modals. Flags text cut off without an ellipsis, text boxes that overlap, and things poking out of their panel.
 // Screenshots go to tests/out/. Exit code = number of problems.  node ui_audit.mjs [width height]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import fs from 'node:fs';
 const [W, H] = [+(process.argv[2] || 1517), +(process.argv[3] || 904)], OUT = new URL('./out/', import.meta.url).pathname;
 fs.mkdirSync(OUT, { recursive: true });
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 2 })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 2 })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto((process.env.B || 'http://127.0.0.1:4610') + '/', { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

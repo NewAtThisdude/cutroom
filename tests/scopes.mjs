@@ -4,7 +4,7 @@
 // panel is remembered, nothing is drawn while it is closed, at most ~15 updates a second while playing, and the cost of
 // one update (ms) is measured. Both motion modes.
 //   B=http://127.0.0.1:<scratch port> node scopes.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,7 +21,7 @@ fs.rmSync(tmp, { recursive: true });
 const OW = 256, OH = 150, cx = OW / 2, cy = OH / 2, R = Math.min(cx, cy) - 4;
 const vecAt = (r, g, b) => { const y = 0.2126 * r + 0.7152 * g + 0.0722 * b; return [cx + ((b - y) / 1.8556) * 2 * R, cy - ((r - y) / 1.5748) * 2 * R]; };
 const Yof = v => Math.round((1 - v / 255) * (OH - 1));
-const b = await webkit.launch(), pids = [], cost = {};
+const b = await browser.launch(), pids = [], cost = {};
 for (const rm of ['no-preference', 'reduce']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

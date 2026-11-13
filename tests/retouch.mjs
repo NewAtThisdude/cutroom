@@ -4,7 +4,7 @@
 // matching the rendered copy, and the inspector (sliders -> preview on the paused frame -> Apply -> Reset) in headless
 // WebKit in both motion modes, plus REMOTE.retouch (the MCP tool). Before/after PNGs go to tests/out.
 //   CUTROOM_HOME=<library> B=http://127.0.0.1:4755 [PHOTOS=<dir with IMG_4700.MOV>] node tests/retouch.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -148,7 +148,7 @@ else {
 }
 
 // 7. the inspector in headless WebKit, both motion modes: sliders preview the paused frame, Apply renders, Reset restores
-const br = await webkit.launch();
+const br = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

@@ -3,7 +3,7 @@
 // Momentary (median over each steady part) and integrated within 0.5 LU, per-channel sample peaks within 0.5 dB; the
 // meter's state is remembered across a reload, and a hidden meter has no audio nodes and gets no blocks.
 //   B=http://127.0.0.1:4705 CUTROOM_HOME=<scratch lib> node meter.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,7 +23,7 @@ const m = await api('/api/import_path', { path: f });
 if (m.error) throw new Error(m.error);
 for (let i = 0; !(await api('/api/media')).find(x => x.id === m.id)?.ready; i++) { if (i > 300) throw new Error('import stuck'); await new Promise(r => setTimeout(r, 200)); }
 
-const b = await webkit.launch();
+const b = await browser.launch();
 let pid, ref;
 for (const rm of ['reduce', 'no-preference']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];

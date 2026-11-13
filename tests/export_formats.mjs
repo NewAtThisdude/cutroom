@@ -5,7 +5,7 @@
 //   fps / frames / length and PSNR vs H.264; 120 fps from the 60 fps project (each frame twice); 8K of the 4K sources; a custom
 //   bitrate; SRT / VTT / TXT round-trip through the subtitle importer; the MCP export with preset + fps + light.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> [SERVER_PID=<pid>] [LOW_B=<same lib, CUTROOM_RAM_GB=8>] node export_formats.mjs [quick]   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,7 +35,7 @@ const ids = {
 };
 fs.rmSync(tmp, { recursive: true });
 
-const b = await webkit.launch();
+const b = await browser.launch();
 let page, ev, errs;
 const open = async (rm, base = B) => {
   page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

@@ -4,14 +4,16 @@
 
 Commands go to Cutroom's local server, which hands them to the editor page; the page runs them with the
 same functions the buttons use, so every edit shows up live and is one undo step. If no editor is open,
-the first tool call opens ~/Applications/Cutroom.app.
+the first tool call opens it: ~/Applications/Cutroom.app on a Mac, cutroom.cmd (an Edge app window) on Windows.
 
-Register:  claude mcp add -s user cutroom -- env -u PYTHONPATH /opt/homebrew/bin/python3 -I ~/cutroom/mcp/cutroom_mcp.py
+Register (Mac):      claude mcp add -s user cutroom -- env -u PYTHONPATH /opt/homebrew/bin/python3 -I ~/cutroom/mcp/cutroom_mcp.py
+Register (Windows):  claude mcp add -s user cutroom -- <python.exe, as install.ps1 printed it> -X utf8 -I C:/Users/<you>/cutroom/mcp/cutroom_mcp.py
 """
 import json, os, subprocess, sys, threading, time, urllib.error, urllib.request
 
 BASE = f"http://127.0.0.1:{os.environ.get('CUTROOM_PORT', '4610')}"
-APP = os.path.expanduser('~/Applications/Cutroom.app')
+MAC = sys.platform == 'darwin'
+APP = os.path.expanduser('~/Applications/Cutroom.app') if MAC else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cutroom.cmd')
 OUT = threading.Lock()
 
 INSTRUCTIONS = """Cutroom is the user's own CapCut-style video editor, running in a window on this Mac. These tools drive
@@ -82,12 +84,16 @@ def ensure_editor():
     if connected():
         return
     if os.path.exists(APP):
-        subprocess.run(['open', APP], check=False)
+        if MAC:
+            subprocess.run(['open', APP], check=False)
+        else:  # the launcher starts the server (hidden) and the editor window, then exits
+            subprocess.Popen(['cmd', '/d', '/c', APP], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     for _ in range(80):
         time.sleep(0.5)
         if connected():
             return
-    raise RuntimeError('Cutroom is not open and did not start. Open ~/Applications/Cutroom.app and try again.')
+    raise RuntimeError(f'Cutroom is not open and did not start. Open {"~/Applications/Cutroom.app" if MAC else "Cutroom from the Start menu"} and try again.')
 
 
 def remote(cmd, args, timeout=900):
@@ -308,7 +314,17 @@ TOOLS = [
         'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo,
         'also': {'type': 'array', 'items': {'type': 'string', 'enum': ['9:16', '16:9', '1:1', '4:5']}, 'description': 'more shapes, rendered in the same queue'}}), 'export'),
 ]
-SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]
+def here(text):  # the descriptions say "this Mac"; elsewhere they say "this computer" (Windows: the library is ~/Videos/Cutroom)
+    if MAC:
+        return text
+    for a, b in (('ON THIS MAC', 'ON THIS COMPUTER'), ('this Mac', 'this computer'), ("the Mac's player", 'the default player'), ('the Mac stays cool', 'this computer stays cool'),
+                 ('on the Mac', 'on this computer'), ("the Mac's voices", 'the system voices'), ('another Mac', 'another computer'), ('~/Movies/Cutroom', '~/Videos/Cutroom')):
+        text = text.replace(a, b)
+    return text
+
+
+INSTRUCTIONS = here(INSTRUCTIONS)
+SCHEMAS = [{'name': n, 'description': here(d), 'inputSchema': s} for n, d, s, _ in TOOLS]
 CMD = {n: c for n, _, _, c in TOOLS}
 
 

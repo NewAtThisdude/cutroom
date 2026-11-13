@@ -3,7 +3,7 @@
 // The flash is read off the preview canvas; the beep off a tap on the clips' Web Audio chains, put on the page clock
 // with getOutputTimestamp(). Passes when every flash has its beep within 45 ms (1.4 frames at 30 fps) and none is lost.
 //   B=http://127.0.0.1:4620 node av_sync.mjs   (a scratch server: CUTROOM_HOME=... CUTROOM_PORT=4620 python3 server.py)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +16,7 @@ execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', "color=black:s
 const m = await api('/api/import_path', { path: f });
 if (m.error) throw new Error(m.error);
 for (let i = 0; !(await api('/api/media')).find(x => x.id === m.id)?.ready; i++) { if (i > 200) throw new Error('import stuck'); await new Promise(r => setTimeout(r, 200)); }
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 page.on('pageerror', e => console.log('PAGE ERROR', e.message));
 await page.goto(B + '/', { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof M !== 'undefined', null, { timeout: 30000 });

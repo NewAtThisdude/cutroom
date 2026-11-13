@@ -3,7 +3,7 @@
 // Denoise: speech (say) + pink noise -> export WAV: the cleaned speech must sit where the clean speech is (lag), the noise
 // between words must drop >= 10 dB, and the preview must play the same denoised samples (&fx=dn). Duck: a night drive (road
 // noise, nobody talking) must leave the song alone; on talk + music, trimming 2 s off the talk moves every dip 2 s.
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -52,7 +52,7 @@ const tone = new Float32Array(4 * SR); for (let i = 0; i < tone.length; i++) ton
 const tnoise = pink(tone.length, 0.03), tnoisy = tone.map((v, i) => v + tnoise[i]);
 const sm = await imp('audio-tools-speech-noise.wav', wavOf(noisy)), tm = await imp('audio-tools-tone-noise.wav', wavOf(tnoisy));
 
-const b = await webkit.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 } });
+const b = await browser.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 } });
 let page = await ctx.newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 const open = async () => { await page.goto(`${B}/`, { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 30000 }); await page.evaluate(() => loadMedia()); };

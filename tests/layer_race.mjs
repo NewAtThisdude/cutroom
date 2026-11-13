@@ -7,7 +7,7 @@
 //   frames at once, each its own upload; and through the page: an export with snapshots taken while it renders.
 // Every finished export / still is checked picture by picture (each span's colour at its box).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> [SERVER_PY=<server.py for the second server>] node layer_race.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -101,7 +101,7 @@ for (const [how, harm] of [['deleted', d => fs.rmSync(`${d}/t5.png`)], ['damaged
 }
 // ---- through the page: the workers' layer, an export with snapshots taken while it renders (each its own upload)
 {
-  const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: 'reduce' })).newPage();
+  const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: 'reduce' })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));
   await page.goto(`${B}/`, { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 30000 });

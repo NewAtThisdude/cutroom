@@ -2,7 +2,7 @@
 // SRT import/export, relink, colour grading (HSL, curves, wheels, .cube LUTs) and scopes, keyframed masks and
 // filters, compound clips, multicam, beauty, body effects. Each section uses real mouse/keyboard input where the user
 // would, and checks the export (still frames / files) as well as the preview.   node features_e2e.mjs [section]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,7 +21,7 @@ const BLUE = await imp(gen('feat-blue.png', ['-f', 'lavfi', '-i', 'color=c=blue:
 const TONE = await imp(gen('feat-tone.wav', ['-f', 'lavfi', '-i', 'sine=f=300:d=6']));
 const MEDIA = { V, RED, BLUE, TONE };
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = [];
 page.on('pageerror', e => errs.push(e.message));
 page.on('dialog', d => d.accept());

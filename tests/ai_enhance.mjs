@@ -8,7 +8,7 @@
 //   sharpen   Adjust > Sharpen: preview == export (video_parity's measure at 1280 px) and both visibly sharper than without
 //   ui        the Tools tab's new controls in both reduced-motion modes: Preview frame shows a picture, Deflicker switches the clip
 // node ai_enhance.mjs [section]    (B = a scratch server, CUTROOM_HOME = its library; never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -154,7 +154,7 @@ if (run('sharpen') || run('ui')) {
   const T1 = await imp(tsrc), V2 = await imp(enc(vid, 'transpose=cclock', `${tmp}/page_wide.mp4`)); // the same footage turned on its side: a 16:9 preview
   for (const reduced of ['no-preference', 'reduce']) {
     if (reduced === 'reduce' && !run('ui')) break;
-    const br = await webkit.launch(), page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduced })).newPage();
+    const br = await browser.launch(), page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduced })).newPage();
     const errs = [];
     page.on('pageerror', e => errs.push(e.message));
     await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });

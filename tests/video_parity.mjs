@@ -3,7 +3,7 @@
 // the preview canvas (preview: true) and the export renderer (/api/still_frame); both are shrunk to 160x90 and compared.
 // Reports the mean difference and the worst 10x10 block, in 0-255 levels. Side-by-sides of failures go to out/parity/.
 //   node video_parity.mjs [filter]   (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,7 @@ const ids = {};
 for (const [k, f] of Object.entries(files)) ids[k] = (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
 fs.rmSync(tmp, { recursive: true });
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

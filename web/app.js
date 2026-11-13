@@ -14,6 +14,33 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
 };
 
+// Keys and words follow the computer: ⌘ ⌥ ⇧ and "this Mac" on a Mac (written that way in the code), Ctrl+ Alt+ Shift+ and
+// "this computer" on Windows and Linux. plat() rewrites one label; off the Mac platWatch() runs it over everything the page shows.
+const OS = navigator.userAgentData?.platform || navigator.platform || '';
+const IS_MAC = /^mac/i.test(OS), IS_WIN = /^win/i.test(OS);
+const modKey = e => (IS_MAC ? e.metaKey : e.ctrlKey || e.metaKey); // ⌘ on a Mac (where Ctrl-click is the right click), Ctrl elsewhere
+const PLAT_KEYS = { '⌫': 'Backspace', '⌦': 'Del', '↩': 'Enter' };
+const plat = s => (IS_MAC || !/[⌃⌥⇧⌘⌫⌦↩]|Mac|Finder|Movies/.test(s) ? s : s
+  .replace(/[⌃⌥⇧⌘]+(?=(.?))/g, (m, next) => ['Ctrl', 'Alt', 'Shift'].filter((_, i) => [/[⌃⌘]/, /⌥/, /⇧/][i].test(m)).join('+') + (/[\w←→↑↓⌫⌦↩]/.test(next) ? '+' : ''))
+  .replace(/[⌫⌦↩]/g, c => PLAT_KEYS[c])
+  .replace(/Show in Finder/g, IS_WIN ? 'Show in Explorer' : 'Show in folder')
+  .replace(/\bMac voices\b/g, 'System voices')
+  .replace(/Movies\/Cutroom/g, 'Videos/Cutroom')
+  .replace(/\b(this|This|a|another|idle|GB|smaller|the) Mac\b(?!s)/g, '$1 computer'));
+function platWatch() { // ponytail: rewrites every label off the Mac, a file named "this Mac" too (the transcript and captions are skipped); plat() per string if that bites
+  if (IS_MAC) return;
+  const ATTRS = ['title', 'aria-label', 'placeholder'], mine = n => !n?.closest?.('#scriptBody, #capList');
+  const fix = n => {
+    if (n.nodeType === 3) { const t = mine(n.parentElement) && plat(n.data); if (t && t !== n.data) n.data = t; return; }
+    if (n.nodeType !== 1 || !mine(n)) return;
+    for (const a of ATTRS) { const v = n.getAttribute(a), t = v && plat(v); if (t && t !== v) n.setAttribute(a, t); }
+    n.childNodes.forEach(fix);
+  };
+  fix(document.body);
+  new MutationObserver(rs => rs.forEach(r => (r.type === 'childList' ? r.addedNodes.forEach(fix) : fix(r.target))))
+    .observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS });
+}
+
 // pane sizes: library | preview | inspector widths and the timeline height, dragged on the .gut handles, kept per Mac
 const PANES = (() => { try { return JSON.parse(store.get('cutroom.panes')) || {}; } catch { return {}; } })();
 const paneSize = k => ({ lw: $('.left'), rw: $('#inspector'), th: $('.timeline') })[k].getBoundingClientRect()[k === 'th' ? 'height' : 'width'];
@@ -838,7 +865,11 @@ function keyCombo(e) {
   return `${e.metaKey || e.ctrlKey ? 'Mod+' : ''}${e.altKey ? 'Alt+' : ''}${e.shiftKey && !sign ? 'Shift+' : ''}${letter ? `Key${e.key.toUpperCase()}` : sign ? e.key : e.code}`;
 }
 const KEY_NAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Backspace: '⌫', Delete: '⌦', Escape: 'Esc', Enter: '↩', '-': '−' };
-function keyText(k) { const [, m, n] = k.match(/^((?:Mod\+|Alt\+|Shift\+)*)(.+)$/); return (m.includes('Alt') ? '⌥' : '') + (m.includes('Shift') ? '⇧' : '') + (m.includes('Mod') ? '⌘' : '') + (KEY_NAMES[n] || n.replace(/^(Key|Digit)(?=.)/, '')); }
+function keyText(k) { // ⌥⇧⌘Z on a Mac, Ctrl+Alt+Shift+Z elsewhere
+  const [, m, n] = k.match(/^((?:Mod\+|Alt\+|Shift\+)*)(.+)$/), name = KEY_NAMES[n] || n.replace(/^(Key|Digit)(?=.)/, '');
+  if (!IS_MAC) return [m.includes('Mod') && 'Ctrl', m.includes('Alt') && 'Alt', m.includes('Shift') && 'Shift', PLAT_KEYS[name] || name].filter(Boolean).join('+');
+  return (m.includes('Alt') ? '⌥' : '') + (m.includes('Shift') ? '⇧' : '') + (m.includes('Mod') ? '⌘' : '') + name;
+}
 const kb = id => (keysOf(id)[0] ? keyText(keysOf(id)[0]) : '');
 function setKeys(id, list) { list = [...new Set(list)]; if (JSON.stringify(list) === JSON.stringify(KEYDEF[id][2])) delete KEYOWN[id]; else KEYOWN[id] = list; }
 const KC = { for: null, conf: null, msg: '' }; // the sheet: the row waiting for a key, a clash to settle, the last word
@@ -859,7 +890,7 @@ function shortcuts(keep, focus) { // the sheet; click a key to change it (kept p
     const ks = keysOf(id), wait = KC.for === id;
     return `<tr><td><button class="kb${wait ? ' on' : ''}" data-keyfor="${id}" title="Change the shortcut" aria-label="${esc(d)}: ${wait ? 'press the new key' : esc(ks.map(keyText).join(' or ') || 'no shortcut')}. Change">${wait ? 'Press a key…' : ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</button></td><td>${esc(d)}</td><td>${KEYOWN[id] ? `<button class="ghost" data-keyreset="${id}">Reset</button>` : ''}</td></tr>`;
   };
-  modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels). Ctrl works wherever ⌘ is shown.</p>`
+  modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels).${IS_MAC ? ' Ctrl works wherever ⌘ is shown.' : ''}</p>`
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
     + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
@@ -4859,7 +4890,7 @@ async function restoreVersion(id, vid) {
   return p;
 }
 async function trashProject(id, name) { // reversible: the server moves it to Movies/Cutroom/trash
-  if (!confirm(`Delete "${name}"? It moves to Movies/Cutroom/trash, so it can be recovered.`)) return;
+  if (!confirm(`Delete "${name}"? ${plat('It moves to Movies/Cutroom/trash, so it can be recovered.')}`)) return;
   if (id === P?.id) { clearTimeout(saveTimer); saveTimer = 0; } // (a pending save would put it back)
   await api(`/api/projects/${id}/trash`, {});
   if (id === P?.id) { const list = await api('/api/projects'); if (list[0]) await openProject(list[0].id); else { setProject(newProject('9:16')); scheduleSave(); } }
@@ -5044,7 +5075,7 @@ function drag(e, lane, c, el) {
       reanchor(an);
     }
     if (S.dragLane) { S.dragLane = null; restackTracks(lane); }
-    if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
+    if (!moved && S.multi.size && !e.shiftKey && !modKey(e)) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
     if (moved && JSON.stringify(P) !== before) { step(before); touched(); } else renderTimeline();
   };
   addEventListener('pointermove', move);
@@ -5355,7 +5386,7 @@ function wire() {
     if (used) return toast(`"${m.name}" is used in this project; delete those clips first`);
     const others = await api(`/api/media/${m.id}/uses`).then(l => l.filter(x => x.id !== P.id)).catch(() => []); // other projects that would lose it
     const also = others.length ? `\n\nIt's used in ${others.length} other project${others.length > 1 ? 's' : ''} (${others.slice(0, 3).map(x => x.name).join(', ')}${others.length > 3 ? ', …' : ''}): there it will show as missing until you put it back from the trash.` : '';
-    if (!confirm(`Remove "${m.name}" from the library? It moves to Movies/Cutroom/trash.${also}`)) return;
+    if (!confirm(`Remove "${m.name}" from the library? ${plat('It moves to Movies/Cutroom/trash.')}${also}`)) return;
     try { await api(`/api/media/${m.id}/trash`, {}); await loadMedia(); } catch (err) { toast(err.message); }
   });
   $('#mediaList').addEventListener('dragstart', e => {
@@ -5405,7 +5436,7 @@ function wire() {
     const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
     if (!c) return;
     if (locked(lane, c)) return toast('That track is locked: click its lock to edit it');
-    if (e.shiftKey || e.metaKey) { // ⇧ / ⌘-click: add the clip to the selection, or take it out
+    if (e.shiftKey || modKey(e)) { // ⇧ / ⌘-click (Ctrl-click off the Mac): add the clip to the selection, or take it out
       const k = selKey(lane, c.id);
       if (isSel(lane, c.id) && selection().length > 1) {
         S.multi.delete(k);
@@ -5502,7 +5533,7 @@ function wire() {
     const snapAxis = (a, v, ev) => { // -> [value, guide line] for one axis
       const [off, half] = bx[a], tol = (6 * px) / k / (a === 'x' ? P.w : P.h), ctr = v + off;
       const cand = [[0.5, 0.5], ...others.map(h => { const q = a === 'x' ? (h.x0 + h.x1) / 2 / k / P.w : (h.y0 + h.y1) / 2 / k / P.h; return [q, q]; }), [SAFE + half, SAFE], [1 - SAFE - half, 1 - SAFE]];
-      const best = ev.metaKey ? null : cand.map(([to, line]) => [Math.abs(to - ctr), to, line]).filter(q => q[0] <= tol).sort((p, q) => p[0] - q[0])[0];
+      const best = modKey(ev) ? null : cand.map(([to, line]) => [Math.abs(to - ctr), to, line]).filter(q => q[0] <= tol).sort((p, q) => p[0] - q[0])[0];
       return best ? [best[1] - off, best[2]] : [v, null];
     };
     const move = ev => {
@@ -5790,7 +5821,7 @@ function wire() {
     else if ('savetpl' in d) { await saveTemplate(); openTemplates(); }
     else if (d.tpl) showTemplate(d.tpl);
     else if (d.usetpl) useTemplate(d.usetpl);
-    else if (d.deltpl) { if (confirm('Delete this template? It moves to Movies/Cutroom/trash.')) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+    else if (d.deltpl) { if (confirm(plat('Delete this template? It moves to Movies/Cutroom/trash.'))) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
     else if (d.pkg) openPackage(d.pkg);
     else if (d.pkgo) { // the dialog may be closed meanwhile: then the result is a toast
       const out = (msg, file) => {
@@ -6641,8 +6672,8 @@ const REMOTE = {
     if (!sz) throw new Error(`resolution must be one of ${exportSizes().map(x => x[0]).join(', ')}`);
     if (!FORMATS.some(x => x[0] === format)) throw new Error(`format must be one of ${FORMATS.map(x => x[0]).join(', ')}`);
     if (at !== undefined) S.t = +at;
-    if (SUB_FMT.includes(format)) { const file = await saveSRT(name, format); return { file, path: `~/Movies/Cutroom/exports/${file}`, format }; }
-    if (HAND_FMT.includes(format)) { const r = await handOff(name, format); return { file: r.file, path: `~/Movies/Cutroom/exports/${r.file}`, format, notes: r.notes, ...(r.text ? { text: r.text } : {}) }; }
+    if (SUB_FMT.includes(format)) { const file = await saveSRT(name, format); return { file, path: `${plat('~/Movies/Cutroom/exports/')}${file}`, format }; }
+    if (HAND_FMT.includes(format)) { const r = await handOff(name, format); return { file: r.file, path: `${plat('~/Movies/Cutroom/exports/')}${r.file}`, format, notes: r.notes, ...(r.text ? { text: r.text } : {}) }; }
     S.exporting = true;
     try {
       const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS
@@ -6651,8 +6682,8 @@ const REMOTE = {
       for (const r of rest) more.push(await enqueue({ ...(await shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format)), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
       const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `~/Movies/Cutroom/exports/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
-        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `~/Movies/Cutroom/exports/${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
+      return { file: jb.file, path: `${plat('~/Movies/Cutroom/exports/')}${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
+        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${plat('~/Movies/Cutroom/exports/')}${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
     } finally { S.exporting = false; }
   },
 };
@@ -6799,6 +6830,7 @@ Object.assign(REMOTE, {
 });
 
 (async function boot() {
+  platWatch();
   wire();
   try {
     await loadMedia();
@@ -6813,7 +6845,7 @@ Object.assign(REMOTE, {
     loadVoices();
     loadAI();
     const ping = await api('/api/ping');
-    if (!ping.whisper) $('#capStatus').textContent = 'Captions need whisper.cpp: brew install whisper-cpp';
+    if (!ping.whisper) $('#capStatus').textContent = `Captions need whisper.cpp: ${IS_MAC ? 'brew install whisper-cpp' : IS_WIN ? 'run install.ps1' : 'install whisper-cli'}`;
   } catch (e) { toast(`Cannot reach the Cutroom server: ${e.message}`); }
   kick();
   remoteLoop();

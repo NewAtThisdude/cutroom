@@ -4,12 +4,12 @@
 // Twice: with the effects (the box is the whole frame) and text only (a real crop). Project: 4 s of 1080p30 footage with titles in Cutroom's fonts (in/out/loop animations, shadow, box, letter spacing), an
 // imported font, a Mac font, Bold captions with word highlights and Snow, VHS, Camcorder, Lens flare and Dust overlays.
 //   B=http://127.0.0.1:4721 CUTROOM_HOME=<scratch lib> node layer_parity.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 const B = process.env.B || 'http://127.0.0.1:4721', HOME = process.env.CUTROOM_HOME;
 if (!HOME || B.endsWith(':4610')) throw new Error('run on a scratch server: B=... CUTROOM_HOME=<its library>');
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 page.on('pageerror', e => console.log('PAGE ERROR', e.message));
 page.on('console', m => { if (m.type() === 'warning') console.log('console.warn', m.text()); });
 await page.route(u => u.pathname === '/api/remote/next', async q => { await new Promise(z => setTimeout(z, 15000)); q.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });

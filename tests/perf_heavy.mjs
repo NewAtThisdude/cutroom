@@ -2,7 +2,8 @@
 // with the CPU and memory each step takes. Run it against a SCRATCH server so the library stays untouched:
 //   CUTROOM_HOME=/tmp/x CUTROOM_PORT=4620 python3 -I server.py &   then   B=http://127.0.0.1:4620 node perf_heavy.mjs a.mp4 b.mov ...
 // Cores = CPU seconds per wall second (WebKit + server + its ffmpeg children). Peak MB = the server's ffmpegs together.
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_heavy: process probes (ps, pgrep, lsof) of a Mac');
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 const B = process.env.B || 'http://127.0.0.1:4620', PORT = new URL(B).port, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
@@ -31,7 +32,7 @@ const ms = (await api('/api/media')).filter(m => ids.includes(m.id));
 for (const m of ms) log(`  ${m.name}: ${m.w}x${m.h} ${m.fps} fps ${m.codec}${m.hdr ? ' HDR' : ''} -> ${m.proxy ? 'proxy' : 'original'} in the preview`);
 
 // 2. playback and seeking, per clip, in WebKit (the app's engine)
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 await page.route(u => u.pathname === '/api/remote/next', async q => { await new Promise(z => setTimeout(z, 15000)); q.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
 await page.goto(B + '/', { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P, null, { timeout: 20000 });

@@ -6,7 +6,7 @@
 //   faces   blur faces on talk-with-music: every face Vision finds on the source frames is blurred in >= 95 % of them
 //   reframe bmx-trees (no face) to 9:16: the rider (SAM 2 cutout centre) inside the crop in >= 95 % of frames; fox-walk, the fox boxed
 //   ui      the new buttons in both reduced-motion modes; the panel still fits
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,7 +30,7 @@ const SYN = await imp(`${tmp}/synth.mp4`), RED = await imp(gen('trk-red.png', ['
 const lib = await get('/api/media'), byName = n => lib.find(m => m.name === n);
 const MEDIA = { SYN, RED, BMX: byName('bmx-trees.mp4'), FOX: lib.find(m => m.id === '87cf24520932'), TALK: byName('talk-with-music.mp4') };
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const errs = [];
 async function open(reduce = 'no-preference') {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduce })).newPage();

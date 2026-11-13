@@ -4,7 +4,7 @@
 //  - the curve saves and reloads, Remove ramp restores the range, undo restores the media
 //  - the ramp editor (chips + curve drag) in both reduced-motion modes: the draft never touches the project or undo
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4701 node tests/ramp_play.mjs   (needs project ab4bbf27d216 in that library)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,7 +18,7 @@ const FX = (await (await fetch(`${B}/api/import?name=ramp-truth.mp4`, { method: 
 fs.rmSync(tmp, { recursive: true });
 const made = new Set([FX]), pids = [];
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(B + '/', { waitUntil: 'load' });

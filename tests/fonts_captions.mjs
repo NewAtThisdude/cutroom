@@ -3,7 +3,7 @@
 // them; one caption restyled leaves the others alone, the export matches, 'Apply to all' copies it to every caption.
 // Then loudness: the two-pass linear export holds one gain across the edit, and the sound is as long as the picture.
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node fonts_captions.mjs     (never the real 4610 window)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,7 @@ execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x303
 const BG = await (await fetch(`${B}/api/import?name=fonts-bg.mp4`, { method: 'POST', headers: H, body: fs.readFileSync(`${tmp}/fonts-bg.mp4`) })).json();
 const pids = new Set();
 
-const b = await webkit.launch();
+const b = await browser.launch();
 try {
   for (const rm of ['no-preference', 'reduce']) {
     const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

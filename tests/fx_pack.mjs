@@ -12,7 +12,7 @@
 //     the film-look tiles show the selected clip's own frame through their table.
 //  4. what the export pays: seconds for a 1080p30 export with the heaviest new transitions / effects vs a dissolve.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node fx_pack.mjs [exact|parity|perf|tiles|export ...]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,7 +39,7 @@ for (const [k, vf] of [['A', ''], ['B', ',hue=h=140,negate']]) {
 fs.rmSync(tmp, { recursive: true });
 if (fs.existsSync(REAL)) ids.R = (await (await fetch(`${B}/api/import?name=fxpack-real.mov`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(REAL) })).json()).id;
 
-const b = await webkit.launch(), pids = new Set();
+const b = await browser.launch(), pids = new Set();
 const open = async (rm = 'no-preference', scale = 1) => {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, deviceScaleFactor: scale, reducedMotion: rm })).newPage();
   await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); }); // not an MCP target

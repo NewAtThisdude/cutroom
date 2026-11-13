@@ -1,7 +1,7 @@
 // Fade knobs on timeline clips, end to end in headless WebKit: drag the round knobs on a clip's top corners, check the
 // fade values, the cap (fade in + fade out <= the clip), undo/redo, that the edge below the knob still trims, then
 // export a WAV and measure the fade ramps in the file.   node fade_handles.mjs   (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
@@ -14,7 +14,7 @@ wav.writeUInt32LE(SR, 24); wav.writeUInt32LE(SR * 4, 28); wav.writeUInt16LE(4, 3
 for (let i = 0; i < N; i++) { const s = Math.round(0.25 * Math.sin(2 * Math.PI * 440 * i / SR) * 32767); wav.writeInt16LE(s, 44 + i * 4); wav.writeInt16LE(s, 46 + i * 4); }
 const media = await (await fetch(`${B}/api/import?name=fade-e2e-tone.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: wav })).json();
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

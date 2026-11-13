@@ -3,8 +3,9 @@
 // "Select clips with this label" picks exactly them; undo / redo; the export plan and the file (md5) are the same with
 // and without labels. Shortcuts: remap split S -> D in the sheet (?), D splits and S does nothing, a clash is reported
 // and settled (keep / swap), reset one and reset all, the remap survives a reload.
+// Off the Mac (navigator.platform faked to Win32): every label says Ctrl+ / Alt+ / Shift+ and "this computer", Ctrl-click selects.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node labels_keys.mjs     (a scratch server, never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ const fmd5 = f => execFileSync('ffmpeg', ['-v', 'error', '-i', f, '-map', '0:v',
 const md5 = f => createHash('md5').update(fs.readFileSync(f)).digest('hex');
 const made = [];
 
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
   const errs = []; page.on('pageerror', e => { if (!/\/poster /.test(e.message)) errs.push(e.message); }); // (the reload cuts off the old page's poster upload) page.on('dialog', d => d.accept());
@@ -128,9 +129,50 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.keyboard.press('s'); const m1 = await n();
   await page.keyboard.press('d'); const m2 = await n();
   check(`${rm}: after a reload the remap holds (D splits, S doesn't; ⇧X stops)`, m1 === m0 && m2 === m0 + 1 && await ev(() => KEYBY.get('Shift+KeyX')) === 'stop' && !(await ev(() => KEYBY.get('KeyK'))), `${m0} -> ${m1} -> ${m2}, ${await ev(() => store.get('cutroom.keys'))}`);
-  await page.keyboard.press('?'); await sheet(); await page.click('[data-keyall]'); await page.keyboard.press('Escape');
+  await page.keyboard.press('?'); await sheet(); await page.click('[data-keyall]');
+  const macLab = await ev(() => [$('#btnUndo').title, $('[data-keyfor="redo"]').textContent, $('#btnAsk kbd').textContent]);
+  check(`${rm}: on a Mac the labels keep ⌘ ⌥ ⇧`, macLab.join('|') === 'Undo (⌘Z)|⇧⌘Z|⌘K', macLab.join('|'));
+  await page.keyboard.press('Escape');
   check(`${rm}: reset all again: S splits`, await ev(() => KEYBY.get('KeyS')) === 'split');
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
+  await ev(async id => { await api(`/api/projects/${id}/trash`, {}); }, pid);
+  await ctx.close();
+}
+
+// ---- off the Mac (the page told navigator.platform = Win32): Ctrl+ / Alt+ / Shift+ and "this computer" everywhere, Ctrl-click selects ----
+for (const rm of ['no-preference', 'reduce']) {
+  const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm });
+  await ctx.addInitScript(() => { Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Win32' }); Object.defineProperty(Navigator.prototype, 'userAgentData', { get: () => undefined }); });
+  const page = await ctx.newPage(), ev = (f, a) => page.evaluate(f, a);
+  const errs = []; page.on('pageerror', e => errs.push(e.message));
+  await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
+  await page.goto(B + '/', { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
+  const pid = await ev(async () => {
+    const src = (await api('/api/projects')).find(p => /Remove object example/.test(p.name)), p = await api(`/api/projects/${src.id}`);
+    p.id = hex12(); p.name = 'Labels test, Windows (scratch)'; p.main = [0, 1].map(() => ({ ...structuredClone(p.main[0]), id: hex12() }));
+    await api(`/api/projects/${p.id}`, p, 'PUT'); await openProject(p.id); fitTimeline(); return p.id;
+  });
+  await page.waitForTimeout(800);
+  const ids = await ev(() => P.main.map(c => c.id));
+  await page.click(`.clip.main[data-id="${ids[0]}"]`); await page.click(`.clip.main[data-id="${ids[1]}"]`, { modifiers: ['Control'] });
+  check(`${rm}, Windows: Ctrl-click adds a clip to the selection`, await ev(() => selection().length) === 2);
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('?'); await page.waitForSelector('#modal .keysheet');
+  const lab = await ev(() => [$('#btnUndo').title, $('#btnRedo').title, $('[data-keyfor="redo"]').textContent, $('[data-keyfor="pasteLook"]').textContent, $('[data-keyfor="del"]').textContent, $('#btnAsk kbd').textContent]);
+  check(`${rm}, Windows: buttons and the shortcut sheet say Ctrl+ / Alt+ / Shift+`, lab.join('|') === 'Undo (Ctrl+Z)|Redo (Ctrl+Shift+Z)|Ctrl+Shift+Z|Ctrl+Alt+V|Backspace Del|Ctrl+K', lab.join('|'));
+  await page.keyboard.press('Escape');
+  const left = await ev(() => { // every word the page has (hidden panels too), its tooltips and labels
+    const out = [], w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode());) if (!n.parentElement.closest('script, style, #scriptBody, #capList')) out.push(n.data);
+    for (const e of document.querySelectorAll('[title], [aria-label], [placeholder]')) out.push(e.title, e.getAttribute('aria-label') || '', e.placeholder || '');
+    return out.filter(s => /[⌘⌥⇧⌫]|\b(this|This) Mac\b|Finder|Mac voices/.test(s));
+  });
+  check(`${rm}, Windows: no ⌘ ⌥ ⇧, "this Mac" or Finder left in the page`, left.length === 0, left.slice(0, 4).join(' | '));
+  const tour = [];
+  for (const i of [0, 4, 6]) { await ev(i => tourShow(i), i); tour.push(await page.textContent('#tour .td')); }
+  await ev(() => tourGo('skip'));
+  check(`${rm}, Windows: the tour says this computer, Ctrl+Z, Ctrl+K`, /runs on this computer/.test(tour[0]) && /Ctrl\+Z undoes/.test(tour[1]) && /^Ctrl\+K:/.test(tour[2]), tour.join(' | ').slice(0, 300));
+  check(`${rm}, Windows: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
   await ev(async id => { await api(`/api/projects/${id}/trash`, {}); }, pid);
   await ctx.close();
 }

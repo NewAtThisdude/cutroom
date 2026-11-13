@@ -3,7 +3,7 @@
 // project, the library and the rendered files (ffprobe). Also checks the MCP server itself: its tool list maps onto
 // REMOTE, and read-only tools answer through the real stdio -> server -> editor path. Everything made is trashed.
 //   node mcp_e2e.mjs [only]   (server on 127.0.0.1:4610; slow: the AI tools run for real)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -36,7 +36,7 @@ const init = await rpc('initialize', { protocolVersion: '2025-06-18' });
 check('MCP initialize answers with instructions', init.result?.serverInfo?.name === 'cutroom' && init.result.instructions?.length > 100);
 const tools = (await rpc('tools/list')).result.tools;
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = [];
 page.on('pageerror', e => errs.push(e.message));
 page.on('dialog', d => d.accept());

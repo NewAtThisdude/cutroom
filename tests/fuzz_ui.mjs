@@ -5,7 +5,7 @@
 // preview still paints, and one undo puts the project back exactly. Slow AI endpoints answer with a stub error, so their
 // error paths are exercised (the real models are covered by mcp_e2e.mjs). Scratch media/projects are trashed after.
 //   node fuzz_ui.mjs [only-section]   (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,7 +27,7 @@ const ids = [];
 for (const f of files) ids.push((await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id);
 fs.rmSync(tmp, { recursive: true });
 
-const b = await webkit.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 } }), page = await ctx.newPage();
+const b = await browser.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 } }), page = await ctx.newPage();
 const errs = [], findings = [];
 let inflight = 0;
 page.on('pageerror', e => errs.push(`pageerror: ${e.message}`));

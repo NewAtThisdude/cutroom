@@ -5,7 +5,7 @@
 // Checks the exported WAV to the sample, the preview's scheduled Web Audio starts against it, the same edit with the J/L
 // off (only the two body beeps), the knob drag + undo, the inspector fields and the drawn extension in both motion modes.
 //   B=http://127.0.0.1:4704 CUTROOM_HOME=<scratch lib> node tests/jlcuts.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,7 +38,7 @@ const onsets = file => { // sample index of each beep's first sample (left chann
   for (let i = 0, quiet = 1e9; i < x.length; i++) { if (Math.abs(x[i]) > 0.3) { if (quiet > 2400) out.push(i); quiet = 0; } else quiet++; }
   return out;
 };
-const b = await webkit.launch();
+const b = await browser.launch();
 const pids = [];
 for (const motion of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: motion })).newPage();

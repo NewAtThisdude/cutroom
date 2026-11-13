@@ -5,7 +5,7 @@
 // Skips cleanly when the clips aren't there.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node hdr_iphone.mjs     (a scratch server, never 4610)
 //   PHOTOS=<dir of .MOV files> overrides where the clips are read from (they are cloned, never modified)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -64,7 +64,7 @@ for (const f of CLIPS) {
 
 // 2. a 9:16 60 fps project: 3 s of each clip (120 fps footage in a 60 fps project), preview vs export frames in WebKit
 const IN = [2, 1], LEN = 3, T = [0.4, 1.5, 2.9, 3.6, 5.5]; // T: project times (clip A 0-3 s, clip B 3-6 s)
-const b = await webkit.launch();
+const b = await browser.launch();
 let pid = null, file = null;
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

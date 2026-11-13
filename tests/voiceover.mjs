@@ -7,7 +7,7 @@
 // as the export reads it), at two playhead start positions, with the measured and the remembered delay; the "hear the
 // project while recording" toggle (off by default, headphone warning) in both motion modes.
 //   CUTROOM_HOME=<lib> B=http://127.0.0.1:4703 node voiceover.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,7 +25,7 @@ const wavAt = async id => { // the take as the export reads it (a WAV is read as
   for (let i = 0; i < n; i++) x[i] = b.readInt16LE(o + 8 + i * 2) / 32768;
   return { x, sr };
 };
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));
