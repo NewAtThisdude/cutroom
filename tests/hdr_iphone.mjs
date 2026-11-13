@@ -6,6 +6,7 @@
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node hdr_iphone.mjs     (a scratch server, never 4610)
 //   PHOTOS=<dir of .MOV files> overrides where the clips are read from (they are cloned, never modified)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -98,7 +99,7 @@ for (const rm of ['no-preference', 'reduce']) {
     const mean = sum / (90 * 160 * 3), ok = Math.max(...shift.map(Math.abs)) <= 1.5 && mean <= 6 && worst <= 28 && same;
     check(`${rm}: preview == export at ${t}s (HDR, rotated, 120 in 60 fps)`, ok, `colour shift ${sh(shift)}, mean |d| ${f2(mean)}, worst block ${worst.toFixed(1)}; `
       + `source frame: export ${be.t.toFixed(4)} s, preview ${bp.t.toFixed(4)} s for ${st} s${motion < 2 ? ' (static: not judged)' : ''}`);
-    if (!ok || process.env.SAVE) { const o = new URL('./out/parity/', import.meta.url).pathname; fs.mkdirSync(o, { recursive: true }); for (const k of ['ex', 'pv']) fs.writeFileSync(`${o}hdr_${rm}_${t}_${k}.png`, Buffer.from(r[k], 'base64')); }
+    if (!ok || process.env.SAVE) { const o = fileURLToPath(new URL('./out/parity/', import.meta.url)); fs.mkdirSync(o, { recursive: true }); for (const k of ['ex', 'pv']) fs.writeFileSync(`${o}hdr_${rm}_${t}_${k}.png`, Buffer.from(r[k], 'base64')); }
   }
   if (rm === 'no-preference') { // 3. the real export, twice (a regression chain shares this Mac: times are noisy)
     for (let k = 0; k < 2; k++) {
@@ -130,8 +131,8 @@ const yuv = args => { // per-plane means and the planes
 const pcmp = (a, b) => { const m = a.map((p, k) => { let s = 0, d = 0; for (let i = 0; i < p.length; i++) { s += Math.abs(p[i] - b[k][i]); d += p[i] - b[k][i]; } return [s / p.length, d / p.length]; }); return { mean: m.map(x => x[0]), shift: m.map(x => x[1]) }; };
 let av = null;
 try { // AVFoundation's own SDR frame (rotation applied), built once into tests/out
-  const bin = new URL('./out/avref', import.meta.url).pathname, src = new URL('./out/avref.swift', import.meta.url).pathname;
-  fs.mkdirSync(new URL('./out/', import.meta.url).pathname, { recursive: true });
+  const bin = fileURLToPath(new URL('./out/avref', import.meta.url)), src = fileURLToPath(new URL('./out/avref.swift', import.meta.url));
+  fs.mkdirSync(fileURLToPath(new URL('./out/', import.meta.url)), { recursive: true });
   if (!fs.existsSync(bin)) {
     fs.writeFileSync(src, `import AVFoundation
 import CoreGraphics

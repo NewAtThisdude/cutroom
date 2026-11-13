@@ -27,6 +27,31 @@ Needs an Apple Silicon Mac on macOS 14 or later, with [Homebrew](https://brew.sh
 
 Then open **~/Applications/Cutroom.app**. `./cutroom` opens the same editor in a Chrome app window instead.
 
+### Windows 10 / 11 (new)
+
+Needs Windows 10 1803 or later (for `curl.exe` and `tar.exe`) and Microsoft Edge (every Windows has it; Chrome is used if
+Edge is gone). In PowerShell:
+
+    git clone <this repository> cutroom; cd cutroom
+    powershell -ExecutionPolicy Bypass -File install.ps1
+
+`install.ps1` finds Python 3.10 or newer (and offers `winget install Python.Python.3.13` if there is none), then downloads
+into `%LOCALAPPDATA%\Cutroom\bin`, each file pinned and checked by SHA-256 before use:
+- ffmpeg 9.0.2, the [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) "full" build (GPL, 258 MB zip);
+- whisper.cpp 1.9.5: the CUDA 12.4 build (685 MB) when `nvidia-smi` reports a driver for CUDA 12.4 or newer, else the CPU
+  build with OpenBLAS (22 MB);
+- the speech models into the library (`Videos\Cutroom\models`): the same Whisper large-v3-turbo and Silero VAD files and
+  hashes as `install.sh`.
+
+It writes `%LOCALAPPDATA%\Cutroom\cutroom.env` (Python, library, ffmpeg and whisper paths) and a **Cutroom** Start-menu
+shortcut. Nothing is installed system-wide and PATH is not changed: `cutroom.cmd` (or the shortcut) reads that file and
+hands the tools to the server process only, starts the server hidden if `/api/ping` doesn't answer (log:
+`Videos\Cutroom\server.log`), and opens the editor as an Edge app window with its own profile
+(`%LOCALAPPDATA%\Cutroom\edge`). Run `install.ps1` again at any time: finished downloads are kept. `-Prefix`, `-Library`
+and `-Shortcuts` put the tools, the library and the shortcut elsewhere.
+
+What works on Windows and what doesn't: see [This computer](#every-mac-ai-and-heavy-jobs) and [Limits](#limits-honest).
+
 Optional: `ai/setup.sh` installs the on-device AI tools (voices, image generation, object removal, upscaling and
 more; several GB, each model pinned and checksummed). What each one is and its licence: [THIRD_PARTY.md](THIRD_PARTY.md).
 A few optional models are for non-commercial use only; they are marked there and can be left out.
@@ -38,6 +63,9 @@ A few optional models are for non-commercial use only; they are marked there and
   when you quit. It never runs at login. Rebuild the app after editing `app/Cutroom.swift` with `app/build.sh`.
 - Self-check after any engine change: `python3 -I server.py --selftest` (about 3 min). It renders synthetic projects
   through the render paths and checks the results pixel by pixel.
+- On Windows there is no app: `cutroom.cmd` (`cutroom.ps1`) is the launcher, and the editor runs in an Edge app window.
+  The editor shows Ctrl+ / Alt+ / Shift+ where a Mac shows ⌘ / ⌥ / ⇧, says "this computer" where a Mac says "this Mac", and
+  Ctrl-click adds to a selection (⌘-click on a Mac).
 - `CUTROOM_PORT` and `CUTROOM_HOME` (the library folder) work for the app, the launcher and the server;
   `CUTROOM_MODEL` points captions at another whisper ggml model.
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [GPL v3 or later](LICENSE): free to use, change and share; versions you distribute stay open under the same terms.
@@ -105,8 +133,8 @@ and CPU shares are what carry over.
 
 Cutroom runs on any Apple Silicon Mac from 8 GB up, nothing in the cloud and no PC needed. One table in `server.py`
 (`AI_BUDGET`) says, for every AI or heavy job, what it runs at on each size of Mac and how much memory that takes; a Mac
-too small for a job refuses it with the reason. The AI tab's **This Mac** panel lists the same (`/api/ai/caps`), and a
-job that will take a minute or more says roughly how long when it starts.
+too small for a job refuses it with the reason. The AI tab's **This Mac** panel (**This computer** on Windows) lists the same
+(`/api/ai/caps`), and a job that will take a minute or more says roughly how long when it starts.
 
 - **One heavy job at a time, on every Mac.** AI models (MPS, MLX, Metal whisper, Ollama, Vision) and exports above
   1440p take turns in one queue; the next waits and says so ("Waiting for AI music (1 ahead)"), the MCP included. Two
@@ -244,6 +272,12 @@ mirror, rotate, remove pauses and fillers, fit) below.
 `mcp/cutroom_mcp.py` is an MCP server (stdlib only). It is registered for every Claude Code session on this Mac:
 
     claude mcp add -s user cutroom -- env -u PYTHONPATH /opt/homebrew/bin/python3 -I ~/cutroom/mcp/cutroom_mcp.py
+
+On Windows, with the Python `install.ps1` printed:
+
+    claude mcp add -s user cutroom -- C:\Python314\python.exe -X utf8 -I C:/Users/<you>/cutroom/mcp/cutroom_mcp.py
+
+There the first tool call opens `cutroom.cmd` instead of the app, and the tool texts say "this computer".
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
@@ -385,7 +419,10 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
 - `ai/setup.sh`: installs the on-device AI (venv in `ai/.venv`, gitignored). `ai/remove.py`: the object-removal
   engine (runs in that venv). `tools/lift.swift`: Vision subject lifting.
-- `cutroom`: the Chrome-window launcher (also downloads the VAD model if missing).
+- `cutroom`: the Chrome-window launcher on a Mac (also downloads the VAD model if missing).
+- `install.ps1`, `cutroom.ps1`, `cutroom.cmd`: the Windows installer and launcher (Edge app window).
+- `tests/browser.mjs`: the browser the UI tests drive (`BROWSER=webkit`, `chromium`, `msedge` or `chrome`; `PLATFORM=Win32`
+  makes the page think it runs on Windows).
 
 ## Limits (honest)
 
@@ -477,10 +514,22 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Undo history** lives in the open editor, like ⌘Z: it starts fresh when a project is opened or the page reloads (Versions
   keeps what lasts). A step that changed several things is named after the first ("Added clip 3 (+2 more)").
 - **Labels and shortcuts:** labels stay in Cutroom (FCPXML and EDL don't carry them) and a compound clip's inner clips keep
-  theirs out of sight. A shortcut is one key with modifiers (no two-key sequences); ⌘ and Ctrl count as the same modifier.
+  theirs out of sight. A shortcut is one key with modifiers (no two-key sequences); ⌘ and Ctrl count as the same modifier
+  (on Windows the Windows key counts as Ctrl).
   The clip menus, the inspector and the transport and toolbar tooltips follow your keys; some hints written into toasts, the tour
   and the source viewer's In / Out buttons still name the default keys. Escape always closes a dialog.
-- **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
+- **MCP control** needs the editor open (it opens the app, or `cutroom.cmd` on Windows, itself). Commands run one at a time.
+  The Windows launch from the MCP was not run end to end.
+- **Windows** is new. Checked on one PC (Windows 11, i9-14900K, RTX 4090, driver 621): `install.ps1` downloaded and verified
+  every file, a second run downloaded nothing, the CUDA whisper.cpp build transcribed a test sentence on the GPU (2.9 s,
+  the CPU build 11.6 s), and `cutroom.cmd` started a server (`python -X utf8 -I`, the tools on its PATH), waited for its
+  ping and opened the Edge app window; a second launch reused the server. That launcher check used a stand-in server:
+  the engine (`server.py`) needs its own Windows port to start there. The editor page passes `ui_smoke` and `ui_audit` in
+  Edge on that PC (served from a Mac). Not on Windows: the Mac app and its Photos import, and the Apple-only parts (Apple
+  Vision: remove background, faces, retouch, photo cut-out; the Metal effects pack, which has a slower CPU path; the MLX
+  models). The editor wording off the Mac is rewritten
+  by phrase (`plat()` in `web/app.js`), so a file named with "this Mac" in it would read "this computer" there too.
+  The Start-menu shortcut flashes a console for a moment. Chrome as the fallback window and AMD / Intel GPUs were not tried.
 - **Timeline hand-off** (FCPXML, EDL) carries the edit, not the look: effects, filters, grades, masks, keys, crop, position and
   scale of overlays, keyframes (volume envelopes too), clip animations, fades and text styling stay in Cutroom (titles come over
   as plain Basic Titles with their text). Every transition becomes a cross dissolve of the same length, split evenly round the cut.

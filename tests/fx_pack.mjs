@@ -13,13 +13,14 @@
 //  4. what the export pays: seconds for a 1080p30 export with the heaviest new transitions / effects vs a dissolve.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node fx_pack.mjs [exact|parity|perf|tiles|export ...]
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 const parts = process.argv.slice(2).length ? process.argv.slice(2) : ['exact', 'parity', 'perf', 'tiles', 'export'];
 const REAL = `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos/IMG_0324.MOV`; // read-only: uploaded as a copy
-const OUT = new URL('./out/fx_pack/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('./out/fx_pack/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const NEW_TR = ['blurfade', 'whipup', 'whipdown', 'flashwhite', 'flashblack', 'lightleak', 'filmburn', 'cube', 'flip', 'punchin', 'zoomout', 'spin', 'glitchcut', 'rgbsplit',
   'lumafade', 'stretch', 'ink', 'heart', 'star', 'diamond', 'pagecurl', 'wave', 'tiles'];

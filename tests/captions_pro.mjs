@@ -10,9 +10,10 @@
 //   speakers  2-voice fixtures (two Kokoro voices, lines in a known order): caption-level speaker accuracy
 // Fixtures are cached in tests/out/captions_pro/.   B=http://127.0.0.1:4771 CUTROOM_HOME=<scratch lib> node captions_pro.mjs [section]
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-const B = process.env.B, LIB = process.env.CUTROOM_HOME, only = process.argv[2], OUT = new URL('./out/captions_pro/', import.meta.url).pathname;
+const B = process.env.B, LIB = process.env.CUTROOM_HOME, only = process.argv[2], OUT = fileURLToPath(new URL('./out/captions_pro/', import.meta.url));
 if (!B || !LIB || B.endsWith(':4610')) throw new Error('run on a scratch server: B=http://127.0.0.1:<port> CUTROOM_HOME=<its library>');
 fs.mkdirSync(OUT, { recursive: true });
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, res = [], made = { media: [], projects: [] };

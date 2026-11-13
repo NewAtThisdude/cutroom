@@ -4,6 +4,7 @@
 // REMOTE, and read-only tools answer through the real stdio -> server -> editor path. Everything made is trashed.
 //   node mcp_e2e.mjs [only]   (server on 127.0.0.1:4610; slow: the AI tools run for real)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,7 +27,7 @@ const TALK = await imp(`${tmp}/mcp-talk.mp4`), PIC = await imp(`${tmp}/mcp-pic.p
 fs.rmSync(tmp, { recursive: true });
 
 // ---------- the MCP server: tools map onto REMOTE; read-only tools answer through the real path ----------
-const mcp = spawn('python3', ['-I', new URL('../mcp/cutroom_mcp.py', import.meta.url).pathname], { env: { ...process.env, PYTHONPATH: '', CUTROOM_PORT: new URL(B).port || '4610' } }); // the MCP server talks to the server under test
+const mcp = spawn('python3', ['-I', fileURLToPath(new URL('../mcp/cutroom_mcp.py', import.meta.url))], { env: { ...process.env, PYTHONPATH: '', CUTROOM_PORT: new URL(B).port || '4610' } }); // the MCP server talks to the server under test
 let buf = '';
 const waiting = new Map();
 mcp.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(line); waiting.get(m.id)?.(m); } catch { /* not json */ } } });

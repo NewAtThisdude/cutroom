@@ -8,6 +8,9 @@ JavaScript for the editor (`web/`), a thin Swift shell (`app/`). No build step, 
     ./install.sh          # tools check, speech models, builds ~/Applications/Cutroom.app
     ./cutroom             # or: the editor in a browser window
 
+On Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`, then `cutroom.cmd`. Keep `install.ps1` and
+`cutroom.ps1` plain ASCII and Windows PowerShell 5.1 compatible (that is what every Windows has).
+
 ## Rules that keep it honest
 
 - **Preview equals export.** Anything drawn in the preview must come out the same in the file. If you add an effect,
@@ -15,7 +18,10 @@ JavaScript for the editor (`web/`), a thin Swift shell (`app/`). No build step, 
 - **Run the checks.** `python3 -I server.py --selftest` after engine changes (about 3 minutes, pixel checks);
   `node tests/ui_smoke.mjs` and `node tests/ui_audit.mjs` after UI changes. Tests need a server on a scratch library:
   `CUTROOM_HOME=/tmp/cutroom-test CUTROOM_PORT=4620 python3 -I server.py`, then `B=http://127.0.0.1:4620 node tests/...`.
-  Never point tests at your real library. Tests that need real footage (iPhone HDR clips and the like) read it from
+  The UI tests drive WebKit (the Mac app's engine); `BROWSER=chromium` (or `msedge`, `chrome`: the installed browser, no
+  download) runs them in Chromium, which is what Windows uses, and `PLATFORM=Win32` makes the page think it is on Windows,
+  to check the Ctrl+ labels on a Mac. Tests that only make sense on a Mac (`allmacs`, `photos_button`, `perf_*`) print
+  SKIP elsewhere. Use `fileURLToPath`, not `URL.pathname`, for paths in tests (Windows). Never point tests at your real library. Tests that need real footage (iPhone HDR clips and the like) read it from
   `$CUTROOM_SCRATCH/photos` (default `/tmp/cutroom-scratch/photos`) and skip when it isn't there.
 - **Light on the machine.** Heavy jobs go through the one queue (`ai_slot`) and get a row in the budget table
   (`AI_BUDGET`); nothing polls in the background; models unload when idle.

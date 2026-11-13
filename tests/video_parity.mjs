@@ -4,10 +4,11 @@
 // Reports the mean difference and the worst 10x10 block, in 0-255 levels. Side-by-sides of failures go to out/parity/.
 //   node video_parity.mjs [filter]   (server on 127.0.0.1:4610)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
+const B = process.env.B || 'http://127.0.0.1:4610', OUT = fileURLToPath(new URL('./out/parity/', import.meta.url)), only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain|oldtv|nightvision|halftone)/; // grain, and halftone's dots (a few pixels, shrunk to 160 px: moiré): by block averages // 28: a scaled or turning clip's edges land a pixel apart
 const APPROX = /effect (blur|pixelate|motionblur|zoomblur|handheld|beatshake|posterize|halftone)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // camera moves: sub-pixel offsets land a pixel apart; posterize: a level apart in the source can flip a band; halftone: dots sized at each side's own resolution // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box

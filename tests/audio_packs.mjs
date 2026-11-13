@@ -4,6 +4,7 @@
 // (4) export loudness targets -14 / -16 / -23 / off, (5) beats() on a 3 minute song (time, same grid as before).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4751 node audio_packs.mjs [packs|studio|voices|loud|beats]
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +16,7 @@ const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? '
 const get = async p => (await fetch(B + p)).json();
 const post = async (p, body) => (await fetch(B + p, { method: 'POST', headers: H, body: JSON.stringify(body) })).json();
 const run = name => !only || name === only;
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // ---------- signal helpers ----------
 const mono = buf => { const x = new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), n = x.length >> 1, y = new Float32Array(n); for (let i = 0; i < n; i++) y[i] = (x[2 * i] + x[2 * i + 1]) / 65536; return y; };

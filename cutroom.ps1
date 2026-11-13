@@ -16,7 +16,11 @@ $url = "http://127.0.0.1:$port/"
 $lib = if ($env:CUTROOM_HOME) { $env:CUTROOM_HOME } else { Join-Path ([Environment]::GetFolderPath('MyVideos')) 'Cutroom' }
 $env:CUTROOM_HOME = $lib
 
-function Test-Up { try { (Invoke-WebRequest "${url}api/ping" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $false } }
+function Test-Up { # a port check first: on Windows a refused connection takes ~2 s to report, a TCP connect with a timeout doesn't
+  $c = New-Object Net.Sockets.TcpClient
+  try { if (-not $c.ConnectAsync('127.0.0.1', [int]$port).Wait(500)) { return $false } } catch { return $false } finally { $c.Dispose() }
+  try { (Invoke-WebRequest "${url}api/ping" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch { $false }
+}
 
 if (-not (Test-Up)) {
   $py = if ($env:CUTROOM_PYTHON) { $env:CUTROOM_PYTHON } else { 'python' }
@@ -24,7 +28,8 @@ if (-not (Test-Up)) {
   # -X utf8: file names, captions and ffmpeg's messages in UTF-8 (python -I ignores PYTHONUTF8); cmd appends both streams to the log
   Start-Process "$env:SystemRoot\System32\cmd.exe" -WindowStyle Hidden -WorkingDirectory $PSScriptRoot `
     -ArgumentList "/d /s /c `"`"$py`" -X utf8 -I `"$PSScriptRoot\server.py`" >> `"$lib\server.log`" 2>&1`""
-  for ($i = 0; $i -lt 50 -and -not (Test-Up); $i++) { Start-Sleep -Milliseconds 200 }
+  $wait = [Diagnostics.Stopwatch]::StartNew()
+  while ($wait.Elapsed.TotalSeconds -lt 15 -and -not (Test-Up)) { Start-Sleep -Milliseconds 200 }
   if (-not (Test-Up)) { Write-Host "The Cutroom server did not answer on port $port. Its log: $lib\server.log"; exit 1 }
 }
 if ($ServerOnly) { exit 0 }

@@ -2,8 +2,9 @@
 // modals. Flags text cut off without an ellipsis, text boxes that overlap, and things poking out of their panel.
 // Screenshots go to tests/out/. Exit code = number of problems.  node ui_audit.mjs [width height]
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-const [W, H] = [+(process.argv[2] || 1517), +(process.argv[3] || 904)], OUT = new URL('./out/', import.meta.url).pathname;
+const [W, H] = [+(process.argv[2] || 1517), +(process.argv[3] || 904)], OUT = fileURLToPath(new URL('./out/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 2 })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));

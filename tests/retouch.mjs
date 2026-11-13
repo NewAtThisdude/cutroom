@@ -5,11 +5,12 @@
 // WebKit in both motion modes, plus REMOTE.retouch (the MCP tool). Before/after PNGs go to tests/out.
 //   CUTROOM_HOME=<library> B=http://127.0.0.1:4755 [PHOTOS=<dir with IMG_4700.MOV>] node tests/retouch.mjs
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`, B = process.env.B || 'http://127.0.0.1:4610';
-const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, ROOT = new URL('..', import.meta.url).pathname, OUT = `${ROOT}tests/out`;
+const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, ROOT = fileURLToPath(new URL('..', import.meta.url)), OUT = `${ROOT}tests/out`;
 const TOOL = `${ROOT}tools/retouch`, PY = `${ROOT}ai/.venv/bin/python`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };

@@ -5,6 +5,7 @@
 //  - the ramp editor (chips + curve drag) in both reduced-motion modes: the draft never touches the project or undo
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4701 node tests/ramp_play.mjs   (needs project ab4bbf27d216 in that library)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -155,7 +156,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: double-click removes a point`, n1 === n0 - 1, `${n0} -> ${n1}`);
   const fits = await ev(() => { const r = $('#rampSvg').getBoundingClientRect(), i = $('#inspector').getBoundingClientRect(); return r.left >= i.left - 1 && r.right <= i.right + 1 && r.width > 150; });
   check(`${rm}: the curve box fits the inspector`, fits);
-  await page.screenshot({ path: new URL(`./out/ramp_editor_${rm}.png`, import.meta.url).pathname, clip: { x: box.x - 20, y: box.y - 140, width: box.width + 40, height: box.height + 240 } }).catch(() => {});
+  await page.screenshot({ path: fileURLToPath(new URL(`./out/ramp_editor_${rm}.png`, import.meta.url)), clip: { x: box.x - 20, y: box.y - 140, width: box.width + 40, height: box.height + 240 } }).catch(() => {});
 }
 check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 

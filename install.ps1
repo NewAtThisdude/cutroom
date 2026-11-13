@@ -64,7 +64,7 @@ $ffBin = Join-Path $ff 'ffmpeg-9.0.2-full_build\bin'
 
 # 3. whisper.cpp 1.9.5 (release b5454, the same commit): the CUDA build when an NVIDIA driver for CUDA 12.4+ is there, else CPU (OpenBLAS)
 $cuda = $null
-try { if (((& nvidia-smi 2>$null) -join ' ') -match 'CUDA Version: (\d+\.\d+)') { $cuda = [version]$matches[1] } } catch { }
+try { if (((& nvidia-smi 2>$null) -join ' ') -match 'CUDA (UMD )?Version: (\d+\.\d+)') { $cuda = [version]$matches[2] } } catch { } # 'CUDA UMD Version' from driver 6xx
 $wUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/b5454'
 $flavor = if ($cuda -and $cuda -ge [version]'12.4') { 'CUDA' } else { 'CPU' }
 if ($flavor -eq 'CUDA') {

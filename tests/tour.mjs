@@ -3,8 +3,9 @@
 // library that has media; both motion modes, no page errors. Screenshots of every step go to tests/out/tour/.
 //   B=<server on an EMPTY scratch library> [B2=<server on a scratch library with media>] node tour.mjs   (never 4610)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-const B = process.env.B, B2 = process.env.B2, OUT = new URL('./out/tour/', import.meta.url).pathname;
+const B = process.env.B, B2 = process.env.B2, OUT = fileURLToPath(new URL('./out/tour/', import.meta.url));
 if (!B || /:4610\b/.test(B)) { console.log('SKIP: set B to a scratch server on an empty library (never 4610)'); process.exit(0); }
 fs.mkdirSync(OUT, { recursive: true });
 const res = [];

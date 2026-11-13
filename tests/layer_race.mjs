@@ -8,10 +8,11 @@
 // Every finished export / still is checked picture by picture (each span's colour at its box).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> [SERVER_PY=<server.py for the second server>] node layer_race.mjs   (never 4610)
 import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B, HOME = process.env.CUTROOM_HOME, SERVER_PY = process.env.SERVER_PY || new URL('../server.py', import.meta.url).pathname;
+const B = process.env.B, HOME = process.env.CUTROOM_HOME, SERVER_PY = process.env.SERVER_PY || fileURLToPath(new URL('../server.py', import.meta.url));
 if (!B || !HOME || /:4610\b/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port>');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };

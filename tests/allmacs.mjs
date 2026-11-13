@@ -10,12 +10,13 @@
 // at a time (ports 4813, 4814; scratch libraries); never 4610. The jobs run on THIS Mac's hardware: memory sizes are the
 // smaller Mac's, times are this Mac's (the panel scales its estimates by GPU cores).
 import { browser, macOnly } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 macOnly('allmacs: memory, GPU and process probes of a Mac (footprint, ioreg, vm_stat)');
 import { execFileSync, execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-const REPO = new URL('..', import.meta.url).pathname, OUT = new URL('./out/', import.meta.url).pathname;
+const REPO = fileURLToPath(new URL('..', import.meta.url)), OUT = fileURLToPath(new URL('./out/', import.meta.url));
 const SCR = process.env.SCR || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}`;
 const RAMS = (process.argv[2] || '8,16').split(',').map(Number), only = process.argv[3], want = n => !only || new RegExp(`^(${only})$`).test(n);
 const FIX = `${SCR}/allmacs-fixtures`, PAGE = 16384, SWAP_MB = 256; // a job may page out at most this much (other agents share this Mac)
