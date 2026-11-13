@@ -18,7 +18,7 @@ const capLive = st => !!(st.kar || st.wanim || st.reveal === 'char' || st.emoji)
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
 const ss3 = x => x * x * (3 - 2 * x);
 // keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
-const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1] };
+const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1], back: [0.34, 1.56, 0.64, 1] }; // back: past the end, then settles
 function bezE(bz, u) { // cubic-bezier at time u: s by 16 halvings, the very steps the server's pw() writes into ffmpeg (same doubles both sides)
   const [x1, y1, x2, y2] = bz, cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx, cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
   let s = 0, h = 1;
