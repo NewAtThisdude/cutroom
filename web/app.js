@@ -652,7 +652,7 @@ function clipHTML(lane, c, top = 0, h = 42) {
   })() : '';
   const marks = env + fades + (c.kf || []).map((f, i) => `<b class="kfm" data-k="${i}" style="left:${f.t * pps}px" title="Keyframe: click to go to it, drag to move it"></b>`).join('')
     + (c.beats || []).filter(b => b >= c.in && b <= c.out).map(b => `<b class="bm" style="left:${((b - c.in) / c.speed) * pps}px"></b>`).join('');
-  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}">${m && ((m.grid && m.kind === 'video' && lane !== 'audio') || (m.peaks && (lane === 'audio' || lane === 'main'))) ? '<canvas class="cstrip"></canvas>' : ''}<span class="lbl">${esc(label)}</span>${marks}<i class="h l"></i><i class="h r"></i></div>`;
+  return `<div class="clip ${lane}${isSel(lane, c.id) ? ' sel' : ''}${c.media && !m ? ' missing' : ''}" data-lane="${lane}" data-id="${c.id}" style="left:${c.start * pps}px;width:${Math.max(3, tdur(c, lane) * pps)}px;top:${top + 3}px;height:${h - 6}px;${bg}">${m && ((m.grid && m.kind === 'video' && lane !== 'audio') || (m.peaks && (lane === 'audio' || lane === 'main'))) ? '<canvas class="cstrip"></canvas>' : ''}<span class="lbl">${esc(label)}</span>${marks}${LABEL_N[c.label] ? `<i class="lab" style="background:var(--lab-${c.label})"></i>` : ''}<i class="h l"></i><i class="h r"></i></div>`;
 }
 
 function placePlayhead() { $('#playhead').style.transform = `translateX(${S.t * S.pps}px)`; }
@@ -686,14 +686,144 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
   const sel = selection().filter(([, lane]) => lane !== 'main' && lane !== 'tr');
   if (sel.length) change(() => { for (const [c] of sel) c.start = snap(Math.max(0, c.start + d / P.fps)); });
 }
-const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
-  ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'], ['V  Y  U  N', 'Tool: select · slip · slide · roll (⌥-drag: slip a clip, roll a cut)'],
-  ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
-  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['G', 'Scopes: waveform, parade, vectorscope, histogram'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
-const TOOL_KEYS = { KeyV: 'select', KeyY: 'slip', KeyU: 'slide', KeyN: 'roll' };
+// Clip colour labels: a bar on the clip in the timeline, for sorting an edit by eye. Project data only: the export never reads them
+const LABELS = [['red', 'Red'], ['orange', 'Orange'], ['yellow', 'Yellow'], ['green', 'Green'], ['blue', 'Blue'], ['violet', 'Violet']]; // colours: --lab-* in style.css
+const LABEL_N = Object.fromEntries(LABELS);
+function setLabel(v, list = selection()) { // v: a LABELS key, '' = none; every selected clip
+  const many = list.filter(([c, lane]) => !locked(lane, c));
+  if (!many.length) return toast('Select a clip first');
+  change(() => { for (const [c] of many) if (v) c.label = v; else delete c.label; });
+  toast(`${v ? `Label ${LABEL_N[v].toLowerCase()}` : 'No label'}${many.length > 1 ? ` on ${many.length} clips` : ''}`);
+}
+function labelKey(i) { const v = LABELS[i][0], sel = selection(); setLabel(sel.length && sel.every(([c]) => c.label === v) ? '' : v, sel); } // the same colour again takes it off
+function selectClips(all) { // [[lane, id], ...] become the selection
+  S.multi.clear(); S.sel = all.length ? { lane: all[0][0], id: all[0][1] } : null;
+  for (const [l, id] of all.slice(1)) S.multi.add(selKey(l, id));
+  renderTimeline(); renderInspector(); S.dirty = true;
+}
+function selectLabel(v) {
+  const all = LANES.flatMap(L => P[L.key].filter(c => c.label === v && !locked(L.key, c)).map(c => [L.key, c.id]));
+  selectClips(all); toast(`${all.length} clip${all.length === 1 ? '' : 's'} labelled ${LABEL_N[v]?.toLowerCase() || v}`);
+}
+function labelMenu() { openMenu(...menuXY, [['No label', () => setLabel('')], ...LABELS.map(([v, n], i) => [n, () => setLabel(v), kb(`lab${i + 1}`), false, `var(--lab-${v})`])]); } // where the clip menu was
+
+// Every shortcut: [id, what it does, default keys, run]. run(e, field) returning false = not handled here (the browser keeps the key).
+// A key is 'Mod+Alt+Shift+<name>' (Mod = ⌘ or Ctrl). <name>: the letter for letters (⌘Z is Z on any layout), the physical key
+// for letters and digits otherwise, the character for other printed keys ('?' '=' '+' '-', shift is part of them), else e.code
+const keyStep = (sign, sec) => (e, field) => { if (field) return false; const m = S.src && M.get(S.src.id), d = sign * (sec ? 1 : 1 / ((S.src ? m?.fps : P.fps) || 30)); if (S.src) srcSeek(S.src.t + d); else seekTo(S.t + d); };
+const zoomBy = f => () => { const sc = $('#tlScroll'); setZoom(S.pps * f, clamp(S.t * S.pps - sc.scrollLeft, 0, sc.clientWidth)); };
+const KEYMAP0 = [
+  ['play', 'Play / pause', ['Space'], e => { if (e.target.matches('input[type=checkbox], input[type=color]')) return false; if (S.playing) pause(); else play(); }],
+  ['back', 'Play backwards (again: 2x, 4x)', ['KeyJ'], () => shuttle(-1)],
+  ['stop', 'Stop', ['KeyK'], () => pause()],
+  ['fwd', 'Play forwards (again: 2x, 4x)', ['KeyL'], () => shuttle(1)],
+  ['frameL', 'One frame back', ['ArrowLeft'], keyStep(-1)], ['frameR', 'One frame forward', ['ArrowRight'], keyStep(1)],
+  ['secL', 'One second back', ['Shift+ArrowLeft'], keyStep(-1, true)], ['secR', 'One second forward', ['Shift+ArrowRight'], keyStep(1, true)],
+  ['prevCut', 'Previous cut or marker', ['ArrowUp'], (e, field) => { if (field) return false; const t = snap(S.t); seekTo(editPoints().filter(x => x < t - 1e-6).at(-1) ?? 0); }],
+  ['nextCut', 'Next cut or marker', ['ArrowDown'], (e, field) => { if (field) return false; const t = snap(S.t); seekTo(editPoints().find(x => x > t + 1e-6) ?? total()); }],
+  ['start', 'Go to the start', ['Home'], (e, field) => { if (field) return false; seekTo(0); }],
+  ['end', 'Go to the end', ['End'], (e, field) => { if (field) return false; seekTo(total()); }],
+  ['split', 'Split at the playhead', ['KeyS', 'Mod+KeyB'], () => split()],
+  ['trimL', 'Trim the clip\'s start to the playhead', ['KeyQ'], () => trimTo('left')],
+  ['trimR', 'Trim the clip\'s end to the playhead', ['KeyW'], () => trimTo('right')],
+  ['marker', 'Marker', ['KeyM'], () => toggleMarker()],
+  ['srcIn', 'Source viewer (click a video in the library): mark in', ['KeyI'], () => { if (!S.src) return false; srcMark('i'); }],
+  ['srcOut', 'Source viewer: mark out', ['KeyO'], () => { if (!S.src) return false; srcMark('o'); }],
+  ['nudgeL', 'Nudge the selected clips a frame left', ['Alt+ArrowLeft'], (e, field) => { if (field) return false; nudge(-1); }],
+  ['nudgeR', 'Nudge the selected clips a frame right', ['Alt+ArrowRight'], (e, field) => { if (field) return false; nudge(1); }],
+  ['tSelect', 'Tool: select', ['KeyV'], () => setTool('select')],
+  ['tSlip', 'Tool: slip (⌥-drag a clip slips it too)', ['KeyY'], () => setTool('slip')],
+  ['tSlide', 'Tool: slide', ['KeyU'], () => setTool('slide')],
+  ['tRoll', 'Tool: roll (⌥-drag a cut rolls it too)', ['KeyN'], () => setTool('roll')],
+  ['zoomIn', 'Zoom the timeline in', ['Mod+=', 'Mod++'], zoomBy(1.25)],
+  ['zoomOut', 'Zoom the timeline out', ['Mod+-'], zoomBy(0.8)],
+  ['fit', 'Fit the timeline', ['Shift+KeyZ'], () => fitTimeline()],
+  ['copy', 'Copy', ['Mod+KeyC'], () => copySel()], ['cut', 'Cut', ['Mod+KeyX'], () => copySel(true)],
+  ['paste', 'Paste', ['Mod+KeyV'], () => paste()], ['pasteLook', 'Paste the look', ['Mod+Alt+KeyV'], () => pasteLook()],
+  ['dup', 'Duplicate', ['Mod+KeyD'], () => dup()], ['selAll', 'Select all', ['Mod+KeyA'], () => selectAll()],
+  ['undo', 'Undo', ['Mod+KeyZ'], () => restore(undo, redo)], ['redo', 'Redo', ['Mod+Shift+KeyZ'], () => restore(redo, undo)],
+  ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
+  ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
+  ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
+  ...[1, 2, 3, 4, 5, 6].map(i => [`cam${i}`, `Multicam: cut to angle ${i}`, [`Digit${i}`], () => { if (!P.main.some(c => c.mc)) return false; mcCut(i - 1); }]),
+  ...LABELS.map(([, n], i) => [`lab${i + 1}`, `Label the selected clips ${n.toLowerCase()} (again: none)`, [`Mod+Digit${i + 1}`], () => labelKey(i)]),
+  ['scrub', 'Sound while scrubbing on / off', ['Shift+KeyA'], () => { const off = store.get('cutroom.scrubSound') !== 'off'; store.set('cutroom.scrubSound', off ? 'off' : 'on'); toast(off ? 'Sound while scrubbing: off' : 'Sound while scrubbing: on'); }],
+  ['cancel', 'Deselect / cancel', ['Escape'], () => {
+    if (S.src && !menuEl) closeSource();
+    else if (S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
+    else if (S.pick) { S.pick = null; toast('Cancelled'); }
+    else if (menuEl) closeMenu();
+    else if (document.body.classList.contains('theater')) toggleTheater(false);
+    else if (S.sel || S.multi.size) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
+    else return false;
+  }],
+  ['help', 'These shortcuts', ['?'], () => shortcuts()],
+];
+const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = { 'Mod+KeyK': 'the command bar', Tab: 'moving between controls' };
+let KEYOWN = (() => { try { const o = JSON.parse(store.get('cutroom.keys')) || {}; return Object.fromEntries(Object.entries(o).filter(([id, v]) => KEYDEF[id] && Array.isArray(v) && v.every(k => typeof k === 'string'))); } catch { return {}; } })(); // this Mac's changes
+let KEYBY = new Map();
+const keysOf = id => KEYOWN[id] || KEYDEF[id][2];
+const KEY_TITLES = { btnStart: 'start', btnBack: 'frameL', btnPlay: 'play', btnFwd: 'frameR', btnEnd: 'end', btnTheater: 'theater', btnUndo: 'undo', btnRedo: 'redo', btnSplit: 'split', btnDelete: 'del', btnDup: 'dup' };
+function applyKeys(save) {
+  KEYBY = new Map(KEYMAP0.flatMap(([id]) => keysOf(id).map(k => [k, id])));
+  if (save) store.set('cutroom.keys', JSON.stringify(KEYOWN));
+  for (const [b, id] of Object.entries(KEY_TITLES)) { const el = document.getElementById(b); if (el) el.title = el.title.replace(/\([^()]*\)$/, `(${kb(id)})`); }
+}
+function keyCombo(e) {
+  const letter = /^[a-z]$/i.test(e.key), sign = !letter && !/^(Key|Digit)/.test(e.code) && e.key.length === 1 && e.key !== ' ' && !e.altKey;
+  return `${e.metaKey || e.ctrlKey ? 'Mod+' : ''}${e.altKey ? 'Alt+' : ''}${e.shiftKey && !sign ? 'Shift+' : ''}${letter ? `Key${e.key.toUpperCase()}` : sign ? e.key : e.code}`;
+}
+const KEY_NAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Backspace: '⌫', Delete: '⌦', Escape: 'Esc', Enter: '↩', '-': '−' };
+function keyText(k) { const [, m, n] = k.match(/^((?:Mod\+|Alt\+|Shift\+)*)(.+)$/); return (m.includes('Alt') ? '⌥' : '') + (m.includes('Shift') ? '⇧' : '') + (m.includes('Mod') ? '⌘' : '') + (KEY_NAMES[n] || n.replace(/^(Key|Digit)(?=.)/, '')); }
+const kb = id => (keysOf(id)[0] ? keyText(keysOf(id)[0]) : '');
+function setKeys(id, list) { list = [...new Set(list)]; if (JSON.stringify(list) === JSON.stringify(KEYDEF[id][2])) delete KEYOWN[id]; else KEYOWN[id] = list; }
+const KC = { for: null, conf: null, msg: '' }; // the sheet: the row waiting for a key, a clash to settle, the last word
+function keyCapture(e) { // the shortcut sheet is listening: the next key (with its modifiers) becomes the row's first shortcut
+  if (['Shift', 'Meta', 'Control', 'Alt', 'CapsLock', 'Tab'].includes(e.key)) return;
+  e.preventDefault();
+  const id = KC.for; KC.for = null;
+  if (e.key === 'Escape') return shortcuts(true);
+  const k = keyCombo(e), other = KEYBY.get(k), name = KEYDEF[id][1];
+  if (KEYS_RESERVED[k]) KC.msg = `${keyText(k)} is kept for ${KEYS_RESERVED[k]}: pick another key`;
+  else if (other && other !== id) { KC.conf = { id, k, other }; KC.msg = ''; }
+  else { setKeys(id, [k, ...keysOf(id).slice(1)]); applyKeys(true); KC.msg = `${name}: ${keyText(k)}`; }
+  shortcuts(true, id);
+}
+function shortcuts(keep, focus) { // the sheet; click a key to change it (kept per Mac in localStorage 'cutroom.keys')
+  if (!keep) Object.assign(KC, { for: null, conf: null, msg: '' });
+  const top = $('#modal .dialog.keysheet')?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
+    const ks = keysOf(id), wait = KC.for === id;
+    return `<tr><td><button class="kb${wait ? ' on' : ''}" data-keyfor="${id}" title="Change the shortcut" aria-label="${esc(d)}: ${wait ? 'press the new key' : esc(ks.map(keyText).join(' or ') || 'no shortcut')}. Change">${wait ? 'Press a key…' : ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</button></td><td>${esc(d)}</td><td>${KEYOWN[id] ? `<button class="ghost" data-keyreset="${id}">Reset</button>` : ''}</td></tr>`;
+  };
+  modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels). Ctrl works wherever ⌘ is shown.</p>`
+    + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
+    + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
+    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
+  const dlg = $('#modal .dialog');
+  dlg.scrollTop = top;
+  (focus && dlg.querySelector(`[data-keyfor="${focus}"]`))?.focus();
+  dlg.addEventListener('click', e => {
+    const b = e.target.closest('button'), d = b?.dataset;
+    if (!b) return;
+    if ('tour' in d) { closeModal(); tourShow(0); return; }
+    if (d.keyfor) { KC.for = KC.for === d.keyfor ? null : d.keyfor; KC.conf = null; KC.msg = KC.for ? `Press the new key for ${KEYDEF[d.keyfor][1].toLowerCase()}` : ''; }
+    else if ('keyswap' in d) { // the other action takes this one's old key (if it had one)
+      const { id, k, other } = cf, mine = keysOf(id)[0];
+      setKeys(other, keysOf(other).map(x => (x === k ? mine : x)).filter(Boolean)); setKeys(id, [k, ...keysOf(id).slice(1)]); applyKeys(true);
+      KC.msg = `${KEYDEF[id][1]}: ${keyText(k)} · ${KEYDEF[other][1]}: ${mine ? keyText(mine) : 'no shortcut'}`; KC.conf = null;
+    } else if ('keykeep' in d) { KC.msg = `Nothing changed: ${keyText(cf.k)} stays with ${KEYDEF[cf.other][1].toLowerCase()}`; KC.conf = null; }
+    else if (d.keyreset) { // the defaults back; another action holding one of them loses it
+      const id = d.keyreset, took = [];
+      delete KEYOWN[id];
+      for (const k of KEYDEF[id][2]) { const o = KEYBY.get(k); if (o && o !== id) { setKeys(o, keysOf(o).filter(x => x !== k)); took.push(`${keyText(k)} from ${KEYDEF[o][1].toLowerCase()}`); } }
+      applyKeys(true); KC.msg = `${KEYDEF[id][1]}: back to ${kb(id) || 'none'}${took.length ? ` (taken ${took.join(', ')})` : ''}`;
+    } else if ('keyall' in d) { KEYOWN = {}; applyKeys(true); KC.msg = 'Every shortcut is back to its default'; }
+    else return;
+    shortcuts(true, d.keyfor || d.keyreset);
+  });
+}
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
-function shortcuts() { modal(`<h3>Keyboard shortcuts</h3><table class="keys">${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table><div class="actions"><button data-tour>Take the tour</button><button data-close>Close</button></div>`); $('#modal [data-tour]').addEventListener('click', () => { closeModal(); tourShow(0); }); }
 function follow() { const sc = $('#tlScroll'), x = S.t * S.pps; if (x > sc.scrollLeft + sc.clientWidth - 40 || x < sc.scrollLeft) sc.scrollLeft = x - 60; }
 
 function thumbStyle(m) {
@@ -841,6 +971,7 @@ function renderInspector() {
   const c = selClip();
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
+  if (c && S.sel.lane !== 'tr') $('#inspector h3')?.insertAdjacentHTML('afterend', labelRow(c));
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   if (c?.media) drawRamp(c);
   if (c) drawEase(c);
@@ -849,6 +980,12 @@ function renderInspector() {
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
   else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) { renderCapList(); renderCapTiles(false); }
   if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p><div class="actions"><button data-act="compound">Make compound clip</button></div>`);
+}
+function labelRow(c) { // colour label swatches (none + six); Select… picks every clip with the clip's colour
+  const cur = LABEL_N[c.label] ? c.label : '', none = '<svg class="i" viewBox="0 0 24 24"><path d="M6 18 18 6"/></svg>';
+  return `<div class="labrow" role="group" aria-label="Label"><span>Label</span><button class="sw none${cur ? '' : ' on'}" data-label="" title="No label" aria-label="No label" aria-pressed="${!cur}">${none}</button>`
+    + LABELS.map(([v, n], i) => `<button class="sw${cur === v ? ' on' : ''}" data-label="${v}" style="background:var(--lab-${v})" title="${n} (${esc(kb(`lab${i + 1}`))})" aria-label="${n}" aria-pressed="${cur === v}"></button>`).join('')
+    + (cur ? `<button class="ghost sl" data-sellabel="${cur}">Select clips with this label</button>` : '') + '</div>';
 }
 function trPanel(c) {
   const i = P.main.indexOf(c), next = P.main[i + 1], cur = c.tr?.type || 'none';
@@ -887,6 +1024,7 @@ function drawEase(c) { // the segment's curve and its two cubic-bezier handles (
 }
 const RATIO_NAMES = { '9:16': 'TikTok', '16:9': 'YouTube', '1:1': 'Square', '4:5': 'Instagram', '3:4': 'Portrait', '4:3': 'Classic', '21:9': 'Cinema' };
 function projectPanel() {
+  const k = id => esc(kb(id));
   const ratio = Object.keys(RATIOS).find(r => RATIOS[r][0] === P.w && RATIOS[r][1] === P.h), n = LANES.reduce((s, L) => s + P[L.key].length, 0);
   const tile = r => { const [w, h] = RATIOS[r], q = 24 / Math.max(w, h); return `<button data-ratio="${r}" class="${r === ratio ? 'on' : ''}" title="${r} · ${RATIO_NAMES[r]}"><span class="ri"><i style="width:${Math.round(w * q)}px;height:${Math.round(h * q)}px"></i></span><b>${r}</b><span>${RATIO_NAMES[r]}</span></button>`; };
   return `<h3>Project</h3>
@@ -895,7 +1033,7 @@ function projectPanel() {
     <h4>Frame rate</h4><div class="seg full">${[24, 25, 30, 50, 60].map(f => `<button data-fps="${f}" class="${f === P.fps ? 'on' : ''}">${f} fps</button>`).join('')}</div>
     <div class="row"><span>Background</span><input type="color" data-k="p.bg" value="${P.bg}"><label style="margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12.5px" title="Transparent background: what nothing covers exports clear (ProRes 4444, WebM, GIF, PNG); the preview shows a checkerboard there">Transparent<input type="checkbox" data-k="p.alpha"${P.alpha ? ' checked' : ''}></label></div>
     <label class="row" title="HDR keeps iPhone HLG footage HDR in the export (HEVC Main 10 or ProRes 422 HQ). The preview always shows SDR"><span>Export as</span><select data-k="p.hdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
-    <h4>Shortcuts</h4><p class="hint" title="⇧←/→ one second · Home/End · ⇧⌘Z redo · ⌘+scroll zooms the timeline">Space play · S split · ⌫ delete · ⌘D duplicate · ←/→ frame · M marker · ⌘Z undo</p>`;
+    <h4>Shortcuts</h4><p class="hint" title="${k('secL')}/${k('secR')} one second · ${k('start')}/${k('end')} · ${k('redo')} redo · ⌘+scroll zooms the timeline · ${k('help')} lists them all">${k('play')} play · ${k('split')} split · ${k('del')} delete · ${k('dup')} duplicate · ${k('frameL')}/${k('frameR')} frame · ${k('marker')} marker · ${k('undo')} undo</p>`;
 }
 function tabbed(sections) { // inspector tabs; empty tabs are hidden and the open tab survives re-renders
   const live = sections.filter(x => x[1]), cur = live.some(x => x[0] === S.itab) ? S.itab : live[0][0];
@@ -2620,13 +2758,9 @@ function selection() { // the selected clips as [clip, lane]: the primary one pl
 }
 const isSel = (lane, id) => (S.sel?.lane === lane && S.sel.id === id) || S.multi.has(selKey(lane, id));
 function selectAll() { // ⌘A: every clip on every track
-  S.multi.clear();
   const all = LANES.flatMap(L => P[L.key].filter(c => !locked(L.key, c)).map(c => [L.key, c.id]));
   if (!all.length) return;
-  S.sel = { lane: all[0][0], id: all[0][1] };
-  for (const [l, id] of all.slice(1)) S.multi.add(selKey(l, id));
-  renderTimeline(); renderInspector(); S.dirty = true;
-  toast(`${all.length} clips selected`);
+  selectClips(all); toast(`${all.length} clips selected`);
 }
 let clipboard = null;
 function copySel(cut = false) {
@@ -2683,14 +2817,14 @@ function trimTo(side) { // Q / W: delete what is left / right of the playhead in
   });
   if (side === 'left' && lane === 'main') { packMain(); seekTo(kept.start); } // the playhead stays on the same picture
 }
-let menuEl = null;
+let menuEl = null, menuXY = [0, 0];
 function closeMenu() { menuEl?.remove(); menuEl = null; removeEventListener('pointerdown', menuAway, true); }
 const menuAway = e => { if (menuEl && !menuEl.contains(e.target)) closeMenu(); };
-function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled] or '-'
-  closeMenu();
+function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled, swatch colour] or '-'
+  closeMenu(); menuXY = [x, y];
   const m = document.createElement('div');
   m.className = 'ctxmenu'; m.setAttribute('role', 'menu');
-  m.innerHTML = items.map((it, i) => (it === '-' ? '<hr>' : `<button data-mi="${i}" role="menuitem"${it[3] ? ' disabled' : ''}><span>${esc(it[0])}</span><kbd>${esc(it[2] || '')}</kbd></button>`)).join('');
+  m.innerHTML = items.map((it, i) => (it === '-' ? '<hr>' : `<button data-mi="${i}" role="menuitem"${it[3] ? ' disabled' : ''}><span>${it[4] ? `<i class="sw" style="background:${it[4]}"></i>` : ''}${esc(it[0])}</span><kbd>${esc(it[2] || '')}</kbd></button>`)).join('');
   document.body.append(m);
   const r = m.getBoundingClientRect();
   m.style.left = `${clamp(x, 8, innerWidth - r.width - 8)}px`; m.style.top = `${clamp(y, 8, innerHeight - r.height - 8)}px`;
@@ -2701,8 +2835,10 @@ function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled] or '-
 }
 function clipMenu(c, lane) { // what a right-click on a clip offers
   const m = M.get(c.media), vid = m?.kind === 'video', vis = !!m && m.kind !== 'audio', many = selection().length > 1;
-  const items = [['Split', split, 'S'], ['Duplicate', dup, '⌘D'], ['Copy', () => copySel(), '⌘C'], ['Cut', () => copySel(true), '⌘X'], ['Paste', () => paste(), '⌘V', !clipboard],
-    ['Paste look', pasteLook, '⌥⌘V', !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), 'Q'], ['Trim end to playhead', () => trimTo('right'), 'W']];
+  const items = [['Split', split, kb('split')], ['Duplicate', dup, kb('dup')], ['Copy', () => copySel(), kb('copy')], ['Cut', () => copySel(true), kb('cut')], ['Paste', () => paste(), kb('paste'), !clipboard],
+    ['Paste look', pasteLook, kb('pasteLook'), !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), kb('trimL')], ['Trim end to playhead', () => trimTo('right'), kb('trimR')],
+    '-', ['Label…', labelMenu]];
+  if (c.label && LABEL_N[c.label]) items.push(['Select clips with this label', () => selectLabel(c.label)]);
   if (vid || vis) items.push('-');
   if (m && !many && !c.mc && !c.compound) items.push(['Replace…', () => replaceMenu(c, lane)]);
   if (vid) items.push(['Freeze frame', () => quiet(freeze(c, lane))], ['Reverse', () => quiet(remake(c, 'reverse'))]);
@@ -2713,7 +2849,7 @@ function clipMenu(c, lane) { // what a right-click on a clip offers
   if (lane === 'overlay') items.push(['Bring forward', () => restack(c, 1)], ['Send backward', () => restack(c, -1)]);
   if (many) items.push('-', ['Make compound clip', () => makeCompound().catch(e => toast(e.message))]);
   if (c.compound) items.push('-', ['Break apart', () => breakCompound(c)]);
-  items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, '⌫']);
+  items.push('-', [many ? `Delete ${selection().length} clips` : 'Delete', del, kb('del')]);
   return items;
 }
 function penMap(c, h) { // a pen mask's units <-> preview canvas pixels (the mask sits in the clip's drawn rect, turning with it)
@@ -5048,12 +5184,12 @@ function wire() {
     if (th) {
       const c = P.main.find(x => x.id === th.dataset.trFor);
       S.sel = { lane: 'tr', id: c.id }; S.multi.clear(); renderAll(); S.dirty = true;
-      return openMenu(e.clientX, e.clientY, [['Transitions…', () => openTab('transitions')], ['Use this one on every cut', () => applyTransition(c.tr?.type || 'fade', true), '', !c.tr], '-', ['Remove transition', () => change(() => { delete c.tr; }), '⌫', !c.tr]]);
+      return openMenu(e.clientX, e.clientY, [['Transitions…', () => openTab('transitions')], ['Use this one on every cut', () => applyTransition(c.tr?.type || 'fade', true), '', !c.tr], '-', ['Remove transition', () => change(() => { delete c.tr; }), kb('del'), !c.tr]]);
     }
     if (!el) {
       const left = $('#tlInner').getBoundingClientRect().left;
       S.t = snap(clamp((e.clientX - left) / S.pps, 0, total())); placePlayhead(); S.dirty = true;
-      return openMenu(e.clientX, e.clientY, [['Paste here', () => paste(), '⌘V', !clipboard], ['Add marker', toggleMarker, 'M'], ['Select all', selectAll, '⌘A'], '-', ['Fit the edit in view', fitTimeline]]);
+      return openMenu(e.clientX, e.clientY, [['Paste here', () => paste(), kb('paste'), !clipboard], ['Add marker', toggleMarker, kb('marker')], ['Select all', selectAll, kb('selAll')], '-', ['Fit the edit in view', fitTimeline, kb('fit')]]);
     }
     const lane = el.dataset.lane, c = P[lane].find(x => x.id === el.dataset.id);
     if (!c) return;
@@ -5159,7 +5295,7 @@ function wire() {
     e.preventDefault();
     const cv = $('#cv'), r = cv.getBoundingClientRect(), px = cv.width / r.width, x = (e.clientX - r.left) * px, y = (e.clientY - r.top) * px;
     const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
-    if (!hit) return openMenu(e.clientX, e.clientY, [['Paste at the playhead', () => paste(), '⌘V', !clipboard], ['Theater view', () => toggleTheater(), 'F']]);
+    if (!hit) return openMenu(e.clientX, e.clientY, [['Paste at the playhead', () => paste(), kb('paste'), !clipboard], ['Theater view', () => toggleTheater(), kb('theater')]]);
     const c = P[hit.lane].find(q => q.id === hit.id);
     if (!c) return;
     if (!isSel(hit.lane, c.id)) { S.multi.clear(); S.sel = { lane: hit.lane, id: c.id }; renderAll(); S.dirty = true; }
@@ -5268,7 +5404,9 @@ function wire() {
       S.itab = d.itab;
       $$('#inspector .itabs button').forEach(x => x.classList.toggle('on', x === b));
       $$('#inspector .isec').forEach(x => x.classList.toggle('on', x.dataset.sec === d.itab));
-    } else if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
+    } else if ('label' in d) setLabel(d.label);
+    else if (d.sellabel) selectLabel(d.sellabel);
+    else if (d.ratio) { change(() => { [P.w, P.h] = RATIOS[d.ratio]; }); fitStage(); }
     else if (d.fps) { change(() => { P.fps = +d.fps; }); renderAll(); }
     else if (d.fit) change(() => { c.fit = d.fit; });
     else if (d.cappreset) change(() => { P.capStyle = capPreset(d.cappreset); });
@@ -5392,50 +5530,17 @@ function wire() {
 
   addEventListener('keydown', e => {
     if (!P) return;
-    if (!$('#modal').hidden) { if (e.key === 'Escape') closeModal(); return; }
+    if (!$('#modal').hidden) { if (KC.for && $('#modal .keysheet')) keyCapture(e); else if (e.key === 'Escape') closeModal(); return; }
     if (e.key === 'Escape' && e.target.matches('#inspector textarea')) { e.target.blur(); return; } // back to the timeline keys
     if (e.target.matches('textarea, select, input:not([type=range]):not([type=checkbox]):not([type=color])')) return;
-    if (e.repeat && ['Space', 'KeyF', 'KeyM'].includes(e.code)) { e.preventDefault(); return; } // a held key toggles once, not on every repeat
-    const mod = e.metaKey || e.ctrlKey, key = e.key.toLowerCase();
-    const field = e.target.matches('input[type=range], input[type=checkbox], input[type=color]');
+    const key = e.key.toLowerCase(), field = e.target.matches('input[type=range], input[type=checkbox], input[type=color]');
     if (!$('#confirmBar').hidden && (key === 'enter' || key === 'escape')) { e.preventDefault(); return endPreview(key === 'enter' ? 'ok' : null); }
-    if (e.code === 'Space' && !e.target.matches('input[type=checkbox], input[type=color]')) { e.preventDefault(); if (S.playing) pause(); else play(); }
-    else if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) restore(redo, undo); else restore(undo, redo); }
-    else if (mod && key === 'd') { e.preventDefault(); dup(); }
-    else if (mod && e.code === 'KeyC') { e.preventDefault(); copySel(); }
-    else if (mod && e.code === 'KeyX') { e.preventDefault(); copySel(true); }
-    else if (mod && e.code === 'KeyV') { e.preventDefault(); if (e.altKey) pasteLook(); else paste(); }
-    else if (mod && e.code === 'KeyA') { e.preventDefault(); selectAll(); }
-    else if (!mod && S.src && (e.code === 'KeyI' || e.code === 'KeyO')) { e.preventDefault(); srcMark(e.code === 'KeyI' ? 'i' : 'o'); }
-    else if (!mod && !e.altKey && S.src && !field && (key === 'arrowleft' || key === 'arrowright')) { e.preventDefault(); const m = M.get(S.src.id); srcSeek(S.src.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / (m?.fps || 30))); }
-    else if (key === 'escape' && S.src && !menuEl) closeSource();
-    else if (!mod && /^Digit[1-6]$/.test(e.code) && P.main.some(c => c.mc)) { e.preventDefault(); mcCut(+e.code.slice(5) - 1); }
-    else if (!mod && e.code === 'KeyL') { e.preventDefault(); shuttle(1); }
-    else if (!mod && e.code === 'KeyJ') { e.preventDefault(); shuttle(-1); }
-    else if (!mod && e.code === 'KeyK') { e.preventDefault(); pause(); }
-    else if (!mod && (key === 'arrowup' || key === 'arrowdown') && !field) { e.preventDefault(); const pts = editPoints(), t = snap(S.t); seekTo(key === 'arrowup' ? (pts.filter(x => x < t - 1e-6).at(-1) ?? 0) : (pts.find(x => x > t + 1e-6) ?? total())); }
-    else if (mod && (e.key === '=' || e.key === '+' || e.key === '-')) { e.preventDefault(); const sc = $('#tlScroll'); setZoom(S.pps * (e.key === '-' ? 0.8 : 1.25), clamp(S.t * S.pps - sc.scrollLeft, 0, sc.clientWidth)); }
-    else if (!mod && e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); fitTimeline(); }
-    else if (!mod && e.key === '?') { e.preventDefault(); shortcuts(); }
-    else if (!mod && e.shiftKey && e.code === 'KeyA') { e.preventDefault(); const off = store.get('cutroom.scrubSound') !== 'off'; store.set('cutroom.scrubSound', off ? 'off' : 'on'); toast(off ? 'Sound while scrubbing: off' : 'Sound while scrubbing: on'); }
-    else if (e.altKey && !mod && (key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); nudge(key === 'arrowleft' ? -1 : 1); }
-    else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
-    else if (!mod && e.code === 'KeyW') { e.preventDefault(); trimTo('right'); }
-    else if (!mod && e.code === 'KeyF') { e.preventDefault(); toggleTheater(); }
-    else if (!mod && !e.altKey && e.code === 'KeyG') { e.preventDefault(); setScope({ on: !SCOPE.on }); }
-    else if ((key === 'backspace' || key === 'delete') && G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) { e.preventDefault(); cutScript(); }
-    else if (!mod && !e.altKey && TOOL_KEYS[e.code]) { e.preventDefault(); setTool(TOOL_KEYS[e.code]); }
-    else if ((mod && key === 'b') || (!mod && key === 's')) { e.preventDefault(); split(); }
-    else if (!mod && key === 'm') { e.preventDefault(); toggleMarker(); }
-    else if ((key === 'backspace' || key === 'delete') && !field) { e.preventDefault(); del(); }
-    else if ((key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); seekTo(S.t + (key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / P.fps)); }
-    else if ((key === 'home' || key === 'end') && !field) { e.preventDefault(); seekTo(key === 'home' ? 0 : total()); }
-    else if (key === 'escape' && S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
-    else if (key === 'escape' && S.pick) { S.pick = null; toast('Cancelled'); }
-    else if (key === 'escape' && menuEl) closeMenu();
-    else if (key === 'escape' && document.body.classList.contains('theater')) toggleTheater(false);
-    else if (key === 'escape' && (S.sel || S.multi.size)) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
+    const id = KEYBY.get(keyCombo(e)); // the shortcut sheet's map: every action, whatever key this Mac gave it
+    if (!id) return;
+    if (e.repeat && ['play', 'theater', 'marker'].includes(id)) { e.preventDefault(); return; } // a held key toggles once, not on every repeat
+    if (KEYDEF[id][3](e, field) !== false) e.preventDefault();
   });
+  applyKeys();
   new ResizeObserver(fitStage).observe($('#stage'));
   addEventListener('resize', () => { renderTimeline(); fitPanes(); });
   fitPanes();
@@ -5843,10 +5948,11 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.kf?.length) o.keyframes = c.kf.length;
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   if (c.duck) o.duck = c.duck;
+  if (c.label) o.label = c.label;
   return o;
 }
 const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease', 'sndLead', 'sndTail',
-  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt']);
+  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt', 'label']);
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete o[k];
@@ -5919,6 +6025,8 @@ const REMOTE = {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
     if (set.fx !== undefined && !FX[set.fx] && set.fx !== 'adjust') throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}, adjust`);
+    if (set.label === '' || set.label === 'none') set.label = null;
+    if (set.label != null && !LABEL_N[set.label]) throw new Error(`label must be one of ${LABELS.map(x => x[0]).join(', ')}, or null for none`);
     const nan = ['speed', 'volume', 'scale', 'x', 'y', 'rot', 'opacity', 'fadeIn', 'fadeOut', 'start', 'dur', 'in', 'out', 'amt', 'mb', 'sndLead', 'sndTail'].filter(k => set[k] !== undefined && (set[k] !== null || ['speed', 'volume', 'start', 'dur', 'in', 'out'].includes(k)) && !Number.isFinite(set[k]));
     if (nan.length) throw new Error(`${nan.join(', ')} must be numbers`);
     if (set.speed !== undefined && !(set.speed >= 0.1 && set.speed <= 100)) throw new Error('speed must be 0.1-100');
