@@ -3210,7 +3210,7 @@ def scenes(mid, thr=0.3):
 _MCP = []
 PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
              'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'relink_media', 'compound_clip',
-             'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media'}  # need a box, a path or a picture to look at, or only read
+             'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media', 'open_package'}  # need a box, a path or a picture to look at, or only read
 PILOT_ENUM = {('auto_captions', 'style'): 'captionPresets', ('add_text', 'preset'): 'textPresets', ('set_transition', 'type'): 'transitions', ('add_effect', 'type'): 'effects',
               ('add_sound_effect', 'name'): 'sounds', ('export', 'preset'): 'exportPresets', ('export', 'format'): 'formats', ('clip_tool', 'ramp'): 'speedRamps',
               ('auto_reframe', 'ratio'): 'ratios'}
@@ -5341,6 +5341,255 @@ def poster(pid):
     return None
 
 
+# ---------- packages: a project and everything it uses in one .cutroom zip (stored), to move it to another Mac or archive it ----------
+
+PKG_NAME = re.compile(r'manifest\.json|project\.json|media/[a-f0-9]{12}(?:_\d{1,4})?\.[a-z0-9]{1,5}|fonts/[a-f0-9]{12}\.(?:ttf|otf|woff2)|luts/[a-f0-9]{12}\.cube')
+PKG_CAP = {'manifest.json': 16 << 20, 'project.json': 64 << 20, 'fonts': 32 << 20, 'luts': 64 << 20, 'media': 1 << 40}  # bytes per entry
+PKG_META = ('pack', 'licence', 'src', 'sfx')  # what makes a library item a sound-library one (reused by pack_media / sfx_media there too)
+
+
+def dicts(o):  # every object in a project, nested ones too (compound clips' insides, multicam angles)
+    if isinstance(o, dict):
+        yield o
+        o = list(o.values())
+    if isinstance(o, list):
+        for v in o:
+            yield from dicts(v)
+
+
+def sha_file(f):
+    import hashlib
+    h = hashlib.sha256()
+    with open(f, 'rb') as fh:
+        while b := fh.read(1 << 20):
+            h.update(b)
+    return h.hexdigest()
+
+
+def key_before(src, t):  # the last keyframe at or before t: a stream copy from there has no hidden pre-roll
+    r = sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey', '-show_entries', 'frame=pts_time', '-of', 'csv=p=0',
+            '-read_intervals', f'{max(0.0, t - 30):.3f}%{t + 0.001:.3f}', str(src)])
+    t0 = float(sh(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time', '-of', 'csv=p=0', str(src)]).stdout.strip() or 0)
+    return max((k for k in (float(x) - t0 for x in re.findall(r'^-?[\d.]+', r.stdout, re.M)) if k <= t + 1e-6), default=0.0)
+
+
+def cut_range(m, a, b, stem):
+    """[a, b] (source seconds) of a library file as a file of its own -> (file, where it starts in the source, 'copy' | 'encode'),
+    or None: keep the file whole. Video is stream copied from the keyframe before a where the cut stays in sync: no sound, or an
+    MP4 / MOV with AAC, ALAC or PCM (its edit list hides the pre-roll; measured within 3 samples). Else a high-quality re-encode,
+    never for alpha or HDR (it would lose them). Sound files are cut from exact_audio() (M4A / MP3 input seeks land off), to FLAC
+    when they were lossless, else AAC 256k."""
+    video, orig = m['kind'] == 'video', MEDIA / m['file']
+    src, ext = orig if video else exact_audio(m), orig.suffix.lower()
+    ac = sh(['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', str(orig)]).stdout.strip()
+    tries = []
+    if video and (not ac or (ext in ('.mp4', '.mov', '.m4v') and (ac in ('aac', 'alac') or ac.startswith('pcm_')))):
+        tries.append(('copy', key_before(src, a), ext, ['-map', '0:V?', '-map', '0:a?', '-c', 'copy']))
+    if video and not (m.get('alpha') or m.get('trans') or m.get('hdr')):
+        fps = m.get('fps') or 30
+        tries.append(('encode', math.floor(a * fps + 1e-6) / fps, '.mp4', ['-map', '0:V:0', '-map', '0:a:0?', '-c:v', 'libx264', '-crf', '16', '-preset', 'medium',
+                                                                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '256k']))
+    elif not video:
+        lossless = ac in ('flac', 'alac') or ac.startswith('pcm_')
+        tries.append(('encode', a, '.flac' if lossless else '.m4a', ['-map', '0:a:0', *(['-c:a', 'flac'] if lossless else ['-c:a', 'aac', '-b:a', '256k'])]))
+    for how, k, x, args in tries:
+        f = stem.with_suffix(x)
+        r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{k:.6f}', '-i', str(src), '-t', f'{b - k:.6f}', *args, '-map_metadata', '0', '-threads', FF_THREADS, str(f)], low=True)
+        try:
+            q = probe(f) if r.returncode == 0 else None
+        except ValueError:
+            q = None
+        if q and q['duration'] >= min(b, m['duration']) - k - 0.1 and all(q.get(y) == m.get(y) for y in ('w', 'h', 'hasAudio')):
+            return f, k, how
+        f.unlink(missing_ok=True)
+    return None
+
+
+def package(st, pid, trim=False):
+    """A project, every library item it uses (whole, or with trim only the used ranges plus 1 s handles), its imported fonts
+    and LUTs and a manifest with each file's SHA-256, as <exports>/<name>.cutroom."""
+    import hashlib
+    p = json.loads((PROJ / f'{pid}.json').read_text())
+    raw = json.dumps(p)
+    ids = [i for i in dict.fromkeys(re.findall(r'"([a-f0-9]{12})"', raw)) if has_file(i)]  # any value naming a library item: clips, ramp sources, angles
+    missing = sorted({d['media'] for d in dicts(p) if isinstance(d.get('media'), str)} - set(ids))
+    fams = {d[k] for d in dicts(p) for k in ('font', 'biFont') if isinstance(d.get(k), str)}
+    fonts = [f for f in (json.loads(x.read_text()) for x in (HOME / 'fonts').glob('*.json')) if f['family'] in fams]
+    luts = sorted({d['lut']['id'] for d in dicts(p) if isinstance(d.get('lut'), dict) and ID.fullmatch(str(d['lut'].get('id'))) and (HOME / 'luts' / f"{d['lut']['id']}.cube").is_file()})
+    entries, items = [], []  # (zip name, file, manifest row); what happened to each library item
+    num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
+    EXPORTS.mkdir(parents=True, exist_ok=True)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='pkg-', dir=CACHE) as td:
+        for n, mid in enumerate(ids):
+            if st.get('cancel'):
+                raise RuntimeError('cancelled')
+            st['progress'] = 0.3 * n / len(ids) if trim else 0.0
+            m = meta(mid)
+            src = MEDIA / m['file']
+            row = {'id': mid, 'name': m['name'], 'kind': m['kind'], **{k: m[k] for k in PKG_META if k in m}}
+            refs = [d for d in dicts(p) if d.get('media') == mid and num(d.get('in')) and num(d.get('out'))]
+            parts = []
+            if trim and m['kind'] != 'image' and m.get('duration') and len(refs) == raw.count(f'"{mid}"'):  # used only as clips (else whole: an angle, a ramp's source)
+                hs = [1 + max(d.get('sndLead') or 0, d.get('sndTail') or 0) * (d.get('speed') or 1) for d in refs]  # 1 s, plus a J/L cut's extra sound
+                for i, (a, b) in enumerate(spans([(d['in'] - h, d['out'] + h) for d, h in zip(refs, hs)], m['duration'])):
+                    if not (c := cut_range(m, a, b, Path(td) / f'{mid}_{i}')):
+                        parts = []
+                        break
+                    parts.append((b, *c))
+                if parts and sum(f.stat().st_size for _, f, _, _ in parts) >= src.stat().st_size:
+                    parts = []  # (no smaller: one GOP covers it all)
+            if parts:
+                for d in refs:
+                    i, (b, f, k, how) = next((i, x) for i, x in enumerate(parts) if x[2] - 1e-6 <= d['in'] and d['out'] <= x[0] + 1e-6)
+                    d.update(media=f'{mid}_{i}', **{'in': round(d['in'] - k, 6), 'out': round(d['out'] - k, 6)})
+                for i, (b, f, k, how) in enumerate(parts):
+                    entries.append((f'media/{mid}_{i}{f.suffix}', f, {**row, 'id': f'{mid}_{i}', 'name': f"{Path(m['name']).stem} {k:.1f}-{b:.1f} s{f.suffix}",
+                                                                      'cut': {'from': mid, 'at': round(k, 6), 'to': round(b, 6), 'how': how}}))
+                hows = {x[3] for x in parts}
+                items.append({'name': m['name'], 'how': 'copy' if hows == {'copy'} else 'encode', 'parts': len(parts)})
+            else:
+                entries.append((f'media/{mid}{src.suffix.lower()}', src, row))
+                items.append({'name': m['name'], 'how': 'whole', 'parts': 1})
+        for f in fonts:
+            entries.append((f"fonts/{f['file']}", HOME / 'fonts' / f['file'], {'id': f['id'], 'family': f['family']}))
+        for lid in luts:
+            info = json.loads((HOME / 'luts' / f'{lid}.json').read_text()) if (HOME / 'luts' / f'{lid}.json').is_file() else {'name': 'LUT'}
+            entries.append((f'luts/{lid}.cube', HOME / 'luts' / f'{lid}.cube', {'id': lid, 'name': info.get('name', 'LUT')}))
+        stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(p.get('name') or '')).strip(' .')[:100] or 'Project'
+        out = unique(EXPORTS / f'{stem}.cutroom')
+        part, total, done = out.with_name(f'.{out.name}.part'), sum(f.stat().st_size for _, f, _ in entries) or 1, 0
+        man = {'format': 'cutroom-package', 'v': 1, 'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'trim': bool(trim),
+               'project': {'name': p.get('name'), **proj_stats(p)}, 'media': [], 'fonts': [], 'luts': [], 'missing': missing}
+        try:
+            with zipfile.ZipFile(part, 'w', zipfile.ZIP_STORED, allowZip64=True) as z:
+                for name, f, row in entries:
+                    zi = zipfile.ZipInfo(name, time.localtime()[:6])
+                    zi.file_size, h = f.stat().st_size, hashlib.sha256()
+                    with open(f, 'rb') as fh, z.open(zi, 'w') as w:
+                        while b := fh.read(1 << 20):
+                            if st.get('cancel'):
+                                raise RuntimeError('cancelled')
+                            h.update(b)
+                            w.write(b)
+                            done += len(b)
+                            st['progress'] = (0.3 if trim else 0) + (0.7 if trim else 1) * done / total
+                    man[name.split('/')[0]].append({**row, 'file': name, 'size': zi.file_size, 'sha256': h.hexdigest()})
+                    if name.startswith('media/') and '_' not in name:  # its content key, kept: opening a package on this Mac finds it without reading it again
+                        with contextlib.suppress(OSError, ValueError):
+                            save_meta({**meta(row['id']), 'sha256': h.hexdigest()})
+                z.writestr('project.json', json.dumps(p))
+                z.writestr('manifest.json', json.dumps(man, indent=1))
+            part.replace(out)
+        finally:
+            part.unlink(missing_ok=True)
+    return {'file': out.name, 'dir': str(EXPORTS).replace(str(Path.home()), '~', 1), 'size': out.stat().st_size, 'items': items,
+            'fonts': len(fonts), 'luts': len(luts), 'missing': len(missing)}
+
+
+def same_file(f, sha):  # a library item with exactly these bytes (only items of the same size are read; their key is kept)
+    size = f.stat().st_size
+    for j in MEDIA.glob('*.json'):
+        try:
+            m = json.loads(j.read_text())
+            if (MEDIA / m['file']).stat().st_size != size:
+                continue
+        except (OSError, ValueError, KeyError):
+            continue
+        if not m.get('sha256'):
+            m['sha256'] = sha_file(MEDIA / m['file'])
+            save_meta(m)
+        if m['sha256'] == sha:
+            return m
+
+
+def open_package(st, path, drop=False):
+    """A .cutroom into this library: its media (an identical file already here is reused), fonts and LUTs, then the project
+    under a new id with every reference remapped. Only the names a package has are accepted, each within its size cap."""
+    import hashlib
+    work = CACHE / f'pkg-{uuid.uuid4().hex[:8]}'
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = {}
+            for i in z.infolist():  # (zip-slip: a name outside these patterns, ../ or absolute, refuses the whole package)
+                if not PKG_NAME.fullmatch(i.filename) or i.filename in infos or i.flag_bits & 1 or i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) \
+                        or i.file_size > PKG_CAP[i.filename.split('/')[0]]:
+                    raise ValueError(f'not a Cutroom package: it holds {i.filename[:80]!r}')
+                infos[i.filename] = i
+            if not {'manifest.json', 'project.json'} <= set(infos):
+                raise ValueError('not a Cutroom package (no manifest)')
+            man, p = json.loads(z.read('manifest.json')), json.loads(z.read('project.json'))
+            if not isinstance(man, dict) or man.get('format') != 'cutroom-package' or not isinstance(p, dict):
+                raise ValueError('not a Cutroom package')
+            if man.get('v') != 1:
+                raise ValueError('this package was made by a newer Cutroom')
+            rows = [(k, r) for k in ('media', 'fonts', 'luts') for r in man.get(k) or []]
+            if any(not isinstance(r, dict) or not str(r.get('file', '')).startswith(f'{k}/') or r['file'] not in infos or not isinstance(r.get('id'), str) for k, r in rows):
+                raise ValueError('the package is damaged: its manifest names a file it does not hold')
+            total = sum(infos[r['file']].file_size for _, r in rows)
+            if total > shutil.disk_usage(HOME).free - (2 << 30):
+                raise ValueError(f'not enough free space: the package needs {total / 1e9:.1f} GB')
+            work.mkdir(parents=True)
+            remap, fam, lut, done, reused = {}, {}, {}, 0, 0
+            for k, r in rows:
+                f, h = work / Path(r['file']).name, hashlib.sha256()
+                with z.open(infos[r['file']]) as src, open(f, 'wb') as out:  # (zipfile stops at the entry's size and checks its CRC)
+                    while b := src.read(1 << 20):
+                        if st.get('cancel'):
+                            raise RuntimeError('cancelled')
+                        h.update(b)
+                        out.write(b)
+                        done += len(b)
+                        st['progress'] = 0.95 * done / (total or 1)
+                if r.get('sha256') != h.hexdigest():
+                    raise ValueError(f"the package is damaged: {r['file']} does not match its checksum")
+                if k == 'media':
+                    if m := same_file(f, h.hexdigest()):
+                        reused += 1
+                    else:
+                        m = import_file(Path(str(r.get('name') or 'media')).stem[:150] + f.suffix, None, 0, src=f)
+                        if not m.pop('dup', None):  # (the source key import_file made is the unpacked copy's: meaningless later)
+                            m.update(name=str(r.get('name') or m['name'])[:200], sha256=h.hexdigest(), **{x: r[x] for x in PKG_META if x in r})
+                            m.pop('srckey', None)
+                            save_meta(m)
+                    remap[r['id']] = m['id']
+                elif k == 'fonts':
+                    info = import_font(f"{r.get('family') or 'Font'}{f.suffix}", f.read_bytes())
+                    fam[str(r.get('family'))] = info['family']
+                else:
+                    text, d = f.read_text(errors='replace'), HOME / 'luts'
+                    if not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):
+                        raise ValueError('the package is damaged: a LUT in it is not a .cube')
+                    d.mkdir(parents=True, exist_ok=True)
+                    lid = r['id'] if ID.fullmatch(r['id']) and not ((d / f"{r['id']}.cube").exists() and (d / f"{r['id']}.cube").read_text(errors='replace') != text) else uuid.uuid4().hex[:12]
+                    if not (d / f'{lid}.cube').exists():
+                        (d / f'{lid}.cube').write_text(text)
+                        (d / f'{lid}.json').write_text(json.dumps({'id': lid, 'name': str(r.get('name') or 'LUT')[:80]}))
+                    lut[r['id']] = lid
+
+        def fix(o):  # every reference to a packaged file, wherever it sits (clips, compound insides, angles, ramp sources)
+            for k, v in (o.items() if isinstance(o, dict) else enumerate(o)):
+                if isinstance(v, str):
+                    o[k] = remap.get(v, fam.get(v, v) if k in ('font', 'biFont') else v)
+                elif isinstance(v, (dict, list)):
+                    fix(v)
+            if isinstance(o, dict) and isinstance(o.get('lut'), dict) and o['lut'].get('id') in lut:
+                o['lut']['id'] = lut[o['lut']['id']]
+        fix(p)
+        p.update(id=uuid.uuid4().hex[:12], name=str(p.get('name') or 'Packaged project')[:200])
+        PROJ.mkdir(parents=True, exist_ok=True)
+        tmp = PROJ / f".{p['id']}.tmp"
+        tmp.write_text(json.dumps(p))
+        tmp.replace(PROJ / f"{p['id']}.json")
+        return {'project': p['id'], 'name': p['name'], 'media': len(remap), 'reused': reused, 'fonts': len(fam), 'luts': len(lut)}
+    except zipfile.BadZipFile:
+        raise ValueError('not a Cutroom package (not a zip file)')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if drop:
+            Path(path).unlink(missing_ok=True)
+
+
 # ---------- HTTP ----------
 
 class App(BaseHTTPRequestHandler):
@@ -5561,7 +5810,30 @@ class App(BaseHTTPRequestHandler):
                 tmp.write_bytes(data)
                 tmp.replace(d / f't{int(m[2])}.png')  # whole or not there: a plan checked mid-write saw a file that was still being written
                 return self.reply({'ok': True})
+            if u.path == '/api/package/open' and 'name' in parse_qs(u.query):  # a .cutroom's bytes (Open package…, or one dropped on the window)
+                n = int(self.headers.get('Content-Length') or 0)
+                if n > shutil.disk_usage(HOME).free - (4 << 30):
+                    raise ValueError('not enough free space for this package')
+                CACHE.mkdir(parents=True, exist_ok=True)
+                f = CACHE / f'pkg-{uuid.uuid4().hex[:8]}.cutroom'
+                with open(f, 'wb') as out:
+                    while n > 0 and (b := self.rfile.read(min(n, 1 << 20))):
+                        out.write(b)
+                        n -= len(b)
+                if n:
+                    f.unlink()
+                    raise ValueError('the upload was cut off')
+                return self.reply({'job': run_job(open_package, f, True)})
             body = self.body()
+            if u.path == '/api/package/open':  # the MCP server: a package on this Mac by its path
+                f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
+                if not f.is_file():
+                    raise ValueError(f'no such file: {f}')
+                return self.reply({'job': run_job(open_package, f)})
+            if u.path == '/api/package':  # a saved project into <exports>/<name>.cutroom
+                if not ID.fullmatch(str(body.get('id'))) or not (PROJ / f"{body['id']}.json").is_file():
+                    raise ValueError('no such project')
+                return self.reply({'job': run_job(package, body['id'], body.get('trim') is True)})
             if u.path == '/api/transcribe':
                 return self.reply({'words': transcribe(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
             if u.path == '/api/transcribe/progress':  # how far whisper is on that file (null: not listening)

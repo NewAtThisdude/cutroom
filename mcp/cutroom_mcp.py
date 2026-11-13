@@ -272,6 +272,14 @@ TOOLS = [
                  'dur, clips), save a named version of it as it is now, or restore one by id (the current state is kept as a version first, '
                  'and the restore is one undo step).',
      S({'action': {'type': 'string', 'enum': ['list', 'save', 'restore']}, 'name': txt, 'version': txt}), 'versions'),
+    ('package_project', 'Package a project (default the open one; project = id or name) to move it to another Mac or archive it: one .cutroom file '
+                        '(a stored zip) in the exports folder with the project, every library file it uses, its imported fonts and LUTs and a manifest. '
+                        'trim=true keeps only the used part of each video / sound plus 1 s either side (stream copy where the format allows, else a '
+                        'high-quality re-encode; items says which per file: copy | encode | whole).',
+     S({'project': txt, 'trim': boo}), 'package_project'),
+    ('open_package', 'Open a .cutroom package from this Mac by its path: its files go into the library (one already there with the same content is '
+                     'reused), its fonts and LUTs are imported, and its project is added under a new id and opened.',
+     S({'path': txt}, ['path']), 'open_package'),
     ('meter', 'The preview\'s loudness meter (EBU R128): momentary (400 ms), short-term (3 s) and integrated (since reset) LUFS of what has played, '
               'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
               'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
@@ -315,7 +323,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':
