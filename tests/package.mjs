@@ -45,6 +45,7 @@ const [V, I, A] = [await imp(`${FX}/clip.mp4`), await imp(`${FX}/still.png`), aw
 const font = await (await fetch(`${B}/api/fonts?name=Package%20Face.ttf`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: readFileSync(`${ROOT}/web/fonts/BebasNeue.ttf`) })).json();
 const L = await api(B, '/api/luts', { name: 'swap.cube', text: readFileSync(`${FX}/swap.cube`, 'utf8') });
 for (let i = 0; i < 120; i++) { const m = await api(B, '/api/media'); if ([V, A].every(x => m.find(y => y.id === x.id)?.ready)) break; await sleep(500); }
+{ const f = `${HOME}/media/${A.id}.json`; writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), pack: 'test-pack-tone', sfx: 'test-sfx', licence: 'CC0', src: 'https://example.org/tone' })); } // the MP3 as a sound-library item
 
 // ---- the second server: an empty library ----
 const HOME2 = mkdtempSync(`${SCR}/lib2-package-empty-`);
@@ -113,6 +114,7 @@ await pb.evaluate(async s => {
 await pb.waitForFunction(() => P.name === 'Package test' && M.size === 3 && [...M.values()].every(m => m.ready), null, { timeout: 120000 });
 const lib2 = await api(B2, '/api/media');
 check('dropping the .cutroom fills the empty library with its 3 files', lib2.length === 3 && lib2.every(m => m.sha256), lib2.map(m => m.name).join(', '));
+check('a whole sound-library item keeps its pack, sound effect, licence and source', lib2.some(m => m.pack === 'test-pack-tone' && m.sfx === 'test-sfx' && m.licence === 'CC0' && m.src), JSON.stringify(lib2.map(m => [m.name, m.pack])));
 check('its font and LUT came along', (await api(B2, '/api/fonts')).some(f => f.family === font.family) && (await api(B2, '/api/luts')).some(x => x.id === L.id));
 check('the opened project points only at the new library', await pb.evaluate(() => LANES.every(Ln => P[Ln.key].every(c => !c.media || M.has(c.media)))));
 check('durations are equal', Math.abs(await pb.evaluate(() => total()) - dur) < 1e-6, `${dur}`);
@@ -145,7 +147,8 @@ for (const [i, t] of T.entries()) {
   const d = await diff(pb, orig[i], await shot(pb, t));
   check(`trim: the frame at ${t} s still renders the same (within 2 levels)`, d <= 2, d.toFixed(2));
 }
-const am = (await api(B2, '/api/media')).find(m => m.name.startsWith('tone') && m.name.endsWith('.m4a'));
+const lib2t = await api(B2, '/api/media'), am = lib2t.find(m => m.name.startsWith('tone') && m.name.endsWith('.m4a'));
+check('trim: the cut sound keeps its licence and source but is not the pack sound or sound effect (else adding those again gives the fragment)', am && am.licence === 'CC0' && am.src && !('pack' in am) && !('sfx' in am) && !('pack' in acut) && !('sfx' in acut), JSON.stringify(am ? { pack: am.pack, sfx: am.sfx, licence: am.licence } : lib2t.map(m => m.name)));
 check('trim: the cut sound covers its used range', am && am.duration >= 4 - 0.05, `${am?.duration}`);
 const c0 = click(`${HOME}/media/${A.id}.mp3`), c1 = am && click(`${HOME2}/media/${am.file}`);
 check('trim: the cut sound is where the clip expects it (the click 1 s earlier, within 1 ms)', c0 && c1 != null && Math.abs(c0 - 1 - c1) < 0.001, `${c0?.toFixed(5)} -> ${c1?.toFixed(5)}`);

@@ -5444,7 +5444,8 @@ def package(st, pid, trim=False):
                     i, (b, f, k, how) = next((i, x) for i, x in enumerate(parts) if x[2] - 1e-6 <= d['in'] and d['out'] <= x[0] + 1e-6)
                     d.update(media=f'{mid}_{i}', **{'in': round(d['in'] - k, 6), 'out': round(d['out'] - k, 6)})
                 for i, (b, f, k, how) in enumerate(parts):
-                    entries.append((f'media/{mid}_{i}{f.suffix}', f, {**row, 'id': f'{mid}_{i}', 'name': f"{Path(m['name']).stem} {k:.1f}-{b:.1f} s{f.suffix}",
+                    # (a fragment keeps licence/src but is not that pack sound or effect: pack_media / sfx_media would return it)
+                    entries.append((f'media/{mid}_{i}{f.suffix}', f, {**{x: v for x, v in row.items() if x not in ('pack', 'sfx')}, 'id': f'{mid}_{i}', 'name': f"{Path(m['name']).stem} {k:.1f}-{b:.1f} s{f.suffix}",
                                                                       'cut': {'from': mid, 'at': round(k, 6), 'to': round(b, 6), 'how': how}}))
                 hows = {x[3] for x in parts}
                 items.append({'name': m['name'], 'how': 'copy' if hows == {'copy'} else 'encode', 'parts': len(parts)})
@@ -5549,7 +5550,7 @@ def open_package(st, path, drop=False):
                     else:
                         m = import_file(Path(str(r.get('name') or 'media')).stem[:150] + f.suffix, None, 0, src=f)
                         if not m.pop('dup', None):  # (the source key import_file made is the unpacked copy's: meaningless later)
-                            m.update(name=str(r.get('name') or m['name'])[:200], sha256=h.hexdigest(), **{x: r[x] for x in PKG_META if x in r})
+                            m.update(name=str(r.get('name') or m['name'])[:200], sha256=h.hexdigest(), **{x: r[x] for x in PKG_META if x in r and not (r.get('cut') and x in ('pack', 'sfx'))})
                             m.pop('srckey', None)
                             save_meta(m)
                     remap[r['id']] = m['id']
