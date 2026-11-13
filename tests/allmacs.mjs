@@ -233,7 +233,7 @@ for (const [i, ram] of RAMS.entries()) {
             text: [...c.querySelectorAll('.mc')].map(e => e.innerText.replace(/\s+/g, ' ')) };
         });
         const want = caps.jobs.filter(j => j.refused).map(j => j.kind);
-        check(`${ram} GB · panel (${rm}): every AI job listed, the refused ones say why`, ui.n === caps.jobs.length && JSON.stringify(ui.off) === JSON.stringify(want) && ui.text.filter(t => t.includes('Not on this Mac')).length === want.length,
+        check(`${ram} GB · panel (${rm}): every AI job listed, the refused ones say why`, ui.n === caps.jobs.length && JSON.stringify(ui.off) === JSON.stringify(want) && ui.text.filter(t => t.includes('Not on this computer')).length === want.length,
           `${ui.n} rows, off ${ui.off}`);
         check(`${ram} GB · panel (${rm}): the summary names this Mac and how it queues`, ui.sum.includes(`${caps.ram} GB`) && ui.sum.includes(caps.queue.slice(1, 20)) && (!caps.fake || ui.sum.includes('Simulated')), ui.sum);
         check(`${ram} GB · panel (${rm}): fits the AI pane (no sideways overflow), no page errors`, !ui.wide && !errs.length, errs.join(' | '));

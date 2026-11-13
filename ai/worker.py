@@ -67,6 +67,8 @@ def only(name):
         sys.modules['mlx.core'].clear_cache()
     if 'torch' in sys.modules and sys.modules['torch'].backends.mps.is_available():
         sys.modules['torch'].mps.empty_cache()
+    elif 'torch' in sys.modules and sys.modules['torch'].cuda.is_available():
+        sys.modules['torch'].cuda.empty_cache()
 
 
 def voice(req):
