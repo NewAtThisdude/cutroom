@@ -378,7 +378,10 @@ function setProp(c, key, v) { // with keyframes, an edit lands on the keyframe u
   if (!f) { f = { t: lt, ...propsAt(c, lt) }; c.kf.push(f); c.kf.sort((a, b) => a.t - b.t); }
   f[key] = v;
 }
-function change(fn) { undo.push(JSON.stringify(P)); if (undo.length > 200) undo.shift(); redo = []; const an = anchors(); fn(); reanchor(an, true); touched(); }
+// An undo entry is { j: the project before the step (after it, on the redo stack), label, at: ms }. label is optional: the
+// History panel names a step without one from what differs (stepName), only when it is opened.
+function step(before, label) { undo.push({ j: before, label, at: Date.now() }); if (undo.length > 200) undo.shift(); redo = []; }
+function change(fn, label) { step(JSON.stringify(P), label); const an = anchors(); fn(); reanchor(an, true); touched(); }
 // Linkage (on unless the timeline's link button is off): a clip on another track stays over the same picture of the main
 // track when that track is cut, trimmed or reordered. Each one is placed by the source time of the main clip under its start.
 function anchors() {
@@ -449,13 +452,73 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
 }
 function touched() { reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
-function restore(from, to) {
-  if (!from.length) return;
-  to.push(JSON.stringify(P));
-  P = JSON.parse(from.pop());
+function restore(from, to) { if (from.length) jump(undo.length + (from === undo ? -1 : 1)); }
+function jump(k) { // to the state just after step k (0 = the oldest kept): the steps in between move across, one render at the end
+  k = clamp(k, 0, undo.length + redo.length);
+  if (k === undo.length) return;
+  let cur = JSON.stringify(P);
+  while (undo.length > k) { const e = undo.pop(); redo.push({ ...e, j: cur }); cur = e.j; }
+  while (undo.length < k) { const e = redo.pop(); undo.push({ ...e, j: cur }); cur = e.j; }
+  P = JSON.parse(cur);
   if (S.sel && !selClip()) S.sel = null;
   S.multi.clear();
   fitStage(); touched();
+}
+const LANE_WORD = { main: 'clip', overlay: 'overlay', audio: 'sound', text: 'title', captions: 'caption', fx: 'effect' };
+function stepClip(c, lane, p = P) { // what History calls a clip: "clip 3" (its place on the track), title "Hello"
+  if (lane === 'tr') lane = 'main';
+  if (lane === 'text') { const t = String(c.text ?? '').replace(/\s+/g, ' ').trim(); return `title "${t.length > 18 ? `${t.slice(0, 17)}…` : t}"`; }
+  const list = lane === 'main' ? p.main : [...p[lane]].sort((a, b) => a.start - b.start);
+  return `${LANE_WORD[lane]} ${list.findIndex(x => x.id === c.id) + 1}`;
+}
+const FIELD_WORD = { volume: 'volume', vkf: 'volume', opacity: 'opacity', scale: 'size', x: 'position', y: 'position', rot: 'rotation', adj: 'adjustments', grade: 'colour', look: 'filter',
+  fadeIn: 'fade', fadeOut: 'fade', kf: 'keyframes', anim: 'animation', style: 'style', mute: 'sound', mask: 'mask', mkf: 'mask', crop: 'crop', flip: 'mirror', key: 'chroma key', media: 'media' };
+const PROJ_WORD = { name: 'Renamed the project', w: 'Changed the shape', h: 'Changed the shape', fps: 'Changed the frame rate', markers: 'Changed markers', tracks: 'Changed track settings', capStyle: 'Changed caption style' };
+const TRIM_KEYS = new Set(['in', 'out', 'dur', 'start', 'fadeIn', 'fadeOut', 'kf', 'vkf', 'lkf', 'mkf', 'anim', 'words', 'text']);
+function stepName(a, b) { // a step made without a label, named from what differs between the project before (a) and after (b)
+  const parts = [], moves = [], same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  for (const { key: L } of LANES) {
+    const xa = a[L] || [], xb = b[L] || [], A = new Map(xa.map(c => [c.id, c])), B = new Map(xb.map(c => [c.id, c]));
+    const add = xb.filter(c => !A.has(c.id)), gone = xa.filter(c => !B.has(c.id));
+    if (add.length) parts.push(add.length === 1 ? `Added ${stepClip(add[0], L, b)}` : `Added ${add.length} ${LANE_WORD[L]}s`);
+    if (gone.length) parts.push(gone.length === 1 ? `Deleted ${stepClip(gone[0], L, a)}` : `Deleted ${gone.length} ${LANE_WORD[L]}s`);
+    if (L === 'main' && !add.length && !gone.length) { // a reorder: the one clip that moved, if it was one
+      const ia = xa.map(c => c.id), ib = xb.map(c => c.id), without = (l, id) => l.filter(y => y !== id).join();
+      if (ia.join() !== ib.join()) { const id = ib.find(id => without(ia, id) === without(ib, id)); parts.push(id ? `Moved ${stepClip(B.get(id), L, b)}` : 'Reordered clips'); }
+    }
+    for (const y of xb) {
+      const x = A.get(y.id);
+      if (!x) continue;
+      const keys = [...new Set([...Object.keys(x), ...Object.keys(y)])].filter(k => (L !== 'main' || k !== 'start') && !same(x[k], y[k])), n = stepClip(y, L, b); // (main clips are packed: start follows)
+      if (!keys.length) continue;
+      if (keys.every(k => k === 'start')) moves.push(`Moved ${n}`); // also what linkage does to other tracks: said only when nothing else changed
+      else if (keys.includes('speed')) parts.push(`Speed ${+(+y.speed).toFixed(2)}x on ${n}`);
+      else if (keys.some(k => k === 'in' || k === 'out' || k === 'dur') && keys.every(k => TRIM_KEYS.has(k))) parts.push(`Trimmed ${n}`);
+      else if (keys.includes('text')) parts.push(`Edited ${n}`);
+      else if (keys.length === 1 && keys[0] === 'tr') parts.push(`${y.tr ? 'Transition' : 'Removed the transition'} after ${n}`);
+      else parts.push(`Changed ${[...new Set(keys.map(k => FIELD_WORD[k] || k))].slice(0, 3).join(', ')} on ${n}`);
+    }
+  }
+  const lanes = new Set(LANES.map(L => L.key));
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!lanes.has(k) && !same(a[k], b[k])) parts.push(PROJ_WORD[k] || 'Changed project settings');
+  const all = [...new Set(parts.length ? parts : moves.length > 1 ? [`Moved ${moves.length} clips`] : moves)];
+  return !all.length ? 'No change' : all.length === 1 ? all[0] : `${all[0]} (+${all.length - 1} more)`;
+}
+function historyRows() { // every step, oldest first: n, its entry, its name and the states before / after it (JSON, or null = P now)
+  const rows = undo.map((e, i) => ({ n: i + 1, e, a: e.j, b: undo[i + 1]?.j ?? null }));
+  for (let i = redo.length - 1; i >= 0; i--) rows.push({ n: rows.length + 1, e: redo[i], a: redo[i + 1]?.j ?? null, b: redo[i].j });
+  for (const r of rows) {
+    r.name = r.e.label || stepName(r.a ? JSON.parse(r.a) : P, r.b ? JSON.parse(r.b) : P);
+    if (r.a && r.b) r.e.label = r.name; // both sides are kept states: the name can't change, so it is worked out once
+  }
+  return rows;
+}
+function openHistory() {
+  const now = undo.length, row = (n, name, when) => `<button class="hrow${n === now ? ' on' : n > now ? ' undone' : ''}" data-hgo="${n}"${n === now ? ' aria-current="step"' : ''}><b>${esc(name)}</b><small>${n === now ? 'Now · ' : n > now ? 'Undone · ' : ''}${when}</small></button>`;
+  modal(`<h2>History</h2><p class="hint">Click a step to go back to just after it. Undone steps stay until your next edit. ↑ ↓ step through.</p>
+    <div id="histList" class="hlist">${historyRows().reverse().map(r => row(r.n, r.name, ago(r.e.at / 1000))).join('')}${row(0, 'Start', 'the oldest state kept')}</div>
+    <div class="actions"><button data-close>Close</button></div>`);
+  $('#histList .on')?.focus();
 }
 let saveFails = 0;
 function scheduleSave(wait = 400) {
@@ -689,7 +752,7 @@ function nudge(d) { // ⌥← / ⌥→: the selected clips one frame (main clips
 const KEYS = [['Space', 'Play / pause'], ['J  K  L', 'Backwards · stop · forwards (press again: 2x, 4x)'], ['← →', 'One frame (⇧: one second)'], ['↑ ↓', 'Previous / next cut or marker'],
   ['Home  End', 'Start / end'], ['S  or  ⌘B', 'Split at the playhead'], ['Q  W', 'Trim the clip\'s start / end to the playhead'], ['M', 'Marker'], ['I  O', 'Source viewer (click a video in the library): mark in / out'], ['⌥← ⌥→', 'Nudge the selected clips one frame'], ['V  Y  U  N', 'Tool: select · slip · slide · roll (⌥-drag: slip a clip, roll a cut)'],
   ['⌘=  ⌘−', 'Zoom the timeline in / out'], ['⇧Z', 'Fit the timeline'], ['⌘C ⌘X ⌘V', 'Copy · cut · paste (⌥⌘V: paste the look)'], ['⌘D', 'Duplicate'], ['⌘A', 'Select all'],
-  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['⌫', 'Delete'], ['F', 'Big preview'], ['G', 'Scopes: waveform, parade, vectorscope, histogram'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
+  ['⌘Z  ⇧⌘Z', 'Undo / redo'], ['H', 'History: every edit step, go back to any'], ['⌫', 'Delete'], ['F', 'Big preview'], ['G', 'Scopes: waveform, parade, vectorscope, histogram'], ['1 – 6', 'Multicam: cut to that angle'], ['⇧A', 'Sound while scrubbing on / off'], ['Esc', 'Deselect / cancel'], ['?', 'These shortcuts']];
 const TOOL_KEYS = { KeyV: 'select', KeyY: 'slip', KeyU: 'slide', KeyN: 'roll' };
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
@@ -2680,7 +2743,7 @@ function trimTo(side) { // Q / W: delete what is left / right of the playhead in
     kept = side === 'left' ? b : c;
     P[lane] = P[lane].filter(x => x !== (side === 'left' ? c : b));
     S.sel = { lane, id: kept.id }; S.multi.clear();
-  });
+  }, `Trimmed ${stepClip(c, lane)}`);
   if (side === 'left' && lane === 'main') { packMain(); seekTo(kept.start); } // the playhead stays on the same picture
 }
 let menuEl = null;
@@ -2735,7 +2798,7 @@ function penDrag(e, c, h, i) { // drag one pen point (one undo step); ⌥-click 
   if (e.altKey) { if ((c.mask.pts || PEN0).length > 3) change(() => { c.mask.pts = (c.mask.pts || PEN0).filter((_, j) => j !== i).map(q => [...q]); }); return; }
   c.mask.pts ??= PEN0.map(q => [...q]);
   const move = ev => { const [u, v] = map.from((ev.clientX - r.left) * k, (ev.clientY - r.top) * k); c.mask.pts[i] = [+clamp(u, -2, 2).toFixed(4), +clamp(v, -2, 2).toFixed(4)]; S.dirty = true; };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 }
 function selBox(h) { return { cx: (h.x0 + h.x1) / 2, cy: (h.y0 + h.y1) / 2, hw: (h.x1 - h.x0) / 2, hh: (h.y1 - h.y0) / 2, rad: ((h.rot || 0) * Math.PI) / 180 }; }
@@ -2774,7 +2837,7 @@ function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: r
     } else setProp(c, 'scale', +clamp((pr0.scale * Math.hypot(x - b.cx, y - b.cy)) / d0, 0.05, 10).toFixed(3));
     S.dirty = true;
   };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 }
@@ -3186,7 +3249,7 @@ function split() {
   if (!c || !inside(c, lane)) { lane = 'main'; c = P.main.find(x => inside(x, 'main')); }
   if (!c) return toast('Put the playhead over a clip to split it');
   if (locked(lane, c)) return toast('That track is locked: click its lock to edit it'); // (S, Q, W went through on a locked track)
-  change(() => { S.sel = { lane, id: splitClip(c, lane, t).id }; });
+  change(() => { S.sel = { lane, id: splitClip(c, lane, t).id }; }, `Split ${stepClip(c, lane)}`);
 }
 function splitClip(c, lane, t) { // cut c at timeline time t; returns the right half, inserted after c
   {
@@ -3214,12 +3277,12 @@ function splitClip(c, lane, t) { // cut c at timeline time t; returns the right 
 }
 function del() {
   const many = selection().filter(([x, lane]) => !locked(lane, x));
-  if (many.length > 1) { change(() => { for (const [x, lane] of many) P[lane] = P[lane].filter(y => y !== x); S.sel = null; S.multi.clear(); }); return toast(`Deleted ${many.length} clips`); }
+  if (many.length > 1) { change(() => { for (const [x, lane] of many) P[lane] = P[lane].filter(y => y !== x); S.sel = null; S.multi.clear(); }, `Deleted ${many.length} clips`); return toast(`Deleted ${many.length} clips`); }
   const c = selClip();
   if (!c) return;
   if (locked(S.sel.lane, c)) return toast('That track is locked: click its lock to edit it');
-  if (S.sel.lane === 'tr') return change(() => { delete c.tr; });
-  change(() => { P[S.sel.lane] = P[S.sel.lane].filter(x => x !== c); S.sel = null; });
+  if (S.sel.lane === 'tr') return change(() => { delete c.tr; }, `Removed the transition after ${stepClip(c, 'main')}`);
+  change(() => { P[S.sel.lane] = P[S.sel.lane].filter(x => x !== c); S.sel = null; }, `Deleted ${stepClip(c, S.sel.lane)}`);
 }
 function dup() {
   const many = selection().filter(([x, l]) => !locked(l, x));
@@ -3227,7 +3290,7 @@ function dup() {
     change(() => {
       packMain();
       for (const [x, l] of many) { const b = { ...structuredClone(x), id: hex12() }; if (l === 'main') { delete b.tr; P.main.splice(P.main.indexOf(x) + 1, 0, b); } else { b.start = x.start + tdur(x, l); P[l].push(b); } }
-    });
+    }, `Duplicated ${many.length} clips`);
     return toast(`Duplicated ${many.length} clips`);
   }
   const c = selClip(), lane = S.sel?.lane;
@@ -3238,7 +3301,7 @@ function dup() {
     if (lane !== 'main') b.start = c.start + tdur(c, lane);
     P[lane].splice(P[lane].indexOf(c) + 1, 0, b);
     S.sel = { lane, id: b.id };
-  });
+  }, `Duplicated ${stepClip(c, lane)}`);
 }
 
 function cutMain(rm, pad = 0, key = c => c.media, min = 0.1, drop = false) { // main clips without the given source ranges (pauses, filler words, script cuts): jump cuts; keyframes, envelopes, animations kept
@@ -3389,7 +3452,7 @@ async function freeze(c, lane) {
         } else P.main.splice(lt <= 1 / P.fps ? i : i + 1, 0, fr);
       }
       S.sel = { lane, id: fr.id };
-    });
+    }, `Froze a frame of ${stepClip(c, lane)}`);
   } catch (e) { setStatus(e.message); throw e; }
 }
 function moveLane(c, lane) {
@@ -3492,7 +3555,7 @@ async function remake(c, kind) { // reverse / stabilize render a new library ite
     change(() => {
       if (kind === 'reverse') { const a = c.in, b = c.out; c.in = Math.max(0, d - b); c.out = Math.min(d, d - a); }
       c.media = j.media;
-    });
+    }, `${kind === 'reverse' ? 'Reversed' : 'Stabilized'} ${stepClip(...cfind(c.id))}`);
     toast(kind === 'reverse' ? 'Reversed' : 'Stabilized');
   } catch (e) { setStatus(e.message); throw e; }
 }
@@ -4602,7 +4665,7 @@ async function restoreVersion(id, vid) {
   if (id === P?.id) await flushSave(); // the state being replaced is on disk, so the server keeps it as "Before restore"
   const p = await api(`/api/projects/${id}/versions/${vid}/restore`, {});
   if (id !== P?.id) await openProject(id);
-  else { undo.push(JSON.stringify(P)); redo = []; P = migrate(p); S.sel = null; S.multi.clear(); fitStage(); touched(); } // one undo step, no page reload
+  else { step(JSON.stringify(P), 'Restored a version'); P = migrate(p); S.sel = null; S.multi.clear(); fitStage(); touched(); } // one undo step, no page reload
   return p;
 }
 async function trashProject(id, name) { // reversible: the server moves it to Movies/Cutroom/trash
@@ -4758,7 +4821,7 @@ function drag(e, lane, c, el) {
     }
     if (S.dragLane) { S.dragLane = null; restackTracks(lane); }
     if (!moved && S.multi.size && !e.shiftKey && !e.metaKey) { S.multi.clear(); renderInspector(); } // a click (no drag) on one of a group selects just it
-    if (moved && JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } else renderTimeline();
+    if (moved && JSON.stringify(P) !== before) { step(before); touched(); } else renderTimeline();
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
@@ -4799,7 +4862,7 @@ function kfDrag(e, c, el, f) { // a keyframe diamond: click goes to it, drag mov
   const up = () => {
     removeEventListener('pointermove', move); removeEventListener('pointerup', up);
     if (!moved) return seekTo(c.start + f.t);
-    if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); }
+    if (JSON.stringify(P) !== before) { step(before); touched(); }
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
@@ -4812,7 +4875,7 @@ function fadeDrag(lane, c, el, isIn) { // a fade knob: drag it into the clip to 
     c[k] = Math.round(clamp(isIn ? x : d - x, 0, d - (c[other] || 0)) * 20) / 20;
     S.dirty = true; renderTimeline(); renderInspector();
   };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 }
@@ -4826,7 +4889,7 @@ function jlDrag(e, c, isIn) { // a sound knob on a main clip's lower corner: dra
     if (x > 0) c[k] = Math.round(x * P.fps) / P.fps; else delete c[k];
     S.dirty = true; renderTimeline(); renderInspector();
   };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 }
@@ -4959,6 +5022,7 @@ function wire() {
   });
   $('#btnTemplates').addEventListener('click', openTemplates);
   $('#btnVersions').addEventListener('click', () => openVersions().catch(err => toast(err.message)));
+  $('#btnHistory').addEventListener('click', openHistory);
   $('#heads').addEventListener('click', e => {
     const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
     if (!b) return;
@@ -5231,7 +5295,7 @@ function wire() {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
       if (S.guides) { S.guides = null; S.dirty = true; }
-      if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); }
+      if (JSON.stringify(P) !== before) { step(before); touched(); }
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
@@ -5317,7 +5381,7 @@ function wire() {
       set = ev => { if (mv.i < 0) return; mv(ev); c.grade ??= {}; c.grade.curves = { ...c.grade.curves, [ch]: pts.map(q => [...q]) }; drawCurve(c); };
     }
     set(e); S.dirty = true;
-    const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { undo.push(before); redo = []; touched(); } };
+    const mv = ev => { set(ev); S.dirty = true; }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
   });
   insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
@@ -5341,7 +5405,7 @@ function wire() {
     if ('relink' in e.target.dataset && e.target.files[0]) { const c = selClip(), f = e.target.files[0]; setStatus(`Importing ${f.name}…`); uploadOne(f).then(m => relink(c.media, m.id)).catch(err => setStatus(err.message)); return; }
     if (!e.target.dataset.k) return;
     if (e.target.dataset.k.startsWith('rt.')) return renderInspector(); // Apply / Reset follow the draft
-    if (pending) { undo.push(pending); redo = []; pending = null; syncHistory(); }
+    if (pending) { step(pending); pending = null; syncHistory(); }
     renderTimeline();
     const k = e.target.dataset.k;
     if (k === 'c.speed' || k === 'c.pitch') warmTempo(selClip()); // the new speed's sound is made now, not when Space is pressed
@@ -5468,6 +5532,7 @@ function wire() {
     else if (d.trash) trashProject(d.trash, d.name).catch(err => toast(err.message));
     else if (d.versions) openVersions(d.versions);
     else if (d.vsave) { await saveVersion(d.vsave, $('#verName').value); openVersions(d.vsave); }
+    else if (d.hgo !== undefined) { jump(+d.hgo); openHistory(); }
     else if (d.vrestore) { await restoreVersion(d.pid, d.vrestore); closeModal(); toast('Version restored. Undo (⌘Z) brings the last state back.'); }
     else if (d.vdel) { if (confirm('Delete this version? It cannot be recovered.')) { await api(`/api/projects/${d.pid}/versions/${d.vdel}/delete`, {}); openVersions(d.pid); } }
     else if (d.dup) { const p = await api(`/api/projects/${d.dup}`); p.id = hex12(); p.name = `${p.name} (copy)`; await api(`/api/projects/${p.id}`, p, 'PUT'); openProjects(); }
@@ -5482,7 +5547,11 @@ function wire() {
 
   addEventListener('keydown', e => {
     if (!P) return;
-    if (!$('#modal').hidden) { if (e.key === 'Escape') closeModal(); return; }
+    if (!$('#modal').hidden) { // (History: ↑ ↓ step through it)
+      if (e.key === 'Escape') closeModal();
+      else if ($('#histList') && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); jump(undo.length + (e.key === 'ArrowUp' ? 1 : -1)); openHistory(); }
+      return;
+    }
     if (e.key === 'Escape' && e.target.matches('#inspector textarea')) { e.target.blur(); return; } // back to the timeline keys
     if (e.target.matches('textarea, select, input:not([type=range]):not([type=checkbox]):not([type=color])')) return;
     if (e.repeat && ['Space', 'KeyF', 'KeyM'].includes(e.code)) { e.preventDefault(); return; } // a held key toggles once, not on every repeat
@@ -5507,6 +5576,7 @@ function wire() {
     else if (mod && (e.key === '=' || e.key === '+' || e.key === '-')) { e.preventDefault(); const sc = $('#tlScroll'); setZoom(S.pps * (e.key === '-' ? 0.8 : 1.25), clamp(S.t * S.pps - sc.scrollLeft, 0, sc.clientWidth)); }
     else if (!mod && e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); fitTimeline(); }
     else if (!mod && e.key === '?') { e.preventDefault(); shortcuts(); }
+    else if (!mod && !e.altKey && e.code === 'KeyH') { e.preventDefault(); openHistory(); }
     else if (!mod && e.shiftKey && e.code === 'KeyA') { e.preventDefault(); const off = store.get('cutroom.scrubSound') !== 'off'; store.set('cutroom.scrubSound', off ? 'off' : 'on'); toast(off ? 'Sound while scrubbing: off' : 'Sound while scrubbing: on'); }
     else if (e.altKey && !mod && (key === 'arrowleft' || key === 'arrowright') && !field) { e.preventDefault(); nudge(key === 'arrowleft' ? -1 : 1); }
     else if (!mod && e.code === 'KeyQ') { e.preventDefault(); trimTo('left'); }
@@ -6064,7 +6134,7 @@ const REMOTE = {
     const [c, L] = cfind(id);
     if (!(at > c.start && at < c.start + tdur(c, L))) throw new Error(`at must be inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s on the timeline`);
     let b;
-    change(() => { b = splitClip(c, L, L === 'main' ? snap(at) : at); });
+    change(() => { b = splitClip(c, L, L === 'main' ? snap(at) : at); }, `Split ${stepClip(c, L)}`);
     return [brief(c, L), brief(b, L)];
   },
   async duplicate_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; dup(); return brief(...cfind(S.sel.id)); },
@@ -6123,7 +6193,7 @@ const REMOTE = {
         if (!Number.isFinite(by)) throw new Error(`${t}: by (seconds) is required`);
         const f = editTool(t, L, c, side === 'start' ? 'l' : 'r');
         if (typeof f === 'string') throw new Error(f);
-        undo.push(JSON.stringify(P)); redo = []; f(+by); touched();
+        step(JSON.stringify(P), `${t[0].toUpperCase()}${t.slice(1)} ${stepClip(c, L)}`); f(+by); touched();
       }])), speed_ramp: () => {
         if (curve !== undefined) { if (!Array.isArray(curve) || curve.length < 2 || curve.length > 12 || curve.some((q, i) => !Array.isArray(q) || !(q[1] >= 0.1 && q[1] <= 10) || !(q[0] >= 0 && q[0] <= 1) || (i && !(q[0] > curve[i - 1][0]))) || curve[0][0] !== 0 || curve.at(-1)[0] !== 1) throw new Error('curve must be 2-12 [u, speed] points: u rising from 0 to 1, speed 0.1-10'); }
         else if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`);
@@ -6283,7 +6353,13 @@ const REMOTE = {
     await restoreVersion(P.id, version);
     return REMOTE.status();
   },
-  async history({ action }) { if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo); else throw new Error('action: undo or redo'); return REMOTE.status(); },
+  async history({ action, step: k }) { // list: the steps newest first (as the History panel shows them); goto: the state just after step k
+    if (action === 'list') return { position: undo.length, steps: historyRows().reverse().map(r => ({ step: r.n, name: r.name, at: new Date(r.e.at).toISOString(), undone: r.n > undo.length })) };
+    if (action === 'undo') restore(undo, redo); else if (action === 'redo') restore(redo, undo);
+    else if (action === 'goto') { const n = undo.length + redo.length; if (!Number.isInteger(k) || k < 0 || k > n) throw new Error(`step must be a whole number 0-${n} (0 = the oldest state kept; history list shows them)`); jump(k); }
+    else throw new Error('action: undo, redo, list or goto');
+    return REMOTE.status();
+  },
   async snapshot({ t, max = 720, preview = false }) {
     if (S.playing) pause();
     if (t !== undefined) seekTo(+t);
@@ -6350,7 +6426,7 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
     catch (e) { ok = false; result = e.message; }
     finally { busy(-1); }
-    if (P === p0 && undo.length > u0 + 1) undo.splice(u0 + 1); // one command = one undo step (a command may make several changes)
+    if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
     const log = remoteLog;
     remoteLog = null;
     await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});
@@ -6379,7 +6455,7 @@ async function pilotRun(steps, say = () => {}) { // one step = one undo step; a 
     try { const fn = REMOTE[s.cmd]; if (!fn) throw new Error(`unknown command ${s.cmd}`); s.result = await fn(structuredClone(s.args)); }
     catch (e) { err = e.message; }
     finally { // whatever the step changed, also outside change() (a caption style), comes back with one ⌘Z
-      if (JSON.stringify(P) !== before) { undo.splice(u0, Infinity, before); redo = []; syncHistory(); }
+      if (JSON.stringify(P) !== before) { undo.length = u0; step(before); syncHistory(); }
       s.log = remoteLog; remoteLog = log0;
     }
     if (err) { s.error = err; failed.push(s); say(i, 'fail', err); continue; }
