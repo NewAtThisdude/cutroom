@@ -276,7 +276,10 @@ TOOLS = [
               'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
               'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
      S({'show': boo, 'reset': boo, 'target': num}), 'meter'),
-    ('history', 'Undo or redo the last edit.', S({'action': {'type': 'string', 'enum': ['undo', 'redo']}}, ['action']), 'history'),
+    ('history', 'Undo or redo the last edit; list the edit steps (newest first, each with a plain name such as "Split clip 3", and position = '
+                'the step the project is at now); or goto a step: the project as it was just after it (0 = the oldest state kept). '
+                'Steps after it stay redoable until the next edit.',
+     S({'action': {'type': 'string', 'enum': ['undo', 'redo', 'list', 'goto']}, 'step': {'type': 'integer'}}, ['action']), 'history'),
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),

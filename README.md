@@ -219,6 +219,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | Timeline | Markers (M), mute/hide per track, Home/End, frame steps | |
 | Output | MP4 (H.264, HEVC), MOV (ProRes 422), GIF, MP3, WAV, PNG still; 720p to 4K; three quality levels (VideoToolbox constant quality) or a custom bitrate; 23.976 to 60 fps | Composited in RGB like the canvas, then one tagged BT.709 conversion, so players show the right colours. PNG and GIF stay RGB |
 | Library | **Version history**: Versions (top bar, or a project card) lists snapshots kept while you edit and versions you name; Restore any of them, in place | A snapshot every 5 minutes of editing, plus the state before any change of 5 or more clips, gzipped in `projects/<id>.versions/` (the last 60; named ones until you delete them). A restore first keeps the state it replaces ("Before restore") and is one undo step. Deleting a project moves its versions to the trash with it |
+| Edit | **Undo history** (CapCut has only undo and redo): History (top bar, or H) lists every edit step, newest first, with a plain name ("Split clip 2", "Speed 2x on clip 1", "Deleted clip 3") and how long ago; click a step to go back to just after it, or forward again; ↑ ↓ step through, Esc closes | The same undo stack as ⌘Z (200 steps, each the project's JSON). Common edits name themselves (split, trim, delete, duplicate, freeze, reverse, slip / slide / roll); any other step is named when the panel opens, from what differs between its two states (clips added or deleted, which clip's which setting changed, a reorder). Undone steps stay until the next edit. `tests/history.mjs` |
 | | Templates, project duplicate and delete, media delete (to trash), proxies for ProRes, MKV, AV1, GIF and footage past 1080p60 (720p; exports read the original), HEIC import | |
 | Pro colour and motion | Exposure, highlights, shadows, fade, vignette; combo motion (Ken Burns in/out, drift, pulse, shake, sway, float); typewriter / backspace text | One 256-entry tone curve: an `feComponentTransfer` table in the preview, `lut1d` in the export. Vignette: the same multiplier map drawn by the browser |
 | Cleanup | Remove filler words (um, uh, er, hmm), split at scene changes, speed up to 100× | Fillers come from the on-device transcript and are cut at the middle of the pauses around them |
@@ -244,7 +245,7 @@ between every clip and export 1080p". Claude reads the timeline, edits, looks at
 the preview frame as an image), and exports. The 41 tools cover projects, media import, clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
-undo/redo, version history (`versions`: list, save, restore), snapshots, the loudness meter (`meter`), export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
+undo/redo and the edit steps (`history`: list, goto), version history (`versions`: list, save, restore), snapshots, the loudness meter (`meter`), export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
 object's position off a snapshot, and `preview_object` returns the frame with the outline it would take tinted pink), `cut_out_object`, voice isolation (`clip_tool`), `smart_combine`, `transcript`, `make_shorts`, `translate_captions`, `hook_titles` and `scopes` (the frame's levels).
 
 How it works: tool calls go to Cutroom's server (`/api/remote`), which hands them to the open editor page. The page runs
@@ -454,6 +455,8 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Version history** keeps whole project files, not the media: a version whose clips' media was removed from the library
   restores with those clips striped red (relink them). Snapshots follow edits that are saved, so a pause of an hour
   and one edit makes one snapshot; `CUTROOM_VERSION_GAP` (seconds) changes the 5 minutes.
+- **Undo history** lives in the open editor, like ⌘Z: it starts fresh when a project is opened or the page reloads (Versions
+  keeps what lasts). A step that changed several things is named after the first ("Added clip 3 (+2 more)").
 - **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
 - **Timeline hand-off** (FCPXML, EDL) carries the edit, not the look: effects, filters, grades, masks, keys, crop, position and
   scale of overlays, keyframes (volume envelopes too), clip animations, fades and text styling stay in Cutroom (titles come over
