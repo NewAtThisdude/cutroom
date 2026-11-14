@@ -7693,7 +7693,7 @@ const REMOTE = {
     if (x !== undefined) props.x = x; if (y !== undefined) props.y = y;
     if (curve != null || style?.curve != null) props.curve = curve ?? style.curve;
     const cleanStyle = { ...style }; delete cleanStyle.curve;
-    S.t = start; addText(preset, props, cleanStyle);
+    S.t = start; addText(preset, props, merge(structuredClone(TEXT_PRESETS[preset]), cleanStyle)); // deep merge over the preset; null puts the preset's value back
     const [c] = cfind(S.sel.id);
     return brief(c, 'text');
   },

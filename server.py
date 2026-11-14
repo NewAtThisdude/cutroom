@@ -5333,7 +5333,7 @@ def graph(p, td):
                 vals = [f[q] if isinstance(f[q], list) else [f[q]] * (f['b'] - f['a']) for q in ('z', 'x', 'y')]
                 kf = [{'t': (f['a'] + i) / F, 'z': z, 'x': dx, 'y': dy} for i, (z, dx, dy) in enumerate(zip(*vals))]
                 body = f"scale=w='2*trunc({W}*({pw(kf, 'z')})/2)':h=-2:eval=frame"
-                x, y, ev = f"'({W}-overlay_w)/2+({pw(kf, 'x')})'", f"'({H}-overlay_h)/2+({pw(kf, 'y')})'", ':eval=frame'
+                x, y, ev = f"'round(({W}-overlay_w)/2+({pw(kf, 'x')}))'", f"'round(({H}-overlay_h)/2+({pw(kf, 'y')}))'", ':eval=frame'  # overlay truncates toward zero: round like place()
             fg.append(f'[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]{body}[{tag}e];[{tag}a][{tag}e]overlay=x={x}:y={y}{ev}:format=gbrp:{en}[{nxt}]')
         cur[0] = nxt
     if p['frames'] and not ao:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer
