@@ -4817,7 +4817,8 @@ async function uploadOne(file) {
 // ponytail: one offset per take (the median frame); a video stall mid-take (the clock holds up to 1.5 s) shifts the part
 // before it. Raw float samples in memory: ~12 MB a minute.
 let rec = null, recMod;
-const REC_JS = `registerProcessor('cutroom-rec', class extends AudioWorkletProcessor { process([i]) {
+const REC_JS = `registerProcessor('cutroom-rec', class extends AudioWorkletProcessor { constructor() { super(); this.port.onmessage = () => { this.off = true; }; } process([i]) {
+  if (this.off) return false; // the take is over: a node left running posted 375 blocks a second for the life of the page
   const d = new Float32Array(i.length ? i[0].length : 128); // no channels = an input sending nothing (yet): silence keeps the time
   for (const ch of i) for (let k = 0; k < d.length; k++) d[k] += ch[k] / i.length;
   this.port.postMessage([currentFrame, d], [d.buffer]); return true; } });`;
@@ -4860,6 +4861,7 @@ async function toggleRecord() { // the timeline plays muted (unless "hear the pr
     src = A.createMediaStreamSource(stream); node = new AudioWorkletNode(A, 'cutroom-rec');
     node.port.onmessage = ({ data: [f, d] }) => {
       if (r.f0 === undefined) r.f0 = r.f1 = f;
+      if (f < r.f1) f = r.f1; // Edge on Windows once stamped a block with the frame before it, the next one right again (415360, 415360, 415616): in order, so it's the next block (it overran the take: 'offset is out of bounds')
       if (f > r.f1) r.parts.push(new Float32Array(f - r.f1)); // a block the graph skipped: silence keeps the time
       r.parts.push(d); r.f1 = f + d.length;
     };
@@ -4893,7 +4895,7 @@ async function toggleRecord() { // the timeline plays muted (unless "hear the pr
     toggleRecord.last = { lat, heard, start, in: start - z, frames: r.offs.length }; // for tests
   } catch (e) { toast(`Microphone: ${e.message}`); }
   finally {
-    src?.disconnect(); node?.disconnect(); stream?.getTracks().forEach(tr => tr.stop());
+    src?.disconnect(); node?.disconnect(); node?.port.postMessage(0); stream?.getTracks().forEach(tr => tr.stop());
     rec = null; S.recMute = false; btn.textContent = 'Record voiceover (mic)';
   }
 }

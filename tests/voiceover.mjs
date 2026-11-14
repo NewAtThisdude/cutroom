@@ -2,7 +2,7 @@
 // stubbed to return a MediaStreamDestination of the app's own AudioContext. Into it go (a) beeps "spoken" at known
 // project times (scheduled on the app's audio clock at the wall time the playhead shows that time), and (b) the room:
 // everything the app sends to its speakers (web/silent.js's gate in front of them), as a mic without headphones hears it (so the count-in blips measure the
-// delay, and "hear the project" bleeds in). WebKit delivers such a stream ~47-50 ms late: the mic's delay to measure.
+// delay, and "hear the project" bleeds in). WebKit delivers such a stream ~47-50 ms late, Edge on Windows ~21 ms: the mic's delay to measure.
 // Checks: each beep lands within 5 ms of its spoken time on the timeline (clip start + file time - clip in, the file read
 // as the export reads it), at two playhead start positions, with the measured and the remembered delay; the "hear the
 // project while recording" toggle (off by default, headphone warning) in both motion modes.
@@ -88,8 +88,10 @@ for (const rm of ['no-preference', 'reduce']) {
     await ev(() => { change(() => { P.audio.pop(); }); });
     return { ...r, errsMs, bleed: Math.sqrt(q / n), hint, during };
   };
+  let measured = 0;
   for (const t0 of [0.5, 3.0]) {
     const r = await take(t0, false, true), worst = Math.max(...r.errsMs.map(Math.abs));
+    measured = r.L.lat;
     check(`${rm}: beeps land within 5 ms, playhead from ${t0} s`, worst <= 5, `errors ${r.errsMs.map(e => e.toFixed(2)).join(', ')} ms; mic delay measured ${(r.L.lat * 1000).toFixed(1)} ms (heard ${r.L.heard}), clip at ${r.c.start.toFixed(3)} in ${r.c.in.toFixed(3)}, ${r.L.frames} frames`);
     check(`${rm}: muted project while recording, nothing bleeds in (from ${t0} s)`, r.during.mute && r.during.gain < 0.01 && r.bleed < 0.003, `rms ${r.bleed.toFixed(4)}`);
   }
@@ -100,7 +102,10 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: headphones (blips not heard): the remembered delay keeps beeps within 5 ms`, !hp.L.heard && hpw <= 5, `heard ${hp.L.heard}, delay ${(hp.L.lat * 1000).toFixed(1)} ms, errors ${hp.errsMs.map(e => e.toFixed(2)).join(', ')} ms`);
   await ev(() => localStorage.removeItem('cutroom.micDelay')); // control: nothing measured or remembered, so the mic's delay goes uncorrected
   const nc = await take(2.0, true, false);
-  check(`${rm}: control: with no delay known the beeps land 40-60 ms late (the delay the blips measure is real)`, !nc.L.heard && nc.L.lat === 0 && nc.errsMs.every(e => e > 40 && e < 60), `errors ${nc.errsMs.map(e => e.toFixed(2)).join(', ')} ms`);
+  // with nothing measured or remembered the take trusts what the browser reports (WebKit: nothing; Chromium: 10 ms), so the beeps land
+  // the rest of the measured delay late (WebKit ~47 ms, Edge on Windows ~11 ms)
+  const late = (measured - nc.L.lat) * 1000;
+  check(`${rm}: control: with no delay known the beeps land as late as the blips measured, less what the browser reports (the delay is real)`, !nc.L.heard && late > 5 && nc.errsMs.every(e => Math.abs(e - late) < 5), `errors ${nc.errsMs.map(e => e.toFixed(2)).join(', ')} ms; measured ${(measured * 1000).toFixed(1)} ms, reported ${(nc.L.lat * 1000).toFixed(1)} ms`);
   await page.click('#recHear');
   check(`${rm}: toggling off hides the warning`, await ev(() => !$('#recHear').checked && $('#recHearHint').hidden));
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 2).join(' | '));

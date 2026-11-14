@@ -208,6 +208,7 @@ async function rcRun(r) {
     m.src = A.createMediaStreamSource(new MediaStream(au)); m.node = new AudioWorkletNode(A, 'cutroom-rec');
     m.node.port.onmessage = ({ data: [f, x] }) => {
       if (m.f0 === undefined) m.f0 = m.f1 = f;
+      if (f < m.f1) f = m.f1; // a block stamped with the frame before it (Edge on Windows, as in toggleRecord): the next one
       if (f > m.f1) m.parts.push(new Float32Array(f - m.f1)); // a block the graph skipped: silence keeps the time
       m.parts.push(x); m.f1 = f + x.length;
     };
@@ -256,7 +257,7 @@ function rcPause(r) {
 }
 function rcEnd(r, msg) { // let go of every device; the Mac app shows its window to screen capture again
   for (const s of [r.screen, r.user]) s?.getTracks().forEach(t => t.stop());
-  r.mic?.src.disconnect(); r.mic?.node.disconnect();
+  r.mic?.src.disconnect(); r.mic?.node.disconnect(); r.mic?.node.port.postMessage(0);
   clearInterval(r.timer);
   for (const x of r.recs || []) x.rec.abort(); // (a finished one is kept)
   if (r.cur) { r.cur = null; api('/api/cursor', { on: false }).catch(() => {}); }
@@ -292,7 +293,7 @@ async function rcStop(r) {
 }
 async function rcMicTake(r, name) { // the mic's samples from the recorders' start, as a WAV, its delay corrected
   const m = r.mic, sr = actx.sampleRate;
-  m.src.disconnect(); m.node.disconnect();
+  m.src.disconnect(); m.node.disconnect(); m.node.port.postMessage(0); // (the processor stops: REC_JS)
   if (m.f0 === undefined) throw new Error('no sound came in from the microphone');
   const x = new Float32Array(m.f1 - m.f0), c0 = m.f0 / sr, lags = [];
   for (let o = 0, i = 0; i < m.parts.length; o += m.parts[i++].length) x.set(m.parts[i], o);
