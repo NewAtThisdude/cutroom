@@ -92,8 +92,9 @@ for (const dir of ['in', 'out', 'left', 'right', 'orbit']) {
   const moving = [10, 20, 30, 40, 50].every(i => mad(fr[i], fr[i - 8]) > 0.3);
   check(`${dir}: no frozen frames (no 3 identical in a row; every 8 frames the picture changes)`, worst <= 2 && moving, `longest run ${worst}`);
   const from = fr[hold === 0 ? 0 : 0], to = fr[rest], gA = gray(from), gB = gray(to), b0 = ball(from), b1 = ball(to);
-  const near = Math.hypot(b1.cx - b0.cx, b1.cy - b0.cy), wall = dir === 'in' || dir === 'out' ? shift(gA, gB, 860, 340) : shift(gA, gB, 400, 20); // a wall patch at the ball's mirror place (zoom), or as far from the middle sideways as the ball and above it (slides)
-  check(`${dir}: the ball moves more than the wall behind it (${near.toFixed(1)} px vs ${wall.d.toFixed(1)} px)`, near > wall.d + 8, `ball (${b0.cx.toFixed(0)},${b0.cy.toFixed(0)}) -> (${b1.cx.toFixed(0)},${b1.cy.toFixed(0)}); wall ${wall.dx},${wall.dy}`);
+  const zoomy = dir === 'in' || dir === 'out', wall = zoomy ? shift(gA, gB, 860, 340) : shift(gA, gB, 400, 20); // a wall patch at the ball's mirror place (zoom), or as far from the middle sideways as the ball and above it (slides)
+  const mv = [b1.cx - b0.cx, b1.cy - b0.cy], rel = zoomy ? Math.hypot(...mv) - wall.d : Math.hypot(mv[0] - wall.dx, mv[1] - wall.dy); // slides: the ball against the wall (the base zoom moves both outward); zoom: the ball's move beyond the wall's
+  check(`${dir}: the ball moves more than the wall behind it (by ${rel.toFixed(1)} px; ball ${mv.map(v => v.toFixed(0))}, wall ${wall.dx},${wall.dy})`, rel > (zoomy ? 8 : 12), `ball (${b0.cx.toFixed(0)},${b0.cy.toFixed(0)}) -> (${b1.cx.toFixed(0)},${b1.cy.toFixed(0)})`);
   const tail = Math.max(...[rest, Math.floor(rest / 2)].map(i => ball(fr[i]).tail / b0.n));
   check(`${dir}: no red smear off the ball's edge (red beyond 1.15 radii under 1.5 % of the ball)`, tail < 0.015, `${(tail * 100).toFixed(2)} %; at the start ${(b0.tail / b0.n * 100).toFixed(2)} %`);
   if (process.env.SAVE) execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', f, '-vf', `select='eq(n,0)+eq(n,${rest})',scale=640:-1,tile=2x1`, '-frames:v', '1', `${OUT}sheet_${dir}.png`]);
