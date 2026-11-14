@@ -338,7 +338,7 @@ class Parallax:
         ys, xs = torch.meshgrid(torch.linspace(-1, 1, self.h, device=DEV), torch.linspace(-1, 1, self.w, device=DEV), indexing='ij')
         self.g = torch.stack([xs, ys], -1)[None]
         f = 4  # the plate at a quarter size: it only fills small gaps, and soft is right for them
-        small = lambda t: F.interpolate(t, (max(8, self.h // f), max(8, self.w // f)), mode='area')
+        small = lambda t: F.interpolate(t, (max(8, self.h // f), max(8, self.w // f)), mode='bilinear', antialias=True, align_corners=False)  # ('area' fails on MPS when the size is not a multiple of 4)
         xs_, ds = small(x), small(d)
         r = max(2, round(0.07 * self.w / f * max(self.amt, 0.3)))
         idx = F.max_pool2d(F.pad(-ds, (r, r, r, r), value=-2.0), 2 * r + 1, 1, return_indices=True)[1]  # the farthest point within reach of each place
