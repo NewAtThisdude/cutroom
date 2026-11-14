@@ -89,8 +89,11 @@ for (const rm of ['no-preference', 'reduce']) {
       if (DEV.fail.screen) throw no(DEV.fail.screen);
       DEV.screenAsked = c; return (DEV.screen = canvas(640, 360, '#303030'));
     } });
+    DEV.list ??= [['videoinput', 'cam-a', 'FaceTime HD Camera'], ['videoinput', 'cam-b', 'Desk camera'], ['audioinput', 'default', 'Default'], ['audioinput', 'mic-a', 'Built-in microphone'], ['audioinput', 'mic-b', 'USB microphone']];
+    Object.defineProperty(MediaDevices.prototype, 'enumerateDevices', { configurable: true, value: async () => DEV.list.map(([kind, deviceId, label]) => ({ kind, deviceId, label, groupId: '' })) });
     Object.defineProperty(MediaDevices.prototype, 'getUserMedia', { configurable: true, value: async c => {
       if (DEV.fail.user) throw no(DEV.fail.user);
+      DEV.userAsked = c;
       const t = [];
       if (c.video) t.push(...(DEV.cam = canvas(320, 240, '#1d3a8a')).getVideoTracks());
       if (c.audio) t.push(...room().stream.getAudioTracks());
@@ -111,6 +114,9 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.fill('#rcScript', script);
   await page.selectOption('#rcScreen', 'screen');
   if (rm === 'reduce') await page.click('#rcMirror');
+  await page.waitForFunction(() => $('#rcCamDev').options.length === 3 && $('#rcMicDev').options.length === 3, null, { timeout: 5000 }).catch(() => {});
+  const devs = await ev(() => [$$('#rcCamDev option').map(o => o.textContent), $$('#rcMicDev option').map(o => o.textContent), $('#rcCamDev').value, $('#rcMicDev').value]);
+  await page.selectOption('#rcCamDev', 'cam-b'); await page.selectOption('#rcMicDev', 'mic-b');
   check(`${rm}: the dialog offers entire screen, a window, an area or none, camera and mic on; no browser warning in the Mac app`, dlg.opts.join() === 'screen,window,area,none' && dlg.cam && dlg.mic && dlg.hide, JSON.stringify(dlg));
 
   // ---- countdown, then recording ----
@@ -118,6 +124,9 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.waitForFunction(() => RC?.phase === 'count' && $('.rccount')?.textContent === '3', null, { timeout: 10000 });
   const cd = await ev(() => ({ app: APP.slice(), prompt: !!$('.rcprompt:not([hidden])'), mirror: getComputedStyle($('.rctext')).transform }));
   await page.waitForFunction(() => RC?.phase === 'rec', null, { timeout: 10000 });
+  const asked = await ev(() => [DEV.userAsked.video?.deviceId, DEV.userAsked.audio?.deviceId]);
+  check(`${rm}: camera and mic pickers list this computer's devices after the system default (picked first); the ones picked are the ones opened`,
+    devs[0].join() === 'System default,FaceTime HD Camera,Desk camera' && devs[1].join() === 'System default,Built-in microphone,USB microphone' && devs[2] === '' && devs[3] === '' && asked.join() === 'cam-b,mic-b', JSON.stringify({ devs, asked }));
   check(`${rm}: a 3-2-1 countdown; the app hides its window from screen capture before it starts`, cd.app.length === 1 && cd.app[0][0] === true && cd.app[0][1] === 'count', JSON.stringify(cd.app));
   check(`${rm}: the teleprompter shows ${rm === 'reduce' ? 'mirrored' : 'unmirrored'}`, cd.prompt && (rm === 'reduce' ? /matrix\(-1/.test(cd.mirror) : cd.mirror === 'none'), cd.mirror);
   const wall = await ev(() => { const n = performance.now(); FLASH.push(n + 900, n + 1800, n + 2700); for (const t of FLASH) DEV.beep(t); return FLASH.slice(); });
@@ -271,15 +280,25 @@ for (const rm of ['no-preference', 'reduce']) {
   const warn = await ev(() => !$('#rcHide').hidden && /teleprompter is in the recording/.test($('#rcHide').textContent));
   await page.selectOption('#rcScreen', 'window'); const warn2 = await ev(() => $('#rcHide').hidden);
   const kept = await ev(() => [$('#rcScript').value.split('\n').length, $('#rcMirror').checked]);
+  await page.waitForFunction(() => $('#rcCamDev').options.length === 3, null, { timeout: 5000 }).catch(() => {});
+  const devKept = await ev(() => [$('#rcCamDev').value, $('#rcMicDev').value]);
   await page.keyboard.press('Escape');
+  await ev(() => { DEV.list = DEV.list.filter(d => d[1] !== 'cam-b'); }); // unplugged
+  await page.click('#btnRecord'); await page.waitForSelector('#rcCamDev');
+  await page.waitForFunction(() => $('#rcCamDev').options.length === 2, null, { timeout: 5000 }).catch(() => {});
+  const devGone = await ev(() => [$('#rcCamDev').value, $('#rcMicDev').value]);
+  await page.keyboard.press('Escape');
+  check(`${rm}: the picked camera and mic are remembered; an unplugged one falls back to the system default`, devKept.join() === 'cam-b,mic-b' && devGone.join() === ',mic-b', JSON.stringify({ devKept, devGone }));
   check(`${rm}: in a browser (not the Mac app) a whole-screen recording warns the teleprompter would show; a window doesn't; the script and options are remembered`, warn && warn2 && kept[0] === 40 && kept[1] === (rm === 'reduce'), JSON.stringify({ warn, warn2, kept }));
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
   await ev(() => localStorage.removeItem('cutroom.rec'));
   await page.context().close();
 }
 await b.close();
+const side = `${HOME}/media/${made.m[1]}.cursor`, hadSide = fs.existsSync(side); // the first screen recording's cursor track
 for (const p of made.p) await fetch(`${B}/api/projects/${p}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const m of made.m) await fetch(`${B}/api/media/${m}/trash`, { method: 'POST', headers: H, body: '{}' });
 fs.rmSync(tmp, { recursive: true, force: true });
+check('a screen recording\'s cursor track goes when its media is trashed', hadSide && !fs.existsSync(side), side);
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);
 process.exit(res.every(Boolean) ? 0 : 1);

@@ -24,10 +24,10 @@ const rcHtml = (el, h) => el.replaceChildren(document.createRange().createContex
 function rcOpts() {
   let o = {};
   try { o = JSON.parse(store.get('cutroom.rec') || '{}'); } catch { /* defaults */ }
-  return { screen: 'screen', cam: true, mic: true, script: '', speed: 3, size: 34, mirror: false, ...o };
+  return { screen: 'screen', cam: true, mic: true, camDev: '', micDev: '', script: '', speed: 3, size: 34, mirror: false, ...o }; // (kept in this computer's browser storage: devices are per computer)
 }
 function rcRead() { // the dialog -> the options (remembered for next time)
-  const o = { screen: $('#rcScreen').value, cam: $('#rcCam').checked, mic: $('#rcMic').checked, script: $('#rcScript').value, speed: +$('#rcSpeed').value, size: +$('#rcSize').value, mirror: $('#rcMirror').checked };
+  const o = { screen: $('#rcScreen').value, cam: $('#rcCam').checked, mic: $('#rcMic').checked, camDev: $('#rcCamDev').value, micDev: $('#rcMicDev').value, script: $('#rcScript').value, speed: +$('#rcSpeed').value, size: +$('#rcSize').value, mirror: $('#rcMirror').checked };
   store.set('cutroom.rec', JSON.stringify(o));
   return o;
 }
@@ -39,7 +39,9 @@ function openRecorder() {
   modal(`<h2>Record</h2>
     <label class="row"><span>Screen</span><select id="rcScreen">${opt1('screen', 'Entire screen')}${opt1('window', 'A window')}${opt1('area', 'An area of the screen')}${opt1('none', 'No screen')}</select></label>
     <label class="row chk"><span>Camera</span><input id="rcCam" type="checkbox"${o.cam ? ' checked' : ''}></label>
+    <label class="row"><span>Which camera</span><select id="rcCamDev"><option value="">System default</option></select></label>
     <label class="row chk"><span>Microphone</span><input id="rcMic" type="checkbox"${o.mic ? ' checked' : ''}></label>
+    <label class="row"><span>Which microphone</span><select id="rcMicDev"><option value="">System default</option></select></label>
     <p id="rcHide" class="hint" hidden>This browser can't keep its own window out of a whole-screen recording: if this window is on the recorded screen, the teleprompter is in the recording too. Record a window, or move this one to another screen.</p>
     <h4>Teleprompter</h4>
     <textarea id="rcScript" rows="5" spellcheck="true" placeholder="Paste the script to read. It scrolls by the camera while you record and is never in the recording."></textarea>
@@ -54,7 +56,17 @@ function openRecorder() {
   fill(sp); hide();
   sp.addEventListener('input', () => { fill(sp); sp.nextElementSibling.textContent = sp.value; });
   $('#rcScreen').addEventListener('change', hide);
+  rcDevices(o);
   $('#rcGo').addEventListener('click', rcStart);
+}
+async function rcDevices(o) { // the camera and mic lists (names show once the browser has been allowed a device), the remembered one picked
+  const list = await navigator.mediaDevices.enumerateDevices?.().catch(() => []) || [];
+  for (const [kind, sel, id, word] of [['videoinput', '#rcCamDev', o.camDev, 'Camera'], ['audioinput', '#rcMicDev', o.micDev, 'Microphone']]) {
+    const el = $(sel);
+    if (!el) return;
+    list.filter(d => d.kind === kind && d.deviceId && d.deviceId !== 'default').forEach((d, i) => el.add(new Option(d.label || `${word} ${i + 1}`, d.deviceId)));
+    el.value = [...el.options].some(x => x.value === id) ? id : ''; // gone (unplugged): the system default
+  }
 }
 function rcWhy(what, e) { // a refused or failed device, in words: what to do about it
   const n = e?.name;
@@ -79,7 +91,7 @@ async function rcStart() {
     }
     if (o.cam || o.mic) {
       const what = o.cam && o.mic ? 'camera and microphone' : o.cam ? 'camera' : 'microphone';
-      try { r.user = await navigator.mediaDevices.getUserMedia({ video: o.cam && { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: o.mic && { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); } catch (e) { throw new Error(rcWhy(what, e)); } // (echo cancelling would take the blips out)
+      try { r.user = await navigator.mediaDevices.getUserMedia({ video: o.cam && { ...(o.camDev && { deviceId: o.camDev }), width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: o.mic && { ...(o.micDev && { deviceId: o.micDev }), echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); } catch (e) { throw new Error(rcWhy(what, e)); } // (echo cancelling would take the blips out)
     }
     if (o.screen === 'area') {
       r.crop = await rcArea(r);

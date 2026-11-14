@@ -7188,6 +7188,7 @@ class App(BaseHTTPRequestHandler):
                 for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
                         retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
+                (MEDIA / f'{m[1]}.cursor').unlink(missing_ok=True)  # a screen recording's cursor track (auto zoom) goes with it
                 for f in CACHE.glob(f'{m[1]}*.pcm'):  # the preview's sound is remade from the file if it's restored
                     f.unlink(missing_ok=True)
                 return self.reply({'ok': True})
