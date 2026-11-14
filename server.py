@@ -5724,20 +5724,34 @@ def start_export(raw, claimed=False):
     return job
 
 
+def pid_alive(pid):
+    if WIN:  # (os.kill(pid, 0) is no probe there: signal 0 is CTRL_C_EVENT, and a dead pid raises the same OSError as a live one)
+        import ctypes
+        k = ctypes.WinDLL('kernel32', use_last_error=True)
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # access denied: it exists, not ours
+        try:
+            code = ctypes.c_ulong()
+            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # (alive, not ours)
+        pass
+    return True
+
+
 def interrupted_list():
     """Records whose server is gone (another server on this library may still be running its own: its pid is alive)."""
     out = []
     for f in sorted(JOBDIR.glob('*.json')) if JOBDIR.is_dir() else []:
         try:
             rec = json.loads(f.read_text())
-            if rec['pid'] == os.getpid():
-                continue
-            try:
-                os.kill(rec['pid'], 0)
-                continue
-            except ProcessLookupError:
-                pass
-            except OSError:  # (alive, not ours)
+            if rec['pid'] == os.getpid() or pid_alive(rec['pid']):
                 continue
             out.append({'job': f.stem, 'name': rec['plan'].get('name', 'Export'), 'format': rec['plan'].get('format'), 't': rec['t']})
         except (OSError, ValueError, KeyError, AttributeError):

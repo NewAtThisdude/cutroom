@@ -2,32 +2,39 @@
 // (the crash journal: Restore brings it back, Discard drops it); (2) a project file cut off mid-write opens as its newest good
 // version with a message, never a blank editor; (3) an export running when the server is killed is reported on the next start
 // ("Export interrupted") and Retry renders it.
-//   cd tests && node recovery.mjs        (starts its own server on :4840 in tests/out/recovery-lib and its own Chromium; both killed at the end)
-//   Wrap in lockf (part 3 exports video). BROWSER_BIN overrides the Chromium binary.
+//   cd tests && node recovery.mjs        (starts its own server on :4840, or P2, in tests/out/recovery-lib and its own Chromium; both killed at the end)
+//   Wrap in lockf (part 3 exports video). BROWSER_BIN overrides the browser: Playwright's headless shell on a Mac, Edge on Windows.
+//   Windows has no SIGKILL: taskkill /F (TerminateProcess) is the same hard kill, /T takes the process's children with it.
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { PYTHON } from './runtime.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url)), lib = `${here}out/recovery-lib`, prof = `${here}out/recovery-profile`;
-const PORT = 4840, CDP = 4841, B = `http://127.0.0.1:${PORT}`, res = [];
+const WIN = process.platform === 'win32', PORT = +(process.env.P2 || 4840), B = `http://127.0.0.1:${PORT}`, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 fs.rmSync(lib, { recursive: true, force: true }); fs.rmSync(prof, { recursive: true, force: true }); fs.mkdirSync(lib, { recursive: true });
 
 let server, chrome;
 async function startServer() {
-  server = spawn('python3', ['-I', `${here}../server.py`], { env: { ...process.env, CUTROOM_HOME: lib, CUTROOM_PORT: String(PORT), CUTROOM_VERSION_GAP: '0' }, stdio: 'ignore' });
+  server = spawn(PYTHON, ['-X', 'utf8', '-I', `${here}../server.py`], { env: { ...process.env, CUTROOM_HOME: lib, CUTROOM_PORT: String(PORT), CUTROOM_VERSION_GAP: '0' }, stdio: 'ignore' });
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${B}/api/ping`, { headers: { 'X-Cutroom': '1' } })).ok) return; } catch {} await sleep(200); }
   throw new Error('server did not start');
 }
-const kill9 = async p => { const dead = new Promise(r => p.once('exit', r)); p.kill('SIGKILL'); await dead; };
-const realPid = () => +execFileSync('lsof', ['-t', `-iTCP:${PORT}`, '-sTCP:LISTEN']).toString().trim().split('\n')[0]; // (python3 is a launcher: the server is not always the pid spawn returned)
-async function killServer() { const pid = realPid(); process.kill(pid, 'SIGKILL'); for (let i = 0; i < 50; i++) { try { process.kill(pid, 0); await sleep(100); } catch { return; } } }
+const hardKill = pid => WIN ? execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }) : process.kill(pid, 'SIGKILL');
+const kill9 = async p => { const dead = new Promise(r => p.once('exit', r)); hardKill(p.pid); await dead; };
+const realPid = () => WIN // (python3 is a launcher: the server is not always the pid spawn returned)
+  ? +execFileSync('netstat', ['-ano', '-p', 'TCP']).toString().match(new RegExp(`^\\s*TCP\\s+\\S+:${PORT}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, 'm'))[1]
+  : +execFileSync('lsof', ['-t', `-iTCP:${PORT}`, '-sTCP:LISTEN']).toString().trim().split('\n')[0];
+const edge = () => ['ProgramFiles(x86)', 'ProgramFiles', 'LOCALAPPDATA'].map(k => `${process.env[k]}\\Microsoft\\Edge\\Application\\msedge.exe`).find(f => fs.existsSync(f));
+async function killServer() { const pid = realPid(); hardKill(pid); for (let i = 0; i < 50; i++) { try { process.kill(pid, 0); await sleep(100); } catch { return; } } }
 async function startChrome() { // headless Chromium with a fixed profile folder, driven over CDP (so the test owns its process and can SIGKILL it)
-  chrome = spawn(process.env.BROWSER_BIN || chromium.executablePath().replace(/chromium-(\d+)\/.*/, 'chromium_headless_shell-$1/chrome-headless-shell-mac-arm64/chrome-headless-shell'), [`--remote-debugging-port=${CDP}`, `--user-data-dir=${prof}`, '--no-first-run', '--window-size=1517,904', 'about:blank'], { stdio: 'ignore' });
+  fs.rmSync(`${prof}/DevToolsActivePort`, { force: true }); // (any free port: the browser writes the one it took here)
+  chrome = spawn(process.env.BROWSER_BIN || (WIN ? edge() : chromium.executablePath().replace(/chromium-(\d+)\/.*/, 'chromium_headless_shell-$1/chrome-headless-shell-mac-arm64/chrome-headless-shell')), ['--remote-debugging-port=0', `--user-data-dir=${prof}`, '--no-first-run', '--window-size=1517,904', ...(WIN ? ['--headless', '--no-default-browser-check'] : []), 'about:blank'], { stdio: 'ignore' });
   let br;
-  for (let i = 0; i < 50 && !br; i++) { try { br = await chromium.connectOverCDP(`http://127.0.0.1:${CDP}`); } catch { await sleep(200); } }
+  for (let i = 0; i < 50 && !br; i++) { try { br = await chromium.connectOverCDP(`http://127.0.0.1:${fs.readFileSync(`${prof}/DevToolsActivePort`, 'utf8').split('\n')[0].trim()}`); } catch { await sleep(200); } }
   const ctx = br.contexts()[0], page = ctx.pages()[0] || await ctx.newPage();
   await page.goto(`${B}/`, { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M !== undefined, null, { timeout: 30000 });
@@ -127,9 +134,9 @@ try {
   check('3b: Dismiss removes the record and its claimed layer dir', !fs.existsSync(`${lib}/jobs/${jd}.json`) && (fs.existsSync(`${lib}/cache/layers`) ? dir().length : 0) < before2 + (before2 ? 0 : 1) && (before2 === 0 || dir().length === before2 - 1), `${before2} -> ${fs.existsSync(`${lib}/cache/layers`) ? dir().length : 0}`);
   await br.close().catch(() => {});
 } finally {
-  for (const p of [server, chrome]) try { p?.kill('SIGKILL'); } catch {}
-  try { process.kill(realPid(), 'SIGKILL'); } catch {}
-  try { execFileSync('pkill', ['-9', '-f', prof], { stdio: 'ignore' }); } catch {}
+  for (const p of [server, chrome]) try { if (p?.exitCode === null) hardKill(p.pid); } catch {}
+  try { hardKill(realPid()); } catch {}
+  if (!WIN) try { execFileSync('pkill', ['-9', '-f', prof], { stdio: 'ignore' }); } catch {}
 }
 console.log(`${res.filter(Boolean).length}/${res.length} passed`);
 process.exit(res.every(Boolean) ? 0 : 1);

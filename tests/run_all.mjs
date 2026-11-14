@@ -279,7 +279,7 @@ try {
     let test;
     const seedLog = path.join(dir, 'fixtures.log');
     try {
-      const ports = await choosePorts(['tour', 'package', 'voice_dub'].includes(name) ? 2 : 1);
+      const ports = await choosePorts(['tour', 'package', 'voice_dub', 'recovery'].includes(name) ? 2 : 1);
       const env = environment(path.join(dir, 'library'), scratch, ports[0]);
       const srv = await server(env, path.join(dir, 'server.log'));
       env.SERVER_PID = String(srv.child.pid);
@@ -292,7 +292,7 @@ try {
         const fixtures = await seed(env, seedLog, name === 'export_formats');
         if (name === 'export_formats' && fixtures.phonePath) env.PHONE = fixtures.phonePath;
       }
-      if (['package', 'voice_dub'].includes(name)) env.P2 = String(ports[1]);
+      if (['package', 'voice_dub', 'recovery'].includes(name)) env.P2 = String(ports[1]);
       test = start(process.execPath, [path.join(HERE, `${name}.mjs`), ...(name === 'export_formats' ? ['quick'] : [])], env, result.log, true);
       let timer;
       try {
