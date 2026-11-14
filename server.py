@@ -492,7 +492,7 @@ def cursor_poll(on, t0=0.0):
 
     def go():
         last = None
-        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4 and time.time() - CURSOR.get('seen', time.time()) < 30:
+        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4 and time.time() - CURSOR.get('seen', time.time()) < 600:  # a still screen may send no parts for a while: stop only with the stale-part sweep (10 min) or the take's end
             now = time.time()
             x, y, sc, sk = read()
             run['pts'].append([round(now - base, 4), round(x, 1), round(y, 1)])

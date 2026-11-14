@@ -441,6 +441,8 @@ function azKeyframes(c, m, tr, amount = 2, smooth = 0.5) { // the clip's cursor 
   return { kf: azThin(kf, W, H), dense, zooms };
 }
 const AZ_MAX = 200; // separate zooms in one clip: 4 keyframes each, well under the export's 2000 with room for following the cursor
+// ponytail: the 1500-keyframe cap (export refuses > 2000) means a very busy long take follows the cursor more loosely
+// (30 min of a jump and click every ~1.25 s: up to ~290 px off at 1080p); a smarter fit (spline keyframes) if that matters.
 function azThin(kf, W, H, cap = 1500) { // the held stretches' 15-a-second samples -> the few that draw the same motion (within a pixel and 0.2 %
   // zoom; Douglas-Peucker). The zooms' edges always stay (their eased segments have nothing between them). A recording busy throughout loosens
   // it until it fits under the export's 2000 keyframes.
