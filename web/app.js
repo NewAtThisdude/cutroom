@@ -3389,10 +3389,7 @@ async function makeCompound(sel = selection()) {
   delete inner.main.at(-1).tr;
   const P0 = P, name = `Compound ${new Date().toLocaleTimeString().replace(/:\d\d\s/, ' ')}`;
   const sub = migrate({ ...structuredClone(P0), id: hex12(), name, ...inner, captions: [], markers: [], tracks: {}, mute: {} });
-  let plan;
-  S.hold = true; // the preview and autosave leave the borrowed project alone
-  try { P = sub; packMain(); plan = await buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  const plan = await borrowP(sub, () => { packMain(); return buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); });
   Object.assign(plan, { library: true, rate: 2.5 });
   const j = await job('/api/export', plan, 'Making the compound clip');
   await loadMedia();
@@ -3958,7 +3955,8 @@ const tplHTML = (el, s) => el.replaceChildren(document.createRange().createConte
 function tplMeta(t) { return `${t.slots.length} slot${t.slots.length === 1 ? '' : 's'} · ${t.dur ? fmtDur(t.dur) : '?'} · ${shapeOf(t.w, t.h)}`; }
 function tplKeepDefault(m) { return m.kind === 'audio' ? !!(m.pack || m.licence) : !!m.trans && m.kind === 'image'; } // sound-library sounds and cut-out stickers travel with it
 
-function openSaveTemplate() {
+function openSaveTemplate() { return act(openSaveTpl); } // (the open project, not a template preview's borrowed one)
+function openSaveTpl() {
   if (!LANES.some(L => P[L.key].length)) return toast('Add something to the timeline first');
   const media = [...new Set(LANES.flatMap(L => P[L.key].map(c => c.ramp && M.get(c.ramp.src) ? c.ramp.src : c.rt && M.get(c.rt.src) ? c.rt.src : c.media)).filter(id => M.get(id) && !(M.get(id).sfx && !M.get(id).pack)))];
   modal(`<h2>Save as template</h2><p class="hint">The edit stays: cuts, timing, text styles, effects, transitions, sounds. Footage becomes numbered slots that whoever uses it fills.</p>
@@ -3969,7 +3967,8 @@ function openSaveTemplate() {
     ${P.captions.length ? '<label class="row chk" title="The captions here are this video\'s words: a template keeps their style and makes new ones from the new footage\'s speech"><span>Captions: make them again from the new speech</span><input type="checkbox" id="tsRecap" checked></label>' : ''}
     <div class="actions"><button data-close>Cancel</button><button class="primary" data-savetplgo>Save template</button></div>`);
 }
-async function saveTemplate({ name = P.name, keep = [], labels = {}, texts, recaption = false } = {}) { // -> the template
+function saveTemplate(o) { return act(() => saveTpl(o)); }
+async function saveTpl({ name = P.name, keep = [], labels = {}, texts, recaption = false } = {}) { // -> the template
   name = String(name || '').trim().slice(0, 80) || 'Template';
   packMain();
   const t = structuredClone(P), slots = [], idx = new Map(), kept = new Set(keep);
@@ -4018,7 +4017,8 @@ async function tplProject(t, pick, textVals = {}, starts = {}) { // the template
   for (const e of tplTexts(t)) { const c = p.text.find(x => x.id === e.id), v = textVals[e.id]; if (c && v != null && String(v).trim()) c.text = String(v); } // only the words: the style stays
   return Object.assign(p, { id: hex12(), name: `${t.name} ${new Date().toLocaleDateString()}` });
 }
-async function useTemplate(t, pick, textVals = {}, { starts = {}, captions = false } = {}) {
+function useTemplate(...a) { return act(() => useTpl(...a)); } // (a preview's borrow would put its project back over the new one)
+async function useTpl(t, pick, textVals = {}, { starts = {}, captions = false } = {}) {
   const miss = t.slots.findIndex((s, i) => tplVisual(s.kind) && !M.get(pick[i]));
   if (miss >= 0) throw new Error(`fill slot ${miss + 1} first`);
   setProject(await tplProject(t, pick, textVals, starts)); scheduleSave(); closeModal();
@@ -4074,11 +4074,9 @@ function slatePNG(n, label, ar) { // the placeholder for slot n: graphite, its n
   return cv.toDataURL('image/png').split(',')[1];
 }
 async function tplPlan(p, extra, w, h, name) { // buildPlan for project p, not the open one (borrowed like a compound clip's), with media extra known
-  const P0 = P;
   for (const m of extra) M.set(m.id, m);
-  S.hold = true; // ponytail: an edit made during these seconds would land on the copy; the gallery is open then
-  try { P = p; packMain(); return await buildPlan(w, h, 'fast', name, false, 'mp4'); }
-  finally { P = P0; S.hold = false; S.dirty = true; for (const m of extra) M.delete(m.id); }
+  try { return await borrowP(p, () => { packMain(); return buildPlan(w, h, 'fast', name, false, 'mp4'); }, true); } // (in the background: after any action in progress)
+  finally { for (const m of extra) M.delete(m.id); }
 }
 async function tplRender(t) {
   await document.fonts.load('700 100px Montserrat');
@@ -4817,11 +4815,24 @@ function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main
   }
   return Object.assign(p, { w: W2, h: H2 });
 }
-async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+// buildPlan reads the global P, so a plan for another project (a compound clip's, another shape's, a template preview's) borrows it:
+// P is that project until the plan is built. One borrow at a time; act() (saving or using a template, every REMOTE command) waits
+// for a borrow to end, and a background borrow (template previews) waits for acts: neither reads or replaces the other's P
+let heldP = null, acting = 0;
+async function borrowP(p, fn, background = false) { // -> fn()'s result, with P = p (or p(the open project)) meanwhile
+  for (;;) { if (heldP) await heldP.catch(() => {}); else if (background && acting) await sleep(100); else break; }
   const P0 = P;
-  S.hold = true; // ponytail: borrowed like a compound clip's plan; an edit made during these seconds lands on the copy
-  try { P = reshape(P0, ...RATIOS[ratio]); const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return await buildPlan(w, h, ...args); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  S.hold = true; P = typeof p === 'function' ? p(P0) : p; // the preview and autosave leave the borrowed project alone
+  heldP = (async () => fn())();
+  try { return await heldP; } finally { P = P0; S.hold = false; S.dirty = true; heldP = null; }
+}
+async function act(fn) { // fn on the open project, never on a borrowed one
+  while (heldP) await heldP.catch(() => {});
+  acting++;
+  try { return await fn(); } finally { acting--; }
+}
+async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+  return borrowP(P0 => reshape(P0, ...RATIOS[ratio]), () => { const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return buildPlan(w, h, ...args); });
 }
 S.q = []; // the Exports panel: every export the page started, in order; the server renders them one at a time (ai_slot)
 const node = (tag, cls, parent, text = '') => { const e = parent.appendChild(document.createElement(tag)); e.className = cls; e.textContent = text; return e; };
@@ -6892,12 +6903,13 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     api('/api/remote/ack', { id: m.id }).catch(() => {});
     let ok = true, result;
     remoteLog = [];
-    const p0 = P, u0 = undo.length;
     busy(1);
-    try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
-    catch (e) { ok = false; result = e.message; }
-    finally { busy(-1); }
-    if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    await act(async () => { // (never on a template preview's borrowed project)
+      const p0 = P, u0 = undo.length;
+      try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
+      catch (e) { ok = false; result = e.message; }
+      if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    }).finally(() => busy(-1));
     const log = remoteLog;
     remoteLog = null;
     await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});
@@ -6918,7 +6930,7 @@ async function pilotCtx() { // the project in brief for the planner: clip ids, c
 }
 async function pilotRun(steps, say = () => {}) { // one step = one undo step; a step that fails is reported, the others still run
   const done = [], failed = [];
-  for (const [i, s] of steps.entries()) {
+  for (const [i, s] of steps.entries()) await act(async () => {
     say(i, 'run');
     const before = JSON.stringify(P), u0 = undo.length, log0 = remoteLog;
     remoteLog = [];
@@ -6929,9 +6941,9 @@ async function pilotRun(steps, say = () => {}) { // one step = one undo step; a 
       if (JSON.stringify(P) !== before) { undo.length = u0; step(before); syncHistory(); }
       s.log = remoteLog; remoteLog = log0;
     }
-    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); continue; }
+    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); return; }
     done.push(s); say(i, 'ok', s.log.at(-1));
-  }
+  });
   return { done, failed };
 }
 function pilotOpen() {

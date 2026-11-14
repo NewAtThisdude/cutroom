@@ -9,7 +9,7 @@
 //   B=http://127.0.0.1:4751 CUTROOM_HOME=<same lib> CUTROOM_SCRATCH=<scratch dir> node templates.mjs   (its own server on port+1, or P2)
 import { webkit } from 'playwright';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const B = process.env.B || 'http://127.0.0.1:4751', HOME = process.env.CUTROOM_HOME, SCR = process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch';
 if (!HOME || /:4610\b/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port>');
@@ -50,6 +50,8 @@ check('the sticker is a transparent picture (kept by default)', media['sticker.p
 const HOME2 = mkdtempSync(`${SCR}/lib2-templates-empty-`);
 const srv2 = spawn('nice', ['-n', '5', 'python3', '-I', `${ROOT}/server.py`], { env: { ...env, CUTROOM_HOME: HOME2, CUTROOM_PORT: String(PORT2) }, stdio: 'ignore' });
 let gone = false; srv2.on('exit', () => { gone = true; });
+process.on('exit', () => { if (!gone) srv2.kill(); }); // a failed run too: the next run finds the port free
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
 for (let i = 0; i < 60 && !gone; i++) { try { await api(B2, '/api/ping'); break; } catch { await sleep(500); } }
 await sleep(1000);
 if (gone || (await api(B2, '/api/media')).length) { srv2.kill(); throw new Error(`port ${PORT2} is taken: set P2 to a free port`); }
@@ -90,9 +92,12 @@ await R(pa, 'add_sound', { name: 'whoosh', at: 2.9 });
 await pa.evaluate(() => flushSave());
 const orig = await pa.evaluate(() => { packMain(); return { P: structuredClone(P), dur: total() }; });
 
-// ---- Save as template (the dialog) ----
+// ---- Save as template (the dialog), pressed while a starter's preview is being made (its plan borrows the open project) ----
+if (existsSync(`${HOME}/templates`)) for (const f of readdirSync(`${HOME}/templates`)) if (/^cafe0000a\d{3}\.(jpg|mp4)$/.test(f)) unlinkSync(`${HOME}/templates/${f}`); // (as on a fresh library)
 await pa.click('#btnTemplates');
-await pa.click('[data-savetpl]');
+await pa.waitForFunction(() => S.hold && TPL.busy, null, { polling: 'raf', timeout: 120000 });
+check('Save is pressed while a starter preview holds a borrowed project', await pa.evaluate(() => { const h = S.hold && P.name !== 'Template source'; document.querySelector('[data-savetpl]').click(); return h; }));
+await pa.waitForSelector('#tsName');
 await pa.fill('#tsName', 'Promo test');
 check('Save as template: the sticker defaults to "Keep in template", the footage to slots', await pa.evaluate(([s, v, i]) => [s, v, i].map(id => document.querySelector(`[data-tskeep="${id}"]`)?.value).join() === 'keep,slot,slot', [media['sticker.png'].id, media['source.mp4'].id, media['photo.png'].id]));
 await pa.fill(`[data-tslabel="${media['source.mp4'].id}"]`, 'Hero shot');
