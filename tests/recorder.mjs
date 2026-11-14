@@ -238,6 +238,8 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.click('#btnRecord'); await page.waitForSelector('#rcScreen');
   await page.selectOption('#rcScreen', 'area'); await page.click('#rcGo');
   await page.waitForSelector('.rcarea video');
+  await page.waitForFunction(() => document.querySelector('.rcarea video').videoWidth > 0); // the box takes the picture's height once it loads (Edge: a moment later)
+  await page.waitForTimeout(100);
   const box = await (await page.$('.rcarea')).boundingBox();
   await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.2); await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.7, { steps: 5 }); await page.mouse.up();

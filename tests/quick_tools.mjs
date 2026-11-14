@@ -8,6 +8,7 @@
 //  3. Cover: a frame or an image (with an optional title) is saved next to the video and embedded as its cover (attached_pic, ffprobe).
 //   B=<server on a scratch library> CUTROOM_HOME=<its library> node quick_tools.mjs   (never 4610)
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { browser } from './browser.mjs';
@@ -196,7 +197,7 @@ for (const rm of ['no-preference', 'reduce']) {
   // a cover never replaces another export: an existing picture of the same name survives, and two exports of one name keep their own covers
   fs.writeFileSync(`${EXD}/${nm}-keep.png`, 'earlier still export');
   const keep = await doExport('mp4', { name: `${nm}-keep`, title: 'KEEP', cfmt: 'png' });
-  const md5 = f => execFileSync('md5', ['-q', f]).toString().trim();
+  const md5 = f => createHash('md5').update(fs.readFileSync(f)).digest('hex'); // (no md5 command on Windows)
   check(`${rm}: an earlier still export of the same name survives (the new MP4 and its cover take "(2)")`,
     fs.readFileSync(`${EXD}/${nm}-keep.png`, 'utf8') === 'earlier still export' && keep.f === `${nm}-keep (2).mp4` && fs.existsSync(`${EXD}/${nm}-keep (2).png`) && fs.statSync(`${EXD}/${nm}-keep (2).png`).size > 1000, JSON.stringify(keep));
   const same1 = await doExport('mp4', { name: `${nm}-same`, title: 'ONE' }), h1 = md5(`${EXD}/${nm}-same.jpg`);
