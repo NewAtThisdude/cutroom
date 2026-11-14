@@ -1338,15 +1338,7 @@ function mediaPanel(c, lane) {
       + (c.glow ? colour('c.glow.color', 'Colour', c.glow.color) + slider('c.glow.size', 'Size', c.glow.size, 0.05, 1, 0.01, '%') : '');
     const [L, R] = c.flip ? ['r', 'l'] : ['l', 'r']; // with Mirror on, "Left" still means the left of what you see
     look += `<h4>Crop</h4>${slider(`c.crop.${L}`, 'Left', cr[L] || 0, 0, 0.45, 0.005, '%')}${slider(`c.crop.${R}`, 'Right', cr[R] || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.t', 'Top', cr.t || 0, 0, 0.45, 0.005, '%')}${slider('c.crop.b', 'Bottom', cr.b || 0, 0, 0.45, 0.005, '%')}${tick('c.flip', 'Mirror', c.flip)}`;
-    look += `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}${vid ? `<button data-act="aimask" class="${mk?.type === 'ai' ? 'on' : ''}" title="Box the subject: SAM 2 follows its outline through the clip (on this Mac)">AI subject</button>` : ''}</div>`
-      + (mk ? slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
-        + (!['linear', 'mirror'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
-        + (mk.type === 'star' || mk.type === 'polygon' ? slider('c.mask.n', mk.type === 'star' ? 'Points' : 'Sides', mk.n ?? (mk.type === 'star' ? 5 : 6), 3, 12, 1, '') : '') + (mk.type === 'star' ? slider('c.mask.inner', 'Inner radius', mk.inner ?? 0.45, 0.1, 0.9, 0.01, '%') : '')
-        + (mk.type === 'pen' ? `<p class="hint">Drag the dots on the preview to shape it; ⌥-click a dot removes it.</p><div class="actions"><button data-act="penadd">Add a point</button></div>` : '')
-        + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
-        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert)
-        + `<div class="actions">${c.mkf?.length ? '<button data-act="mkfprev" title="Previous mask keyframe" aria-label="Previous mask keyframe">‹</button><button data-act="mkfnext" title="Next mask keyframe" aria-label="Next mask keyframe">›</button>' : ''}<button data-act="mkfadd">${c.mkf?.length ? 'Mask keyframe here' : 'Animate the mask'}</button>${c.mkf?.length ? `<button data-act="mkfdel">Remove here</button><button data-act="mkfclear">Clear ${c.mkf.length}</button>` : ''}</div>`
-        + `<p class="hint">${c.mkf?.length ? 'The mask moves between its keyframes; changing it at the playhead edits or adds one there.' : 'Animate the mask to follow something: add a keyframe, move the playhead, move the mask.'}</p>` : '');
+    look += maskUI(c, mk, vid ? `<button data-act="aimask" class="${mk?.type === 'ai' ? 'on' : ''}" title="Box the subject: SAM 2 follows its outline through the clip (on this Mac)">AI subject</button>` : '', mk ? tick('c.mask.grade', 'Colour only', mk.grade) + `<p class="hint">${mk.grade ? `Adjust, filter and colour change only ${mk.invert ? 'outside' : 'inside'} the mask; the picture stays whole.` : 'Colour only: the mask limits the colour instead of cutting the picture.'}</p>` : '');
     look += `<h4>Chroma key</h4>${c.key ? `${colour('c.key.color', 'Key colour', c.key.color)}${slider('c.key.sim', 'Strength', c.key.sim, 0.01, 1, 0.01, '%')}${slider('c.key.blend', 'Softness', c.key.blend, 0, 0.5, 0.01, '%')}<div class="actions"><button data-act="keypick">Pick colour from preview</button><button data-act="keyoff">Turn off</button></div>`
       : '<div class="actions"><button data-act="keyon">Remove green screen</button></div>'}`;
   }
@@ -2164,6 +2156,9 @@ function paint() {
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
     if (h && sel.length === 1 && x.mask?.type === 'pen' && !S.playing) drawPen(ctx, x, h); // its points, to drag
   }
+  const [af, al] = sel.length === 1 ? sel[0] : []; // an adjustment layer's pen mask: its points on the whole canvas
+  S.penHit = al === 'fx' && af.mask?.type === 'pen' && !S.playing && t >= af.start && t < af.start + af.dur ? { lane: 'fx', id: af.id, x0: 0, y0: 0, x1: cv.width, y1: cv.height, rot: 0 } : null;
+  if (S.penHit) drawPen(ctx, af, S.penHit);
   if (S.guides) { // dragged text is snapped: the line it snapped to
     const d = cpx(), { x: gx, y: gy } = S.guides;
     ctx.save(); ctx.strokeStyle = '#ff3d9a'; ctx.lineWidth = 1 * d; ctx.beginPath();
@@ -2676,6 +2671,23 @@ function fxPanel(c) {
     <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>
     ${EXF[c.fx] ? `<div class="actions"><button data-act="fxsave" title="A small .cutroom-fx file you can share">Save as file</button>${FXSHARED.has(c.fx) ? '<button data-act="fxrm" title="Take it out of the library (clips using it stop showing it)">Remove from library</button>' : ''}</div>` : ''}`;
 }
+function maskUI(c, mk, extra = '', more = '') { // the Mask controls (a clip, or an adjustment layer: the same mask in the canvas frame); extra: buttons after the shapes, more: after Invert
+  return `<h4>Mask</h4><div class="presets small">${MASKS.map(([v, n]) => `<button data-mask="${v}" class="${(mk?.type || 'none') === v ? 'on' : ''}">${n}</button>`).join('')}${extra}</div>`
+      + (mk ? slider('c.mask.x', 'Centre X', mk.x, -0.5, 0.5, 0.005, '%') + slider('c.mask.y', 'Centre Y', mk.y, -0.5, 0.5, 0.005, '%')
+        + (!['linear', 'mirror'].includes(mk.type) ? slider('c.mask.w', 'Width', mk.w, 0.05, 1.5, 0.01, '%') : '')
+        + (mk.type === 'star' || mk.type === 'polygon' ? slider('c.mask.n', mk.type === 'star' ? 'Points' : 'Sides', mk.n ?? (mk.type === 'star' ? 5 : 6), 3, 12, 1, '') : '') + (mk.type === 'star' ? slider('c.mask.inner', 'Inner radius', mk.inner ?? 0.45, 0.1, 0.9, 0.01, '%') : '')
+        + (mk.type === 'pen' ? `<p class="hint">Drag the dots on the preview to shape it; ⌥-click a dot removes it.</p><div class="actions"><button data-act="penadd">Add a point</button></div>` : '')
+        + (mk.type !== 'linear' ? slider('c.mask.h', mk.type === 'mirror' ? 'Band' : 'Height', mk.h, 0.02, 1.5, 0.01, '%') : '')
+        + slider('c.mask.rot', 'Rotate', mk.rot, -180, 180, 1, '°') + slider('c.mask.feather', 'Feather', mk.feather, 0, 0.3, 0.005, '%') + tick('c.mask.invert', 'Invert', mk.invert) + more
+        + `<div class="actions">${c.mkf?.length ? '<button data-act="mkfprev" title="Previous mask keyframe" aria-label="Previous mask keyframe">‹</button><button data-act="mkfnext" title="Next mask keyframe" aria-label="Next mask keyframe">›</button>' : ''}<button data-act="mkfadd">${c.mkf?.length ? 'Mask keyframe here' : 'Animate the mask'}</button>${c.mkf?.length ? `<button data-act="mkfdel">Remove here</button><button data-act="mkfclear">Clear ${c.mkf.length}</button>` : ''}</div>`
+        + `<p class="hint">${c.mkf?.length ? 'The mask moves between its keyframes; changing it at the playhead edits or adds one there.' : 'Animate the mask to follow something: add a keyframe, move the playhead, move the mask.'}</p>` : '');
+}
+function adjMaskUI(c) { // an adjustment layer's own mask: it grades only there (or, inverted, everywhere but there); stack several for several areas
+  const mk = maskAt(c, clamp(S.t - c.start, 0, len(c)));
+  return maskUI(c, mk, `<button data-act="adjaimask" class="${mk?.type === 'ai' ? 'on' : ''}" title="The subject of the video under this layer: its AI mask, or box it (SAM 2, on this Mac)">AI subject</button>`,
+    mk && mk.type !== 'ai' ? '<div class="actions"><button data-act="adjfollow" title="Box something on the video under this layer: the mask follows it">Follow something</button></div>' : '')
+    + `<p class="hint">${mk ? `This layer grades only ${mk.invert ? 'outside' : 'inside'} its mask.` : 'Pick a mask to grade one area or the subject only.'}</p>`;
+}
 function adjustPanel(c) { // an adjustment layer: the clip colour controls that bake into one table (no vignette, blur or keying)
   const a = c.adj || {};
   const look = `<h4>Filter</h4><div class="presets small">${['none', ...LOOK_NAMES()].map(n => `<button data-look="${n}" class="${(c.look?.name || 'none') === n ? 'on' : ''}">${lookLabel(n)}</button>`).join('')}</div>${c.look ? slider('c.look.amount', 'Strength', c.look.amount ?? 1, 0, 1, 0.01, '%') : ''}`
@@ -2683,7 +2695,7 @@ function adjustPanel(c) { // an adjustment layer: the clip colour controls that 
     + slider('c.adj.temp', 'Temperature', a.temp || 0, -1, 1, 0.01, '%') + slider('c.adj.tint', 'Tint', a.tint || 0, -1, 1, 0.01, '%')
     + slider('c.adj.ex', 'Exposure', a.ex || 0, -2, 2, 0.05) + slider('c.adj.hi', 'Highlights', a.hi || 0, -1, 1, 0.01, '%') + slider('c.adj.sh', 'Shadows', a.sh || 0, -1, 1, 0.01, '%') + slider('c.adj.fade', 'Fade', a.fade || 0, 0, 1, 0.01, '%');
   return `<h3>${ADJUST.n}</h3><p class="muted">Effects track · ${mss(c.dur)} · grades everything under it (text stays on top)</p><p id="clipStatus" class="muted"></p>`
-    + tabbed([['Adjust', look], ['Color', colorPanel(c)]])
+    + tabbed([['Adjust', look], ['Color', colorPanel(c)], ['Mask', adjMaskUI(c)]])
     + '<div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>';
 }
 
@@ -4638,6 +4650,54 @@ async function finishBlur(c, lane, rect, T0 = S.t, opt = {}) { // the region box
     return { id: cut.id, frames: pts.length, lost };
   } catch (e) { setStatus(e.message); throw e; }
 }
+// ---------- masked adjustment layers: grade only the subject, or one area that follows something ----------
+function underAdj(f, T = S.t) { // the video an adjustment layer's subject comes from: the top visible video clip under it at T -> [clip, lane] (or [])
+  packMain();
+  const on = (x, L) => T >= x.start && T < x.start + tdur(x, L) && M.get(x.media)?.kind === 'video';
+  return [...shown('overlay')].reverse().filter(x => on(x, 'overlay')).map(x => [x, 'overlay'])[0] || P.main.filter(x => on(x, 'main')).map(x => [x, 'main'])[0] || [];
+}
+function aiToAdj(f, c, ai, T = clamp(S.t, f.start, f.start + f.dur)) { // a clip's AI outline frames -> the layer's mask: placed where the clip is drawn at T, timed like the clip
+  const g = geom(M.get(c.media), c, P.w, P.h, propsAt(c, T - c.start)), cm = c.mask?.type === 'ai' && c.mask.src === ai.src ? c.mask : { x: 0, y: 0, w: 1, h: 1, rot: 0 }, r5 = v => +v.toFixed(5);
+  // ponytail: placed as the clip sits at T (a clip that moves or turns while the layer lasts is not followed; its own AI mask is)
+  return { type: 'ai', src: ai.src, n: ai.n, fps: ai.fps, t0: ai.t0, in0: r5(c.in + (f.start - c.start) * c.speed), sp: c.speed, cr: c.crop ? { ...c.crop } : undefined, fl: !!c.flip,
+    x: r5((g.x + (0.5 + cm.x) * g.w) / P.w - 0.5), y: r5((g.y + (0.5 + cm.y) * g.h) / P.h - 0.5), w: r5((cm.w * g.w) / P.w), h: r5((cm.h * g.h) / P.h), rot: cm.rot || 0,
+    feather: f.mask?.feather ?? 0.01, invert: !!f.mask?.invert };
+}
+async function adjSubject(f, rect, T = S.t) { // the layer grades only the subject of the video under it: that clip's AI mask, or (rect: boxed on the canvas) a new one
+  const [c, lane] = underAdj(f, T);
+  if (!c) throw new Error('Move the playhead to where a video clip plays under the adjustment layer');
+  let ai = c.mask?.type === 'ai' && !rect ? c.mask : null;
+  if (!ai) {
+    if (!rect) throw new Error('Box the subject first');
+    const pid = P.id, was = c.media;
+    const j = await job('/api/remove_object', { media: c.media, t: c.in + (T - c.start) * c.speed, t0: c.in, t1: c.out, box: srcBox(c, rect, T), quality: 'best', mode: 'mask' }, 'Making the AI mask');
+    live(c, pid, was); f = live(f, pid);
+    ai = { src: j.mask, n: j.n, fps: j.fps, t0: j.t0 };
+  }
+  change(() => { f.mask = aiToAdj(f, c, ai, T); delete f.mkf; });
+  toast(`This layer now grades only the subject (${ai.n} frames, SAM 2)`);
+  return f.mask;
+}
+async function adjFollow(f, rect, T0 = S.t) { // the layer's mask follows what rect boxes on the video under it (tracked both ways through the layer)
+  const [c, lane] = underAdj(f, T0);
+  if (!c) throw new Error('Move the playhead to where a video clip plays under the adjustment layer');
+  const pid = P.id, m = M.get(c.media), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
+  const { pts, lost, box } = await followTarget(c, rect, T0, Math.max(c.start, f.start), Math.min(c.start + tdur(c, lane), f.start + f.dur));
+  f = live(f, pid);
+  const r5 = v => +v.toFixed(5), key = p => { // the box's centre and size on the canvas there (the clip's own zoom and mirror come with it), 25 % bigger like a tracked blur
+    const G = geom(m, c, P.w, P.h, propsAt(c, p.T - c.start)); let u = (p.cx - (cr.l || 0)) / fx; if (c.flip) u = 1 - u;
+    return { t: r5(p.T - f.start), x: r5((G.x + u * G.w) / P.w - 0.5), y: r5((G.y + ((p.cy - (cr.t || 0)) / fy) * G.h) / P.h - 0.5), w: r5((1.25 * box.w * p.s * G.w) / fx / P.w), h: r5((1.25 * box.h * p.s * G.h) / fy / P.h), rot: r5(c.flip ? -p.r : p.r), feather: f.mask?.feather ?? 0.04 };
+  };
+  change(() => { f.mask = { type: 'circle', invert: false, ...f.mask, ...key(pts[0]) }; if (f.mask.type === 'ai') { f.mask.type = 'circle'; for (const q of ['src', 'n', 'fps', 't0', 'in0', 'sp', 'cr', 'fl']) delete f.mask[q]; } f.mkf = thin(pts).map(key); });
+  toast(`The mask follows it over ${pts.length} frames${lost ? ' (lost it part of the way: check the ends)' : ''}`);
+  return { frames: pts.length, lost: !!lost };
+}
+function adjPick(f, follow) { // box the subject (or what to follow) on the video under the layer
+  const [c, lane] = underAdj(f);
+  if (!c) return toast('Move the playhead to where a video clip plays under the adjustment layer');
+  if (!follow && c.mask?.type === 'ai') return quiet(adjSubject(f).catch(e => { toast(e.message); throw e; }));
+  startPick(c, lane, R => quiet((follow ? adjFollow(f, R) : adjSubject(f, R)).catch(e => { toast(e.message); throw e; })), follow ? 'Drag a box around what the mask should follow (Esc cancels)' : 'Drag a box around the subject to grade (Esc cancels)');
+}
 async function blurFaces(c, lane, { amount = 1, style = 'mosaic' } = {}) { // every face in the clip (Vision, 15 looks a second), each followed by its own blur
   if (M.get(c.media)?.kind !== 'video') throw new Error('blur faces works on video clips');
   try {
@@ -6267,8 +6327,8 @@ function wire() {
     }
     if (S.maskPreview) return refinePreview(x / (cv.width / P.w), y / (cv.width / P.w), !e.altKey); // clicks shape the outline
     const hs = S.sel && canHandle(S.sel.lane) && selection().length === 1 && hits.find(h => h.id === S.sel.id), hk = hs && handleAt(hs, x, y);
-    const pc = hs && selClip(), pm = pc?.mask?.type === 'pen' && penMap(pc, hs), pi = pm ? (pc.mask.pts || PEN0).findIndex(q => { const [qx, qy] = pm.to(q); return Math.hypot(qx - x, qy - y) <= 9 * px; }) : -1;
-    if (pi >= 0) return penDrag(e, pc, hs, pi); // a pen mask's point (ahead of the corner handles, which may sit on one)
+    const ph = hs || (S.penHit?.id === S.sel?.id && S.penHit), pc = ph && selClip(), pm = pc?.mask?.type === 'pen' && penMap(pc, ph), pi = pm ? (pc.mask.pts || PEN0).findIndex(q => { const [qx, qy] = pm.to(q); return Math.hypot(qx - x, qy - y) <= 9 * px; }) : -1;
+    if (pi >= 0) return penDrag(e, pc, ph, pi); // a pen mask's point (ahead of the corner handles, which may sit on one)
     if (hk) return handleDrag(e, hs, hk, cv);
     const hit = [...hits].reverse().find(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1 && !locked(h.lane, P[h.lane].find(q => q.id === h.id) || {}));
     if (!hit) { if (S.sel) { S.sel = null; renderAll(); S.dirty = true; } return; }
@@ -6485,6 +6545,7 @@ function wire() {
     else if (d.act === 'cutobj') startRemove(c, S.sel.lane, 'cutout');
     else if (d.mask) change(() => { if (d.mask === 'none') { delete c.mask; delete c.mkf; } else { const was = c.mask?.type; c.mask = { x: 0, y: 0, w: 0.6, h: 0.6, rot: 0, feather: 0.04, invert: false, ...c.mask, type: d.mask }; if (was === 'ai') for (const q of ['src', 'n', 'fps', 't0']) delete c.mask[q]; if (d.mask === 'pen') c.mask.pts ??= PEN0.map(q => [...q]); } });
     else if (d.act === 'aimask') startRemove(c, S.sel.lane, 'mask');
+    else if (d.act === 'adjaimask' || d.act === 'adjfollow') adjPick(c, d.act === 'adjfollow');
     else if (d.act === 'penadd') change(() => { const p = c.mask.pts ??= PEN0.map(q => [...q]); let bi = 0, bd = -1; p.forEach((q, i) => { const r = p[(i + 1) % p.length], dd = Math.hypot(r[0] - q[0], r[1] - q[1]); if (dd > bd) { bd = dd; bi = i; } }); const q = p[bi], r = p[(bi + 1) % p.length]; p.splice(bi + 1, 0, [+((q[0] + r[0]) / 2).toFixed(4), +((q[1] + r[1]) / 2).toFixed(4)]); }); // in the middle of the longest side
     else if (d.act === 'ramp') { drawRamp(c); quiet(applyRamp(c, S.sel.lane, S.rampDraft.pts)); }
     else if (d.act === 'rampoff') removeRamp(c);
@@ -7288,6 +7349,33 @@ const REMOTE = {
     if (!['rect', 'circle'].includes(shape) || !['blur', 'mosaic'].includes(style)) throw new Error('shape rect|circle, style blur|mosaic');
     seekTo(T);
     return finishBlur(c, L, { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, S.t, { shape, style, amount: clamp(+amount || 1, 0.05, 1) });
+  },
+  async grade_mask({ id, box, t, shape, follow = false, invert, feather, off = false }) { // grade only the subject or one area: a clip's mask limits its own colour; an adjustment layer gets a mask of its own
+    const [c0, L] = cfind(id), fx = L === 'fx';
+    if (fx ? c0.fx !== 'adjust' : !['main', 'overlay'].includes(L) || !M.get(c0.media) || M.get(c0.media).kind === 'audio') throw new Error('id must be a video or picture clip on the main or overlay track, or an adjustment layer');
+    if (box && !(box.w > 0 && box.h > 0)) throw new Error('box {x, y, w, h} as fractions of the canvas');
+    if (shape && !MASKS.some(([v]) => v === shape && v !== 'none')) throw new Error(`shape must be one of ${MASKS.slice(1).map(x => x[0]).join(', ')}`);
+    if (follow && !fx) throw new Error('follow works on an adjustment layer: add one over the clip (add_effect type adjust) and grade_mask it');
+    if (follow && !box) throw new Error('follow needs box: what the mask should follow, at t');
+    seekTo(t !== undefined ? +t : clamp(S.t, c0.start, c0.start + tdur(c0, L) - 1 / P.fps));
+    if (S.t < c0.start || S.t >= c0.start + tdur(c0, L)) throw new Error('t must be a time inside the clip');
+    S.sel = { lane: L, id };
+    if (off) { change(() => { if (fx) { delete c0.mask; delete c0.mkf; } else if (c0.mask) delete c0.mask.grade; }); return brief(c0, L); }
+    const rect = box && { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, pid = P.id;
+    const at = c => { // the shape over the box: canvas frame for a layer, the clip's own frame for a clip
+      if (!rect) return { x: 0, y: 0, w: 0.6, h: 0.6 };
+      if (fx) return { x: box.x + box.w / 2 - 0.5, y: box.y + box.h / 2 - 0.5, w: box.w, h: box.h };
+      const b = srcBox(c, rect, S.t), [u0, v0] = srcToClip(c, b.x, b.y), [u1, v1] = srcToClip(c, b.x + b.w, b.y + b.h);
+      return { x: (u0 + u1) / 2 - 0.5, y: (v0 + v1) / 2 - 0.5, w: Math.abs(u1 - u0), h: Math.abs(v1 - v0) };
+    };
+    if (shape && !follow) change(() => { c0.mask = { rot: 0, feather: 0.04, invert: false, ...at(c0), type: shape, ...(shape === 'pen' ? { pts: PEN0.map(q => [...q]) } : {}) }; delete c0.mkf; });
+    else if (follow) { if (shape) change(() => { c0.mask = { rot: 0, feather: 0.04, invert: false, x: 0, y: 0, w: 0.6, h: 0.6, type: shape }; }); await adjFollow(c0, rect, S.t); }
+    else if (fx) await adjSubject(c0, rect, S.t);
+    else if (rect) await removeObject(c0, L, rect, S.t, 'best', 'mask');
+    const c = live(c0, pid);
+    if (!c.mask) throw new Error('the clip has no mask: pass box (canvas fractions at t) for an AI subject mask, or shape (and box) for a shape');
+    change(() => { if (!fx) c.mask.grade = true; if (invert !== undefined) c.mask.invert = !!invert; if (feather !== undefined) c.mask.feather = clamp(+feather || 0, 0, 0.3); });
+    return { ...brief(c, L), mask: c.mask.type, grades: c.mask.invert ? 'outside the mask' : 'inside the mask', maskKeyframes: c.mkf?.length || 0 };
   },
   async blur_faces({ id, style = 'blur', amount = 1 }) { const [c, L] = cfind(id); return blurFaces(c, L, { style: style === 'mosaic' ? 'mosaic' : 'blur', amount: clamp(+amount || 1, 0.05, 1) }); },
   async auto_reframe({ id, ratio, box, t }) { // keep the face / subject (or what box, canvas fractions at t, holds) in frame; ratio 9:16 | 1:1 | 4:5 | ... changes the canvas first
