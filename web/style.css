@@ -197,7 +197,7 @@ body.theater .left, body.theater .right, body.theater .timeline { display: none;
 .fdsel { flex: 1 0 100%; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .fdsel select { flex: 1; min-width: 0; }
 /* the path bar, Move to and the folder tiles stay in view while the cards scroll (a card far down can still be filed or dragged onto them) */
-.fdpin { position: sticky; top: 0; z-index: 3; margin: 0 -12px 8px; padding: 4px 12px 2px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.fdpin { position: sticky; top: -12px; z-index: 3; margin: 0 -12px 8px; padding: 4px 12px 2px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .fdlist { max-height: 92px; overflow: auto; margin: 0 0 6px; }
 .smart { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .smart button { padding: 2px 8px; font-size: 11px; border-radius: 999px; background: transparent; color: var(--muted); border-style: dashed; }
