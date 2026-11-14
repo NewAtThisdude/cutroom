@@ -189,13 +189,14 @@ TOOLS = [
                   'fast = ffmpeg minterpolate), detach_audio, split_scenes, deflicker (even out brightness pumping), ai_upscale (scale 2|4, Real-ESRGAN), '
                   'relight (preset light|subject|background, x, y 0..1 where the light is on the frame, color "#rrggbb", strength 0..1; depth from Depth Anything; '
                   'these four render a copy of the clip range on this Mac that the clip then plays), '
+                  'zoom_3d (a photo clip becomes a clip where the camera pushes in/out, slides left/right or orbits and near things move more than far ones: direction in|out|left|right|orbit, amount 0.05-1, duration seconds; depth from Depth Anything; the photo comes back with undo), '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead), slip (by seconds: new in/out, same place and length), slide (by: a main clip moves between its neighbours), '
                   'roll (by: moves the cut at the clip\'s side end|start). slip/slide/roll keep the rest of the timeline as it is. deflicker, ai_upscale (scale 2|4), relight (preset light|subject|background, x, y, color, strength).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt, 'by': num, 'side': txt,
-        'engine': txt, 'scale': {'type': 'integer'}, 'preset': txt, 'x': num, 'y': num, 'color': txt, 'strength': num}, ['id', 'action']), 'clip_tool'),
+        'engine': txt, 'scale': {'type': 'integer'}, 'preset': txt, 'x': num, 'y': num, 'color': txt, 'strength': num, 'direction': txt, 'amount': num, 'duration': num}, ['id', 'action']), 'clip_tool'),
     ('track_motion', 'Motion tracking: an overlay, sticker or text clip (id) follows what is inside box on the main-track video at time t, '
                      'moving, growing and turning with it (keyframes for x, y, scale, rot). box = {x, y, w, h} fractions of the canvas (look with snapshot first). '
                      'scale / rotate false: follow position only.',

@@ -15,7 +15,7 @@ const DEFAULT_TESTS = [
   'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools', 'mask_grade',
   'layouts_viz',
 ];
-const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
+const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub', 'zoom3d'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2);
 const options = { ai: false, ports: process.env.CUTROOM_TEST_PORTS || '4810-4819', timeout: 1200, tests: null, list: false };

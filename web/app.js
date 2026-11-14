@@ -1387,6 +1387,7 @@ function mediaPanel(c, lane) {
     <div class="actions"><button data-act="ramp">Apply ramp</button>${c.ramp && c.media === c.ramp.copy ? `<button data-act="rampoff"${M.get(c.ramp.src) ? '' : ' disabled title="Its original file is not in the library any more"'}>Remove ramp</button>` : ''}</div>
     <p class="hint">Up is faster (the middle line is 1×). Drag a point, click the line to add one, double-click a point to remove it. Rendered once into a copy the clip plays; sound off; undo goes back.</p>` : '';
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
+  if (m.kind === 'image' || z3On(c)) tools += z3Panel(c);
   if (m.kind === 'image') tools += `<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button>${lane === 'overlay' ? '<button data-act="track" title="Follow something in the video under it: moves, grows and turns with it">Track motion</button>' : ''}</div>`
     + '<p class="hint">Cuts out the main subject (any object, not only people) into a new transparent image.</p>';
   tools += `<h4>Clip</h4><div class="actions">${acts.join('')}</div>`;
@@ -4220,6 +4221,36 @@ async function relightPreview(c) { // one frame relit at the playhead, shown in 
     const s = $('#clipStatus'); if (s) s.textContent = '';
   } catch (e) { setStatus(e.message); throw e; }
 }
+// 3D zoom (CapCut's "3D zoom"): a photo becomes a short clip where the camera pushes in, pulls out, slides or orbits and the near
+// things move more than the far ones. Rendered once on this Mac from the photo's depth (/api/zoom3d, ai/enhance.py) into a silent library
+// video the clip plays, so the preview is the export. c.z3 = {src, copy, dir, amount, dur}: Remove puts the photo back.
+const Z3_DIRS = [['in', 'In'], ['out', 'Out'], ['left', 'Left'], ['right', 'Right'], ['orbit', 'Orbit']], Z30 = { dir: 'in', amount: 0.6 }, z3s = () => (S.z3 ??= { ...Z30 });
+const z3On = c => (c.z3 && c.media === c.z3.copy && M.get(c.z3.src) ? c.z3 : null);
+const unz3 = c => { c.media = c.z3.src; c.in = 0; delete c.z3; };
+async function zoom3dPhoto(c, o = {}) { // the photo (the original, each time) rendered into a 3D zoom copy the clip plays
+  try {
+    const on = z3On(c), src = on ? on.src : c.media, pid = P.id, was = c.media, st = z3s();
+    if (M.get(src)?.kind !== 'image') throw new Error('3D zoom works on a photo clip');
+    const dir = o.dir ?? st.dir, amount = o.amount ?? st.amount, dur = r3(o.dur ?? (st.id === c.id ? st.dur : undefined) ?? len(c));
+    if (!Z3_DIRS.some(([k]) => k === dir)) throw new Error(`direction must be one of ${Z3_DIRS.map(([k]) => k).join(', ')}`);
+    if (!(amount >= 0.05 && amount <= 1)) throw new Error('amount must be from 0.05 to 1');
+    if (!(dur >= 0.5 && dur <= 30)) throw new Error('duration must be from 0.5 to 30 seconds');
+    const j = await job('/api/zoom3d', { media: src, direction: dir, amount, dur, fps: P.fps }, '3D zoom');
+    await loadMedia();
+    c = live(c, pid, was);
+    change(() => { c.media = j.media; c.in = 0; c.out = dur; c.speed = 1; c.z3 = { src, copy: j.media, dir, amount, dur }; }, `3D zoom ${dir}`);
+    toast('3D zoom: the clip plays the rendered copy (Remove 3D zoom or undo goes back to the photo)');
+    return c;
+  } catch (e) { setStatus(e.message); throw e; }
+}
+function z3Panel(c) { // Tools tab: direction, amount, length
+  const st = z3s(), on = z3On(c), dir = on?.dir ?? st.dir, amount = on && st.id !== c.id ? on.amount : st.amount, dur = (st.id === c.id ? st.dur : undefined) ?? r3(len(c));
+  return `<h4>3D zoom</h4><div class="row"><span>Camera</span><div class="seg">${Z3_DIRS.map(([v, n]) => `<button data-z3d="${v}" class="${dir === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>`
+    + `<label class="row"><span>Amount</span><input type="range" data-z3="amount" min="0.05" max="1" step="0.01" value="${amount}" style="--p:${((amount - 0.05) / 0.95) * 100}%"></label>`
+    + `<label class="row"><span>Length (seconds)</span><input type="number" data-z3="dur" min="0.5" max="30" step="0.5" value="${dur}"></label>`
+    + `<div class="actions"><button data-act="zoom3d" title="Renders the photo with its depth: near things move more than far ones">Make 3D zoom</button>${on ? `<button data-act="z3off">Remove 3D zoom</button>` : ''}</div>`
+    + '<p class="hint">On this Mac: the photo\'s depth (Depth Anything) decides what moves more. Rendered once into a silent clip; the gap behind a moving edge is filled from the background. Undo goes back.</p>';
+}
 // Retouch (CapCut's face and body retouch): the sliders are a draft (S.rtDraft); the paused frame shows that draft rendered
 // by the same code as the copy (/api/retouch_preview, swapped in for the clip's picture); Apply renders the clip's range into
 // a library copy it plays (c.rt = {src, t0, p, copy}); Reset puts the original back.
@@ -4399,7 +4430,7 @@ function tplKeepDefault(m) { return m.kind === 'audio' ? !!(m.pack || m.licence)
 function openSaveTemplate() { return act(openSaveTpl); } // (the open project, not a template preview's borrowed one)
 function openSaveTpl() {
   if (!LANES.some(L => P[L.key].length)) return toast('Add something to the timeline first');
-  const media = [...new Set(LANES.flatMap(L => P[L.key].map(c => c.ramp && M.get(c.ramp.src) ? c.ramp.src : c.rt && M.get(c.rt.src) ? c.rt.src : c.media)).filter(id => M.get(id) && !(M.get(id).sfx && !M.get(id).pack)))];
+  const media = [...new Set(LANES.flatMap(L => P[L.key].map(c => c.ramp && M.get(c.ramp.src) ? c.ramp.src : c.rt && M.get(c.rt.src) ? c.rt.src : c.z3 && M.get(c.z3.src) ? c.z3.src : c.media)).filter(id => M.get(id) && !(M.get(id).sfx && !M.get(id).pack)))];
   modal(`<h2>Save as template</h2><p class="hint">The edit stays: cuts, timing, text styles, effects, transitions, sounds. Footage becomes numbered slots that whoever uses it fills.</p>
     <label class="row"><span>Name</span><input id="tsName" maxlength="80" value="${esc(P.name)}"></label>
     ${media.length ? `<h4>Media</h4><div class="tslist">${media.map(id => { const m = M.get(id); return `<div class="tsrow"><span class="tthumb" style="${thumbStyle(m)}"></span><span class="tsname"><b title="${esc(m.name)}">${esc(m.name)}</b><small>${m.kind}${m.kind === 'image' ? '' : ` · ${fmtDur(m.duration)}`}</small></span>`
@@ -4417,6 +4448,7 @@ async function saveTpl({ name = P.name, keep = [], labels = {}, texts, recaption
     if (!c.media) continue;
     if (c.ramp) { if (c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c); delete c.ramp; } // a ramp's copy belongs to its own footage: the slot gets the original range
     if (c.rt) { if (rtOn(c)) unretouch(c); delete c.rt; } // so does a retouched copy
+    if (c.z3) { if (z3On(c)) unz3(c); delete c.z3; } // and a 3D zoom's
     const m = M.get(c.media);
     if (m?.sfx && !m.pack) { c.media = `sfx:${m.sfx}`; continue; } // synthesized by Cutroom: made again by name on any Mac
     if (kept.has(c.media)) continue;
@@ -6812,6 +6844,7 @@ function wire() {
   insp.addEventListener('dblclick', e => { const w = e.target.closest('canvas[data-wheel]'), c = selClip(); if (w && c?.grade?.[w.dataset.wheel]) change(() => { delete c.grade[w.dataset.wheel].x; delete c.grade[w.dataset.wheel].y; }); });
   insp.addEventListener('input', e => {
     if (e.target.dataset.rl) { rl()[e.target.dataset.rl] = e.target.type === 'range' ? +e.target.value : e.target.value; if (e.target.type === 'range') fill(e.target); return; } // the relight panel's light (not the clip)
+    if (e.target.dataset.z3) { const z = z3s(), c = selClip(); z[e.target.dataset.z3] = +e.target.value; if (c) z.id = c.id; if (e.target.type === 'range') fill(e.target); return; } // the 3D zoom panel's settings (not the clip)
     if (!e.target.dataset.k) return;
     if (e.target.dataset.k.startsWith('rt.')) { apply(e.target); if (e.target.type === 'range') fill(e.target); const o = e.target.parentElement.querySelector('output'); if (o) o.textContent = fmt(+e.target.value, e.target.dataset.unit); return; }
     pending ??= JSON.stringify(P); // one undo step per gesture, committed on 'change'
@@ -6896,6 +6929,9 @@ function wire() {
     else if (d.act === 'upscale') quiet(upscaleVideo(c, $('#upScale')?.value));
     else if (d.act === 'relight') quiet(relightVideo(c));
     else if (d.act === 'rlprev') quiet(relightPreview(c));
+    else if (d.act === 'zoom3d') quiet(zoom3dPhoto(c));
+    else if (d.act === 'z3off') { if (z3On(c)) change(() => unz3(c), 'Removed 3D zoom'); }
+    else if (d.z3d) { z3s().dir = d.z3d; z3s().id = c.id; renderInspector(); }
     else if (d.rlp) { rl().preset = d.rlp; renderInspector(); }
     else if (d.act === 'scenes') quiet(sceneSplit(c, S.sel.lane));
     else if (d.act === 'reframe') quiet(autoReframe(c, { ratio: $('#reframeRatio')?.value || undefined }));
@@ -7413,6 +7449,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.mc) o.multicam = { angle: c.mc.a + 1, angles: c.mc.angles.length };
   if (c.compound) o.compound = Object.values(c.compound).filter(Array.isArray).reduce((n, a) => n + a.length, 0);
   if (c.ramp) o.ramp = c.ramp.pts;
+  if (c.z3) o.zoom3d = { direction: c.z3.dir, amount: c.z3.amount, seconds: c.z3.dur };
   if (c.rt) o.retouch = Object.fromEntries(Object.entries(c.rt.p).filter(([k, v]) => v !== RT0[k]));
   if (MULTI.includes(lane)) { const r = rows(lane).row.get(c.id) || 0; if (r) o.track = r; }
   if (c.kf?.length) o.keyframes = c.kf.length;
@@ -7658,13 +7695,13 @@ const REMOTE = {
     await loadMedia(); addMedia(m.id, 'audio', at);
     return brief(...cfind(S.sel.id));
   },
-  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp0, curve, at, ref, by, side = 'end', engine = 'ai', scale = 2, preset, x, y, color, strength }) {
+  async clip_tool({ id, action, depth = 0.25, every = 2, ramp: rp0, curve, at, ref, by, side = 'end', engine = 'ai', scale = 2, preset, x, y, color, strength, direction, amount, duration }) {
     const rp = rp0 ?? (action === 'speed_ramp' && RAMPS[preset] ? preset : 'montage'); // a ramp named as preset (relight's option) is still that ramp
     const [c, L] = cfind(id), n0 = LANES.reduce((n, x) => n + P[x.key].length, 0);
     S.sel = { lane: L, id };
     const run = { remove_background: () => removeBackground(c), stabilize: () => remake(c, 'stabilize'), reverse: () => remake(c, 'reverse'), auto_reframe: () => autoReframe(c),
       freeze_frame: () => { packMain(); if (at !== undefined) S.t = +at; if (!(S.t >= c.start && S.t <= c.start + tdur(c, L))) throw new Error(`at must be a time inside the clip: ${r3(c.start)}..${r3(c.start + tdur(c, L))} s`); return freeze(c, L); }, smooth_slowmo: () => smoothSlowmo(c), detach_audio: () => detachAudio(c), split_scenes: () => sceneSplit(c, L),
-      deflicker: () => deflickerVideo(c), ai_upscale: () => upscaleVideo(c, scale), relight: () => relightVideo(c, { ...RL0, ...Object.fromEntries(Object.entries({ preset, x, y, color, strength }).filter(([, v]) => v !== undefined)) }),
+      zoom_3d: () => zoom3dPhoto(c, { dir: direction, amount, dur: duration }), deflicker: () => deflickerVideo(c), ai_upscale: () => upscaleVideo(c, scale), relight: () => relightVideo(c, { ...RL0, ...Object.fromEntries(Object.entries({ preset, x, y, color, strength }).filter(([, v]) => v !== undefined)) }),
       auto_duck: () => autoDuck(c, depth), auto_adjust: () => autoAdjust(c, L, ref), isolate_voice: () => isolateVoice(c, L, 'voice'), remove_voice: () => isolateVoice(c, L, 'music'), split_stems: () => splitStems(c, L), detect_beats: () => detectBeats(c), beat_sync: () => beatSync(c, every), body_blur: () => bodyEffect(c, L, 'blur'), body_mono: () => bodyEffect(c, L, 'mono'), body_dim: () => bodyEffect(c, L, 'dim'), body_glow: () => bodyEffect(c, L, 'glow'), body_neon: () => bodyEffect(c, L, 'neon'), ...Object.fromEntries(['slip', 'slide', 'roll'].map(t => [t, () => { // by seconds; one undo step, the rest of the timeline keeps its timing
         if (!Number.isFinite(by)) throw new Error(`${t}: by (seconds) is required`);
         const f = editTool(t, L, c, side === 'start' ? 'l' : 'r');
@@ -7675,7 +7712,7 @@ const REMOTE = {
         else if (!RAMPS[rp]) throw new Error(`ramp must be one of ${Object.keys(RAMPS).join(', ')}`);
         return applyRamp(c, L, curve?.map(q => [+q[0], +q[1]]) ?? rampPts(rp));
       } }[action];
-    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, deflicker, ai_upscale, relight, auto_duck, auto_adjust (ref = a clip id to match its colours), slip, slide, roll (by seconds; roll side start|end), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
+    if (!run) throw new Error('action must be one of body_blur, body_mono, body_dim, body_glow, body_neon, remove_background, stabilize, reverse, auto_reframe, freeze_frame, smooth_slowmo, detach_audio, split_scenes, deflicker, ai_upscale, relight, zoom_3d (a photo clip: direction in|out|left|right|orbit, amount 0.05-1, duration seconds), auto_duck, auto_adjust (ref = a clip id to match its colours), slip, slide, roll (by seconds; roll side start|end), isolate_voice, remove_voice, split_stems, detect_beats, beat_sync, speed_ramp');
     await run();
     return { clipsBefore: n0, clipsNow: LANES.reduce((n, x) => n + P[x.key].length, 0), clip: P[L].includes(c) ? brief(c, L) : null };
   },

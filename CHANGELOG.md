@@ -67,6 +67,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Voice isolation, voice clone, voiceover voices and AI dubbing
 - Make shorts from a long video, and smart combine: several clips cut into one edit on the beat
 - Smooth slow motion, upscaling, relighting, deflicker and sharpen
+- 3D zoom: a photo becomes a clip where the camera pushes in, pulls out, slides or orbits and the near things move more than the far ones (depth from the photo, rendered once on your computer; undo gives the photo back)
 - Smart media search by what is in the shot
 - Auto B-roll: shots from your own library that match what is being said go on the overlay track, in one undo
   step, and each one can be swapped or removed
