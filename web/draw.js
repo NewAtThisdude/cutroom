@@ -7,7 +7,50 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const alike = (a, b) => /^#[0-9a-f]{6}/i.test(a) && /^#[0-9a-f]{6}/i.test(b) && [1, 3, 5].reduce((d, i) => d + Math.abs(parseInt(a.substr(i, 2), 16) - parseInt(b.substr(i, 2), 16)), 0) < 96; // two #rrggbb colours too close to tell apart
 const hexA = (hex, a = 1) => `${hex}${Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0')}`;
 const TEXT_BASE = { font: 'Montserrat', weight: 800, size: 72, color: '#ffffff', stroke: '#000000', strokeW: 0, shadow: false, box: false, boxColor: '#000000', boxAlpha: 0.72, upper: false, hl: '#ffd400', pop: false, maxW: 0.86, lh: 1.15,
-  italic: false, align: 'center', ls: 0, shc: '#000000', sha: 0.55, shb: 0.18, shx: 0, shy: 0.04, boxR: 0.18, boxPad: 0.3 };
+  italic: false, align: 'center', ls: 0, curve: 0, shc: '#000000', sha: 0.55, shb: 0.18, shx: 0, shy: 0.04, boxR: 0.18, boxPad: 0.3 };
+
+// IDs are project/REMOTE values; labels stay in the DOM, including the animation galleries.
+const TEXT_FX_IN = [['wordpop', 'Word pop'], ['letterrise', 'Letter rise'], ['letterdrop', 'Letter drop'], ['letterblur', 'Blur in per letter'], ['decode', 'Scramble / decode'],
+  ['wave', 'Wave'], ['stroke', 'Stroke draw-on'], ['underline', 'Underline draw-on'], ['highlight', 'Highlight box wipe'], ['bounce', 'Bounce'], ['elastic', 'Elastic'],
+  ['glitch', 'Glitch'], ['flicker', 'Flicker'], ['zoomblur', 'Zoom in blur'], ['slideblur', 'Slide with motion blur']];
+const TEXT_FX_OUT = [['wordpop', 'Word pop out'], ['letterrise', 'Letter rise out'], ['letterdrop', 'Letter drop out'], ['letterblur', 'Blur out per letter'],
+  ['glitch', 'Glitch out'], ['zoomblur', 'Zoom out blur'], ['slideblur', 'Slide out with motion blur']];
+const TEXT_FX_LOOPS = [['wave', 'Wave'], ['breathe', 'Breathe'], ['shake', 'Shake'], ['swing', 'Swing'], ['glow', 'Pulse glow'], ['colorcycle', 'Colour cycle']];
+const textSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const textChars = s => textSegmenter ? Array.from(textSegmenter.segment(s), x => x.segment) : [...s];
+const textStagger = (p, i, n) => clamp((p - 0.65 * i / Math.max(1, n - 1)) / 0.35, 0, 1);
+const textLetterFx = a => ['letterrise', 'letterdrop', 'letterblur', 'decode', 'wave', 'glitch'].includes(a);
+function textArc(dx, width, curve, lineHeight = 0) { // arc length -> baseline and tangent; short lines keep a radius large enough for their background
+  const bend = clamp(curve, -100, 100) * Math.PI / (100 * Math.max(1, width, lineHeight * Math.PI));
+  return Math.abs(bend) < 1e-8 ? { x: dx, y: 0, a: 0 } : { x: Math.sin(dx * bend) / bend, y: (1 - Math.cos(dx * bend)) / bend, a: dx * bend };
+}
+// the text scratch canvases are CPU canvases: WebKit's GPU ones, cleared and redrawn for the next letter, now and then lent a
+// drawImage queued before it the next letter's pixels (each draw of a frame came out different and the export refused it)
+const TX_2D = { willReadFrequently: true };
+function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, deterministic blur taps: also works in WebKit workers without ctx.filter
+  if (radius < 0.01) { ctx.drawImage(cv, x, y); return; }
+  const layer = scratch(cv.width, cv.height, 'txblur'), q = layer.getContext('2d', TX_2D), n = 13;
+  q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, layer.width, layer.height);
+  q.globalCompositeOperation = 'lighter'; q.globalAlpha = 1 / n; // average premultiplied pixels; source-over taps would lose opacity
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1), r = Math.sqrt(u) * radius, a = i * 2.399963229728653;
+    q.drawImage(cv, horizontal ? (u - 0.5) * radius * 2 : Math.cos(a) * r, horizontal ? 0 : Math.sin(a) * r);
+  }
+  q.globalCompositeOperation = 'source-over'; q.globalAlpha = 1; ctx.drawImage(layer, x, y);
+}
+function textGlyph(ctx, stroke, ch, x, y, size, alpha, blur, gradient) { // raster first: WebKit's text shadows otherwise ignore per-letter globalAlpha
+  if (alpha <= 0) return;
+  const m = ctx.measureText(ch), pad = Math.ceil(size * 2 + ctx.lineWidth + ctx.shadowBlur * 2 + Math.abs(ctx.shadowOffsetX) + Math.abs(ctx.shadowOffsetY));
+  const r32 = v => Math.ceil(v / 32) * 32; // sizes in steps of 32 px: a canvas per letter width churned the 64-canvas scratch cache every frame
+  const w = r32(Math.max(m.width, m.actualBoundingBoxRight || 0) + Math.max(0, m.actualBoundingBoxLeft || 0) + 2 * pad), h = r32(size * 2 + 2 * pad);
+  const cv = scratch(w, h, 'txglyph'), q = cv.getContext('2d', TX_2D);
+  q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, w, h);
+  for (const k of ['font', 'textBaseline', 'lineJoin', 'lineWidth', 'fillStyle', 'strokeStyle', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY']) q[k] = ctx[k];
+  q.setTransform(1, 0, 0, 1, pad - x, pad + size - y);
+  if (gradient) { const g = q.createLinearGradient(x, y - size / 2, x, y + size / 2); g.addColorStop(0, gradient[0]); g.addColorStop(1, gradient[1]); q.fillStyle = g; }
+  if (stroke) q.strokeText(ch, x, y); else q.fillText(ch, x, y);
+  ctx.save(); ctx.shadowColor = 'transparent'; ctx.globalAlpha *= alpha; textFxBlit(ctx, cv, x - pad, y - pad - size, blur); ctx.restore();
+}
 
 const animLen = (st, out) => (out ? st.outT : st.animT) ?? ((out ? st.out : st.anim) === 'type' ? 1.2 : ANIM_T); // text in/out length; typing takes longer
 const wob = t => 0.5 * Math.sin(t) + 0.3 * Math.sin(2.3 * t + 1.7) + 0.2 * Math.sin(4.1 * t + 3.1); // smooth deterministic jitter (the export bakes the same)
@@ -16,6 +59,13 @@ const WORD_T = 0.22; // a caption word's own entrance (pop, bounce, rise...), se
 const SPK_C = ['#ffd400', '#4fd8ff', '#ff6fa8', '#7dff8b', '#c79bff', '#ff9f43']; // speaker colours, in order
 const capLive = st => !!(st.kar || st.wanim || st.reveal === 'char' || st.emoji); // a caption style that changes every frame (the export draws each one)
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+const elasticEase = t => t <= 0 ? 0 : t >= 1 ? 1 : 1 - 2 ** (-10 * t) * Math.cos(t * Math.PI * 6);
+function bounceEase(t) {
+  if (t < 1 / 2.75) return 7.5625 * t * t;
+  if (t < 2 / 2.75) return 7.5625 * (t - 1.5 / 2.75) ** 2 + 0.75;
+  if (t < 2.5 / 2.75) return 7.5625 * (t - 2.25 / 2.75) ** 2 + 0.9375;
+  return t >= 1 ? 1 : 7.5625 * (t - 2.625 / 2.75) ** 2 + 0.984375;
+}
 const ss3 = x => x * x * (3 - 2 * x);
 // keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
 const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1], back: [0.34, 1.56, 0.64, 1] }; // back: past the end, then settles
@@ -29,15 +79,16 @@ function bezE(bz, u) { // cubic-bezier at time u: s by 16 halvings, the very ste
 const easeU = (u, r0, r1, bz) => { const E = bz ? v => bezE(bz, v) : ss3, d = E(r1) - E(r0); return Math.abs(d) > 1e-9 ? (E(r0 + u * (r1 - r0)) - E(r0)) / d : u; }; // part [r0, r1] of the curve, rescaled to 0..1
 function propsAt(c, lt) { // keyframed scale/x/y/opacity at clip-local time: linear, exactly like the server's pw()
   const k = c.kf;
-  if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1, rot: c.rot ?? 0 };
+  const curve = c.curve ?? c.style?.curve ?? 0;
+  if (!k?.length) return { scale: c.scale ?? 1, x: c.x ?? 0, y: c.y ?? 0, opacity: c.opacity ?? 1, rot: c.rot ?? 0, curve };
   let i = 0;
   while (i + 1 < k.length && k[i + 1].t <= lt) i++;
   const a = k[i], b = k[i + 1];
-  if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity, rot: a.rot ?? 0 }; // never leak a keyframe's own t
+  if (!b) return { scale: a.scale, x: a.x, y: a.y, opacity: a.opacity, rot: a.rot ?? 0, curve: a.curve ?? curve }; // never leak a keyframe's own t
   let u = clamp((lt - a.t) / Math.max(1e-6, b.t - a.t), 0, 1);
   if (a.ease ?? c.ease) u = easeU(u, a.eu0 ?? 0, a.eu1 ?? 1, a.bz); // smoothstep (or its cubic-bezier) from this keyframe (or clip default), same as pw() with e=1
   const mix = p => (a[p] ?? 0) + ((b[p] ?? 0) - (a[p] ?? 0)) * u;
-  return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity'), rot: mix('rot') };
+  return { scale: mix('scale'), x: mix('x'), y: mix('y'), opacity: mix('opacity'), rot: mix('rot'), curve: (a.curve ?? curve) + ((b.curve ?? curve) - (a.curve ?? curve)) * u };
 }
 
 const rnd = (i, s = 0) => { const x = Math.sin(i * 127.1 + s * 311.7) * 43758.5453; return x - Math.floor(x); }; // deterministic noise: preview and export agree
@@ -257,7 +308,7 @@ function drawTexts(ctx, t, k, preview) {
 
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
   if (it.viz) return drawViz(ctx, it, lt, k, preview); // an audio visualizer, not text
-  const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
+  const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0, curve: it.curve ?? st.curve } : propsAt(it, lt);
   const u = (Math.min(P.w, P.h) / 1080) * k * pr.scale, size = st.size * u;
   const timed = it.words?.length ? it.words : null;
   let active = -1, now = 0; // now: the word being said (the last one started), whatever the highlight
@@ -270,16 +321,42 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   const LS = (st.ls || 0) * size; // letter spacing, drawn letter by letter so it works in every engine (WebKit has no ctx.letterSpacing everywhere)
-  const meas = w => (LS ? [...w].reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) + LS * ([...w].length - 1) : ctx.measureText(w).width);
+  const meas = w => (LS ? textChars(w).reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) + LS * Math.max(0, textChars(w).length - 1) : ctx.measureText(w).width);
+  const curve = clamp(pr.curve ?? st.curve ?? 0, -100, 100);
+  let wordFx = null;
   const put = (stroke, w, x0, y0) => {
+    if (wordFx && (curve || (av < 1 && (textLetterFx(st.anim) || st.anim === 'wordpop')) || (ao < 1 && (textLetterFx(st.out) || st.out === 'wordpop')) || st.loop === 'wave')) {
+      const chars = textChars(w), { ln, ci } = wordFx, mid = lx(ln) + ln.w / 2;
+      let xx = x0;
+      for (const [i, ch] of chars.entries()) {
+        const cw = ctx.measureText(ch).width, off = LS ? xx - x0 : meas(chars.slice(0, i + 1).join('')) - cw;
+        const pos = textArc(x0 + off + cw / 2 - mid, ln.w, curve, lh);
+        let dy = 0, dx = 0, alpha = 1, blur = 0, glyph = ch;
+        for (const [type, p] of [[st.anim, av], [st.out, ao]]) if (p < 1 && textLetterFx(type)) {
+          const v = textStagger(p, ci + i, all), q = 1 - v;
+          alpha *= v;
+          if (type === 'letterrise') dy += q * q * size * 0.9;
+          if (type === 'letterdrop') dy -= q * q * size * 0.9;
+          if (type === 'letterblur') blur += q * size * 0.18;
+          if (type === 'wave') dy += Math.sin(v * Math.PI * 3 + (ci + i) * 0.7) * q * size * 0.45;
+          if (type === 'glitch') dx += (rnd(ci + i, Math.floor(p * 24)) - 0.5) * q * size * 0.65;
+          if (type === 'decode' && v > 0 && v < 1) glyph = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(rnd(ci + i, Math.floor(p * 30)) * 36)];
+        }
+        if (st.loop === 'wave') dy += Math.sin(lt * Math.PI * 2 + (ci + i) * 0.65) * size * 0.14;
+        ctx.save(); ctx.translate(mid + pos.x + dx, y0 + pos.y + dy); ctx.rotate(pos.a);
+        textGlyph(ctx, stroke, glyph, -cw / 2, 0, size, alpha, blur, st.grad && !stroke && st.loop !== 'colorcycle' ? [st.color, st.grad] : null);
+        ctx.restore(); xx += cw + LS;
+      }
+      return;
+    }
     if (!LS) return stroke ? ctx.strokeText(w, x0, y0) : ctx.fillText(w, x0, y0);
     let xx = x0;
-    for (const ch of w) { if (stroke) ctx.strokeText(ch, xx, y0); else ctx.fillText(ch, xx, y0); xx += ctx.measureText(ch).width + LS; }
+    for (const ch of textChars(w)) { if (stroke) ctx.strokeText(ch, xx, y0); else ctx.fillText(ch, xx, y0); xx += ctx.measureText(ch).width + LS; }
   };
   const cjk = /[぀-ヿ㐀-鿿＀-￯　-〿]/.test(paras.map(q => q.map(x => x[0]).join('')).join('')); // Chinese / Japanese words are characters: no gaps
   const sp = (cjk ? 0 : ctx.measureText(' ').width) + LS, maxW = st.maxW * P.w * k, lines = [];
   const grow = timed && st.wanim === 'scale' ? 1.25 : timed && st.pop ? 1.12 : 1; // every word reserves its popped width: no overlap, and the line doesn't jitter
-  let idx = 0;
+  let idx = 0, charIdx = 0;
   for (const para of paras) {
     let ln = { ws: [], w: 0 };
     for (let [w, ti] of para) {
@@ -287,7 +364,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       const ww = meas(w);
       if (ln.ws.length && ln.w + sp + ww * grow > maxW) { lines.push(ln); ln = { ws: [], w: 0 }; }
       ln.w += (ln.ws.length ? sp : 0) + ww * grow;
-      ln.ws.push({ w, ww, i: idx++, ti });
+      ln.ws.push({ w, ww, i: idx++, ci: charIdx, ti }); charIdx += textChars(w).length;
     }
     lines.push(ln);
   }
@@ -308,10 +385,22 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     if (st.out === 'slide') ctx.translate(0, -((1 - ao) ** 2) * lh * 0.8);
     if (st.out === 'zoom') { const s = 1 + 0.6 * (1 - ao) ** 2; ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
   }
+  let fxBlur = 0, fxHorizontal = false;
+  for (const [type, p, dir] of [[st.anim, av, 1], [st.out, ao, -1]]) if (p < 1) {
+    const q = 1 - p, around = z => { ctx.translate(x, y); ctx.scale(z, z); ctx.translate(-x, -y); };
+    if (type === 'bounce') ctx.translate(0, -dir * (1 - bounceEase(p)) * size * 1.2);
+    if (type === 'elastic') around(0.25 + 0.75 * elasticEase(p));
+    if (type === 'zoomblur') { around(0.5 + 0.5 * p); fxBlur += q * size * 0.22; }
+    if (type === 'slideblur') { ctx.translate(dir * q * q * size * 2.5, 0); fxBlur += q * size * 0.4; fxHorizontal = true; }
+    if (type === 'flicker') ctx.globalAlpha *= 0.25 + 0.75 * rnd(Math.floor(p * 20), 9);
+  }
   if (st.loop === 'bounce') ctx.translate(0, -Math.abs(Math.sin(lt * Math.PI * 2)) * size * 0.15);
   if (st.loop === 'pulse') { const s = 1 + 0.06 * Math.sin(lt * Math.PI * 4); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-x, -y); }
   if (st.loop === 'wiggle') { ctx.translate(x, y); ctx.rotate(0.06 * Math.sin(lt * Math.PI * 6)); ctx.translate(-x, -y); }
-  const nch = lines.map(l => l.ws.reduce((n2, w) => n2 + [...w.w].length, 0)), before = nch.map((_, i) => nch.slice(0, i).reduce((x2, y2) => x2 + y2, 0));
+  if (st.loop === 'breathe') { const z = 1 + 0.035 * (1 - Math.cos(lt * Math.PI)); ctx.translate(x, y); ctx.scale(z, z); ctx.translate(-x, -y); }
+  if (st.loop === 'shake') ctx.translate(size * 0.025 * Math.sin(lt * Math.PI * 12), size * 0.025 * Math.sin(lt * Math.PI * 20));
+  if (st.loop === 'swing') { ctx.translate(x, top); ctx.rotate(0.08 * Math.sin(lt * Math.PI)); ctx.translate(-x, -top); }
+  const nch = lines.map(l => l.ws.reduce((n2, w) => n2 + textChars(w.w).length, 0)), before = nch.map((_, i) => nch.slice(0, i).reduce((x2, y2) => x2 + y2, 0));
   const all = before.at(-1) + nch.at(-1);
   let shown = Infinity; // typewriter: characters typed so far; backspace: characters still left
   if (st.anim === 'type' && av < 1) shown = Math.floor(av * all);
@@ -320,8 +409,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   // WebKit draws shadowed text at full strength whatever globalAlpha says (the default Title popped on instead of fading,
   // in the preview and the export): such text is drawn solid on a scratch canvas, then laid on at the fade
   const main = ctx, fade = ctx.globalAlpha;
-  if (st.shadow && fade < 1) {
-    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d');
+  if ((st.shadow && fade < 1) || fxBlur > 0 || (st.loop === 'glow' && fade < 1)) {
+    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d', TX_2D);
     sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, sx.canvas.width, sx.canvas.height);
     sx.setTransform(main.getTransform()); sx.font = main.font; sx.textBaseline = 'middle'; sx.lineJoin = 'round';
     ctx = sx;
@@ -330,7 +419,25 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   if (st.grad) { gradFill = ctx.createLinearGradient(0, top, 0, top + lines.length * lh); gradFill.addColorStop(0, st.color); gradFill.addColorStop(1, st.grad); }
   if (st.box) {
     ctx.fillStyle = hexA(st.boxColor, st.boxAlpha);
-    for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) { ctx.beginPath(); ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18))); ctx.fill(); }
+    for (const [li, ln] of lines.entries()) if (ln.ws.length && shown > before[li]) {
+      ctx.beginPath();
+      if (curve) {
+        const mid = lx(ln) + ln.w / 2, cy = top + li * lh + lh / 2;
+        for (const side of [-1, 1]) for (let j = 0; j <= 40; j++) {
+          const dx = ((side < 0 ? j : 40 - j) / 40 - 0.5) * (ln.w + padX * 2), a = textArc(dx, ln.w, curve, lh);
+          const px = mid + a.x - Math.sin(a.a) * side * lh / 2, py = cy + a.y + Math.cos(a.a) * side * lh / 2;
+          if (side === -1 && j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+      } else ctx.roundRect(lx(ln) - padX, top + li * lh, ln.w + padX * 2, lh, Math.min(lh / 2, size * (st.boxR ?? 0.18)));
+      ctx.fill();
+    }
+  }
+  if (av < 1 && (st.anim === 'underline' || st.anim === 'highlight')) for (const [li, ln] of lines.entries()) {
+    ctx.save(); ctx.globalAlpha *= Math.sin(Math.PI * av); ctx.strokeStyle = ctx.fillStyle = st.grad || st.color2 || st.color;
+    if (st.anim === 'highlight') { ctx.globalAlpha *= 0.35; ctx.fillRect(lx(ln) - padX, top + li * lh, (ln.w + padX * 2) * av, lh); }
+    else { ctx.lineWidth = size * 0.06; ctx.beginPath(); for (let j = 0; j <= 40; j++) { const a = textArc((j / 40 * av - 0.5) * ln.w, ln.w, curve, lh); const px = lx(ln) + ln.w / 2 + a.x, py = top + li * lh + lh * 0.9 + a.y; if (!j) ctx.moveTo(px, py); else ctx.lineTo(px, py); } ctx.stroke(); }
+    ctx.restore();
   }
   const spkC = st.spk && it.spk != null ? st.spkc?.[it.spk] || SPK_C[it.spk % SPK_C.length] : null, baseC = spkC || st.color; // a speaker's captions in their colour
   const vs = c => spkC && alike(spkC, c) ? [st.color, '#ffffff', '#101010'].find(k => !alike(k, spkC)) : c; // a highlight that would vanish into the speaker's colour
@@ -340,7 +447,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     let cx = lx(ln);
     const cy = top + li * lh + lh / 2;
     for (const w of ln.ws) {
-      const tw = timed?.[w.ti], on = tw && w.ti === active, wx = cx + (w.ww * grow - w.ww) / 2, chars = [...w.w];
+      const tw = timed?.[w.ti], on = tw && w.ti === active, wx = cx + (w.ww * grow - w.ww) / 2, chars = textChars(w.w);
+      wordFx = { ln, ci: w.ci };
       let vis = left >= chars.length ? w.w : chars.slice(0, Math.max(0, left)).join('');
       left -= chars.length;
       if (tw && lt < tw.s && (st.reveal || (st.wanim && st.wanim !== 'scale'))) vis = ''; // revealed as it is said
@@ -348,6 +456,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       if (!vis) { cx += w.ww * grow + sp; continue; } // not typed yet: its place stays reserved
       ctx.save();
       const mx = wx + w.ww / 2, around = s => { ctx.translate(mx, cy); ctx.scale(s, s); ctx.translate(-mx, -cy); };
+      for (const [type, p] of [[st.anim, av], [st.out, ao]]) if (type === 'wordpop' && p < 1) { const v = textStagger(p, w.i, idx); around(0.3 + 0.7 * easeOutBack(v)); ctx.globalAlpha *= v; }
       if (on && st.pop && st.wanim !== 'scale') around(grow);
       if (tw && st.wanim) { // each word's own entrance, from the moment it is said
         const wu = clamp((lt - tw.s) / WORD_T, 0, 1), A = st.wanim;
@@ -362,12 +471,24 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       if (st.color2 && (w.ti >= 0 ? w.ti : w.i) % 2) fill = st.color2;
       if (st.kw && tw && it.kw?.includes(w.ti)) fill = kwC;
       if (on && !st.wbox && !st.kar) fill = hl;
+      if (st.loop === 'colorcycle') {
+        const palette = [st.color, st.grad, st.color2, st.shadow && st.shc, st.box && st.boxColor].filter(c => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c));
+        const phase = ((lt % 2 + 2) % 2) / 2 * palette.length, a = palette[Math.floor(phase)], b = palette[(Math.floor(phase) + 1) % palette.length], f = phase % 1;
+        if (a && b) fill = `rgb(${[1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * (1 - f) + parseInt(b.slice(i, i + 2), 16) * f)).join(',')})`;
+        if (palette.length < 2) ctx.globalAlpha *= 0.85 + 0.15 * Math.cos(lt * Math.PI);
+      }
       if (on && st.wbox) { ctx.fillStyle = hl; ctx.beginPath(); ctx.roundRect(wx - size * 0.16, cy - size * 0.62, w.ww + size * 0.32, size * 1.24, size * 0.2); ctx.fill(); }
       if (st.stack > 0) { // shadow stack: hard copies stepping down-right, the furthest first
         ctx.fillStyle = ctx.strokeStyle = st.shc || '#000000'; ctx.lineWidth = st.strokeW * u * 2;
         for (let j = Math.round(st.stack); j > 0; j--) { const o = j * size * 0.03; if (st.strokeW > 0) put(true, vis, wx + o, cy + o); put(false, vis, wx + o, cy + o); }
       }
       if (st.shadow) { ctx.shadowColor = hexA(st.shc || '#000000', st.sha ?? 0.55); ctx.shadowBlur = size * (st.shb ?? 0.18); ctx.shadowOffsetX = size * (st.shx || 0); ctx.shadowOffsetY = size * (st.shy ?? 0.04); }
+      if (st.loop === 'glow') { ctx.shadowColor = st.shadow && st.shc && st.shc !== '#000000' ? st.shc : st.color; ctx.shadowBlur = size * (0.15 + 0.2 * (1 + Math.sin(lt * Math.PI))); ctx.shadowOffsetX = ctx.shadowOffsetY = 0; }
+      if (st.anim === 'stroke' && av < 1) {
+        ctx.save(); ctx.beginPath(); ctx.rect(lx(ln) - size, cy - size * 3, size + ln.w * clamp(av * 1.5, 0, 1), size * 6); ctx.clip();
+        ctx.lineWidth = Math.max(st.strokeW * u * 2, size * 0.025); ctx.strokeStyle = st.strokeW ? st.stroke : st.color; put(true, vis, wx, cy); ctx.restore();
+        ctx.globalAlpha *= ss3(clamp((av - 0.45) / 0.55, 0, 1));
+      }
       if (st.strokeW > 0) { ctx.lineWidth = st.strokeW * u * 2; ctx.strokeStyle = st.stroke; put(true, vis, wx, cy); ctx.shadowColor = 'transparent'; }
       ctx.fillStyle = fill;
       put(false, vis, wx, cy);
@@ -380,7 +501,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       cx += w.ww * grow + sp;
     }
   }
-  let yTop = top, yBot = top + lines.length * lh; // extras around the block: speaker name and emoji above, the translation below
+  const arcEdge = textArc(BW / 2, BW, curve, lh).y;
+  let yTop = top + Math.min(0, arcEdge), yBot = top + lines.length * lh + Math.max(0, arcEdge); // extras around the block: speaker name and emoji above, the translation below
   if (st.bi && it.tr) {
     let bs = size * (st.biSize ?? 0.6);
     const bf = s => `${st.italic ? 'italic ' : ''}${Math.min(st.weight, 700)} ${s}px "${st.biFont || st.font}", system-ui, sans-serif`;
@@ -407,7 +529,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     ctx.save(); ctx.translate(x, ey); ctx.scale(s, s); ctx.rotate(-0.12 * (1 - eu)); ctx.drawImage(emojiPic(it.emoji), -128, -128); ctx.restore();
     yTop = ey - es * 0.6;
   }
-  if (ctx !== main) { main.setTransform(1, 0, 0, 1, 0, 0); main.globalAlpha = fade; main.drawImage(ctx.canvas, 0, 0); ctx = main; }
+  if (ctx !== main) { main.setTransform(1, 0, 0, 1, 0, 0); main.globalAlpha = fade; textFxBlit(main, ctx.canvas, 0, 0, fxBlur, fxHorizontal); ctx = main; }
   ctx.restore();
   if (preview) {
     const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;

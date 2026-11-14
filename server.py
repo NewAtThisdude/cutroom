@@ -5123,9 +5123,11 @@ def graph(p, td):
         Ew, Eh = (math.hypot(mw, mh),) * 2 if rotation(c) else (mw, mh)
         if kf:
             S = lambda v_: f"(({pw(kf, 'w', v_)})/{mw:.4f})"
+            # round(): overlay casts x/y to int (toward zero), which put every clip left of / above the frame's edge (a bounce
+            # or snap clip animation, a negative keyframe) up to a pixel right/down of the preview's subpixel position
             return (f",format=rgba,scale=w='2*trunc(iw*{S('t')}/2)':h=-2:eval=frame",
-                    f"'({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2'",
-                    f"'({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2':eval=frame")
+                    f"'round(({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2)'",
+                    f"'round(({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2)':eval=frame")
         sw, sh = max(2, even(Ew * g['w'] / mw)), max(2, even(Eh * g['w'] / mw))
         return f',scale={sw}:{sh}{exact(c)}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
 
@@ -5335,7 +5337,7 @@ def graph(p, td):
                 vals = [f[q] if isinstance(f[q], list) else [f[q]] * (f['b'] - f['a']) for q in ('z', 'x', 'y')]
                 kf = [{'t': (f['a'] + i) / F, 'z': z, 'x': dx, 'y': dy} for i, (z, dx, dy) in enumerate(zip(*vals))]
                 body = f"scale=w='2*trunc({W}*({pw(kf, 'z')})/2)':h=-2:eval=frame"
-                x, y, ev = f"'({W}-overlay_w)/2+({pw(kf, 'x')})'", f"'({H}-overlay_h)/2+({pw(kf, 'y')})'", ':eval=frame'
+                x, y, ev = f"'round(({W}-overlay_w)/2+({pw(kf, 'x')}))'", f"'round(({H}-overlay_h)/2+({pw(kf, 'y')}))'", ':eval=frame'  # overlay truncates toward zero: round like place()
             fg.append(f'[{cur[0]}]split[{tag}a][{tag}b];[{tag}b]{body}[{tag}e];[{tag}a][{tag}e]overlay=x={x}:y={y}{ev}:format=gbrp:{en}[{nxt}]')
         cur[0] = nxt
     if p['frames'] and not ao:  # text layer: PNG per interval, played back as a VFR stream by the concat demuxer

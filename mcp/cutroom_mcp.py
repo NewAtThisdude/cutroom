@@ -40,10 +40,12 @@ adj: {b, c, s: brightness/contrast/saturation, 1 = neutral; temp, tint: -1..1; e
 look: {name: a filter from options().looks (colour matrices such as vivid, mono, teal; film looks such as tealorange, bleach, print, portra, noir, cinema), amount 0..1} | crop: {l, r, t, b: fractions 0..0.45}
 key: {color '#00ff00', sim 0..1, blend 0..0.5} chroma key | mask: {type circle|rect|linear|mirror|heart|star|polygon|pen, x, y -0.5..0.5, w, h, rot, feather, invert;
   star/polygon: n points/sides 3-12, star: inner 0.1-0.9; pen: pts [[u, v], ...] -1..1 in the mask's box (a smooth closed curve)} (an AI subject mask: cut_out_object as_mask)
-anim: {in, out: none|fade|grow|shrink|left|right|up|down|rotate|spin; ind, outd seconds; loop: none|kbin|kbout|drift|pulse|shake|sway|float; amt strength}
-text clips: text, style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
-  align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, anim pop|fade|slide|type, out pop|fade|slide|type, loop bounce|pulse|wiggle, animT, outT}
-track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, ease, bz}] (replaces them;
+anim: {in, out: values from options().clipIn / clipOut (also bounce, elastic, whip, roll, tilt, snap); ind, outd seconds; loop: options().comboMotion (also breathe, orbit, bounce, jitter); amt strength}
+text clips: text, curve -100..100 (0 straight, keyframeable), style {font, weight, size (px at 1080), color, stroke, strokeW, shadow, shc, sha, shb, shx, shy, box, boxColor, boxAlpha, boxR, boxPad,
+  align left|center|right, ls letter spacing, lh line height, maxW, upper, italic, curve -100..100,
+  anim: options().textIn (also wordpop, letterrise, letterdrop, letterblur, decode, wave, stroke, underline, highlight, bounce, elastic, glitch, flicker, zoomblur, slideblur),
+  out: options().textOut, loop: options().textLoop (also wave, breathe, shake, swing, glow, colorcycle), animT, outT: 0.1..5 seconds}
+track: overlay/audio/text/fx clips sit on tracks 0, 1, 2... (higher overlay tracks draw on top) | start, dur (overlay/audio/text/fx) | in, out (source seconds) | kf: keyframes [{t, scale, x, y, opacity, rot, curve, ease, bz}] (replaces them;
   ease = the segment after it: linear|ease-in|ease-out|ease-in-out|back (or true/false); bz: [x1, y1, x2, y2] a custom cubic-bezier, x 0..1)
 effect clips (fx track): fx (the effect, from options().effects), amt strength 0.1-2 (1 = default)
 label: red|orange|yellow|green|blue|violet, or null for none: a colour bar on the clip in the timeline, for organising the edit (never in the export; timeline lists it)
@@ -149,7 +151,7 @@ TOOLS = [
     ('move_clip', 'Move a clip: main-track order (index), start time (other tracks), or between the main and overlay tracks (lane).',
      S({'id': txt, 'start': num, 'index': {'type': 'integer'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay']}}, ['id']), 'move_clip'),
     ('add_text', 'Add a text clip. Presets: Title, Subtitle, Label, Outline, Headline, Typewriter, Sticker. style takes the text style keys listed in update_clip.',
-     S({'text': txt, 'preset': txt, 'start': num, 'duration': num, 'x': num, 'y': num, 'style': obj}, ['text']), 'add_text'),
+     S({'text': txt, 'preset': txt, 'start': num, 'duration': num, 'x': num, 'y': num, 'curve': num, 'style': obj}, ['text']), 'add_text'),
     ('layout', 'Split-screen layout on the overlay track. Without id/clip: makes one (one undo step) from media (library ids or names, '
                'new clips) and/or clips (existing video/picture clip ids, moved in), type 2h (side by side) | 2v (stacked) | 3 (one big, two small) | 4 (grid) | '
                'react (reaction: 60/40) | pip (picture in picture), start (default: playhead), duration, gap (share of the short side, 0-0.15), color ("#rrggbb" '
