@@ -124,6 +124,8 @@ for (const [rm, dpr] of [['no-preference', 1], ['reduce', 2]]) {
   const sa = await both(0.75), sb = await both(1.25);
   check(`${rm}: grade_mask on a layer copies the subject mask of the clip under it; it changes with the clip's outline frames, preview = export`,
     gm.mask === 'ai' && dark(sa.pv.L) && same(sa.pv.R) && same(sb.pv.L) && dark(sb.pv.R) && dark(sb.ex.R) && same(sb.ex.L) && Math.max(agree(sa), agree(sb)) <= 3, `${JSON.stringify(gm).slice(0, 120)} ${show(sa)} ${show(sb)}`);
+  const e29 = await both(29 / 30), e30 = await both(30 / 30); // the outline switches between these two frames: the export switches on the same one
+  check(`${rm}: the subject mask switches on the same frame in the preview and the export`, dark(e29.ex.L) && same(e29.ex.R) && dark(e30.ex.R) && same(e30.ex.L) && Math.max(agree(e29), agree(e30)) <= 3, `${show(e29)} ${show(e30)}`);
   const inv = await ev(a => REMOTE.grade_mask({ id: a, invert: true }), fa), si = await both(0.75);
   check(`${rm}: grade_mask invert: the layer grades everything but the subject`, inv.grades === 'outside the mask' && same(si.pv.L) && dark(si.pv.R) && agree(si) <= 3, show(si));
 
