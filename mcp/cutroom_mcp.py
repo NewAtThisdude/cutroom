@@ -140,6 +140,8 @@ TOOLS = [
      S({'lane': txt, 'track': {'type': 'integer'}, 'hidden': boo, 'locked': boo}, ['lane']), 'set_track'),
     ('delete_clip', 'Delete a clip (main-track clips close the gap).', S({'id': txt}, ['id']), 'delete_clip'),
     ('duplicate_clip', 'Duplicate a clip (placed right after it).', S({'id': txt}, ['id']), 'duplicate_clip'),
+    ('paste_attributes', 'Paste chosen attributes of one clip onto others in one undo step. categories (default: all): adjust, look, grade, curves, hsl, effects, masks, transform, speed, audio, anim, trans, kf. keyframes: scale (retime to each clip\'s length, default) or abs (keep the same times). Categories a clip cannot carry are skipped and named in the result.',
+     S({'from': txt, 'to': {'type': 'array', 'items': txt}, 'categories': {'type': 'array', 'items': txt}, 'keyframes': {'type': 'string', 'enum': ['scale', 'abs']}}, ['from', 'to']), 'paste_attributes'),
     ('move_clip', 'Move a clip: main-track order (index), start time (other tracks), or between the main and overlay tracks (lane).',
      S({'id': txt, 'start': num, 'index': {'type': 'integer'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay']}}, ['id']), 'move_clip'),
     ('add_text', 'Add a text clip. Presets: Title, Subtitle, Label, Outline, Headline, Typewriter, Sticker. style takes the text style keys listed in update_clip.',

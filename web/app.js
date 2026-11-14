@@ -863,7 +863,7 @@ const KEYMAP0 = [
   ['zoomOut', 'Zoom the timeline out', ['Mod+-'], zoomBy(0.8)],
   ['fit', 'Fit the timeline', ['Shift+KeyZ'], () => fitTimeline()],
   ['copy', 'Copy', ['Mod+KeyC'], () => copySel()], ['cut', 'Cut', ['Mod+KeyX'], () => copySel(true)],
-  ['paste', 'Paste', ['Mod+KeyV'], () => paste()], ['pasteLook', 'Paste the look', ['Mod+Alt+KeyV'], () => pasteLook()],
+  ['paste', 'Paste', ['Mod+KeyV'], () => paste()], ['pasteLook', 'Paste the look', ['Mod+Alt+Shift+KeyV'], () => pasteLook()], ['pasteAttrs', 'Paste attributes: pick what to paste', ['Mod+Alt+KeyV'], () => pasteAttrsDialog()],
   ['dup', 'Duplicate', ['Mod+KeyD'], () => dup()], ['selAll', 'Select all', ['Mod+KeyA'], () => selectAll()],
   ['undo', 'Undo', ['Mod+KeyZ'], () => restore(undo, redo)], ['redo', 'Redo', ['Mod+Shift+KeyZ'], () => restore(redo, undo)],
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
@@ -3019,7 +3019,7 @@ function copySel(cut = false) {
   packMain();
   const order = ([c, lane]) => (lane === 'main' ? P.main.indexOf(c) : 1e6 + c.start); // pasted in timeline order, not click order
   clipboard = { items: [...many].sort((a, b) => order(a) - order(b)).map(([c, lane]) => ({ lane, c: structuredClone(c) })), t0: Math.min(...many.map(([c]) => c.start)) };
-  if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes the look`);
+  if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes attributes`);
 }
 function paste(at = S.t) { // main clips insert at the playhead's cut; the others keep their spacing, starting at the playhead
   if (!clipboard) return toast('Nothing to paste: copy a clip first (⌘C)');
@@ -3050,6 +3050,118 @@ function pasteLook() { // ⌥⌘V: the copied clip's filter, adjustments, animat
     }
   });
   toast(`Pasted the look onto ${targets.length} clip${targets.length > 1 ? 's' : ''}`);
+}
+// ---------- paste attributes (⌥⌘V): pick what of the copied clip goes onto the selected clips, in one undo step ----------
+// Per category: the clip fields it owns (top = on the clip, adj / grade = inside those objects). A category the copied clip can't have
+// (a colour on a sound) or a target can't show (a mask on a title) is skipped, and the note says so.
+const ATTR_CATS = [
+  ['adjust', 'Adjust', 'brightness, contrast, saturation, temperature, tint, exposure, highlights, shadows, fade', { adj: ['b', 'c', 's', 'temp', 'tint', 'ex', 'hi', 'sh', 'fade'] }],
+  ['look', 'Filter and LUT', 'the filter, its strength points and the imported LUT', { top: ['look', 'lkf'], grade: ['lut'] }],
+  ['grade', 'Colour wheels', 'shadows, midtones, highlights', { grade: ['lift', 'gamma', 'gain'] }],
+  ['curves', 'Curves', 'luma, red, green, blue', { grade: ['curves'] }],
+  ['hsl', 'HSL', 'hue, saturation, lightness by colour', { grade: ['hsl'] }],
+  ['effects', 'Effects', 'blur, mosaic, sharpen, vignette, beauty, glow, chroma key, motion blur', { adj: ['vig', 'blur', 'pix', 'sharp'], top: ['beauty', 'glow', 'key', 'mb'] }],
+  ['masks', 'Masks', 'the mask and its keyframes', { top: ['mask', 'mkf'] }],
+  ['transform', 'Transform', 'fit, position, scale, rotation, crop, mirror, opacity, blend', { top: ['fit', 'scale', 'x', 'y', 'rot', 'opacity', 'crop', 'flip', 'blend'] }],
+  ['speed', 'Speed', 'speed, pitch with speed, speed ramp', { top: ['speed', 'pitch'] }],
+  ['audio', 'Volume and sound', 'volume, noise reduction, studio voice, voice effect, equalizer, volume points', { top: ['volume', 'denoise', 'studio', 'au', 'vkf'] }],
+  ['anim', 'Animations', 'in, out and combo animations, fades', { top: ['anim', 'fadeIn', 'fadeOut'] }],
+  ['trans', 'Transition', 'the transition into the next clip (main track)', { top: ['tr'] }],
+  ['kf', 'Keyframes', 'position, scale, rotation and opacity keyframes', { top: ['kf', 'ease'] }],
+];
+const ATTR_COLOUR = ['adjust', 'look', 'grade', 'curves', 'hsl'], ATTR_DEF = Object.fromEntries(ATTR_CATS.map(([k]) => [k, true])), attrName = k => ATTR_CATS.find(a => a[0] === k)[1].toLowerCase();
+const attrFam = (c, lane) => { const m = M.get(c.media); return lane === 'text' ? 'text' : m?.kind === 'audio' || lane === 'audio' ? 'aud' : m && !c.fx && lane !== 'fx' && lane !== 'captions' ? 'vis' : ''; };
+function attrCan(cat, c, lane) { // can this clip carry this category?
+  const m = M.get(c.media), f = attrFam(c, lane);
+  if (cat === 'transform' || cat === 'anim' || cat === 'kf') return f === 'vis' || f === 'text';
+  if (cat === 'trans') return f === 'vis' && lane === 'main';
+  if (cat === 'speed') return !!m && m.kind !== 'image' && (f === 'vis' || f === 'aud');
+  if (cat === 'audio') return !!m?.hasAudio && (f === 'vis' || f === 'aud');
+  return f === 'vis'; // colour, effects, masks
+}
+const attrWhy = f => ({ vis: 'picture clips', aud: 'sound clips', text: 'titles' })[f] || 'effect and caption clips';
+function attrPrefs() { let p = {}; try { p = JSON.parse(store.get('cutroom.attrs') || '{}'); } catch { p = {}; } return { cats: { ...ATTR_DEF, ...p.cats }, kf: p.kf === 'abs' ? 'abs' : 'scale' }; }
+function attrRetime(arr, mode, f, dstLen) { // keyframe times: scaled with the clip's length (f), or kept (ones past a shorter clip's end are dropped)
+  if (!arr?.length) return undefined;
+  return structuredClone(mode === 'abs' ? arr.filter(k => k.t <= dstLen + 1e-6) : arr.map(k => ({ ...k, t: +(k.t * f).toFixed(4) })));
+}
+async function pasteAttrs(src, targets, cats, kfMode = 'scale') { // src: { c, lane } (a snapshot is fine); targets: [[clip, lane]]; cats: category ids
+  const sfam = attrFam(src.c, src.lane), want = ATTR_CATS.map(a => a[0]).filter(k => cats.includes(k)), skipped = new Map();
+  const skip = (why) => skipped.set(why, (skipped.get(why) || 0) + 1);
+  if (!want.length) { toast('Nothing ticked to paste'); return { pasted: [], clips: [], skipped: {} }; }
+  const plan = targets.filter(([c, lane]) => !locked(lane, c) || (skip('clips on a locked track'), false)).map(([c, lane]) => ({ c, lane, cats: want.filter(k => {
+    const ok = attrCan(k, src.c, src.lane) && attrCan(k, c, lane) && (!['transform', 'anim', 'kf'].includes(k) || attrFam(c, lane) === sfam);
+    if (!ok) skip(`${attrName(k)} on ${attrWhy(attrFam(c, lane))}`);
+    return ok;
+  }) }));
+  const ramp = src.c.ramp && M.get(src.c.ramp.src) && src.c.media === src.c.ramp.copy ? src.c.ramp : null, pid = P.id;
+  if (ramp) for (const p of plan) { // a speed ramp is rendered once per target, over that clip's own picture, before the one undo step
+    const m = M.get(p.c.media);
+    if (!p.cats.includes('speed') || m?.kind !== 'video' || m.alpha || m.trans || p.lane === 'audio') continue;
+    const pl = rampPlan(p.c, ramp.pts);
+    if (pl.b - pl.a < 0.25) { skip('speed ramp on clips under 0.25 s'); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
+    p.ramp = { pl, was: p.c.media, j: await job('/api/ramp', { media: pl.src, t0: pl.a, t1: pl.b, map: pl.tbl, fps: P.fps }, 'Rendering the ramp') };
+  }
+  if (plan.some(p => p.ramp)) { await loadMedia(); for (const p of plan) p.c = live(p.c, pid, p.ramp ? p.ramp.was : undefined); }
+  const done = plan.filter(p => p.cats.length), note = () => [...skipped].map(([k, n]) => `${k}${n > 1 ? ` (${n})` : ''}`).join(', ');
+  if (!done.length) { toast(`Nothing to paste: ${note() || 'no clips'}`); return { pasted: [], clips: [], skipped: Object.fromEntries(skipped) }; }
+  const s = src.c;
+  change(() => {
+    for (const { c, cats: ks, ramp: rp } of done) {
+      if (ks.includes('speed')) {
+        if (rp) { const d = M.get(rp.j.media)?.duration ?? Infinity; reclip(c, x => clamp(rp.pl.f(x), 0, d), 1); c.media = rp.j.media; c.ramp = { src: rp.pl.src, in: rp.pl.a, out: rp.pl.b, pts: ramp.pts.map(q => [...q]), copy: rp.j.media }; delete c.pitch; }
+        else {
+          if (c.ramp && c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c);
+          const v = s.speed || 1, o = c.speed;
+          if (v !== o) for (const k of ['kf', 'vkf', 'lkf', 'mkf']) c[k]?.forEach(x => { x.t *= o / v; }); // what stays on the clip keeps its frames
+          c.speed = v;
+          if (s.pitch !== undefined) c.pitch = s.pitch; else delete c.pitch;
+        }
+      }
+      const dstLen = len(c), fs = dstLen / Math.max(1e-6, len(s)); // keyframes follow the length the clip has now
+      for (const k of ks) {
+        const spec = ATTR_CATS.find(a => a[0] === k)[3];
+        for (const key of (k === 'speed' ? [] : spec.top || [])) {
+          let v = s[key];
+          if (['kf', 'mkf', 'vkf', 'lkf'].includes(key)) v = attrRetime(v, kfMode, fs, dstLen);
+          if (key === 'kf' && v && kfMode === 'abs' && s.kf.some(q => q.t > dstLen + 1e-6) && v.at(-1).t < dstLen - 1e-6) v.push({ t: +dstLen.toFixed(4), ...propsAt(s, dstLen) }); // the cut keeps where it was heading
+          if (v === undefined) delete c[key]; else c[key] = structuredClone(v);
+        }
+        for (const key of spec.adj || []) { c.adj ||= { b: 1, c: 1, s: 1 }; const v = s.adj?.[key] ?? (['b', 'c', 's'].includes(key) ? 1 : undefined); if (v === undefined) delete c.adj[key]; else c.adj[key] = v; }
+        for (const key of spec.grade || []) { c.grade ||= {}; const v = s.grade?.[key]; if (v === undefined) delete c.grade[key]; else c.grade[key] = structuredClone(v); }
+      }
+      if (c.grade && !Object.keys(c.grade).length) delete c.grade;
+      if (!c.kf?.length) delete c.kf;
+    }
+  }, `Pasted attributes onto ${done.length} clip${done.length > 1 ? 's' : ''}`);
+  const names = want.filter(k => done.some(p => p.cats.includes(k))).map(attrName);
+  toast(`Pasted ${names.join(', ')} onto ${done.length} clip${done.length > 1 ? 's' : ''}${skipped.size ? `. Skipped: ${note()}` : ''}`);
+  return { pasted: names, clips: done.map(p => p.c.id), skipped: Object.fromEntries(skipped) };
+}
+function pasteAttrsDialog() { // ⌥⌘V: the checklist
+  const it = clipboard?.items[0];
+  if (!it) return toast('Copy a clip first (⌘C), then select others and paste attributes (⌥⌘V)');
+  const tg = selection(), pf = attrPrefs();
+  if (!tg.length) return toast('Select the clips to paste onto first');
+  const row = ([k, n, hint]) => { const can = attrCan(k, it.c, it.lane); return `<label class="attr${can ? '' : ' off'}"><input type="checkbox" data-attr="${k}"${pf.cats[k] && can ? ' checked' : ''}${can ? '' : ' disabled'}><span>${esc(n)}<small>${can ? esc(hint) : `the copied clip has no ${esc(n.toLowerCase())}`}</small></span></label>`; };
+  const g = (t, ids) => `<h4>${t}</h4>${ATTR_CATS.filter(a => ids.includes(a[0])).map(row).join('')}`;
+  const name = M.get(it.c.media)?.name || it.c.text || 'the copied clip';
+  modal(`<h3>Paste attributes</h3><p class="hint">From ${esc(short(String(name), 40))} onto ${tg.length} clip${tg.length > 1 ? 's' : ''}. Ticked things replace the same things on each clip; the rest stay as they are. One undo step.</p>
+    <div class="attrs">${g('Colour', ATTR_COLOUR)}${g('Picture', ['effects', 'masks', 'transform', 'anim', 'trans'])}${g('Timing and sound', ['speed', 'audio', 'kf'])}</div>
+    <h4>Keyframes</h4><div class="seg wrap" id="attrKf"><button data-kfm="scale" class="${pf.kf === 'scale' ? 'on' : ''}" title="The keyframes stretch or shrink with each clip's length, so the move still starts and ends with the clip">Scale to the clip's length</button><button data-kfm="abs" class="${pf.kf === 'abs' ? 'on' : ''}" title="Each keyframe stays at the same time from the clip's start; ones past a shorter clip's end are dropped">Keep the same times</button></div>
+    <div class="actions"><button data-attrall>All</button><button data-attrnone>None</button><span class="grow"></span><button data-close>Cancel</button><button class="primary" data-attrgo>Paste</button></div>`, 'attrdlg');
+  const d = $('#modal .dialog'), ticks = () => $$('[data-attr]', d).filter(x => !x.disabled);
+  d.addEventListener('click', e => {
+    if (e.target.closest('[data-attrall]')) ticks().forEach(x => { x.checked = true; });
+    else if (e.target.closest('[data-attrnone]')) ticks().forEach(x => { x.checked = false; });
+    else if (e.target.closest('[data-kfm]')) $$('#attrKf button', d).forEach(b => b.classList.toggle('on', b === e.target.closest('[data-kfm]')));
+    else if (e.target.closest('[data-attrgo]')) {
+      const cats = { ...pf.cats }; for (const x of ticks()) cats[x.dataset.attr] = x.checked;
+      const kf = $('#attrKf .on', d)?.dataset.kfm || 'scale';
+      store.set('cutroom.attrs', JSON.stringify({ cats, kf }));
+      closeModal(); quiet(pasteAttrs(it, tg, Object.keys(cats).filter(k => cats[k] && attrCan(k, it.c, it.lane)), kf));
+    }
+  });
 }
 function trimTo(side) { // Q / W: delete what is left / right of the playhead in the clip (CapCut's trim left / right)
   packMain();
@@ -3086,7 +3198,7 @@ function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled, swatc
 function clipMenu(c, lane) { // what a right-click on a clip offers
   const m = M.get(c.media), vid = m?.kind === 'video', vis = !!m && m.kind !== 'audio', many = selection().length > 1;
   const items = [['Split', split, kb('split')], ['Duplicate', dup, kb('dup')], ['Copy', () => copySel(), kb('copy')], ['Cut', () => copySel(true), kb('cut')], ['Paste', () => paste(), kb('paste'), !clipboard],
-    ['Paste look', pasteLook, kb('pasteLook'), !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), kb('trimL')], ['Trim end to playhead', () => trimTo('right'), kb('trimR')],
+    ['Paste look', pasteLook, kb('pasteLook'), !clipboard], ['Paste attributes…', pasteAttrsDialog, kb('pasteAttrs'), !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), kb('trimL')], ['Trim end to playhead', () => trimTo('right'), kb('trimR')],
     '-', ['Label…', labelMenu]];
   if (c.label && LABEL_N[c.label]) items.push(['Select clips with this label', () => selectLabel(c.label)]);
   if (vid || vis) items.push('-');
@@ -7183,6 +7295,17 @@ const REMOTE = {
     const key = `${lane}:${MULTI.includes(lane) ? Math.max(0, Math.round(track)) : 0}`;
     change(() => { const T = { ...(P.tracks[key] || {}) }; if (hidden !== undefined) T.off = !!hidden; if (lk !== undefined) T.lock = !!lk; if (T.off || T.lock) P.tracks[key] = T; else delete P.tracks[key]; });
     return { tracks: P.tracks };
+  },
+  async paste_attributes({ from, to, categories, keyframes = 'scale' }) { // from: a clip id (default: the copied clip); to: clip ids (default: the selection); categories: ids of ATTR_CATS (default: the last checklist)
+    const src = from ? (([c, lane]) => ({ c: structuredClone(c), lane }))(cfind(from)) : clipboard?.items[0];
+    if (!src) throw new Error('from: a clip id, or copy a clip first');
+    const tg = to?.length ? to.map(cfind) : selection();
+    if (!tg.length) throw new Error('to: clip ids, or select clips first');
+    const all = ATTR_CATS.map(a => a[0]), cats = categories === 'all' ? all : categories || all.filter(k => attrPrefs().cats[k]);
+    const bad = cats.filter(k => !all.includes(k));
+    if (bad.length) throw new Error(`categories: ${all.join(', ')} (or "all"); not: ${bad.join(', ')}`);
+    if (!['scale', 'abs'].includes(keyframes)) throw new Error('keyframes: scale (to each clip\'s length) or abs (keep the same times)');
+    return pasteAttrs(src, tg, cats, keyframes);
   },
   async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
   async split_clip({ id, at }) {
