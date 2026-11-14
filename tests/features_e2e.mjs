@@ -209,7 +209,10 @@ if (run('compound')) {
 }
 
 // ---------- multicam ----------
-if (run('multicam') && makeSpeech(`${tmp}/mc.wav`, 'One. Two, three. This is the multicam test, with words to line up the cameras. Four, five, six. Done.')) {
+// multicam syncs angles with ai/sync.py (numpy in the AI venv, server.py AI_PY): without it the section can't run
+const AI_PY = new URL(process.platform === 'win32' ? '../ai/.venv/Scripts/python.exe' : '../ai/.venv/bin/python', import.meta.url);
+if (run('multicam') && !fs.existsSync(AI_PY)) console.log('SKIP multicam: the AI tools are not installed (ai/setup)');
+else if (run('multicam') && makeSpeech(`${tmp}/mc.wav`, 'One. Two, three. This is the multicam test, with words to line up the cameras. Four, five, six. Done.')) {
   await fresh('Multicam');
   const cam = (name, colour, cut, delay) => gen(name, ['-f', 'lavfi', '-i', `color=c=${colour}:s=320x180:r=30:d=9`, '-i', `${tmp}/mc.wav`, '-filter_complex', `[1:a]${cut ? `atrim=start=${cut},asetpts=PTS-STARTPTS` : `adelay=${delay}:all=1`},apad=whole_dur=9[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-t', '9']);
   const A1 = await imp(cam('mc-red.mp4', 'red', 0, 1000)), A2 = await imp(cam('mc-green.mp4', 'lime', 0.8, 0)), A3 = await imp(cam('mc-blue.mp4', 'blue', 0, 2300)); // green started 1.8 s earlier in the speech, blue 1.3 s later
