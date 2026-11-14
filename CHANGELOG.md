@@ -14,6 +14,8 @@ Windows PC. It is licensed GPL v3 or later.
 - Speed ramps drawn as one curve, reverse, freeze frame, stabilize, detach audio, auto reframe
 - Compound clips, multicam, adjustment layers
 - Fade handles on clips: drag a top corner to fade in or out
+- Paste attributes (Cmd/Ctrl+Alt+V, or right-click): copy one clip, select one or many, and tick what to paste (colour, effects, masks, transform, speed and ramps, sound, animations, transition, keyframes scaled to each clip or kept at their times); remembers the list, one undo step, skips with a note what a clip cannot take
+- Split-screen layouts (side by side, stacked, one big and two small, grid of four, reaction, picture in picture) for any project shape: drop clips into the cells, pan and zoom inside a cell, gap colour and rounded corners; the cells stay ordinary clips you can trim and animate, and they re-flow when you change the layout or the canvas shape
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
 - Library source viewer with hover skim, In and Out points and Replace clip
@@ -24,6 +26,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Remappable keyboard shortcuts
 - Crash recovery: edits made since the last save come back after a crash, a damaged project opens from its newest
   version, and an export cut short by a crash is listed with a Retry button
+- Full screen preview (Shift+F or the button beside Theater): the picture alone at full quality, Esc leaves, playback keys keep working
 
 ### Effects, colour and transitions
 
@@ -31,6 +34,10 @@ Windows PC. It is licensed GPL v3 or later.
 - Effects-pack effects and transitions run on the GPU in exports
 - 12 blend modes that look the same in the preview and the export
 - Colour grading on the GPU, curves, and scopes: waveform, RGB parade, histogram and vectorscope with a skin line
+- Masked grades: a clip's mask can limit its colour to one object or area (or keep it out), and adjustment layers take
+  their own mask (a shape, a pen outline, the AI subject of the video under them, or a shape that follows something); stack
+  several, and the export matches the preview
+- Before / after for colour (backslash, or the button under the preview): the clip or the whole frame without its colour work on one side of a line you drag, or side by side, effects optional; preview only, never in an export
 - Motion blur, glow, clip blur and noise reduction
 - Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it
 - Retouch: skin, eyes, teeth, makeup, face shape and body
@@ -44,6 +51,7 @@ Windows PC. It is licensed GPL v3 or later.
 - A loudness meter (momentary, short-term and integrated LUFS) and loudness targets for exports
 - A built-in library of CC0 sound effects and music
 - Voiceover recording that lands where you spoke
+- Audio visualizer (bars, mirrored bars, line, circle) in your brand colours, following one clip or the whole mix, with smoothing and sensitivity; worked out from the sound frame by frame, so the export matches the preview exactly
 
 ### Captions and text
 
@@ -51,6 +59,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
 - Export captions burned in, as language-tagged tracks in MP4/MOV, WebM or MKV, both ways, or off, including a separate track for translations.
+- Find and replace in captions: match count, next and previous, replace one or all in one undo step, match case, whole word, and the second-language line
 
 ### AI features (all run on your computer)
 
@@ -59,6 +68,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Voice isolation, voice clone, voiceover voices and AI dubbing
 - Make shorts from a long video, and smart combine: several clips cut into one edit on the beat
 - Smooth slow motion, upscaling, relighting, deflicker and sharpen
+- 3D zoom: a photo becomes a clip where the camera pushes in, pulls out, slides or orbits and the near things move more than the far ones (depth from the photo, rendered once on your computer; undo gives the photo back)
 - Smart media search by what is in the shot
 - Auto B-roll: shots from your own library that match what is being said go on the overlay track, in one undo
   step, and each one can be swapped or removed
@@ -73,6 +83,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
 - Fit exports within a chosen file size, with sharing presets, measured bitrate correction, automatic resolution reduction when needed, and a final byte count; GIF adapts its palette, size and frame rate.
+- Cover image: pick the frame at the playhead or a library picture, add a title in any text style; it is saved as a JPG or PNG next to the video and embedded as the MP4's cover (Finder, Explorer and players show it). Remembered per project
 
 ### Templates, brand kit and batch
 

@@ -8,10 +8,14 @@ job: op, src, out, t0, dur, fps, w, h (display size), dec (ffmpeg input args), v
   upscale  scale 2 | 4: Real-ESRGAN general x4v3 (xinntao, BSD-3); x2 = the x4 result averaged 2x2
   relight  light {preset light | subject | background, x, y (0..1 on the frame), color '#rrggbb', strength 0..1}:
            Depth Anything V2 Small (Apache-2.0) per frame -> a light that falls off in 3D and lights the surfaces facing it
+  zoom3d   photo (src is an image), dir in | out | left | right | orbit, amount 0..1: Depth Anything V2 Small once on the photo, then a
+           parallax render from photo + depth (near things move more than far ones; the gap an edge opens is filled from the
+           background behind it, not stretched from the foreground); dur seconds at fps, silent
 Frames go through the GPU as BT.709 YUV <-> RGB done here (both ways the same matrix, so colours round-trip exactly);
 ffmpeg's own RGB conversion guesses the matrix.
 """
 import json
+import math
 import os
 import subprocess
 import sys
@@ -54,10 +58,10 @@ def encoder(job, W, H, fps):
     kv = [f'{opt[k]}={v}' for k, v in zip(job['tags'][::2], job['tags'][1::2]) if k in opt]  # a raw pipe has no colour labels: set them on the frames
     big = max(W, H) > 4096  # past H.264's size: HEVC
     return subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps:g}', '-i', '-',
-                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
+                             *([] if job.get('silent') else ['-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?']),  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
                              *(['-vf', 'setparams=' + ':'.join(kv)] if kv else []), *job.get('venc_big' if big else 'venc', ['-c:v', 'hevc_videotoolbox' if big else 'h264_videotoolbox', '-q:v', '68']),  # this computer's encoder (server.py venc)
                              *(['-tag:v', 'hvc1'] if big else []), '-pix_fmt', 'yuv420p', *job['tags'],
-                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
+                             *(['-an'] if job.get('silent') else ['-c:a', 'aac', '-b:a', '192k', '-shortest']), '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
 
 
 def to_rgb(f):  # uint8 yuv444 planes -> (1, 3, h, w) RGB 0..1 on the GPU
@@ -282,6 +286,114 @@ def relight(job):
         sys.exit('encoding the relit frames failed')
 
 
+def photo(job):
+    """The photo at the render size as RGB 0..1 (1, 3, h, w) on the GPU (ffmpeg turns EXIF rotation and decodes JPEG / PNG)."""
+    w, h = job['w'], job['h']
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', job['src'], '-vf', f'scale={w}:{h}:flags=lanczos,format=rgb24', '-frames:v', '1',
+                          '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
+    if len(raw) != w * h * 3:
+        sys.exit('could not read that photo')
+    return torch.from_numpy(np.frombuffer(raw, np.uint8).reshape(h, w, 3).copy()).to(DEV).permute(2, 0, 1)[None].float() / 255
+
+
+def photo_depth(x):
+    """Nearness 0 (far) .. 1 (near) of the photo at its own size: the model's map stretched to its 2nd..98th percentile, then made to
+    follow the photo's edges (guided_up)."""
+    with torch.inference_mode():
+        raw = depth(depth_model(), x)
+        q = torch.quantile(F.avg_pool2d(raw, 4).flatten(), torch.tensor([0.02, 0.98], device=DEV))
+        d = ((raw - q[0]) / (q[1] - q[0]).clamp(min=1e-6)).clamp(0, 1)
+        Ih = luma(x)
+        y = F.interpolate(Ih, d.shape[-2:], mode='bilinear', antialias=True, align_corners=False)
+        return guided_up(d, y, Ih).clamp(0, 1)
+
+
+def camera(kind, amt, u):
+    """The camera at u (0..1 through the clip): nearness L (0 far .. 1 near) -> (zoom, dx, dy), dx in frame widths, dy in frame heights. Near things zoom
+    and slide more than far ones; the base zoom grows with the slide (1 / (1 - the largest offset, in the grid's half-frames)), so no
+    sampled place is ever outside the photo, at any frame shape."""
+    e = u * u * (3 - 2 * u)
+    if kind in ('in', 'out'):
+        k = e if kind == 'in' else 1 - e
+        return lambda L: (1 + k * amt * 0.22 * (0.35 + L), 0.0, 0.0)
+    if kind == 'orbit':
+        a = 2 * math.pi * u
+        fx, fy = math.sin(a), (1 - math.cos(a)) / 2
+        z = 1 / (1 - 0.075 * amt * max(abs(fx), fy) * 1.02)  # 0.075 = 2 * 0.05 * 0.75: the largest |offset| in half-frames
+        return lambda L: (z, amt * 0.05 * (L - 0.25) * fx, amt * 0.05 * (L - 0.25) * fy)
+    sg = 1 if kind == 'right' else -1
+    return lambda L: (1 / (1 - 0.075 * amt * e * 1.02), sg * amt * 0.05 * (L - 0.25) * e, 0.0)  # the far background barely moves, the near moves most
+
+
+class Parallax:
+    """The photo seen from a moving camera. For each output pixel the nearest surface that lands on it is found by marching down through
+    depth levels (a level L is hit when the photo's depth where it comes from, at that level's camera, is at least L; refined between levels),
+    and the colour comes from there. Where that finds a foreground edge the camera has slid off its background (no real surface at that
+    depth), the colour is the background plate instead: each place's colour from the farthest point within reach of the slide, so the gap
+    fills with what was behind the edge, not a smear of the edge."""
+
+    def __init__(self, x, d, kind, amt, n=48):
+        self.x, self.d, self.kind, self.amt, self.n = x, d, kind, amt, n
+        _, _, self.h, self.w = x.shape
+        ys, xs = torch.meshgrid(torch.linspace(-1, 1, self.h, device=DEV), torch.linspace(-1, 1, self.w, device=DEV), indexing='ij')
+        self.g = torch.stack([xs, ys], -1)[None]
+        f = 4  # the plate at a quarter size: it only fills small gaps, and soft is right for them
+        small = lambda t: F.interpolate(t, (max(8, self.h // f), max(8, self.w // f)), mode='bilinear', antialias=True, align_corners=False)  # ('area' fails on MPS when the size is not a multiple of 4)
+        xs_, ds = small(x), small(d)
+        r = max(2, round(0.07 * self.w / f * max(self.amt, 0.3)))
+        idx = F.max_pool2d(F.pad(-ds, (r, r, r, r), value=-2.0), 2 * r + 1, 1, return_indices=True)[1]  # the farthest point within reach of each place
+        sh, sw = ds.shape[-2:]
+        pw = sw + 2 * r  # indices are into the padded map
+        iy, ix = (idx[0, 0] // pw - r).clamp(0, sh - 1), (idx[0, 0] % pw - r).clamp(0, sw - 1)
+        up = lambda t: F.interpolate(t, (self.h, self.w), mode='bilinear', align_corners=False)
+        self.plate, self.dmin = up(xs_[0][:, iy, ix][None]), up(ds[0, 0][iy, ix][None, None])
+
+    def q(self, cam, L):
+        """Where each output place comes from, for a surface at nearness L (a number, or a map (1, 1, h, w)). The camera's zoom and
+        slide are linear in L, so a map of levels is read off its two ends."""
+        (z0, x0, y0), (z1, x1, y1) = cam(0.0), cam(1.0)
+        if not torch.is_tensor(L):
+            L = torch.full((1, 1, self.h, self.w), float(L), device=DEV)
+        z, dx, dy = (a + (b - a) * L[0, 0][None, ..., None] for a, b in ((z0, z1), (x0, x1), (y0, y1)))
+        return self.g / z + torch.cat([2 * dx, 2 * dy], -1)
+
+    def sample(self, t, g):
+        return F.grid_sample(t, g, mode='bilinear', padding_mode='border', align_corners=True)
+
+    def frame(self, u):
+        cam, n = camera(self.kind, self.amt, u), self.n
+        Ls, done, fp = torch.zeros(1, 1, self.h, self.w, device=DEV), torch.zeros(1, 1, self.h, self.w, device=DEV, dtype=torch.bool), None
+        for i in range(n + 1):  # from the nearest level down: the first one the photo reaches is the surface this pixel shows
+            L = 1 - i / n
+            f = self.sample(self.d, self.q(cam, L)) - L
+            hit = (~done) & (f >= 0)
+            frac = (f / (f - fp).clamp(max=-1e-6)).clamp(0, 1) / n if i else 0.0  # between this level and the one above: where the depth crosses
+            Ls = torch.where(hit, L + frac, Ls)
+            done, fp = done | hit, f
+        Ls = Ls.clamp(0, 1)
+        q = self.q(cam, Ls)
+        col = self.sample(self.x, q)
+        # a gap: the photo at that source is much nearer than the level this pixel was given (the camera slid a near edge off its background)
+        wgt = ((self.sample(self.d, q) - Ls - 0.03) / 0.08).clamp(0, 1)
+        wgt = F.avg_pool2d(F.pad(wgt, (1, 1, 1, 1), mode='replicate'), 3, 1)  # a soft edge to the gap
+        return col + wgt * (self.sample(self.plate, self.q(cam, self.dmin)) - col)
+
+
+def zoom3d(job):
+    w, h = job['w'], job['h']
+    x = photo(job)
+    P = Parallax(x, torch.full_like(x[:, :1], 0.5) if job.get('flat') else photo_depth(x), job['dir'], float(job['amount']))  # flat: one depth everywhere (the test's no-parallax control)
+    n = max(2, math.ceil(job['dur'] * job['fps'] - 1e-6))  # the copy is never shorter than the clip (round() made 2.5 s at 25 fps 62 frames)
+    enc = encoder(job, w, h, job['fps'])
+    with torch.inference_mode():
+        for i in range(n):
+            enc.stdin.write(to_yuv(P.frame(i / (n - 1))))
+            say(0.1 + 0.88 * (i + 1) / n)
+    enc.stdin.close()
+    if enc.wait():
+        sys.exit('encoding the 3D zoom failed')
+
+
 MODEL = {}
 
 
@@ -306,5 +418,5 @@ def preview(job):
 
 if __name__ == '__main__':
     j = json.loads(Path(sys.argv[1]).read_text())
-    {'interp': interp, 'upscale': upscale, 'relight': relight}[j['op']](j)
+    {'interp': interp, 'upscale': upscale, 'relight': relight, 'zoom3d': zoom3d}[j['op']](j)
     say(1)

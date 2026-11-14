@@ -12,9 +12,10 @@ const DEFAULT_TESTS = [
   'ui_smoke', 'ui_audit', 'tour', 'platforms', 'history', 'curves', 'scopes', 'jlcuts', 'meter',
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
-  'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'export_extra',
+  'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools', 'mask_grade',
+  'layouts_viz', 'source_viewer', 'polish_e2e', 'adjust_panes', 'fonts_captions', 'motion_blur', 'layer_race', 'photos_button', 'export_extra',
 ];
-const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
+const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub', 'zoom3d'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2);
 const options = { ai: false, ports: process.env.CUTROOM_TEST_PORTS || '4810-4819', timeout: 1200, tests: null, list: false };
@@ -28,6 +29,9 @@ Runs the 26 release tests serially, with export_formats in quick mode.
 --timeout   Per-test timeout in seconds, excluding server startup and fixture seeding.
 --ai        Permit AI model tests and append them to the default list. Off by default.
 --list      Print selected tests without starting anything.
+CUTROOM_TEST_AI_OFF=llm (comma list of AI kinds) starts each fresh library with those AI jobs off.
+CUTROOM_TEST_PHOTOS=<dir> (or PHOTOS) clones that folder's real clips into every test's scratch photos folder
+(ai_enhance, retouch, hdr_iphone, export_hdr_alpha, the real fox in ai_worker); without it those parts SKIP.
 
 Install dependencies first: npm ci --prefix tests
 macOS: npx --prefix tests playwright install webkit
@@ -210,6 +214,17 @@ function environment(home, scratch, port) {
   if (options.ai) env.CUTROOM_TEST_AI = '1';
   else { env.CUTROOM_MODEL = path.join(home, 'models', 'not-installed.bin'); env.CUTROOM_VAD = path.join(home, 'models', 'not-installed-vad.bin'); }
   fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(env.PHOTOS, { recursive: true });
+  // CUTROOM_TEST_PHOTOS (else the caller's PHOTOS): a folder of real reference clips (iPhone MOVs, fox-walk.mp4, talk-with-music.mp4).
+  // Its files are cloned into the test's scratch photos (copy-on-write on APFS; a plain copy elsewhere), so suites that need real
+  // footage run instead of SKIPping, and never touch the originals. ponytail: a full copy per test on Windows; link if that gets slow
+  const real = process.env.CUTROOM_TEST_PHOTOS || process.env.PHOTOS;
+  if (real && fs.existsSync(real)) for (const f of fs.readdirSync(real, { withFileTypes: true })) {
+    const dst = path.join(env.PHOTOS, f.name);
+    if (f.isFile() && !fs.existsSync(dst)) fs.copyFileSync(path.join(real, f.name), dst, fs.constants.COPYFILE_FICLONE);
+  }
+  // CUTROOM_TEST_AI_OFF=llm,...: those AI_BUDGET kinds start switched off in each fresh library (Settings > AI), so a run never loads
+  // a model into a shared service, e.g. an Ollama another job is using; the checks that need them fail and say why
+  if (process.env.CUTROOM_TEST_AI_OFF) fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify(Object.fromEntries(process.env.CUTROOM_TEST_AI_OFF.split(',').map(k => [`ai.${k.trim()}`, false]))));
   return env;
 }
 

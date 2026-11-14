@@ -103,6 +103,7 @@ final class EditorView: WKWebView {
         NSApp.mainMenu = mainMenu()
         let cfg = WKWebViewConfiguration()
         cfg.mediaTypesRequiringUserActionForPlayback = [] // the preview plays <video>s from code
+        cfg.preferences.isElementFullscreenEnabled = true // the preview's Full screen button (Shift+F): element.requestFullscreen()
         cfg.preferences.inactiveSchedulingPolicy = .none // keep running behind other windows: Claude Code drives it (MCP), exports run
         cfg.userContentController.add(self, name: "busy") // at rest the app may nap like any other: it used to hold App Nap off for good
         cfg.userContentController.add(self, name: "pick")
