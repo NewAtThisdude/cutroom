@@ -2,10 +2,11 @@
 // `photos` message handler, and a click posts 'pick' to it (the app then opens the system Photos picker as a sheet).
 // Headless WebKit with window.webkit.messageHandlers stubbed; the real picker is native and not exercised here. Both motion modes.
 //   node photos_button.mjs     (server on 127.0.0.1:4610, or B=...)
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('photos_button: the Mac app\'s Photos picker');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   for (const app of [false, true]) {
     const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm });

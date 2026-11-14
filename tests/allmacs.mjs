@@ -9,12 +9,14 @@
 // STRICTLY one job at a time: before each heavy job the GPU must be under 20 % for 10 s (ioreg AGXAccelerator); one server
 // at a time (ports 4813, 4814; scratch libraries); never 4610. The jobs run on THIS Mac's hardware: memory sizes are the
 // smaller Mac's, times are this Mac's (the panel scales its estimates by GPU cores).
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
+macOnly('allmacs: memory, GPU and process probes of a Mac (footprint, ioreg, vm_stat)');
 import { execFileSync, execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-const REPO = new URL('..', import.meta.url).pathname, OUT = new URL('./out/', import.meta.url).pathname;
+const REPO = fileURLToPath(new URL('..', import.meta.url)), OUT = fileURLToPath(new URL('./out/', import.meta.url));
 const SCR = process.env.SCR || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}`;
 const RAMS = (process.argv[2] || '8,16').split(',').map(Number), only = process.argv[3], want = n => !only || new RegExp(`^(${only})$`).test(n);
 const FIX = `${SCR}/allmacs-fixtures`, PAGE = 16384, SWAP_MB = 256; // a job may page out at most this much (other agents share this Mac)
@@ -215,7 +217,7 @@ for (const [i, ram] of RAMS.entries()) {
     }
     // ---------- the "This Mac" panel ----------
     if (want('panel')) {
-      const br = await webkit.launch();
+      const br = await browser.launch();
       for (const rm of ['reduce', 'no-preference']) {
         const page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
         const errs = [];
@@ -248,7 +250,7 @@ for (const [i, ram] of RAMS.entries()) {
       for (let k = 0; k < 30; k++) { base.push(gpuUtil()); await sleep(1000); }
       const gBase = base.reduce((a, b) => a + b, 0) / base.length;
       const before = new Set(execFileSync('ps', ['-A', '-o', 'pid=']).toString().split(/\s+/).filter(Boolean).map(Number));
-      const br = await webkit.launch();
+      const br = await browser.launch();
       const page = await (await br.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
       await page.goto(`${B}/`, { waitUntil: 'load' });
       await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 30000 });

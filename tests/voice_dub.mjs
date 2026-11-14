@@ -11,14 +11,15 @@
 //   gating: lip sync / talking photo (buttons and MCP tools) show only while the GPU PC is set up and answering; when it is
 //     not, their sections print SKIP and the hidden state, the hint and the MCP refusal are checked instead
 // Needs: ai/setup.sh, Ollama, the PC on (ai/gpu_setup.sh). ~30 min.   CUTROOM_HOME=<lib> B=http://127.0.0.1:<port> node voice_dub.mjs [section]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const res = [], t00 = Date.now();
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
@@ -65,7 +66,7 @@ const SCRIPT = 'Welcome back to the workshop. Today we are swapping the turbocha
   'The new ones go in with fresh gaskets and new oil lines. After that, we fill the coolant, start the car, and check for leaks. ' +
   'We also replace two coolant hoses, because one of them was leaking a little. Every bolt gets torqued to the number in the manual. ' +
   'Finally, we take it for a long test drive and log the boost, to be sure that everything is right.';
-const b = await webkit.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: 'reduce' }), page = await ctx.newPage();
+const b = await browser.launch(), ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: 'reduce' }), page = await ctx.newPage();
 const errs = [];
 page.on('pageerror', e => errs.push(e.message));
 page.on('dialog', d => d.accept());

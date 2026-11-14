@@ -9,10 +9,11 @@
 //             word recall and line timing, against plain captions of the same mix
 //   speakers  2-voice fixtures (two Kokoro voices, lines in a known order): caption-level speaker accuracy
 // Fixtures are cached in tests/out/captions_pro/.   B=http://127.0.0.1:4771 CUTROOM_HOME=<scratch lib> node captions_pro.mjs [section]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-const B = process.env.B, LIB = process.env.CUTROOM_HOME, only = process.argv[2], OUT = new URL('./out/captions_pro/', import.meta.url).pathname;
+const B = process.env.B, LIB = process.env.CUTROOM_HOME, only = process.argv[2], OUT = fileURLToPath(new URL('./out/captions_pro/', import.meta.url));
 if (!B || !LIB || B.endsWith(':4610')) throw new Error('run on a scratch server: B=http://127.0.0.1:<port> CUTROOM_HOME=<its library>');
 fs.mkdirSync(OUT, { recursive: true });
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, res = [], made = { media: [], projects: [] };
@@ -40,7 +41,7 @@ function lcs(a, b) { // longest common subsequence of two word lists -> matched 
 const med = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : NaN; };
 const secs = t0 => ((performance.now() - t0) / 1000).toFixed(1);
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const open = async (rm = false) => {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm ? 'reduce' : 'no-preference' })).newPage();
   page.on('pageerror', e => console.log('PAGE ERROR', e.message));

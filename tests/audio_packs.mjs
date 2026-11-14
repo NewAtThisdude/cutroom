@@ -3,7 +3,8 @@
 // onset delay, preview == export), (3) the 8 voice characters (pitch / formant / band checks, preview == export),
 // (4) export loudness targets -14 / -16 / -23 / off, (5) beats() on a 3 minute song (time, same grid as before).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4751 node audio_packs.mjs [packs|studio|voices|loud|beats]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +16,7 @@ const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? '
 const get = async p => (await fetch(B + p)).json();
 const post = async (p, body) => (await fetch(B + p, { method: 'POST', headers: H, body: JSON.stringify(body) })).json();
 const run = name => !only || name === only;
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // ---------- signal helpers ----------
 const mono = buf => { const x = new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), n = x.length >> 1, y = new Float32Array(n); for (let i = 0; i < n; i++) y[i] = (x[2 * i] + x[2 * i + 1]) / 65536; return y; };
@@ -101,7 +102,7 @@ const envLag = (a, b) => { // the shift (samples, 1 ms steps) of b's loudness en
 const lufs = f => { const r = spawnSync('ffmpeg', ['-v', 'info', '-i', f, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'], { encoding: 'utf8' }).stderr; const j = JSON.parse(r.slice(r.lastIndexOf('{'), r.lastIndexOf('}') + 1)); return { i: +j.input_i, tp: +j.input_tp }; };
 
 // ---------- the page ----------
-const b = await webkit.launch();
+const b = await browser.launch();
 const open = async rm => {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   page.errs = []; page.on('pageerror', e => page.errs.push(e.message)); page.on('dialog', d => d.accept());

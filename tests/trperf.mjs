@@ -4,7 +4,7 @@
 // the GPU path (web/grade.js trGPU) and on the JS one (GPU.trOff), whose pictures must agree. LOAD=n adds n busy loops.
 // Numbers are wall clock on a shared Mac: run twice and compare, the load average is printed with them.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node trperf.mjs [types]
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +17,7 @@ for (const [n, vf] of [['tr-a', ''], ['tr-b', ',hue=h=140']]) {
   ids.push((await (await fetch(`${B}/api/import?name=${n}.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id);
 }
 fs.rmSync(tmp, { recursive: true });
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, deviceScaleFactor: 2 })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, deviceScaleFactor: 2 })).newPage();
 await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });

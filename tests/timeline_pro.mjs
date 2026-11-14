@@ -3,7 +3,7 @@
 // checked by rendering the same frame both ways (MCP snapshot: canvas vs /api/still_frame), like video_parity.
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node timeline_pro.mjs [only]   (never the 4610 server)
 // only: ease | ripple | tools | mask | ai | quality (default: all). PHOTOS=<dir with iPhone MOVs> for ai + quality.
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,7 +26,7 @@ for (const [k, f] of Object.entries(files)) ids[k] = (await (await fetch(`${B}/a
 if ((on('ai') || on('quality')) && fs.existsSync(`${PHOTOS}/IMG_4654.MOV`)) ids.R = (await post('/api/import_path', { path: `${PHOTOS}/IMG_4654.MOV` })).id; // 4K120 HLG, an exhaust tip
 fs.rmSync(tmp, { recursive: true });
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const pids = new Set();
 async function openPage(rm = 'no-preference', dpr = 1) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm, deviceScaleFactor: dpr })).newPage();

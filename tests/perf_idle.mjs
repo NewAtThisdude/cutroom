@@ -1,7 +1,8 @@
 // CPU use of the editor (headless WebKit, the app's engine) + the server: idle, effects gallery open, playing.
 // CPU seconds per wall second over 20 s windows (1.00 = one core busy). Needs the server on 127.0.0.1:4610.
 //   node perf_idle.mjs [--reduce]
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_idle: process probes (ps, pgrep, lsof) of a Mac');
 import { execFileSync } from 'node:child_process';
 const PORT = process.env.PORT || '4610';
 const reduce = process.argv.includes('--reduce'), WIN = 20000;
@@ -9,7 +10,7 @@ const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; 
 const cpu = list => execFileSync('ps', ['-o', 'time=', '-p', list.join(',')]).toString().trim().split('\n')
   .reduce((s, t) => { const [m, sec] = t.trim().split(':'); return s + +m * 60 + +sec; }, 0);
 const server = () => execFileSync('sh', ['-c', 'lsof -t -nP -iTCP:'+PORT+' -sTCP:LISTEN']).toString().trim();
-const b = await webkit.launch();
+const b = await browser.launch();
 const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduce ? 'reduce' : 'no-preference' })).newPage();
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

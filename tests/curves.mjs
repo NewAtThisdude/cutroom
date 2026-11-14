@@ -4,7 +4,7 @@
 // MCP snapshot) puts the clip within 2 px of the preview; the presets set their known curves; copy / paste and the keyboard
 // (arrows nudge, 1 / 2 pick the handle, ] the next segment) work; undo restores. Both motion modes, no page errors.
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node curves.mjs   (never the 4610 server)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,7 +35,7 @@ const EDGES = async T => {
   return { w: a.w, ex: a.e, pv: b.e };
 };
 
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const [rm, dpr] of [['no-preference', 1], ['reduce', 2]]) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm, deviceScaleFactor: dpr })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

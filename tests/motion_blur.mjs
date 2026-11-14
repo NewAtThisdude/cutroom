@@ -4,7 +4,7 @@
 // frames the preview drew; it paints once per project frame, so 60 is the ceiling). Preview == export pictures are in
 // video_parity.mjs ("motion blur", "transition whip", "transition zoomblur", "effect motionblur", "effect zoomblur").
 //   B=http://127.0.0.1:<scratch port> node motion_blur.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,7 +14,7 @@ const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-mb-`), f = `${tmp}/mb-1080p60
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=60:d=16', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', f]);
 const V = await (await fetch(`${B}/api/import?name=mb-1080p60.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
 fs.rmSync(tmp, { recursive: true });
-const b = await webkit.launch(), pids = [];
+const b = await browser.launch(), pids = [];
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

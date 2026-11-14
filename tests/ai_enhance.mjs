@@ -8,13 +8,14 @@
 //   sharpen   Adjust > Sharpen: preview == export (video_parity's measure at 1280 px) and both visibly sharper than without
 //   ui        the Tools tab's new controls in both reduced-motion modes: Preview frame shows a picture, Deflicker switches the clip
 // node ai_enhance.mjs [section]    (B = a scratch server, CUTROOM_HOME = its library; never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4754', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
 const PH = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
-const OUT = new URL('./out/ai_enhance/', import.meta.url).pathname, FLICKER = 1;
+const OUT = fileURLToPath(new URL('./out/ai_enhance/', import.meta.url)), FLICKER = 1;
 fs.mkdirSync(OUT, { recursive: true });
 const NEED = ['IMG_4700.MOV', 'IMG_4581.MOV', 'IMG_4703.MOV'].filter(f => !fs.existsSync(`${PH}/${f}`)); // real iPhone clips (people walking, handheld, a car on a lift)
 if (NEED.length) { console.log(`SKIP: real footage missing in ${PH}: ${NEED.join(', ')}`); process.exit(0); }
@@ -154,7 +155,7 @@ if (run('sharpen') || run('ui')) {
   const T1 = await imp(tsrc), V2 = await imp(enc(vid, 'transpose=cclock', `${tmp}/page_wide.mp4`)); // the same footage turned on its side: a 16:9 preview
   for (const reduced of ['no-preference', 'reduce']) {
     if (reduced === 'reduce' && !run('ui')) break;
-    const br = await webkit.launch(), page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduced })).newPage();
+    const br = await browser.launch(), page = await (await br.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: reduced })).newPage();
     const errs = [];
     page.on('pageerror', e => errs.push(e.message));
     await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });

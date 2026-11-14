@@ -2,7 +2,7 @@
 // points) is exported to WAV and also rendered through the preview's own Web Audio chain (soundChain/setSound, offline)
 // on the same test signal; the two must match. Then the Audio inspector by real clicks, and Split into stems.
 //   node audio_e2e.mjs     (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
@@ -24,7 +24,7 @@ const db = x => 20 * Math.log10(x + 1e-12);
 const snr = (a, b, from = 0.1 * SR, to = 2.8 * SR) => { let s = 0, e = 0; for (let i = from; i < to; i++) { s += a[i] * a[i]; e += (a[i] - b[i]) ** 2; } return s < 1e-6 && e < 1e-6 ? 99 : 10 * Math.log10(s / (e + 1e-15)); }; // both silent = a match
 const rms = (x, a = 0.4 * SR, n = 0.5 * SR) => { let s = 0; for (let i = a; i < a + n; i++) s += x[i] * x[i]; return Math.sqrt(s / n); };
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

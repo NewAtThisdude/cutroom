@@ -6,7 +6,7 @@
 // clips, FCPXML splits it round the cut), not from server.py. FCPXML is read with the browser's DOMParser; every media-rep must be
 // a file that exists. EDL at 25 fps and at 29.97 drop-frame, line by line. Chapters: names, the 0:00 rule, the 10 s rule.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node interchange.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const B = process.env.B || 'http://127.0.0.1:4702', HOME = process.env.CUTROOM_HOME;
@@ -30,7 +30,7 @@ const project = (fps, cOut = 20) => ({
 });
 const assets = new Set([vid.id, img.id, snd[0].id, snd.at(-1).id]).size;
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const page = await (await b.newContext({ reducedMotion: 'reduce' })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });
@@ -111,7 +111,7 @@ check('unknown format refused', !c5.ok && /format must be one of fcpxml, edl, ch
 await b.close();
 
 // ---------- the Export dialog and the MCP export, both motion modes ----------
-const bw = await webkit.launch(), ids = [];
+const bw = await browser.launch(), ids = [];
 for (const rm of ['reduce', 'no-preference']) {
   const pg = await (await bw.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const er = []; pg.on('pageerror', e => er.push(e.message));

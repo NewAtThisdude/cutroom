@@ -1,10 +1,10 @@
 // Headless WebKit: the export dialog's Light toggle (VideoToolbox decode) is there, off by default, off for sound-only and
 // subtitle formats, sent as plan.light, and a Light export of a plain-cut project finishes. Both motion modes.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node export_light.mjs     (a scratch server, never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

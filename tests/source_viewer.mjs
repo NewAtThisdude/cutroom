@@ -2,7 +2,7 @@
 // modes: hover skim on a video card (preview follows the pointer, timeline untouched), click to open it, I/O mark a range,
 // + adds just that range at the playhead, library search / sort / "This project", and Replace clip.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node tests/source_viewer.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
@@ -11,7 +11,7 @@ const before = new Set((await get('/api/projects')).map(x => x.id));
 const lib = await get('/api/media'), by = n => lib.find(m => m.name === n);
 const DJI = by('DJI_0482_001.MP4'), TALK = by('talk.mp4'), HIKE = by('mountain-hike.mp4');
 if (!DJI || !TALK || !HIKE) { console.log('FAIL the scratch library needs DJI_0482_001.MP4, talk.mp4 and mountain-hike.mp4'); process.exit(1); }
-const b = await webkit.launch();
+const b = await browser.launch();
 
 for (const reducedMotion of ['reduce', 'no-preference']) {
   console.log(`--- reducedMotion: ${reducedMotion}`);

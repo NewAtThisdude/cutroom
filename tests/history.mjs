@@ -2,12 +2,12 @@
 // with the right names; jumping back 3 steps gives exactly the project JSON of that moment, forward again restores it,
 // an edit after a jump drops the redo branch; the MCP's list / goto; the stack stays at 200. Both motion modes.
 //   CUTROOM_HOME=<scratch lib> python3 -I server.py, then B=... node history.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 const B = process.env.B || 'http://127.0.0.1:4610';
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

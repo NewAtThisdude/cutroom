@@ -3,11 +3,12 @@
 // the preview canvas (preview: true) and the export renderer (/api/still_frame); both are shrunk to 160x90 and compared.
 // Reports the mean difference and the worst 10x10 block, in 0-255 levels. Side-by-sides of failures go to out/parity/.
 //   node video_parity.mjs [filter]   (server on 127.0.0.1:4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', OUT = new URL('./out/parity/', import.meta.url).pathname, only = process.argv[2];
+const B = process.env.B || 'http://127.0.0.1:4610', OUT = fileURLToPath(new URL('./out/parity/', import.meta.url)), only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain|oldtv|nightvision|halftone)/; // grain, and halftone's dots (a few pixels, shrunk to 160 px: moiré): by block averages // 28: a scaled or turning clip's edges land a pixel apart
 const APPROX = /effect (blur|pixelate|motionblur|zoomblur|handheld|beatshake|posterize|halftone)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // camera moves: sub-pixel offsets land a pixel apart; posterize: a level apart in the source can flip a band; halftone: dots sized at each side's own resolution // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
@@ -23,7 +24,7 @@ const ids = {};
 for (const [k, f] of Object.entries(files)) ids[k] = (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
 fs.rmSync(tmp, { recursive: true });
 
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(`${B}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });

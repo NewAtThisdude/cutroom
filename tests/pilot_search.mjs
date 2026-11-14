@@ -4,7 +4,7 @@
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:4774 node tests/pilot_search.mjs      (ONLY=pilot | search)
 // Acceptance: 15 instructions -> >= 12 with the expected edit, every step undoable, a clear "can't" instead of a guess;
 // 10 library queries -> >= 8 with the right clip first (and the right moment where one is asked for).
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import fs from 'node:fs';
 const B = process.env.B || 'http://127.0.0.1:4774', HOME = process.env.CUTROOM_HOME, ONLY = process.env.ONLY || '';
 const PHOTOS = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
@@ -16,7 +16,7 @@ const api = async (p, b) => {
   const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j;
 };
 const lib = await api('/api/media'), byName = n => lib.find(m => m.name === n)?.id;
-const b = await webkit.launch();
+const b = await browser.launch();
 const open = async rm => {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

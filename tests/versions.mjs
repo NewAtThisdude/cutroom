@@ -1,7 +1,7 @@
 // Project version history: snapshots at the right cadence, named versions survive pruning, restore brings back the exact
 // JSON and is itself reversible, trash takes the history along; then the Versions dialog in both motion modes.
 //   CUTROOM_VERSION_GAP=2 CUTROOM_HOME=<scratch lib> python3 -I server.py, then B=... CUTROOM_HOME=<same lib> node versions.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME;
@@ -64,7 +64,7 @@ check('trash takes the history along', !existsSync(`${HOME}/projects/${id}.versi
 
 // ---- the editor ----
 const src = (await api('/api/projects')).find(p => p.clips > 0 && p.pic);
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

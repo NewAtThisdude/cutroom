@@ -5,7 +5,7 @@
 // 2. picking an animation tile (Pop on a text clip, Zoom in on a video clip) plays its span once and stops where it ends (fully in);
 //    under reduced motion the playhead jumps to the end and nothing plays.
 // 3. dragged pane sizes persist across a reload; double-click resets; the preview keeps room at 1440x800.
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +15,7 @@ const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-adj-`), f = `${tmp}/adjust-sh
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=9', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '15', f]);
 const mid = (await (await fetch(`${B}/api/import?name=adjust-shots.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
 fs.rmSync(tmp, { recursive: true });
-const b = await webkit.launch(), pids = new Set();
+const b = await browser.launch(), pids = new Set();
 const open = async (rm, vp = { width: 1517, height: 904 }, ctx) => {
   ctx ??= await b.newContext({ viewport: vp, reducedMotion: rm });
   const page = await ctx.newPage(), errs = [];

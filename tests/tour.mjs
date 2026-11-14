@@ -2,14 +2,15 @@
 // window and off the ring, Back / Next / Esc / keys, remembered after it ends, replayed from the shortcut sheet, never on a
 // library that has media; both motion modes, no page errors. Screenshots of every step go to tests/out/tour/.
 //   B=<server on an EMPTY scratch library> [B2=<server on a scratch library with media>] node tour.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-const B = process.env.B, B2 = process.env.B2, OUT = new URL('./out/tour/', import.meta.url).pathname;
+const B = process.env.B, B2 = process.env.B2, OUT = fileURLToPath(new URL('./out/tour/', import.meta.url));
 if (!B || /:4610\b/.test(B)) { console.log('SKIP: set B to a scratch server on an empty library (never 4610)'); process.exit(0); }
 fs.mkdirSync(OUT, { recursive: true });
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

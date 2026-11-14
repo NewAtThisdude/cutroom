@@ -2,7 +2,7 @@
 // short window, portrait posters with their text for 9:16 projects, text drag snapping (centre / other text / safe
 // margin, ⌘ to move freely) with a guide line, the main-track insertion line, clickable / draggable keyframe diamonds.
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node polish_e2e.mjs     (never the real 4610 window)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +15,7 @@ const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-polish-`);
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x404040:s=640x360:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', `${tmp}/polish-gray.mp4`]);
 const GRAY = await (await fetch(`${B}/api/import?name=polish-gray.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${tmp}/polish-gray.mp4`) })).json();
 
-const b = await webkit.launch();
+const b = await browser.launch();
 try {
   for (const rm of ['no-preference', 'reduce']) {
     const ctx = await b.newContext({ viewport: { width: 1440, height: 800 }, reducedMotion: rm, deviceScaleFactor: rm === 'reduce' ? 2 : 1 }), page = await ctx.newPage(); // (reduce runs as a Retina screen, like his Mac)

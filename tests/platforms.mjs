@@ -6,7 +6,7 @@
 //   another (the server's start / end times), and cancelling a queued one (its panel button) removes only it.
 //   Also the layout rule itself (reshape): a reframe-style path keeps its subject, a picture-in-picture scales with the short side.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node platforms.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,7 +29,7 @@ ff('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=s=640x360:d=1',
 const up = async f => (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
 const ids = { bars: await up(SRC), pic: await up(PIC) };
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const done = [];
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

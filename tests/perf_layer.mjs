@@ -3,13 +3,14 @@
 // (1080p and 4K), a synthetic 60 s 1080x1920 60 fps Bold-captioned short (~150 words), and the "Idling truck" short
 // repeated N times (LONG=10,70: 70 copies = 30 min). RSS = the WebKit page process's peak memory while building.
 //   B=http://127.0.0.1:4721 CUTROOM_HOME=<scratch lib> node perf_layer.mjs [case,...]   (N=3 runs; never the real 4610 server)
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_layer: process probes (ps, pgrep, lsof) of a Mac');
 import { execFileSync } from 'node:child_process';
 const B = process.env.B || 'http://127.0.0.1:4721', FULL = !!process.env.FULL, N = +process.env.N || 3, only = process.argv[2]?.split(',');
 const LONG = (process.env.LONG || '10').split(',').map(Number);
 const procs = () => execFileSync('ps', ['-A', '-o', 'pid=,rss=,command=']).toString().trim().split('\n').map(l => l.trim().split(/\s+/)).filter(r => /WebContent/.test(r.slice(2).join(' '))).map(r => [+r[0], +r[1]]);
 const before = new Set(procs().map(r => r[0])); // WebContent is an XPC service (parent launchd): ours are the ones that appear after the launch
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 page.on('pageerror', e => console.log('PAGE ERROR', e.message));
 page.on('console', m => { if (m.type() === 'warning' || m.type() === 'error') console.log('console.' + m.type(), m.text()); });
 await page.route(u => u.pathname === '/api/remote/next', async q => { await new Promise(z => setTimeout(z, 15000)); q.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });

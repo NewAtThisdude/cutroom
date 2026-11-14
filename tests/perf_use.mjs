@@ -1,12 +1,13 @@
 // CPU while using the editor (headless WebKit + server), on the 15-clip 60 fps night-drive edit: scrubbing the ruler,
 // dragging a clip, zooming the timeline; plus what one timeline / inspector rebuild costs. Cores = CPU s per wall s.
 //   node perf_use.mjs
-import { webkit } from 'playwright';
+import { browser, macOnly } from './browser.mjs';
+macOnly('perf_use: process probes (ps, pgrep, lsof) of a Mac');
 import { execFileSync } from 'node:child_process';
 const PORT = process.env.PORT || '4610';
 const pids = () => execFileSync('sh', ['-c', `pgrep -f 'ms-playwright/webkit' ; lsof -t -nP -iTCP:${PORT} -sTCP:LISTEN`]).toString().split(/\s+/).filter(Boolean);
 const cpu = l => execFileSync('ps', ['-o', 'time=', '-p', l.join(',')]).toString().trim().split('\n').reduce((s, t) => { const [m, x] = t.trim().split(':'); return s + +m * 60 + +x; }, 0);
-const b = await webkit.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
+const b = await browser.launch(), page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
 const ev = (f, a) => page.evaluate(f, a);

@@ -7,7 +7,7 @@
 // nothing is, 255 on the text / sticker / cut-out, frame counts; the preview shows a checkerboard where the file is clear.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node export_hdr_alpha.mjs     (a scratch server, never 4610)
 //   PHOTOS=<dir of .MOV files> overrides where IMG_4705.MOV is read from (cloned, never modified)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -56,7 +56,7 @@ for (const [k, f] of [['hdr', SRC], ['pat', `${TMP}/hlg-patches.mp4`], ['cut', `
 }
 for (let t = 0; t < 600; t++) { const ms = await api('/api/media'); if (Object.values(ids).every(id => ms.find(x => x.id === id)?.ready)) break; await new Promise(r => setTimeout(r, 500)); }
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const out = {};
 for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

@@ -5,7 +5,7 @@
 // file is reused; the dialogs in both motion modes, no page errors.
 //   CUTROOM_HOME=<scratch lib> CUTROOM_PORT=4714 python3 -I server.py, then
 //   B=http://127.0.0.1:4714 CUTROOM_HOME=<same lib> CUTROOM_SCRATCH=<scratch dir> node package.mjs   (its own server on port+1, or P2)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -55,7 +55,7 @@ for (let i = 0; i < 60 && !gone; i++) { try { await api(B2, '/api/ping'); break;
 await sleep(1000); // (a port someone else holds: ours exits, theirs answers)
 if (gone || (await api(B2, '/api/media')).length) { srv2.kill(); throw new Error(`port ${PORT2} is taken: set P2 to a free port`); }
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const errs = [];
 const open = async (base, rm = 'reduce') => {
   const page = await (await b.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: rm })).newPage();
