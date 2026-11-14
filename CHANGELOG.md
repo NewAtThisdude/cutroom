@@ -50,6 +50,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Automatic captions with 22 animated styles, a second-language line, keywords, emoji, lyrics and speaker labels
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
+- Export captions burned in, as language-tagged tracks in MP4/MOV, WebM or MKV, both ways, or off, including a separate track for translations.
 
 ### AI features (all run on your computer)
 
@@ -71,6 +72,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
+- Fit exports within a chosen file size, with sharing presets, measured bitrate correction, automatic resolution reduction when needed, and a final byte count; GIF adapts its palette, size and frame rate.
 
 ### Templates, brand kit and batch
 
