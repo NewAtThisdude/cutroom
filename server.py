@@ -6091,7 +6091,10 @@ def render_fitted(p, td, out, report, job):
             same = last and last[:2] == (codec, p['fit_size']) and last[2] != bps
             if same and (payload - last[3]) * (bps - last[2]) > 0:
                 new = bps + (want - payload) * (bps - last[2]) / (payload - last[3])
-            stuck = size > target and same and last[2] > bps and (last[3] - payload) / last[3] < 0.5 * (last[2] - bps) / last[2]
+            flat = same and abs(payload - last[3]) / last[3] < 0.5 * abs(bps - last[2]) / last[2]  # bytes stopped following the request
+            if flat and size <= target:  # under the limit and it won't spend more: keep the best
+                break
+            stuck = flat and size > target
             last = (codec, p['fit_size'], bps, payload)
             new = min(new, bps * 0.95) if size > target else min(max(new, bps), bps * 1.5)
             hw += codec.split('_')[-1] in HW_FAMILIES
