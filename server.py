@@ -4178,6 +4178,8 @@ def fx_check(text):
     if kind not in FX_KINDS or not isinstance(ex, dict) or not isinstance(ex.get('defs', {}), dict):
         raise ValueError('the file needs a kind (effect or transition) and expressions {defs, e}')
     name = re.sub(r'[\x00-\x1f\x7f]', '', str(d.get('name') or '')).strip()[:40]
+    if re.search(r'''[<>&"']''', name + str(d.get('author') or '')):  # second layer behind the page's esc()
+        raise ValueError('the name and author cannot contain < > & " or \'')
     if not name:
         raise ValueError('the file has no name')
     par = d.get('parameters') or {}

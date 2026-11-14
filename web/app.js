@@ -1097,7 +1097,7 @@ function labelRow(c) { // colour label swatches (none + six); Select… picks ev
 function trPanel(c) {
   const i = P.main.indexOf(c), next = P.main[i + 1], cur = c.tr?.type || 'none';
   return `<h3>Transition</h3><p class="muted">${esc(M.get(c.media)?.name || 'clip')} → ${esc(M.get(next?.media)?.name || 'clip')}</p>
-    <div class="presets small">${TRANSITIONS.map(([v, n]) => `<button data-tr="${v}" class="${cur === v ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <div class="presets small">${TRANSITIONS.map(([v, n]) => `<button data-tr="${esc(v)}" class="${cur === v ? 'on' : ''}">${esc(n)}</button>`).join('')}</div>
     ${c.tr ? `${slider('c.tr.d', 'Duration', c.tr.d, 0.1, 2, 0.05, 's')}<p class="hint">Using ${(trF(i) / P.fps).toFixed(2)} s here (at most half the shorter clip). The clips overlap, so the video gets that much shorter.</p>` : ''}
     <div class="actions"><button data-act="trall">Apply to all cuts</button>${c.tr ? '<button data-act="delete">Remove</button>' : ''}</div>
     ${TRX[cur] ? `<div class="actions"><button data-act="fxsave" title="A small .cutroom-fx file you can share">Save as file</button>${FXSHARED.has(cur) ? '<button data-act="fxrm" title="Take it out of the library (cuts using it become a dissolve)">Remove from library</button>' : ''}</div>` : ''}`;

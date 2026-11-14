@@ -114,7 +114,7 @@ try {
 
   // survives a reload
   await pb.reload({ waitUntil: 'load' });
-  await pb.waitForFunction(() => typeof FXSHARED !== 'undefined' && FXSHARED.size > 0, null, { timeout: 20000 });
+  await pb.waitForFunction(() => typeof FXSHARED !== 'undefined' && FXSHARED.size > 0 && typeof P !== 'undefined' && P, null, { timeout: 20000 });
   check('imported files survive a reload', (await pb.evaluate(() => FXSHARED.size)) === 2 + exRes.length && (await get(B2, '/api/fx')).length === 2 + exRes.length);
   check('the saved copy of an imported effect round-trips to the same id', await pb.evaluate(async k => { const t = fxFile('effect', k); const d = await api('/api/fx', { text: t }); return `u_${d.id}` === k; }, fxKey));
 
@@ -156,6 +156,8 @@ try {
     'a parameter that is not a number': mk({ parameters: { k: '1+1' } }, {}),
     'a parameter named like a built-in': mk({ parameters: { X: 1 } }, {}),
     'a missing name': mk({ name: '' }),
+    'HTML in the name': mk({ name: '<img src=x onerror=window.__pwn=1>' }),
+    'HTML in the author': mk({ author: '"><script>1</script>' }),
   };
   const refused = [];
   for (const [what, text] of Object.entries(evil)) {
@@ -178,6 +180,16 @@ try {
   await pb.locator('#fxFileIn').setInputFiles(`${tmp}/big.cutroom-fx`);
   await pb.waitForFunction(() => /too big/.test(document.body.innerText), null, { timeout: 5000 }).catch(() => {});
   check('the Import button refuses a big file before reading it', (await get(B2, '/api/fx')).length === 0 && /too big/.test(await pb.evaluate(() => document.body.innerText)));
+  // page layer: even if a hostile name got past the server, the transition inspector must not build elements from it
+  const xss = await pb.evaluate(() => {
+    const k = Object.keys(TRX)[0], d = JSON.parse(fxFile('transition', k));
+    d.name = '<img src=x onerror=window.__pwn=1>'; d.id = 'xss000000001';
+    fxRegister(d);
+    setProject(newProject('16:9')); const c = { media: 'm', tr: { type: 'u_xss000000001' } }; P.main.push(c);
+    const box = document.createElement('div'); box.innerHTML = trPanel(c); fxUnregister('u_xss000000001');
+    return { img: !!box.querySelector('img'), btns: box.querySelectorAll('button[data-tr]').length };
+  });
+  check('a hostile transition name is escaped in the inspector (no element created)', !xss.img && xss.btns > 0, JSON.stringify(xss));
   check('no page errors', !pb.errs.length, pb.errs.slice(0, 3).join(' | '));
 } catch (e) {
   check('test ran to the end', false, String(e.stack || e).split('\n').slice(0, 3).join(' | '));
