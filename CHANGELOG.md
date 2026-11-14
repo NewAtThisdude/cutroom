@@ -14,6 +14,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Speed ramps drawn as one curve, reverse, freeze frame, stabilize, detach audio, auto reframe
 - Compound clips, multicam, adjustment layers
 - Fade handles on clips: drag a top corner to fade in or out
+- Paste attributes (Cmd/Ctrl+Alt+V, or right-click): copy one clip, select one or many, and tick what to paste (colour, effects, masks, transform, speed and ramps, sound, animations, transition, keyframes scaled to each clip or kept at their times); remembers the list, one undo step, skips with a note what a clip cannot take
 - Split-screen layouts (side by side, stacked, one big and two small, grid of four, reaction, picture in picture) for any project shape: drop clips into the cells, pan and zoom inside a cell, gap colour and rounded corners; the cells stay ordinary clips you can trim and animate, and they re-flow when you change the layout or the canvas shape
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
@@ -32,6 +33,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Effects-pack effects and transitions run on the GPU in exports
 - 12 blend modes that look the same in the preview and the export
 - Colour grading on the GPU, curves, and scopes: waveform, RGB parade, histogram and vectorscope with a skin line
+- Before / after for colour (backslash, or the button under the preview): the clip or the whole frame without its colour work on one side of a line you drag, or side by side, effects optional; preview only, never in an export
 - Motion blur, glow, clip blur and noise reduction
 - Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it
 - Retouch: skin, eyes, teeth, makeup, face shape and body
@@ -45,6 +47,7 @@ Windows PC. It is licensed GPL v3 or later.
 - A loudness meter (momentary, short-term and integrated LUFS) and loudness targets for exports
 - A built-in library of CC0 sound effects and music
 - Voiceover recording that lands where you spoke
+- Audio visualizer (bars, mirrored bars, line, circle) in your brand colours, following one clip or the whole mix, with smoothing and sensitivity; worked out from the sound frame by frame, so the export matches the preview exactly
 
 ### Captions and text
 
@@ -52,7 +55,6 @@ Windows PC. It is licensed GPL v3 or later.
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
 
-- Audio visualizer (bars, mirrored bars, line, circle) in your brand colours, following one clip or the whole mix, with smoothing and sensitivity; worked out from the sound frame by frame, so the export matches the preview exactly
 ### AI features (all run on your computer)
 
 - Remove filler words and pauses
