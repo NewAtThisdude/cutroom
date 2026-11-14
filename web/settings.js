@@ -16,7 +16,7 @@ const SET = (() => {
     ['voice', 'AI voiceover', '#btnAiVoice', ['ai_voiceover']],
     ['clone', 'Voice clone and dubbing', '#btnClone, #btnDub', ['clone_voice', 'dub_video']],
     ['music', 'AI music', '#btnMusic', ['generate_music']],
-    ['image', 'Image and sticker generation', '#btnAiImage, #btnStickerAI', ['generate_image']],
+    ['image', 'Image and sticker generation', '#btnAiImage, #btnStickerAI', ['ai_image']],
     ['remove', 'Remove object', '[data-aitool="removeobj"], [data-act="removeobj"]', ['remove_object']],
     ['cutout', 'Cut out object', '[data-aitool="cutobj"], [data-act="cutobj"]', ['cut_out_object', 'preview_object']],
     ['matte', 'Remove background', '[data-aitool="matte"], [data-act="matte"]', ['clip_tool:remove_background']],

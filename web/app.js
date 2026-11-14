@@ -857,17 +857,20 @@ function keyCapture(e) { // the shortcut sheet is listening: the next key (with 
   else { setKeys(id, [k, ...keysOf(id).slice(1)]); applyKeys(true); KC.msg = `${name}: ${keyText(k)}`; }
   shortcuts(true, id);
 }
-function shortcuts(keep, focus) { // the sheet; click a key to change it (kept per Mac in localStorage 'cutroom.keys'). Settings > Shortcuts shows it in #setKeys
+function shortcuts(keep, focus) { // ? = a read-only quick view; Settings > Shortcuts (#setKeys) is where a key is changed (kept per Mac in localStorage 'cutroom.keys')
   if (!keep) Object.assign(KC, { for: null, conf: null, msg: '' });
   const host = $('#setKeys'), scroller = host ? host.closest('.setmain') : $('#modal .dialog.keysheet');
   const top = scroller?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
     const ks = keysOf(id), wait = KC.for === id;
+    if (!host) return `<tr><td>${ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</td><td>${esc(d)}</td></tr>`;
     return `<tr><td><button class="kb${wait ? ' on' : ''}" data-keyfor="${id}" title="Change the shortcut" aria-label="${esc(d)}: ${wait ? 'press the new key' : esc(ks.map(keyText).join(' or ') || 'no shortcut')}. Change">${wait ? 'Press a key…' : ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</button></td><td>${esc(d)}</td><td>${KEYOWN[id] ? `<button class="ghost" data-keyreset="${id}">Reset</button>` : ''}</td></tr>`;
   };
-  const html = (host ? '' : '<h3>Keyboard shortcuts</h3>') + `<p class="hint">Click a shortcut, then press the new key (Esc cancels). Ctrl works wherever ⌘ is shown.</p>`
+  const html = host ? `<p class="hint">Click a shortcut, then press the new key (Esc cancels). Ctrl works wherever ⌘ is shown.</p>`
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
-    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button>${host ? '' : '<button data-settings>Edit in Settings</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button>'}</div>`;
+    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button></div>`
+    : `<h3>Keyboard shortcuts</h3><p class="hint">Ctrl works wherever ⌘ is shown. To change a shortcut, edit it in Settings.</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
+    + '<div class="actions"><button data-settings>Edit in Settings</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>';
   if (host) host.replaceChildren(document.createRange().createContextualFragment(html)); else modal(html, 'keysheet'); // (every value in it went through esc)
   const dlg = host || $('#modal .dialog');
   (host ? scroller : dlg).scrollTop = top;

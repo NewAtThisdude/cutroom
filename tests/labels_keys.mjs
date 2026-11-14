@@ -90,10 +90,14 @@ for (const rm of ['no-preference', 'reduce']) {
   }
 
   // ---- shortcuts ----
-  const sheet = () => page.waitForSelector('#modal .keysheet');
+  // ? is a read-only quick view; keys are changed in Settings > Shortcuts (its Edit in Settings button)
+  const sheet = async () => { await page.waitForSelector('#modal .keysheet'); await page.click('#modal [data-settings]'); await page.waitForSelector('#setKeys [data-keyfor]'); };
   await page.keyboard.press('Escape');
-  await page.keyboard.press('?'); await sheet();
-  check(`${rm}: ? opens the editable sheet, every action a row`, await page.locator('#modal [data-keyfor]').count() === await ev(() => KEYMAP0.length));
+  await page.keyboard.press('?'); await page.waitForSelector('#modal .keysheet');
+  const ro = await ev(() => [$$('#modal .keysheet .keys tr').length === KEYMAP0.length, $$('#modal .keysheet [data-keyfor], #modal .keysheet [data-keyreset], #modal .keysheet [data-keyall]').length, !!$('#modal .keysheet [data-settings]')]);
+  check(`${rm}: ? opens a read-only sheet, every action a row, with Edit in Settings`, ro[0] && ro[1] === 0 && ro[2], ro.join(','));
+  await sheet();
+  check(`${rm}: Edit in Settings opens the editable list, every action a row`, await page.locator('#setKeys [data-keyfor]').count() === await ev(() => KEYMAP0.length));
   await page.click('[data-keyfor="split"]');
   const waiting = await page.textContent('[data-keyfor="split"]');
   await page.keyboard.press('d');

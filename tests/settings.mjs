@@ -124,13 +124,13 @@ for (const rm of ['no-preference', 'reduce']) {
   await section('ai');
   await page.waitForFunction(() => /GB memory/.test($('#setMacSum')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
   const caps = await ev(() => $$('[data-capfor]').filter(x => x.textContent).length);
-  await page.click('#set-ai-music'); await page.click('#set-ai-llm');
+  await page.click('#set-ai-music'); await page.click('#set-ai-llm'); await page.click('#set-ai-image');
   await page.screenshot({ path: `${OUT}${rm}-ai.png` });
   await page.keyboard.press('Escape');
-  const hid = await ev(() => ['#btnMusic', '#btnAsk', '#btnAiVoice'].map(s => getComputedStyle($(s)).display));
-  const ref = await api('/api/remote', { cmd: 'generate_music', args: { prompt: 'lofi' } }), ref2 = await api('/api/remote', { cmd: 'pilot', args: { text: 'add captions' } });
-  check(`${rm}: AI: the panel lists what this computer runs (${caps} features); AI music and the language model off: their buttons are gone, the MCP refuses them`,
-    caps >= 8 && hid[0] === 'none' && hid[1] === 'none' && hid[2] !== 'none' && !ref.ok && /turned off in Settings/.test(ref.result) && !ref2.ok && /turned off in Settings/.test(ref2.result), JSON.stringify({ caps, hid, ref, ref2 }));
+  const hid = await ev(() => ['#btnMusic', '#btnAsk', '#btnAiVoice', '#btnAiImage', '#btnStickerAI'].map(s => getComputedStyle($(s)).display));
+  const ref = await api('/api/remote', { cmd: 'generate_music', args: { prompt: 'lofi' } }), ref2 = await api('/api/remote', { cmd: 'pilot', args: { text: 'add captions' } }), ref3 = await api('/api/remote', { cmd: 'ai_image', args: {} }); // ai_image = the MCP generate_image; no prompt, so only the switch can refuse it with this text
+  check(`${rm}: AI: the panel lists what this computer runs (${caps} features); AI music, image generation and the language model off: their buttons are gone, the MCP refuses them`,
+    caps >= 8 && hid[0] === 'none' && hid[1] === 'none' && hid[2] !== 'none' && hid[3] === 'none' && hid[4] === 'none' && !ref3.ok && /turned off in Settings/.test(ref3.result) && !ref.ok && /turned off in Settings/.test(ref.result) && !ref2.ok && /turned off in Settings/.test(ref2.result), JSON.stringify({ caps, hid, ref, ref2, ref3 }));
 
   // ---- MCP: settings get / set ----
   const g = await api('/api/remote', { cmd: 'settings', args: {} }), s = await api('/api/remote', { cmd: 'settings', args: { set: { thumbs: false } } });
