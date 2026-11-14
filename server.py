@@ -8198,7 +8198,7 @@ def resume_prepare():
     yet (HDR imported before HDR got one): finished in the background, one at a time like any import."""
     for f in sorted(MEDIA.glob('*.json')):
         try:
-            m = json.loads(f.read_text())
+            m = json.loads(retry(f.read_text))
         except ValueError:
             continue
         if m.get('kind') == 'video' and 'gop' not in m and m.get('ready') and m.get('file') and (MEDIA / m['file']).is_file() and not m.get('trans'):
@@ -8326,7 +8326,7 @@ def clear_preview_cache():
     again = []
     for f in MEDIA.glob('*.json'):
         try:
-            m = json.loads(f.read_text())
+            m = json.loads(retry(f.read_text))
         except ValueError:
             continue
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file():
