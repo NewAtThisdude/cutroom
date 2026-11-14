@@ -32,6 +32,8 @@ Windows PC. It is licensed GPL v3 or later.
 - Motion blur, glow, clip blur and noise reduction
 - Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it
 - Retouch: skin, eyes, teeth, makeup, face shape and body
+- Share custom effects and transitions as `.cutroom-fx` files: save one, or import one by button or drag and drop;
+  every imported file is checked before it can run
 
 ### Audio
 
@@ -55,6 +57,8 @@ Windows PC. It is licensed GPL v3 or later.
 - Make shorts from a long video, and smart combine: several clips cut into one edit on the beat
 - Smooth slow motion, upscaling, relighting, deflicker and sharpen
 - Smart media search by what is in the shot
+- Auto B-roll: shots from your own library that match what is being said go on the overlay track, in one undo
+  step, and each one can be swapped or removed
 - Control from Claude Code through the built-in MCP server
 - Lip sync, talking photo and AI video need an NVIDIA GPU with 18-24 GB; on a Mac they run only on a GPU PC you opt in to
 
