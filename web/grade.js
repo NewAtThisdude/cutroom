@@ -634,10 +634,10 @@ function fxGPU(src, W, H, steps) {
     if (st.box) gl.uniform4f(U.box, ...st.box);
     if (st.G && FXG.lutKey !== st.G.key) { gl.activeTexture(gl.TEXTURE1); gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, GN, GN, GN, 0, gl.RGB, gl.FLOAT, st.G.d); gl.activeTexture(gl.TEXTURE0); FXG.lutKey = st.G.key; gl.bindTexture(gl.TEXTURE_2D, tex[cur]); }
     if (st.G) gl.uniform1f(U.lutN, GN);
-    gl.uniform1i(U.useM, st.M ? 1 : 0);
-    if (st.M && FXG.mKey !== st.M) { // an adjustment layer's mask (maskCanvas, W x H, top row first like the textures here)
-      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, FXG.mT); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, st.M);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[cur]); FXG.mKey = st.M;
+    gl.uniform1i(U.useM, st.mask ? 1 : 0); // (st.M is mode 0's colour matrix)
+    if (st.mask && FXG.mKey !== st.mask) { // an adjustment layer's mask (maskCanvas, W x H, top row first like the textures here)
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, FXG.mT); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, st.mask);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[cur]); FXG.mKey = st.mask;
     }
     gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0); gl.uniform1f(U.sg, st.sg || 1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -652,7 +652,7 @@ function fxGPU(src, W, H, steps) {
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return [cv, cv.height - H];
 }
-const FX_GPU = { lut: o => [{ mode: 7, G: o.G, M: o.M }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }], transform: o => [{ mode: 9, s: o.z, box: [o.x, o.y, 0, 0] }] };
+const FX_GPU = { lut: o => [{ mode: 7, G: o.G, mask: o.M }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }], transform: o => [{ mode: 9, s: o.z, box: [o.x, o.y, 0, 0] }] };
 
 // ---------- adjustment layer: an Effects-track clip (fx 'adjust') whose colour stage grades the composite under it ----------
 // Its brightness/contrast/saturation, temperature/tint, exposure/highlights/shadows/fade, filter and grade (wheels, curves,
