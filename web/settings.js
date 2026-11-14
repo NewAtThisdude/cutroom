@@ -12,7 +12,7 @@ const SET = (() => {
   const secsOf = a => a.map(x => [x, x === 1 ? '1 second' : `${x} seconds`]);
   // AI features: AI_BUDGET kind, name, what it hides (also the inspector's buttons, drawn later), the remote commands it refuses
   const AIF = [
-    ['captions', 'Auto captions, edit by script', '[data-aitool="captions"], #btnCaptions, [data-tab="script"], #btnFillers, #btnScriptFill', ['auto_captions', 'transcript', 'main_transcript', 'remove_fillers']],
+    ['captions', 'Auto captions, edit by script', '[data-aitool="captions"], #btnCaptions, [data-tab="script"], #btnFillers, #btnScriptFill, #btnBroll', ['auto_captions', 'transcript', 'main_transcript', 'remove_fillers', 'auto_broll']],
     ['voice', 'AI voiceover', '#btnAiVoice', ['ai_voiceover']],
     ['clone', 'Voice clone and dubbing', '#btnClone, #btnDub', ['clone_voice', 'dub_video']],
     ['music', 'AI music', '#btnMusic', ['generate_music']],
@@ -24,7 +24,7 @@ const SET = (() => {
     ['upscale', 'AI upscale', '[data-act="upscale"]', ['clip_tool:ai_upscale']],
     ['relight', 'Relight', '[data-act="relight"]', ['clip_tool:relight']],
     ['llm', 'Local language model: shorts, hooks, translation, caption keywords and emoji, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk, #btnCombine, #btnIndex, label:has(#capKw), label:has(#capEmoji), label:has(#trBi)',
-      ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'smart_combine', 'search_media:?index', 'caption_extras:?keywords|emoji|bilingual']],
+      ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'smart_combine', 'search_media:?index', 'auto_broll:?index', 'caption_extras:?keywords|emoji|bilingual']],
   ];
   // k key, s section, l label, c control (check / select / text / checks / folder), d default, o options, h help;
   // where: pref = PREFS (the setup answers), lib = this library, st = an older localStorage key, else this computer's LKEY
