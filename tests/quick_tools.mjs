@@ -52,7 +52,10 @@ for (const rm of ['no-preference', 'reduce']) {
     S.sel = { lane: 'main', id: P.main[0].id }; renderAll();
   });
   const q0 = await ev(() => $('#cv').width / ($('#cv').clientWidth * (devicePixelRatio || 1)));
+  await ev(() => { setScope({ on: true }); meterSet(true); });
+  const vis0 = await ev(() => [getComputedStyle($('#scope')).display, getComputedStyle($('#meter')).display]);
   await page.click('#btnFullscreen'); await page.waitForTimeout(200);
+  const vis1 = await ev(() => [getComputedStyle($('#scope')).display, getComputedStyle($('#meter')).display]);
   const f1 = await ev(() => ({ calls: __fs.calls, el: __fs.el, fs: S.fs, on: $('#btnFullscreen').classList.contains('on'), pressed: $('#btnFullscreen').getAttribute('aria-pressed'),
     scale: $('#cv').width / ($('#cv').clientWidth * (devicePixelRatio || 1)), title: $('#btnFullscreen').title }));
   // playback keys keep working in full screen
@@ -64,6 +67,8 @@ for (const rm of ['no-preference', 'reduce']) {
   const f2 = await ev(() => ({ exits: __fs.exits, fs: S.fs, on: $('#btnFullscreen').classList.contains('on'), scale: $('#cv').width / ($('#cv').clientWidth * (devicePixelRatio || 1)) }));
   check(`${rm}: the button asks the stage to go full screen; the page shows it pressed, at full quality (preview menu says quarter: ${q0.toFixed(2)} before, ${f1.scale.toFixed(2)} in); Esc leaves and quality returns`,
     f1.calls === 1 && f1.el === 'stage' && f1.fs && f1.on && f1.pressed === 'true' && Math.abs(q0 - 0.25) < 0.03 && Math.abs(f1.scale - 1) < 0.03 && f2.exits === 1 && !f2.fs && !f2.on && Math.abs(f2.scale - 0.25) < 0.03, JSON.stringify({ q0, f1, f2 }));
+  await ev(() => { setScope({ on: false }); meterSet(false); });
+  check(`${rm}: the scopes and the loudness meter hide in full screen (picture alone) and come back after it`, vis0.every(d => d !== 'none') && vis1.every(d => d === 'none') && await ev(() => !document.body.classList.contains('fs')), JSON.stringify({ vis0, vis1 }));
   check(`${rm}: in full screen Space plays and pauses and an arrow steps a frame`, playing && t1 > t0, JSON.stringify({ playing, t0, t1 }));
   await page.keyboard.press('Shift+F'); await page.waitForTimeout(100);
   const k1 = await ev(() => [__fs.calls, S.fs, KEYBY.get('Shift+KeyF')]);
@@ -148,6 +153,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const doExport = async (fmt, o) => { // through the dialog: the cover options, then Export; -> the status text and the saved file name
     await page.click('#btnExport'); await page.waitForSelector('#exFmt');
     await page.fill('#exName', o.name); await page.selectOption('#exRes', '0'); await page.selectOption('#exFmt', fmt);
+    if (o.hdr) await page.selectOption('#exHdr', o.hdr);
     const on = await page.isEnabled('#exCover');
     if (on) {
       await page.setChecked('#exCover', o.cover !== false);
@@ -182,6 +188,25 @@ for (const rm of ['no-preference', 'reduce']) {
   const mov = await doExport('prores', { name: `${nm}-mov`, title: 'MOV' });
   check(`${rm}: a ProRes MOV gets the picture beside it only (ffmpeg's MOV writer has no cover), and the dialog says so`,
     fs.existsSync(`${EXD}/${nm}-mov.mov`) && fs.existsSync(`${EXD}/${nm}-mov.jpg`) && !probe(`${EXD}/${nm}-mov.mov`).some(s => s.disposition.attached_pic) && /MOV cannot carry/.test(mov.s), mov.s);
+  // a cover never replaces another export: an existing picture of the same name survives, and two exports of one name keep their own covers
+  fs.writeFileSync(`${EXD}/${nm}-keep.png`, 'earlier still export');
+  const keep = await doExport('mp4', { name: `${nm}-keep`, title: 'KEEP', cfmt: 'png' });
+  const md5 = f => execFileSync('md5', ['-q', f]).toString().trim();
+  check(`${rm}: an earlier still export of the same name survives (the new MP4 and its cover take "(2)")`,
+    fs.readFileSync(`${EXD}/${nm}-keep.png`, 'utf8') === 'earlier still export' && keep.f === `${nm}-keep (2).mp4` && fs.existsSync(`${EXD}/${nm}-keep (2).png`) && fs.statSync(`${EXD}/${nm}-keep (2).png`).size > 1000, JSON.stringify(keep));
+  const same1 = await doExport('mp4', { name: `${nm}-same`, title: 'ONE' }), h1 = md5(`${EXD}/${nm}-same.jpg`);
+  const same2 = await doExport('prores', { name: `${nm}-same`, title: 'TWO' });
+  check(`${rm}: the same name as MP4 then ProRes keeps both covers (${nm}-same.jpg untouched; the MOV and its cover are "(2)")`,
+    same1.f === `${nm}-same.mp4` && same2.f === `${nm}-same (2).mov` && md5(`${EXD}/${nm}-same.jpg`) === h1 && fs.existsSync(`${EXD}/${nm}-same (2).jpg`) && md5(`${EXD}/${nm}-same (2).jpg`) !== h1, JSON.stringify({ one: same1.f, two: same2.f }));
+  // the cover remux (-c copy) keeps the HDR tags
+  const tags = f => JSON.stringify(JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,codec_tag_string,pix_fmt,color_space,color_transfer,color_primaries,color_range:stream_side_data_list', '-of', 'json', f]).toString()).streams);
+  const hdrRes = [];
+  for (const k of ['hlg', 'pq']) {
+    await doExport('hevc', { name: `${nm}-${k}-plain`, cover: false, hdr: k }); await doExport('hevc', { name: `${nm}-${k}-cover`, title: k, hdr: k });
+    hdrRes.push([k, tags(`${EXD}/${nm}-${k}-plain.mp4`), tags(`${EXD}/${nm}-${k}-cover.mp4`)]);
+  }
+  check(`${rm}: a cover keeps the HDR tags (HLG and PQ HEVC exports: codec, tag, pixel format, primaries, transfer, matrix, range, side data identical with and without a cover)`,
+    hdrRes.every(([k, a, b2]) => a === b2 && a.includes(k === 'hlg' ? 'arib-std-b67' : 'smpte2084') && a.includes('bt2020')), JSON.stringify(hdrRes));
   // remembered per project: saved with it, back after a reload
   await ev(id => { P.cover = { on: true, src: 'image', media: id, title: 'Remembered', preset: 'Title', fmt: 'png' }; scheduleSave(); }, picId);
   await page.waitForTimeout(1500); await open();

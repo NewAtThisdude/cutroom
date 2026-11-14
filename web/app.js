@@ -3190,6 +3190,7 @@ async function toggleFullscreen(on = !fsEl()) {
 }
 function fsChanged() { // entered or left (also by Esc, which the browser takes itself)
   S.fs = !!fsEl(); S.pqLow = false;
+  document.body.classList.toggle('fs', S.fs); // (the scopes and the loudness meter hide: the picture alone)
   const b = $('#btnFullscreen'); b.classList.toggle('on', S.fs); b.setAttribute('aria-pressed', S.fs);
   fitStage(); requestAnimationFrame(() => { fitStage(); S.dirty = true; });
 }

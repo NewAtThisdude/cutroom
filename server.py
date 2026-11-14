@@ -5455,9 +5455,9 @@ def render_gpu(p, td, out, report, what, job, intermediate=False):
     return err
 
 
-def unique(path):
+def unique(path, also=None):  # also: a second suffix whose file beside it must be free too (a cover picture)
     n, base = 2, path
-    while path.exists():
+    while path.exists() or (also and path.with_suffix(also).exists()):
         path = base.with_name(f'{base.stem} ({n}){base.suffix}')
         n += 1
     return path
@@ -5835,7 +5835,7 @@ def export(job, p):
                 st.update(state='done', progress=1.0, media=m['id'])
                 return
             pic, embedded = make_cover(p, td, out) if p.get('cover') else (None, False)
-            dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
+            dst = unique(EXPORTS / f"{p['name']}{out.suffix}", pic.suffix if pic else None)  # (the cover's name must be free too: it never replaces another export)
             retry(shutil.move, out, dst)
             if pic:
                 retry(shutil.copyfile, pic, dst.with_suffix(pic.suffix))

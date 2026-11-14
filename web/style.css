@@ -626,3 +626,4 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .caprow.hit .ct { color: #eee; }
 .caprow.cur input { box-shadow: 0 0 0 1px #7c6cff; }
 .caprow input.tr { grid-column: 2; }
+body.fs #scope, body.fs #meter { display: none !important; }
