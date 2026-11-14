@@ -2,19 +2,28 @@
 # in Microsoft Edge (Chrome if there is no Edge), with its own profile so it behaves like an app. Started on demand, never
 # at login. Settings come from <Prefix>\cutroom.env (written by install.ps1) and go to the server process only.
 #   cutroom.cmd [-ServerOnly]       or: powershell -ExecutionPolicy Bypass -File cutroom.ps1 [-Prefix <folder>] [-ServerOnly]
-param([string]$Prefix = "$env:LOCALAPPDATA\Cutroom", [switch]$ServerOnly)
+#   cutroom.cmd check               this computer in plain words and the AI it runs (server.py --check)
+param([Parameter(Position = 0)][string]$Command, [string]$Prefix, [switch]$ServerOnly)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+if (-not $Prefix) { # installed from the one-line installer the source is <prefix>\src, beside cutroom.env
+  $Prefix = if (Test-Path (Join-Path $PSScriptRoot '..\cutroom.env')) { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } else { "$env:LOCALAPPDATA\Cutroom" }
+}
 
 $cfg = Join-Path $Prefix 'cutroom.env'
 if (Test-Path $cfg) { # KEY=VALUE lines; a variable already set in the environment wins
-  foreach ($l in Get-Content $cfg) { if ($l -match '^(CUTROOM_\w+)=(.*)$' -and -not (Test-Path "env:$($matches[1])")) { Set-Item "env:$($matches[1])" $matches[2] } }
+  foreach ($l in Get-Content $cfg) { if ($l -match '^(CUTROOM_\w+|HF_HOME)=(.*)$' -and -not (Test-Path "env:$($matches[1])")) { Set-Item "env:$($matches[1])" $matches[2] } }
 }
 if ($env:CUTROOM_PATH) { $env:PATH = "$env:CUTROOM_PATH;$env:PATH" } # ffmpeg and whisper.cpp, for this process and the server it starts
 $port = if ($env:CUTROOM_PORT) { $env:CUTROOM_PORT } else { '4610' }
 $url = "http://127.0.0.1:$port/"
 $lib = if ($env:CUTROOM_HOME) { $env:CUTROOM_HOME } else { Join-Path ([Environment]::GetFolderPath('MyVideos')) 'Cutroom' }
 $env:CUTROOM_HOME = $lib
+if ($Command -eq 'check') {
+  & $(if ($env:CUTROOM_PYTHON) { $env:CUTROOM_PYTHON } else { 'python' }) -X utf8 -I "$PSScriptRoot\server.py" --check
+  exit $LASTEXITCODE
+}
+if ($Command) { Write-Host "cutroom: unknown command '$Command' (cutroom check, or no command to open the editor)"; exit 2 }
 
 function Test-Up { # a port check first: on Windows a refused connection takes ~2 s to report, a TCP connect with a timeout doesn't
   $c = New-Object Net.Sockets.TcpClient

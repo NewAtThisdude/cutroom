@@ -1,5 +1,6 @@
 #!/bin/sh
-# Start the Cutroom server if it isn't running, then open the editor as a Chrome app window.
+# Start the Cutroom server if it isn't running, then open the editor as a Chrome app window. ./cutroom check: this
+# computer's profile in plain words and the AI it runs.
 # Started on demand, never at login. Data: ~/Movies/Cutroom (media, projects, exports, cache, models).
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 PORT="${CUTROOM_PORT:-4610}"
@@ -7,6 +8,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${CUTROOM_HOME:-$HOME/Movies/Cutroom}"
 VAD="$DATA/models/ggml-silero-v5.1.2.bin"   # speech detector that keeps whisper from captioning music
 
+if [ "${1:-}" = check ]; then  # this computer in plain words and the AI it runs (server.py --check)
+  exec env -u PYTHONPATH python3 -I "$DIR/server.py" --check
+fi
 mkdir -p "$DATA/models"
 [ -f "$VAD" ] || curl -fsSL -o "$VAD" "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" || rm -f "$VAD"
 

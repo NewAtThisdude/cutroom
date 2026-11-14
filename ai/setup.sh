@@ -18,8 +18,8 @@ env -u PYTHONPATH VIRTUAL_ENV="$PWD/.venv" PATH="$PWD/.venv/bin:$PATH" .venv/bin
 # Skipped below 12 GB of memory: the 4-bit copy alone is 5.5 GB, and Cutroom refuses to run it there anyway.
 ram=$(( $(sysctl -n hw.memsize) / 1073741824 ))
 if [ "$ram" -ge 12 ]; then
-env -u PYTHONPATH .venv/bin/mflux-save --model z-image-turbo --quantize 4 --path "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit"
-test -f "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit/mflux_model.json"
+env -u PYTHONPATH .venv/bin/mflux-save --model z-image-turbo --quantize 4 --path "${CUTROOM_HOME:-$HOME/Movies/Cutroom}/ai/z-image-turbo-4bit"
+test -f "${CUTROOM_HOME:-$HOME/Movies/Cutroom}/ai/z-image-turbo-4bit/mflux_model.json"
 env -u PYTHONPATH .venv/bin/python -I -c "
 from huggingface_hub import scan_cache_dir
 c = scan_cache_dir()
