@@ -552,7 +552,36 @@ function openHistory() {
   $('#histList .on')?.focus();
 }
 let saveFails = 0;
+// Crash journal: the latest unsaved state of the project, in this browser, written on every change and cleared once a save lands.
+// A tab, app or server that dies in between leaves it behind; openProject offers it back (Restore / Discard).
+const jkey = id => `cutroom.journal.${id}`;
+function journalWrite(p) { try { localStorage.setItem(jkey(p.id), JSON.stringify({ t: Date.now(), p })); } catch {} } // ponytail: a whole stringify per change; a 1 MB project costs ~2 ms. Past the quota it just stops journalling
+function journalClear(id) { try { localStorage.removeItem(jkey(id)); } catch {} }
+function journalRead(id) { try { return JSON.parse(localStorage.getItem(jkey(id))); } catch { return null; } }
+function recoverBar(msg, buttons) { // a quiet row top right: message + buttons [[label, fn]]; any button closes it
+  let box = $('#rbar');
+  if (!box) { box = document.body.appendChild(document.createElement('div')); box.id = 'rbar'; box.style.cssText = 'position:fixed;top:12px;right:12px;z-index:60;display:flex;flex-direction:column;gap:8px;align-items:flex-end'; }
+  const row = box.appendChild(document.createElement('div')); row.className = 'confirm'; row.setAttribute('role', 'status'); row.style.cssText = 'position:static;transform:none';
+  const t = row.appendChild(document.createElement('span')); t.textContent = msg; t.style.whiteSpace = 'normal';
+  for (const [label, fn] of buttons) { const b = row.appendChild(document.createElement('button')); b.textContent = label; b.onclick = () => { row.remove(); fn(); }; }
+}
+async function offerJournal(id) { // after the project is open: unsaved edits from a session that ended badly
+  const j = journalRead(id);
+  if (!j?.p) return;
+  const upd = (await api('/api/projects').catch(() => [])).find(p => p.id === id)?.updated || 0;
+  if (j.t / 1000 <= upd || JSON.stringify(j.p) === JSON.stringify(P)) return journalClear(id); // the save did land
+  recoverBar(`Unsaved edits from ${ago(j.t / 1000)} were found for "${j.p.name || 'this project'}".`, [
+    ['Restore', () => { if (P?.id === id) { setProject(j.p); scheduleSave(); toast('Unsaved edits restored'); } }],
+    ['Discard', () => journalClear(id)]]);
+}
+async function offerInterrupted() { // exports the server was running when it died
+  for (const x of await api('/api/interrupted').catch(() => []))
+    recoverBar(`Export interrupted: "${x.name}" (${ago(x.t)}). The server stopped before it finished.`, [
+      ['Retry', async () => { try { toast('Export restarted'); const j = await job(() => api(`/api/interrupted/${x.job}/retry`, {}), null, 'Export'); toast(`Export done: ${j.name || x.name}`); } catch (e) { toast(`Export failed: ${e.message}`); } }],
+      ['Dismiss', () => api(`/api/interrupted/${x.job}/dismiss`, {}).catch(() => {})]]);
+}
 function scheduleSave(wait = 400) {
+  if (P && !S.hold) journalWrite(P);
   $('#saveState').textContent = 'Saving…';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, wait);
@@ -563,7 +592,7 @@ async function saveNow(leaving) {
   if (!P) return;
   if (S.hold) return scheduleSave();
   const p = P;
-  try { await api(`/api/projects/${p.id}`, p, 'PUT', leaving); saveFails = 0; if (p === P && !saveTimer) $('#saveState').textContent = 'Saved'; }
+  try { await api(`/api/projects/${p.id}`, p, 'PUT', leaving); saveFails = 0; if (p !== P || !saveTimer) journalClear(p.id); if (p === P && !saveTimer) $('#saveState').textContent = 'Saved'; }
   catch (e) { // tried again until it goes through (the server restarting, say): an edit is never just dropped
     if (p !== P) return;
     $('#saveState').textContent = 'Not saved';
@@ -5508,7 +5537,10 @@ function setProject(p) {
   fitStage(); renderAll();
 }
 async function openProject(id) {
-  setProject(await api(`/api/projects/${id}`));
+  const p = await api(`/api/projects/${id}`), note = p._recovered; delete p._recovered; // (a damaged file: the server fell back to its newest good version)
+  setProject(p);
+  if (note) toast(note);
+  offerJournal(id);
   const gone = LANES.reduce((n, L) => n + P[L.key].filter(c => c.media && !M.get(c.media)).length, 0);
   if (gone) toast(`${gone} clip${gone === 1 ? ' has' : 's have'} missing media (striped red): select one to restore or relink it`);
 }
@@ -7556,6 +7588,7 @@ Object.assign(REMOTE, {
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);
     else { setProject(newProject()); scheduleSave(); }
+    offerInterrupted();
     tourMaybe(); // tour.js: once, on a first start (an empty library)
     if (id && !opt('openLast', true) && !$('#tour')) openProjects(); // (Settings: not straight into the last project: pick one)
     loadVoices();
