@@ -132,6 +132,20 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: AI: the panel lists what this computer runs (${caps} features); AI music, image generation and the language model off: their buttons are gone, the MCP refuses them`,
     caps >= 8 && hid[0] === 'none' && hid[1] === 'none' && hid[2] !== 'none' && hid[3] === 'none' && hid[4] === 'none' && !ref3.ok && /turned off in Settings/.test(ref3.result) && !ref.ok && /turned off in Settings/.test(ref.result) && !ref2.ok && /turned off in Settings/.test(ref2.result), JSON.stringify({ caps, hid, ref, ref2, ref3 }));
 
+  // the language model off also covers the caption extras it makes (keywords, emoji, bilingual), not their show / hide
+  const ce = await api('/api/remote', { cmd: 'caption_extras', args: { keywords: true } }), cb = await api('/api/remote', { cmd: 'caption_extras', args: { bilingual: 'es' } });
+  const cs = await api('/api/remote', { cmd: 'caption_extras', args: { show: { kw: true } } });
+  const kwHidden = await ev(() => getComputedStyle($('#capKw').closest('label')).display === 'none' && getComputedStyle($('#capEmoji').closest('label')).display === 'none' && getComputedStyle($('#trBi').closest('label')).display === 'none');
+  check(`${rm}: AI: with the language model off, caption keywords / bilingual are refused and their toggles hidden; showing layers still works`,
+    !ce.ok && /turned off in Settings/.test(ce.result) && !cb.ok && /turned off in Settings/.test(cb.result) && !/turned off in Settings/.test(String(cs.result)) && kwHidden, JSON.stringify({ ce, cb, cs, kwHidden }));
+  // captions off covers every way to transcribe: main_transcript (edit by script) too, and the Script tab goes
+  await keyOpen(); await section('ai');
+  await page.click('#set-ai-captions'); await page.keyboard.press('Escape');
+  const mt = await api('/api/remote', { cmd: 'main_transcript', args: {} }), scHidden = await ev(() => getComputedStyle($('[data-tab="script"]')).display === 'none');
+  const missing = await ev(() => SET.missing);
+  check(`${rm}: AI: auto captions off refuses main_transcript and hides the Script tab; every AI switch names a real command`,
+    !mt.ok && /turned off in Settings/.test(mt.result) && scHidden && !missing.length, JSON.stringify({ mt, scHidden, missing }));
+
   // ---- MCP: settings get / set ----
   const g = await api('/api/remote', { cmd: 'settings', args: {} }), s = await api('/api/remote', { cmd: 'settings', args: { set: { thumbs: false } } });
   const bad = await api('/api/remote', { cmd: 'settings', args: { set: { pq: 'huge' } } });

@@ -12,7 +12,7 @@ const SET = (() => {
   const secsOf = a => a.map(x => [x, x === 1 ? '1 second' : `${x} seconds`]);
   // AI features: AI_BUDGET kind, name, what it hides (also the inspector's buttons, drawn later), the remote commands it refuses
   const AIF = [
-    ['captions', 'Auto captions', '[data-aitool="captions"], #btnCaptions', ['auto_captions', 'transcript']],
+    ['captions', 'Auto captions, edit by script', '[data-aitool="captions"], #btnCaptions, [data-tab="script"]', ['auto_captions', 'transcript', 'main_transcript']],
     ['voice', 'AI voiceover', '#btnAiVoice', ['ai_voiceover']],
     ['clone', 'Voice clone and dubbing', '#btnClone, #btnDub', ['clone_voice', 'dub_video']],
     ['music', 'AI music', '#btnMusic', ['generate_music']],
@@ -23,7 +23,8 @@ const SET = (() => {
     ['isolate', 'Isolate voice, stems', '[data-aitool="isovoice"], [data-aitool="novoice"], [data-act="isovoice"], [data-act="novoice"], [data-act="stems"]', ['clip_tool:isolate_voice', 'clip_tool:remove_voice', 'clip_tool:split_stems']],
     ['upscale', 'AI upscale', '[data-act="upscale"]', ['clip_tool:ai_upscale']],
     ['relight', 'Relight', '[data-act="relight"]', ['clip_tool:relight']],
-    ['llm', 'Local language model: shorts, hooks, translation, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk', ['make_shorts', 'hook_titles', 'translate_captions', 'pilot']],
+    ['llm', 'Local language model: shorts, hooks, translation, caption keywords and emoji, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk, label:has(#capKw), label:has(#capEmoji), label:has(#trBi)',
+      ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'caption_extras:?keywords|emoji|bilingual']],
   ];
   // k key, s section, l label, c control (check / select / text / checks / folder), d default, o options, h help;
   // where: pref = PREFS (the setup answers), lib = this library, st = an older localStorage key, else this computer's LKEY
@@ -112,10 +113,13 @@ const SET = (() => {
   }
   const GATE = {}; // remote command -> [feature, its name, the clip_tool action (or none: the whole command)]
   for (const [kind, name, , cmds] of AIF) for (const c of cmds) { const [cmd, action] = c.split(':'); (GATE[cmd] ||= []).push([kind, name, action]); }
+  const missing = Object.keys(GATE).filter(cmd => !REMOTE[cmd]); // a renamed command would slip past its switch: said loudly, and tests/settings.mjs fails on it
+  if (missing.length) console.error(`Settings: AI switches name commands the editor doesn't have: ${missing.join(', ')}`);
   for (const [cmd, gates] of Object.entries(GATE)) { // the MCP (and the command bar's plans) refuse a feature that's off
     const fn = REMOTE[cmd];
     if (fn) REMOTE[cmd] = async function (args = {}) {
-      const g = gates.find(([kind, , action]) => (!action || action === args.action) && !get(`ai.${kind}`));
+      const hit = action => !action || (action[0] === '?' ? action.slice(1).split('|').some(k => args[k]) : action === args.action); // '?a|b': only when one of those arguments is given
+      const g = gates.find(([kind, , action]) => hit(action) && !get(`ai.${kind}`));
       if (g) throw new Error(`${g[1]} is turned off in Settings (AI and this computer)`);
       return fn.call(this, args);
     };
@@ -297,5 +301,5 @@ const SET = (() => {
   }, true);
   const nprev = get('notify');
   if ((nprev === 'note' || nprev === 'both') && typeof Notification === 'function' && Notification.permission === 'default') addEventListener('pointerdown', () => Notification.requestPermission().catch(() => {}), { once: true });
-  return { get, set, open, exportOpened, exported, OPTS, AIF, lib: () => LIB };
+  return { get, set, open, exportOpened, exported, OPTS, AIF, missing, lib: () => LIB };
 })();
