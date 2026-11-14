@@ -160,7 +160,7 @@ try {
     await ev(() => pause());
     check(`${rm}: explicit playback advances with reduced motion as well as full motion`, advanced);
     // Restore the saved project first: gallery previews above intentionally made subsequent edits.
-    await ev(async saved => { P.text = [JSON.parse(saved)]; await flushSave(); }, history.saved);
+    await ev(async saved => { change(() => { P.text = [JSON.parse(saved)]; }); await flushSave(); }, history.saved);
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof REMOTE !== 'undefined', null, { timeout: 30000 });
     await ev(project => REMOTE.open_project({ project }), history.project);
