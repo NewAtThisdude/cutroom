@@ -7014,6 +7014,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   }
   for (const k of ['adj', 'look', 'crop', 'key', 'anim', 'style', 'tr', 'grade', 'beauty', 'glow']) if (c[k] && Object.keys(c[k]).length) o[k] = c[k];
   if (c.body) o.body = c.body;
+  if (lane === 'text' || lane === 'captions') o.curve = c.curve ?? c.style?.curve ?? 0;
   if (c.lkf?.length) o.strengthPoints = c.lkf.length;
   if (c.mask) o.mask = c.mask.type;
   if (c.mkf?.length) o.maskKeyframes = c.mkf.length;
@@ -7154,7 +7155,7 @@ const REMOTE = {
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
     if (L === 'text' || L === 'captions') {
       checkTextStyle(set.style); checkTextCurve(set.curve);
-      if (L === 'text' && set.style && Object.hasOwn(set.style, 'curve')) { set = structuredClone(set); set.curve = set.curve ?? set.style.curve; delete set.style.curve; }
+      if (L === 'text' && set.style && Object.hasOwn(set.style, 'curve')) { set = structuredClone(set); set.curve = set.curve ?? set.style.curve; set.style.curve = null; }
       for (const f of Array.isArray(set.kf) ? set.kf : []) checkTextCurve(f?.curve);
     } else if (set.curve !== undefined) throw new Error('Curve is a text option');
     if (set.fx !== undefined && !FX[set.fx] && set.fx !== 'adjust') throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}, adjust`);

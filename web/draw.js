@@ -26,14 +26,14 @@ function textArc(dx, width, curve) { // arc length -> baseline point and tangent
 }
 function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, deterministic blur taps: also works in WebKit workers without ctx.filter
   if (radius < 0.01) { ctx.drawImage(cv, x, y); return; }
-  ctx.save();
-  const alpha = ctx.globalAlpha, n = 13;
+  const layer = scratch(cv.width, cv.height, 'txblur'), q = layer.getContext('2d'), n = 13;
+  q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, layer.width, layer.height);
+  q.globalCompositeOperation = 'lighter'; q.globalAlpha = 1 / n; // average premultiplied pixels; source-over taps would lose opacity
   for (let i = 0; i < n; i++) {
     const u = i / (n - 1), r = Math.sqrt(u) * radius, a = i * 2.399963229728653;
-    ctx.globalAlpha = alpha / n;
-    ctx.drawImage(cv, x + (horizontal ? (u - 0.5) * radius * 2 : Math.cos(a) * r), y + (horizontal ? 0 : Math.sin(a) * r));
+    q.drawImage(cv, horizontal ? (u - 0.5) * radius * 2 : Math.cos(a) * r, horizontal ? 0 : Math.sin(a) * r);
   }
-  ctx.restore();
+  q.globalCompositeOperation = 'source-over'; q.globalAlpha = 1; ctx.drawImage(layer, x, y);
 }
 function textGlyph(ctx, stroke, ch, x, y, size, alpha, blur, gradient) { // raster first: WebKit's text shadows otherwise ignore per-letter globalAlpha
   if (alpha <= 0) return;
@@ -478,7 +478,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
         for (let j = Math.round(st.stack); j > 0; j--) { const o = j * size * 0.03; if (st.strokeW > 0) put(true, vis, wx + o, cy + o); put(false, vis, wx + o, cy + o); }
       }
       if (st.shadow) { ctx.shadowColor = hexA(st.shc || '#000000', st.sha ?? 0.55); ctx.shadowBlur = size * (st.shb ?? 0.18); ctx.shadowOffsetX = size * (st.shx || 0); ctx.shadowOffsetY = size * (st.shy ?? 0.04); }
-      if (st.loop === 'glow') { ctx.shadowColor = st.shc && st.shadow ? st.shc : st.color; ctx.shadowBlur = size * (0.15 + 0.2 * (1 + Math.sin(lt * Math.PI))); ctx.shadowOffsetX = ctx.shadowOffsetY = 0; }
+      if (st.loop === 'glow') { ctx.shadowColor = st.shadow && st.shc && st.shc !== '#000000' ? st.shc : st.color; ctx.shadowBlur = size * (0.15 + 0.2 * (1 + Math.sin(lt * Math.PI))); ctx.shadowOffsetX = ctx.shadowOffsetY = 0; }
       if (st.anim === 'stroke' && av < 1) {
         ctx.save(); ctx.beginPath(); ctx.rect(lx(ln) - size, cy - size * 3, size + ln.w * clamp(av * 1.5, 0, 1), size * 6); ctx.clip();
         ctx.lineWidth = Math.max(st.strokeW * u * 2, size * 0.025); ctx.strokeStyle = st.strokeW ? st.stroke : st.color; put(true, vis, wx, cy); ctx.restore();
