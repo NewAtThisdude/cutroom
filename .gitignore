@@ -3,10 +3,10 @@ __pycache__/
 tools/matte
 tools/track
 tools/faces
-ai/.venv/
+ai/.venv
 tools/lift
-ai/vendor/
-node_modules/
+ai/vendor
+node_modules
 tests/out/
 tools/fonts
 tools/retouch
