@@ -1386,6 +1386,7 @@ function mediaPanel(c, lane) {
     <div class="curvebox rampbox"><svg id="rampSvg" viewBox="-16 -6 222 112" preserveAspectRatio="none"></svg></div><p class="muted ramplen" id="rampLen"></p>
     <div class="actions"><button data-act="ramp">Apply ramp</button>${c.ramp && c.media === c.ramp.copy ? `<button data-act="rampoff"${M.get(c.ramp.src) ? '' : ' disabled title="Its original file is not in the library any more"'}>Remove ramp</button>` : ''}</div>
     <p class="hint">Up is faster (the middle line is 1×). Drag a point, click the line to add one, double-click a point to remove it. Rendered once into a copy the clip plays; sound off; undo goes back.</p>` : '';
+  if (vid && m.cursor && typeof azPanel === 'function') tools = azPanel(c) + tools; // a screen recording: Auto zoom (record.js)
   if (vid) tools += `<h4>Body effects</h4><div class="actions">${BODY.map(([k, n, t]) => `<button data-body="${k}" title="${t}">${n}</button>`).join('')}</div><p class="hint">The person is cut out (on this Mac) onto the track above, in sync, and the background or the person gets the effect.</p>`;
   if (m.kind === 'image' || z3On(c)) tools += z3Panel(c);
   if (m.kind === 'image') tools += `<h4>Smart tools</h4><div class="actions"><button data-act="matte">Remove background</button>${lane === 'overlay' ? '<button data-act="track" title="Follow something in the video under it: moves, grows and turns with it">Track motion</button>' : ''}</div>`

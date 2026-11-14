@@ -256,6 +256,8 @@ def meta(mid):
 def save_meta(m):
     if m.get('file') and not (MEDIA / m['file']).exists():  # removed from the library while it was being prepared: don't bring back an empty entry
         return
+    if (MEDIA / f"{m['id']}.cursor").exists():  # a screen recording's cursor track (cursor_track): kept whoever saves (prepare() holds an older copy)
+        m['cursor'] = True
     tmp = MEDIA / f".{m['id']}.{uuid.uuid4().hex[:6]}.tmp"  # whole or not there: a reader between write_text's truncate and its write saw an empty file (/api/media failed)
     tmp.write_text(json.dumps(m))
     retry(tmp.replace, MEDIA / f"{m['id']}.json")
@@ -358,6 +360,168 @@ def import_file(name, stream, length, background=True, src=None, key=None):
     if kind != 'image':
         threading.Thread(target=prepare, args=(m,), daemon=True).start() if background else prepare(m)
     return m
+
+
+def rec_sweep():
+    for f in CACHE.glob('rec-*'):
+        try:
+            if time.time() - f.stat().st_mtime > 600:
+                f.unlink()
+        except OSError:  # gone meanwhile
+            pass
+
+
+REC_ABORTED = set()  # takes the page gave up on (ponytail: kept until the server restarts; a few ids a day)
+REC_CAP = 32 << 30  # recordings being made, all parts together (a screen take at 10 Mbit/s is about 4.5 GB an hour)
+
+
+def record_part(rid, ext, stream, length, q):
+    """A screen or camera take from the recorder (web/record.js), sent a second at a time while it records: an hour of
+    screen never sits in the page's memory, and a crash keeps what was sent. The last call (done=1) imports it. The
+    recorder's file has no duration (fragmented MP4, WebM without cues) and its first frame starts after the recorder's
+    start (WebKit: 43 ms): remuxed (no re-encode) to start at 0, and 'lead' is the start it had, so the page can place it."""
+    part = CACHE / f'rec-{rid}.{ext}'
+    CURSOR['seen'] = time.time()  # (the cursor poll stops by itself once no take is sending: a page closed mid-take)
+    if not part.exists():  # a new take: parts a closed page or a crash left (untouched 10 min: no take pauses that long) go now
+        rec_sweep()
+    if q.get('abort') or rid in REC_ABORTED:  # the page gave up on it (failed, cancelled, closed); a part still on its way after that is dropped too
+        REC_ABORTED.add(rid)
+        part.unlink(missing_ok=True)
+        return {'ok': True}
+    if length and not q.get('done'):  # checked before the part is written: what was recorded stays a whole file
+        have = sum(f.stat().st_size for f in CACHE.glob('rec-*') if f.is_file())
+        if have + length > REC_CAP:
+            raise ValueError(f'the recording reached {REC_CAP >> 30} GB, the most Cutroom keeps at once: it stopped there, and what was recorded is kept')
+        if shutil.disk_usage(CACHE).free - length < 1 << 30:
+            raise ValueError('the disk is nearly full: the recording stopped there, and what was recorded is kept')
+    with open(part, 'ab') as f:
+        while length > 0:
+            b = stream.read(min(length, 1 << 20))
+            if not b:
+                break
+            f.write(b)
+            length -= len(b)
+    if not q.get('done'):
+        return {'size': part.stat().st_size}
+    fixed = CACHE / f'rec-{rid}.fixed.{ext}'
+    try:
+        lead = float(sh(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time', '-of', 'csv=p=0', str(part)]).stdout.strip() or 0)
+        if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(part), '-map', '0', '-c', 'copy', '-avoid_negative_ts', 'make_zero', str(fixed)]).returncode or not fixed.exists():
+            raise ValueError('the recording could not be read (nothing was recorded?)')
+        name = re.sub(r'[\\/:*?"<>|]', '-', q.get('name', ['Recording'])[0])[:150] or 'Recording'
+        return {**import_file(f'{name}.{ext}', None, 0, src=fixed), 'lead': max(0.0, lead)}
+    finally:
+        part.unlink(missing_ok=True)
+        fixed.unlink(missing_ok=True)
+
+
+CURSOR = {}  # the cursor poll of the recording under way (cursor_poll)
+
+
+def cursor_reader():
+    """This computer's pointer, read without any permission: read() -> (x, y, seconds since the last click, since the last
+    key press) in global screen points, and the screens' rectangles [x, y, w, h] in the same space. None where unknown."""
+    import ctypes
+    if MAC:
+        cg = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+
+        class Pt(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double)]
+
+        class Rect(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double), ('w', ctypes.c_double), ('h', ctypes.c_double)]
+        cg.CGEventCreate.restype, cg.CGEventCreate.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        cg.CGEventGetLocation.restype, cg.CGEventGetLocation.argtypes = Pt, [ctypes.c_void_p]
+        cg.CFRelease.argtypes = [ctypes.c_void_p]
+        cg.CGEventSourceSecondsSinceLastEventType.restype, cg.CGEventSourceSecondsSinceLastEventType.argtypes = ctypes.c_double, [ctypes.c_int, ctypes.c_uint32]
+        cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+        cg.CGDisplayBounds.restype, cg.CGDisplayBounds.argtypes = Rect, [ctypes.c_uint32]
+        ids, n = (ctypes.c_uint32 * 16)(), ctypes.c_uint32()
+        cg.CGGetActiveDisplayList(16, ids, ctypes.byref(n))
+        screens = [[r.x, r.y, r.w, r.h] for r in (cg.CGDisplayBounds(ids[i]) for i in range(n.value))]  # the main display first
+
+        def read():
+            e = cg.CGEventCreate(None)
+            p = cg.CGEventGetLocation(e)
+            cg.CFRelease(e)
+            return p.x, p.y, cg.CGEventSourceSecondsSinceLastEventType(0, 1), cg.CGEventSourceSecondsSinceLastEventType(0, 10)  # left mouse down, key down
+        return read, screens
+    if WIN:
+        u = ctypes.windll.user32
+        u.SetProcessDPIAware()  # pixels, as the screen capture has them
+
+        class Pt(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+        class Last(ctypes.Structure):
+            _fields_ = [('size', ctypes.c_uint), ('t', ctypes.c_uint)]
+        pt, li, st = Pt(), Last(8, 0), {'down': False, 'in': 0, 'pos': None, 'c': 0.0, 'k': 0.0}
+
+        def read():  # a click: the left button going down; a key: input with the pointer still and no button (GetLastInputInfo)
+            now = time.time()
+            u.GetCursorPos(ctypes.byref(pt))
+            down = bool(u.GetAsyncKeyState(1) & 0x8000)
+            u.GetLastInputInfo(ctypes.byref(li))
+            if down and not st['down']:
+                st['c'] = now
+            elif li.t != st['in'] and not down and st['pos'] == (pt.x, pt.y):
+                st['k'] = now
+            st.update(down=down, pos=(pt.x, pt.y))
+            st['in'] = li.t
+            return pt.x, pt.y, now - st['c'], now - st['k']
+        return read, [[0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)]]  # ponytail: the primary screen; EnumDisplayMonitors for others
+    return None
+
+
+def cursor_poll(on, t0=0.0):
+    """The recorder's cursor track (auto zoom): from on=True until on=False, the pointer 30 times a second and each click and
+    key press, timed from t0 (the page's clock at the recorders' start, ms since the epoch). Off -> what was recorded."""
+    old = CURSOR.pop('run', None)
+    if old:
+        old['stop'].set()
+        old['thread'].join(2)
+    if not on:
+        return {k: old[k] for k in ('pts', 'ev', 'screens')} if old else {'pts': [], 'ev': [], 'screens': []}
+    rd = cursor_reader()
+    if not rd:
+        return {'ok': False, 'why': 'the cursor is not followed on this system'}
+    read, screens = rd
+    run = {'stop': threading.Event(), 'pts': [], 'ev': [], 'screens': screens}
+    CURSOR['seen'] = time.time()
+    base = float(t0) / 1000
+
+    def go():
+        last = None
+        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4 and time.time() - CURSOR.get('seen', time.time()) < 600:  # a still screen may send no parts for a while: stop only with the stale-part sweep (10 min) or the take's end
+            now = time.time()
+            x, y, sc, sk = read()
+            run['pts'].append([round(now - base, 4), round(x, 1), round(y, 1)])
+            if last:  # the time since a click (key) went down: it happened now - that
+                for kind, since, before in (('c', sc, last[0]), ('k', sk, last[1])):
+                    if since < before:
+                        run['ev'].append([round(now - since - base, 4), kind, round(x, 1), round(y, 1)])
+            last = (sc, sk)
+    run['thread'] = threading.Thread(target=go, daemon=True)
+    run['thread'].start()
+    CURSOR['run'] = run
+    return {'ok': True, 'screens': screens}
+
+
+def cursor_track(mid, track=None):
+    """A screen recording's cursor track, kept next to its file (<id>.cursor): [t, u, v] in its own time and frame
+    (0..1), and the clicks and keys [t, 'c'|'k', u, v]. With track: save it."""
+    m = meta(mid)
+    f = MEDIA / f"{m['id']}.cursor"  # (not .json: the trash's restore looks for <id>*.json; it goes to the trash and back with its file)
+    if track is None:
+        if not f.exists():
+            raise ValueError('this clip has no cursor track: auto zoom works on screen recordings made in Cutroom')
+        return json.loads(f.read_text())
+    pts = [[float(a), float(b), float(c)] for a, b, c in track.get('pts', [])[:30 * 3600 * 4]]
+    ev = [[float(a), 'k' if k == 'k' else 'c', float(b), float(c)] for a, k, b, c in track.get('ev', [])[:100000]]
+    f.write_text(json.dumps({'pts': pts, 'ev': ev}, separators=(',', ':')))
+    m['cursor'] = True
+    save_meta(m)
+    return {'ok': True, 'pts': len(pts), 'ev': len(ev)}
 
 
 def photo_copy(m, size):
@@ -6886,6 +7050,8 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/import':
                 name = parse_qs(u.query).get('name', ['file'])[0]
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
+            if m := re.fullmatch(r'/api/record/([0-9a-f]{12})\.(mp4|webm)', u.path):  # the recorder's screen / camera take, a part at a time
+                return self.reply(record_part(m[1], m[2], self.rfile, int(self.headers.get('Content-Length') or 0), parse_qs(u.query)))
             if u.path == '/api/fonts':  # the font file's bytes
                 n = int(self.headers.get('Content-Length') or 0)
                 if n > 32 << 20:
@@ -7101,6 +7267,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
                 return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
+            if u.path == '/api/cursor':  # the recorder's cursor poll: on (t0) / off -> the samples
+                return self.reply(cursor_poll(bool(body.get('on')), float(body.get('t0') or 0)))
+            if m := re.fullmatch(r'/api/cursor/([0-9a-f]{12})', u.path):  # a screen recording's cursor track: read, or save (track)
+                return self.reply(cursor_track(m[1], body.get('track')))
             if u.path == '/api/sync':
                 return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
@@ -7159,6 +7329,8 @@ class App(BaseHTTPRequestHandler):
                 for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
                         retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
+                if (MEDIA / f'{m[1]}.cursor').exists():  # a screen recording's cursor track (auto zoom) goes with it; emptying the trash purges it
+                    retry(shutil.move, str(MEDIA / f'{m[1]}.cursor'), str(HOME / 'trash' / 'media' / f'{m[1]}.cursor'))
                 for f in CACHE.glob(f'{m[1]}*.pcm'):  # the preview's sound is remade from the file if it's restored
                     f.unlink(missing_ok=True)
                 return self.reply({'ok': True})
@@ -7172,6 +7344,8 @@ class App(BaseHTTPRequestHandler):
                 if not src:
                     raise ValueError('its file is not in the trash')
                 retry(shutil.move, str(src), str(MEDIA / info['file']))
+                if (tr / f'{m[1]}.cursor').exists():  # its cursor track back too: the restored recording keeps auto zoom
+                    retry(shutil.move, str(tr / f'{m[1]}.cursor'), str(MEDIA / f'{m[1]}.cursor'))
                 retry(shutil.move, str(js[-1]), str(MEDIA / f'{m[1]}.json'))
                 return self.reply({'ok': True, 'id': m[1]})
             if u.path == '/api/ramp':  # the knot table is checked here: it goes into an ffmpeg expression
@@ -8574,6 +8748,7 @@ def main():
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:  # gone meanwhile (another server's export finished with it)
             pass
+    rec_sweep()  # recordings' parts a crash, a reload or a quit mid-take left (not one being written: a take appends every second)
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     # On Windows SO_REUSEADDR (HTTPServer's default) lets a second server bind a port that is already listening, and the two
     # then split the connections: there a second Cutroom on the same port must fail to start, as it does on the Mac
