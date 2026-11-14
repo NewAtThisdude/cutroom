@@ -1,3 +1,4 @@
+import { requireHome } from './runtime.mjs';
 // Voice clone, AI dubbing, lip sync and talking photo, end to end in headless WebKit with the real models:
 // Chatterbox (clone + Spanish dub, this Mac), WavLM (speaker similarity), whisper (captions), the local LLM (translation),
 // LatentSync 1.6 (lip sync of real footage) and Wan 2.2 S2V (talking photo) on the RTX 4090 PC. Acceptance, measured on the files:
@@ -11,13 +12,13 @@
 //   gating: lip sync / talking photo (buttons and MCP tools) show only while the GPU PC is set up and answering; when it is
 //     not, their sections print SKIP and the hidden state, the hint and the MCP refusal are checked instead
 // Needs: ai/setup.sh, Ollama, the PC on (ai/gpu_setup.sh). ~30 min.   CUTROOM_HOME=<lib> B=http://127.0.0.1:<port> node voice_dub.mjs [section]
+import { PYTHON, spawnManaged, stopChild } from './runtime.mjs';
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
+const LIB = requireHome();
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const res = [], t00 = Date.now();
@@ -173,7 +174,7 @@ if (run('gpu') || run('lip') || run('talk') || !only) {
     const r = await ev(() => Promise.all([REMOTE.lip_sync({}), REMOTE.talking_photo({})].map(p => p.then(() => 'ran', e => e.message))));
     check('...and the MCP commands refuse in words, at once', r.every(x => /needs the 4090 PC/i.test(x)), r.join(' | '));
   }
-  const mcp = spawn('python3', ['-I', `${ROOT}mcp/cutroom_mcp.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_PORT: new URL(B).port }, stdio: ['pipe', 'pipe', 'ignore'] });
+  const mcp = spawnManaged(PYTHON, ['-X', 'utf8', '-I', `${ROOT}mcp/cutroom_mcp.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_PORT: new URL(B).port }, stdio: ['pipe', 'pipe', 'ignore'] });
   const listed = await new Promise((res, rej) => { let buf = ''; mcp.stdout.on('data', d => { buf += d; const l = buf.split('\n').find(x => x.includes('"id": 2') || x.includes('"id":2')); if (l) res(JSON.parse(l).result.tools.map(t => t.name)); }); setTimeout(() => rej(new Error('no MCP answer')), 15000);
     mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n' + JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n'); }).finally(() => mcp.kill());
   const has = ['lip_sync', 'talking_photo'].filter(n => listed.includes(n));
@@ -273,8 +274,9 @@ if (run('offline')) {
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=512x512', '-frames:v', '1', `${tmp}/still.png`]);
     img = (await (await fetch(`${B}/api/import?name=voice-dub-still.png`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${tmp}/still.png`) })).json()).id;
   }
-  const port = await new Promise(r => { const q = net.createServer().listen(0, '127.0.0.1', () => { const p = q.address().port; q.close(() => r(p)); }); }); // a free port (another agent's server may hold any fixed one)
-  const srv = spawn('python3', ['-I', `${ROOT}server.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_HOME: LIB, CUTROOM_PORT: `${port}`, CUTROOM_GPU_HOST: 'cutroom-no-such-pc.invalid', CUTROOM_COMFY_PORT: '18199' }, stdio: 'ignore' });
+  const port = process.env.P2 ? Number(process.env.P2) : Number(new URL(B).port) + 1;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610 || (process.platform === 'darwin' && (port < 4810 || port > 4819))) throw new Error('set P2 to a free scratch port (4810-4819 on macOS, never 4610)');
+  const srv = spawnManaged(PYTHON, ['-X', 'utf8', '-I', `${ROOT}server.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_HOME: LIB, CUTROOM_PORT: `${port}`, CUTROOM_GPU_HOST: 'cutroom-no-such-pc.invalid', CUTROOM_COMFY_PORT: '18199' }, stdio: 'ignore' });
   const B2 = `http://127.0.0.1:${port}`;
   try {
     for (let i = 0; i < 40; i++) { try { if ('cloneReady' in await (await fetch(`${B2}/api/ai/status`)).json()) break; } catch { await new Promise(r => setTimeout(r, 250)); } }
@@ -284,7 +286,7 @@ if (run('offline')) {
     let g2 = {};
     for (let i = 0; i < 20 && !g2.checked; i++) { await new Promise(r => setTimeout(r, 500)); g2 = (await (await fetch(`${B2}/api/ai/status`)).json()).gpu; }
     check('...and its AI status says configured, not reachable (so the tools stay hidden)', g2.configured && g2.checked && !g2.reachable, JSON.stringify(g2));
-  } finally { srv.kill(); }
+  } finally { await stopChild(srv); }
 }
 } catch (e) { check('the suite ran to the end', false, String(e.message).split('\n')[0]); }
 

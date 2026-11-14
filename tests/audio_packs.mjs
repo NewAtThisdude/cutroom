@@ -1,14 +1,16 @@
+import { requireHome } from './runtime.mjs';
 // Audio round 2026-11-10, end to end on a scratch server: (1) the CC0 sound + music library (download, licences, the
 // Audio rail: search, categories, listen, add), (2) Studio voice (speech-band SNR on talk-with-music and podcast-episode,
 // onset delay, preview == export), (3) the 8 voice characters (pitch / formant / band checks, preview == export),
 // (4) export loudness targets -14 / -16 / -23 / off, (5) beats() on a 3 minute song (time, same grid as before).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4751 node audio_packs.mjs [packs|studio|voices|loud|beats]
+import { PYTHON } from './runtime.mjs';
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
+const LIB = requireHome();
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], SR = 48000;
 if (/:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), not on 4610');
 const res = [];
@@ -186,7 +188,7 @@ if (run('packs')) {
   check('MCP sound_library searches the packs', lib.installed && lib.total > 0 && lib.results.every(r => /laser/i.test(r.name)), `${lib.total} lasers`);
   const added = await ev(id => REMOTE.add_sound({ name: id, at: 5 }), lib.results[0].id);
   check('add_sound_effect(<pack id>) adds it', added?.lane === 'audio' && Math.abs(added.start - 5) < 1e-6, JSON.stringify(added).slice(0, 160));
-  const tools = spawnSync('python3', ['-I', `${ROOT}mcp/cutroom_mcp.py`], { input: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n', encoding: 'utf8', timeout: 10000 }).stdout;
+  const tools = spawnSync(PYTHON, ['-X', 'utf8', '-I', `${ROOT}mcp/cutroom_mcp.py`], { input: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n', encoding: 'utf8', timeout: 10000 }).stdout;
   check('MCP lists sound_library; export takes a loudness target', /"sound_library"/.test(tools) && /-23 \(EBU broadcast\)/.test(tools));
 }
 
@@ -376,7 +378,7 @@ for _ in range(3):
 f.unlink(missing_ok=True)
 print(json.dumps({'t': min(ts), 'out': out}))`;
     const py = (exe, code, ...a) => JSON.parse(execFileSync(exe, ['-I', '-c', code, ...a], { env: { ...process.env, CUTROOM_HOME: LIB, PYTHONPATH: '' }, maxBuffer: 1 << 26 }).toString());
-    const old = py('python3', OLD, raw), np = py(`${ROOT}ai/.venv/bin/python`, NEW, `${ROOT}ai/beats.py`, raw), sl = py('python3', FALLBACK, ROOT, m.id);
+    const old = py(PYTHON, OLD, raw), np = py(`${ROOT}ai/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, NEW, `${ROOT}ai/beats.py`, raw), sl = py(PYTHON, FALLBACK, ROOT, m.id);
     fs.rmSync(raw, { force: true });
     const same = o => JSON.stringify(o) === JSON.stringify(r);
     check('beats on a 2:50 song: the app grid == the old per-sample loops on the same song (117.2 BPM, 335 beats)', same(old.out) && r.bpm === 117.2 && r.beats.length === 335, `${r.bpm} BPM, ${r.beats.length} beats, gap sd ${(sd * 1000).toFixed(1)} ms; old ${old.out.bpm} BPM ${old.out.beats.length} beats`);

@@ -42,6 +42,9 @@ for (const rm of ['reduce', 'no-preference']) {
   await page.click('#btnMeter');
   await page.waitForFunction(() => MTR.node, null, { timeout: 10000 }).catch(() => {});
   check(`${rm}: the button shows it and taps the master bus`, await ev(() => !$('#meter').hidden && !!MTR.node && actx.bus.gain.value === 1 && $('#btnMeter').getAttribute('aria-pressed') === 'true'));
+  // a fresh library makes the clip's PCM on first request (seconds): reloading mid-fetch makes WebKit report the cancelled
+  // fetch as a page error ("due to access control checks"), so let the sound chunks land first
+  await page.waitForFunction(() => pcmBusy === 0, null, { timeout: 30000 }).catch(() => {});
   await page.reload({ waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof M !== 'undefined', null, { timeout: 30000 });
   check(`${rm}: shown again after a reload (remembered)`, await ev(() => !$('#meter').hidden));

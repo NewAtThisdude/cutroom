@@ -238,7 +238,9 @@ if (on('mask')) {
 }
 
 // ---------- 5. AI subject mask (SAM 2 on real iPhone footage) ----------
-if (on('ai') && ids.R) {
+if (on('ai') && !process.env.CUTROOM_TEST_AI) console.log('SKIP AI subject mask: AI models excluded (run_all --ai to enable)');
+else if (on('ai') && !ids.R) console.log('SKIP AI subject mask: no IMG_4654.MOV fixture');
+if (on('ai') && ids.R && process.env.CUTROOM_TEST_AI === '1') {
   const page = await openPage();
   pids.add(await ev(page, () => { const id = fresh('16:9'); const c = main(R); c.in = 1; c.out = 2.5; renderAll(); return id; }));
   const t0 = Date.now();
@@ -269,6 +271,7 @@ if (on('ai') && ids.R) {
 }
 
 // ---------- 6. preview quality ----------
+if (on('quality') && !ids.R) console.log('SKIP 4K preview quality: no IMG_4654.MOV fixture');
 if (on('quality') && ids.R) {
   const page = await openPage('no-preference', 2); // a Retina screen, like his
   pids.add(await ev(page, () => { const id = fresh('16:9'); [P.w, P.h] = [3840, 2160]; fitStage(); const c = main(R); c.in = 1; c.out = 4; renderAll(); return id; }));

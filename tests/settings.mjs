@@ -7,7 +7,7 @@
 //   B=<server on a scratch library> node settings.mjs   (never 4610; it imports two 3 s test clips, best on an empty library)
 import path from 'node:path';
 import os from 'node:os';
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const B = process.env.B, OUT = new URL('./out/settings/', import.meta.url).pathname;
@@ -29,7 +29,7 @@ for (let i = 0; i < 120 && (await api('/api/media')).some(m => !m.ready); i++) a
 const info = await api('/api/settings'), HOME = info.home, ids = (await api('/api/media')).filter(m => CLIPS.some(([n]) => n === m.name)).map(m => m.id);
 await api('/api/settings', { versionsKeep: null, versionsGap: null, exportDir: null, proxy: null, llm: null }); // a clean start
 
-const b = await webkit.launch();
+const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));

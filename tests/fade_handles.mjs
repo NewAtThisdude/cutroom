@@ -1,10 +1,12 @@
+import { requireHome } from './runtime.mjs';
 // Fade knobs on timeline clips, end to end in headless WebKit: drag the round knobs on a clip's top corners, check the
 // fade values, the cap (fade in + fade out <= the clip), undo/redo, that the edge below the knob still trims, then
 // export a WAV and measure the fade ramps in the file.   node fade_handles.mjs   (server on 127.0.0.1:4610)
+import { mkdirSync, renameSync } from 'node:fs';
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
+const LIB = requireHome(); // the library the server under test uses
 const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, N = 4 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 // a steady 440 Hz tone, 4 s, so the level over time is the fade curve
@@ -63,7 +65,8 @@ const pts = [0.1, 0.5, 0.9, 1.5, 2.4, 3.0, 3.5, 3.9].map(t => [t, lvl(t) / full,
 check('exported level follows both fades', pts.every(([, g, w]) => Math.abs(g - w) < 0.06), pts.map(([t, g, w]) => `${t}s ${g.toFixed(2)}/${w.toFixed(2)}`).join(' '));
 check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
 
-execFileSync('mv', [`${LIB}/exports/${ex.file}`, `${LIB}/trash/exports/`]);
+mkdirSync(`${LIB}/trash/exports`, { recursive: true });
+renameSync(`${LIB}/exports/${ex.file}`, `${LIB}/trash/exports/${ex.file}`);
 for (const u of [`/api/projects/${pid}/trash`, `/api/media/${media.id}/trash`]) await fetch(B + u, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 await b.close();
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);

@@ -19,7 +19,9 @@ const made = [];
 
 const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
-  const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
+  const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm });
+  await ctx.addInitScript(() => { Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel', configurable: true }); Object.defineProperty(Navigator.prototype, 'userAgentData', { get: () => undefined, configurable: true }); });
+  const page = await ctx.newPage();
   const errs = []; page.on('pageerror', e => { if (!/\/poster /.test(e.message)) errs.push(e.message); }); // (the reload cuts off the old page's poster upload) page.on('dialog', d => d.accept());
   await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); }); // no MCP commands from elsewhere
   const boot = async () => { await page.goto(B + '/', { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 }); };

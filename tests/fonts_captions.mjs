@@ -5,7 +5,7 @@
 //   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node fonts_captions.mjs     (never the real 4610 window)
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME, H = { 'X-Cutroom': '1' };
@@ -117,7 +117,9 @@ try {
       const dOn = durs(out.true), dOff = durs(out.false);
       check('loudness on: export gain varies < 1 dB across the edit (400 ms windows vs the plain export)', g.spread < 1, `linear ${g.min.toFixed(2)}..${g.max.toFixed(2)} dB (spread ${g.spread.toFixed(2)}); the old single-pass loudnorm spread ${g0.spread.toFixed(2)} dB`);
       check('loudness on: audio length equals video length (within one AAC frame, 21 ms)', Math.abs(dOn.audio - dOn.video) <= 1024 / 48000 + 1e-6, `on: audio ${dOn.audio} video ${dOn.video}; off: audio ${dOff.audio} video ${dOff.video}`);
-      const m = execFileSync('sh', ['-c', `ffmpeg -hide_banner -nostats -i "${out.true}" -af ebur128=peak=true -f null - 2>&1 | grep -E "^ +(I|Peak):" | tail -2`], { encoding: 'utf8' }).replace(/\s+/g, ' ').trim();
+      const meter = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', out.true, '-af', 'ebur128=peak=true', '-f', 'null', '-'], { encoding: 'utf8' });
+      if (meter.error || meter.status !== 0) throw meter.error || new Error(meter.stderr);
+      const m = meter.stderr.split(/\r?\n/).filter(line => /^ +(I|Peak):/.test(line)).slice(-2).join(' ').replace(/\s+/g, ' ').trim();
       console.log(`     loudness-on export meter: ${m}`);
       for (const f of Object.values(out)) fs.renameSync(f, `${HOME}/trash/${f.split('/').pop()}`);
     }

@@ -3,9 +3,10 @@
 // on the same test signal; the two must match. Then the Audio inspector by real clicks, and Split into stems.
 //   node audio_e2e.mjs     (server on 127.0.0.1:4610)
 import { browser } from './browser.mjs';
+import { requireHome } from './runtime.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
+const LIB = requireHome(); // the library the server under test uses
 import fs from 'node:fs';
 const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, N = 3 * SR, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
@@ -111,7 +112,7 @@ check('Reset sound clears the effects', await ev(() => !P.audio[0].au));
 check('MCP: update_clip takes au', await ev(async () => { const c = P.audio[0]; await REMOTE.update_clip({ id: c.id, set: { au: { voice: 'echo', treb: 3 } } }); return c.au.voice === 'echo' && c.au.treb === 3; }));
 // Split into stems on a mix with a voice (the library's talk-with-music)
 const mix = await ev(() => [...M.values()].find(m => /^talk-with-music\.mp4$/.test(m.name))?.id);
-if (mix) {
+if (mix && process.env.CUTROOM_TEST_AI === '1') {
   await ev(id => { setProject(newProject('16:9')); P.name = 'Audio e2e stems (scratch)'; addMedia(id, 'main'); S.sel = { lane: 'main', id: P.main[0].id }; renderAll(); }, mix);
   made.push(await ev(() => P.id));
   await page.click('#inspector .itabs button[data-itab="Audio"]');
@@ -126,7 +127,7 @@ if (mix) {
   const s = snr(ol, sl, 0, Math.min(ol.length, sl.length) - 1);
   check('the four stems add back up to the original', s > 12, `${s.toFixed(1)} dB SNR`);
   stemIds.push(...await ev(() => P.audio.map(c => c.media))); // trashed at the end (the cache re-splits when they're gone)
-}
+} else console.log(`SKIP Split into stems: ${process.env.CUTROOM_TEST_AI === '1' ? 'no talk-with-music speech fixture' : 'AI models excluded (run_all --ai to enable)'}`);
 check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 for (const id of made) await fetch(`${B}/api/projects/${id}/trash`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
 { const X = `${LIB}/exports/`; fs.mkdirSync(`${X}../trash/exports`, { recursive: true }); for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-e2e-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); } // its exports, to the trash

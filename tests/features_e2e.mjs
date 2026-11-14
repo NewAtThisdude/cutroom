@@ -1,12 +1,14 @@
+import { requireHome } from './runtime.mjs';
 // The features added 2026-11-07/08, end to end in headless WebKit: tracks (drag between them, hide, mute, lock),
 // SRT import/export, relink, colour grading (HSL, curves, wheels, .cube LUTs) and scopes, keyframed masks and
 // filters, compound clips, multicam, beauty, body effects. Each section uses real mouse/keyboard input where the user
 // would, and checks the export (still frames / files) as well as the preview.   node features_e2e.mjs [section]
+import { makeSpeech } from './fixtures.mjs';
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`; // the library the server under test uses
+const LIB = requireHome(); // the library the server under test uses
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${LIB}/exports`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
@@ -207,10 +209,12 @@ if (run('compound')) {
 }
 
 // ---------- multicam ----------
-if (run('multicam')) {
+// multicam syncs angles with ai/sync.py (numpy in the AI venv, server.py AI_PY): without it the section can't run
+const AI_PY = new URL(process.platform === 'win32' ? '../ai/.venv/Scripts/python.exe' : '../ai/.venv/bin/python', import.meta.url);
+if (run('multicam') && !fs.existsSync(AI_PY)) console.log('SKIP multicam: the AI tools are not installed (ai/setup)');
+else if (run('multicam') && makeSpeech(`${tmp}/mc.wav`, 'One. Two, three. This is the multicam test, with words to line up the cameras. Four, five, six. Done.')) {
   await fresh('Multicam');
-  execFileSync('say', ['-o', `${tmp}/mc.aiff`, 'One. Two, three. This is the multicam test, with words to line up the cameras. Four, five, six. Done.']);
-  const cam = (name, colour, cut, delay) => gen(name, ['-f', 'lavfi', '-i', `color=c=${colour}:s=320x180:r=30:d=9`, '-i', `${tmp}/mc.aiff`, '-filter_complex', `[1:a]${cut ? `atrim=start=${cut},asetpts=PTS-STARTPTS` : `adelay=${delay}:all=1`},apad=whole_dur=9[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-t', '9']);
+  const cam = (name, colour, cut, delay) => gen(name, ['-f', 'lavfi', '-i', `color=c=${colour}:s=320x180:r=30:d=9`, '-i', `${tmp}/mc.wav`, '-filter_complex', `[1:a]${cut ? `atrim=start=${cut},asetpts=PTS-STARTPTS` : `adelay=${delay}:all=1`},apad=whole_dur=9[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-t', '9']);
   const A1 = await imp(cam('mc-red.mp4', 'red', 0, 1000)), A2 = await imp(cam('mc-green.mp4', 'lime', 0.8, 0)), A3 = await imp(cam('mc-blue.mp4', 'blue', 0, 2300)); // green started 1.8 s earlier in the speech, blue 1.3 s later
   await ev(() => loadMedia());
   await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), [A1.id, A2.id, A3.id], { timeout: 60000 });
@@ -261,13 +265,13 @@ if (run('beauty')) {
   const g = await still(1, 640), pg = await pvImg(), halo = img => at(img, 0.5 + 60 / 640, 0.5)[2];
   check('Neon on a cutout: a cyan halo around it, export and preview', await ev(() => P.overlay[0].glow?.neon) && halo(g) > 150 && halo(pg) > 150, `${halo(g)} ${halo(pg)}`);
   const tm = (await get('/api/media')).find(m => m.name === 'talk-with-music.mp4');
-  if (tm) {
+  if (tm && process.env.CUTROOM_TEST_AI === '1') {
     await ev(id => { setProject(newProject('16:9')); P.name = 'Body (scratch)'; addMedia(id, 'main'); Object.assign(P.main[0], { in: 2, out: 4 }); renderAll(); }, tm.id);
     const r2 = await ev(async () => { try { const cut = await bodyEffect(P.main[0], 'main', 'blur'); return { ok: true, ov: P.overlay.length, dur: +len(cut).toFixed(2), alpha: !!(M.get(cut.media)?.alpha || M.get(cut.media)?.trans), blur: P.main[0].adj.blur, mdur: +M.get(cut.media).duration.toFixed(1) }; } catch (e) { return { ok: false, e: e.message }; } });
     check('Blur background: the person cut out (only the 2 s used) on the track above, the main clip blurred', r2.ok && r2.ov === 1 && r2.alpha && r2.blur > 0 && Math.abs(r2.dur - 2) < 0.05 && r2.mdur <= 2.2, JSON.stringify(r2));
     const ex = await ev(() => REMOTE.export({ format: 'mp4', resolution: '720p', name: 'feat-body' }).then(r => r.file, e => 'ERR ' + e.message));
     check('...and it exports', !/^ERR/.test(ex), ex);
-  }
+  } else console.log(`SKIP Blur background neural body effect: ${process.env.CUTROOM_TEST_AI !== '1' ? 'requires --ai' : 'talk-with-music.mp4 fixture is not available'}`);
 }
 
 } catch (e) { check('the suite ran to the end', false, String(e.message).split('\n')[0]); }

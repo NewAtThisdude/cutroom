@@ -5,8 +5,9 @@
 // file is reused; the dialogs in both motion modes, no page errors.
 //   CUTROOM_HOME=<scratch lib> CUTROOM_PORT=4714 python3 -I server.py, then
 //   B=http://127.0.0.1:4714 CUTROOM_HOME=<same lib> CUTROOM_SCRATCH=<scratch dir> node package.mjs   (its own server on port+1, or P2)
+import { PYTHON, execNiceSync, spawnManaged, stopChild } from './runtime.mjs';
 import { browser } from './browser.mjs';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const B = process.env.B || 'http://127.0.0.1:4714', HOME = process.env.CUTROOM_HOME, SCR = process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch';
@@ -20,8 +21,8 @@ const api = async (base, path, body) => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH'));
-const py = (code, ...args) => execFileSync('python3', ['-I', '-c', code, ...args], { env, encoding: 'utf8' });
-const ff = (...a) => execFileSync('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-y', ...a], { env });
+const py = (code, ...args) => execFileSync(PYTHON, ['-X', 'utf8', '-I', '-c', code, ...args], { env, encoding: 'utf8' });
+const ff = (...a) => execNiceSync('ffmpeg', [ '-v', 'error', '-y', ...a], { env });
 const ZIPINFO = `import json, sys, zipfile, hashlib
 z = zipfile.ZipFile(sys.argv[1])
 print(json.dumps({'names': z.namelist(), 'stored': all(i.compress_type == 0 for i in z.infolist()), 'sizes': {i.filename: i.file_size for i in z.infolist()},
@@ -49,13 +50,15 @@ for (let i = 0; i < 120; i++) { const m = await api(B, '/api/media'); if ([V, A]
 
 // ---- the second server: an empty library ----
 const HOME2 = mkdtempSync(`${SCR}/lib2-package-empty-`);
-const srv2 = spawn('nice', ['-n', '5', 'python3', '-I', `${ROOT}/server.py`], { env: { ...env, CUTROOM_HOME: HOME2, CUTROOM_PORT: String(PORT2) }, stdio: 'ignore' });
+const srv2 = spawnManaged(PYTHON, ['-X', 'utf8', '-I', `${ROOT}/server.py`], { env: { ...env, CUTROOM_HOME: HOME2, CUTROOM_PORT: String(PORT2) }, stdio: 'ignore' });
+let b;
+try {
 let gone = false; srv2.on('exit', () => { gone = true; });
 for (let i = 0; i < 60 && !gone; i++) { try { await api(B2, '/api/ping'); break; } catch { await sleep(500); } }
 await sleep(1000); // (a port someone else holds: ours exits, theirs answers)
 if (gone || (await api(B2, '/api/media')).length) { srv2.kill(); throw new Error(`port ${PORT2} is taken: set P2 to a free port`); }
 
-const b = await browser.launch();
+b = await browser.launch();
 const errs = [];
 const open = async (base, rm = 'reduce') => {
   const page = await (await b.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: rm })).newPage();
@@ -199,8 +202,9 @@ for (const rm of ['no-preference', 'reduce']) {
 }
 check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
 
-await b.close();
-srv2.kill();
+} finally {
+  try { await b?.close(); } finally { await stopChild(srv2); }
+}
 rmSync(HOME2, { recursive: true, force: true });
 rmSync(FX, { recursive: true, force: true });
 const fails = res.filter(x => !x).length;

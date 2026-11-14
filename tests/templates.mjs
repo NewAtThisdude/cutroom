@@ -7,8 +7,9 @@
 // zips are refused; the dialogs in both motion modes, no page errors.
 //   CUTROOM_HOME=<scratch lib> CUTROOM_PORT=4751 python3 -I server.py, then
 //   B=http://127.0.0.1:4751 CUTROOM_HOME=<same lib> CUTROOM_SCRATCH=<scratch dir> node templates.mjs   (its own server on port+1, or P2)
-import { webkit } from 'playwright';
-import { spawn, execFileSync } from 'node:child_process';
+import { PYTHON, execNiceSync, spawnManaged, stopChild } from './runtime.mjs';
+import { browser } from './browser.mjs';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const B = process.env.B || 'http://127.0.0.1:4751', HOME = process.env.CUTROOM_HOME, SCR = process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch';
@@ -22,8 +23,8 @@ const api = async (base, path, body) => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH'));
-const py = (code, ...args) => execFileSync('python3', ['-I', '-c', code, ...args], { env, encoding: 'utf8' });
-const ff = (...a) => execFileSync('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-y', ...a], { env });
+const py = (code, ...args) => execFileSync(PYTHON, ['-X', 'utf8', '-I', '-c', code, ...args], { env, encoding: 'utf8' });
+const ff = (...a) => execNiceSync('ffmpeg', [ '-v', 'error', '-y', ...a], { env });
 const probe = f => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=width,height:format=duration', '-of', 'json', f], { env, encoding: 'utf8' }));
 
 // ---- fixtures ----
@@ -48,15 +49,15 @@ check('the sticker is a transparent picture (kept by default)', media['sticker.p
 
 // ---- the second server: an empty library ----
 const HOME2 = mkdtempSync(`${SCR}/lib2-templates-empty-`);
-const srv2 = spawn('nice', ['-n', '5', 'python3', '-I', `${ROOT}/server.py`], { env: { ...env, CUTROOM_HOME: HOME2, CUTROOM_PORT: String(PORT2) }, stdio: 'ignore' });
+const srv2 = spawnManaged(PYTHON, ['-X', 'utf8', '-I', `${ROOT}/server.py`], { env: { ...env, CUTROOM_HOME: HOME2, CUTROOM_PORT: String(PORT2) }, stdio: 'ignore' });
+let b;
+try {
 let gone = false; srv2.on('exit', () => { gone = true; });
-process.on('exit', () => { if (!gone) srv2.kill(); }); // a failed run too: the next run finds the port free
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
 for (let i = 0; i < 60 && !gone; i++) { try { await api(B2, '/api/ping'); break; } catch { await sleep(500); } }
 await sleep(1000);
 if (gone || (await api(B2, '/api/media')).length) { srv2.kill(); throw new Error(`port ${PORT2} is taken: set P2 to a free port`); }
 
-const b = await webkit.launch();
+b = await browser.launch();
 const errs = [];
 const open = async (base, rm = 'reduce') => {
   const page = await (await b.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: rm })).newPage();
@@ -231,8 +232,9 @@ for (const rm of ['no-preference', 'reduce']) {
 }
 check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
 
-await b.close();
-srv2.kill();
+} finally {
+  try { await b?.close(); } finally { await stopChild(srv2); }
+}
 const n = res.filter(Boolean).length;
 console.log(`\n${n}/${res.length} passed`);
 process.exit(n === res.length ? 0 : 1);

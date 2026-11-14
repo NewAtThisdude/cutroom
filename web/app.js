@@ -1851,7 +1851,7 @@ async function meterTap() {
   const hs = new IIRFilterNode(A, { feedforward: [vh + vb * k1 / q1 + k1 * k1, 2 * (k1 * k1 - vh), vh - vb * k1 / q1 + k1 * k1], feedback: [1 + k1 / q1 + k1 * k1, 2 * (k1 * k1 - 1), 1 - k1 / q1 + k1 * k1] });
   const hp = new IIRFilterNode(A, { feedforward: [1, -2, 1], feedback: [1, 2 * (k2 * k2 - 1) / d2, (1 - k2 / q2 + k2 * k2) / d2] });
   const node = new AudioWorkletNode(A, 'cutroom-meter', { numberOfInputs: 2, channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
-  node.port.onmessage = e => meterTick(e.data);
+  node.port.onmessage = e => MTR.node === node && meterTick(e.data); // a block already posted when the meter is hidden is dropped
   bus().connect(hs).connect(hp).connect(node, 0, 0); bus().connect(node, 0, 1);
   node.connect(A.destination); // its output is silence; connected so the graph pulls it
   Object.assign(MTR, { node, kw: hs });

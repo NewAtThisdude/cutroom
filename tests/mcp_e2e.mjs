@@ -1,14 +1,17 @@
+import { requireHome } from './runtime.mjs';
 // Every MCP command end to end, with the real on-device models: each REMOTE command (what the MCP tools call) runs in
 // headless WebKit exactly as the remote loop runs it (one undo step per command), and the result is checked against the
 // project, the library and the rendered files (ffprobe). Also checks the MCP server itself: its tool list maps onto
 // REMOTE, and read-only tools answer through the real stdio -> server -> editor path. Everything made is trashed.
 //   node mcp_e2e.mjs [only]   (server on 127.0.0.1:4610; slow: the AI tools run for real)
+import { makeSpeech } from './fixtures.mjs';
+import { PYTHON, spawnManaged, stopChild } from './runtime.mjs';
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`, EXP = `${HOME}/exports`;
+const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], HOME = requireHome(), EXP = `${HOME}/exports`;
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
@@ -17,9 +20,9 @@ const probe = f => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_ent
 
 // a talking clip with pauses and a filler (macOS say), over moving test video with a hard scene cut at 5 s
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-mcp-`);
-execFileSync('say', ['-v', 'Samantha', '-o', `${tmp}/speech.aiff`, 'Hello and welcome to the editing test. Um, this is the first sentence. [[slnc 1600]] Now we talk about colours and video. [[slnc 1600]] Thanks for watching, goodbye.']);
-const sd = +execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', `${tmp}/speech.aiff`]).toString();
-execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=1280x720:r=30:d=5`, '-f', 'lavfi', '-i', `smptebars=s=1280x720:r=30:d=${(sd - 5 + 0.5).toFixed(2)}`, '-i', `${tmp}/speech.aiff`,
+if (!makeSpeech(`${tmp}/speech.wav`, 'Hello and welcome to the editing test. Um, this is the first sentence. [[slnc 1600]] Now we talk about colours and video. [[slnc 1600]] Thanks for watching, goodbye.', { voice: 'Samantha' })) { fs.rmSync(tmp, { recursive: true }); process.exit(0); }
+const sd = +execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', `${tmp}/speech.wav`]).toString();
+execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=1280x720:r=30:d=5`, '-f', 'lavfi', '-i', `smptebars=s=1280x720:r=30:d=${(sd - 5 + 0.5).toFixed(2)}`, '-i', `${tmp}/speech.wav`,
   '-filter_complex', '[0:v][1:v]concat=n=2:v=1[v]', '-map', '[v]', '-map', '2:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', `${tmp}/mcp-talk.mp4`]);
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=s=800x800:d=1', '-frames:v', '1', `${tmp}/mcp-pic.png`]);
 const imp = async f => (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json());
@@ -27,7 +30,7 @@ const TALK = await imp(`${tmp}/mcp-talk.mp4`), PIC = await imp(`${tmp}/mcp-pic.p
 fs.rmSync(tmp, { recursive: true });
 
 // ---------- the MCP server: tools map onto REMOTE; read-only tools answer through the real path ----------
-const mcp = spawn('python3', ['-I', fileURLToPath(new URL('../mcp/cutroom_mcp.py', import.meta.url))], { env: { ...process.env, PYTHONPATH: '', CUTROOM_PORT: new URL(B).port || '4610' } }); // the MCP server talks to the server under test
+const mcp = spawnManaged(PYTHON, ['-X', 'utf8', '-I', fileURLToPath(new URL('../mcp/cutroom_mcp.py', import.meta.url))], { env: { ...process.env, PYTHONPATH: '', CUTROOM_PORT: new URL(B).port || '4610' } }); // the MCP server talks to the server under test
 let buf = '';
 const waiting = new Map();
 mcp.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(line); waiting.get(m.id)?.(m); } catch { /* not json */ } } });
@@ -61,7 +64,7 @@ for (const t of ['status', 'options', 'timeline', 'media', 'projects']) {
   const r = await rpc('tools/call', { name: t, arguments: {} });
   check(`MCP ${t} answers through the server and the open editor`, r.result && !r.result.isError && r.result.content[0].text.length > 2, r.result?.content?.[0]?.text?.slice(0, 120));
 }
-mcp.kill();
+await stopChild(mcp);
 await page.route(isNext, hold);
 
 // one command as the remote loop runs it

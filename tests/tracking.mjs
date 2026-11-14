@@ -7,12 +7,13 @@
 //   reframe bmx-trees (no face) to 9:16: the rider (SAM 2 cutout centre) inside the crop in >= 95 % of frames; fox-walk, the fox boxed
 //   ui      the new buttons in both reduced-motion modes; the panel still fits
 import { browser } from './browser.mjs';
+import { requireHome } from './runtime.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const ROOT = path.resolve(import.meta.dirname, '..');
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
+const LIB = requireHome();
 const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], EXP = `${LIB}/exports`;
 const res = [], nums = {};
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };
