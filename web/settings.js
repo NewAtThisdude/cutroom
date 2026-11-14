@@ -67,7 +67,7 @@ const SET = (() => {
     { k: 'openDone', s: 'export', l: 'Open the file when it is done', c: 'check', d: false },
     { k: 'notify', s: 'export', l: 'When an export finishes', c: 'select', d: 'none', o: () => [['none', 'Only the Exports panel'], ['sound', 'Play a sound'], ['note', 'Show a notification'], ['both', 'Sound and notification']] },
 
-    ...AIF.map(([kind, name]) => ({ k: `ai.${kind}`, s: 'ai', l: name, c: 'check', d: true, kind })),
+    ...AIF.map(([kind, name]) => ({ k: `ai.${kind}`, s: 'ai', l: name, c: 'check', d: true, kind, lib: 1 })), // with the library: the server refuses an off feature by every path
     { k: 'llm', s: 'ai', l: 'Local language model', c: 'llm', d: '', lib: 1 },
   ];
   const BY = Object.fromEntries(OPTS.filter(o => o.k).map(o => [o.k, o]));
@@ -110,7 +110,6 @@ const SET = (() => {
     if (!st) { st = document.createElement('style'); st.id = 'setAiOff'; document.head.append(st); }
     const off = AIF.filter(([kind]) => !get(`ai.${kind}`)).map(f => f[2]);
     st.textContent = off.length ? `${off.join(', ')} { display: none !important; }` : '';
-    api('/api/settings/ai-off', { kinds: AIF.filter(([kind]) => !get(`ai.${kind}`)).map(f => f[0]) }).catch(() => {}); // the server refuses them too, by whatever path
   }
   const GATE = {}; // remote command -> [feature, its name, the clip_tool action (or none: the whole command)]
   for (const [kind, name, , cmds] of AIF) for (const c of cmds) { const [cmd, action] = c.split(':'); (GATE[cmd] ||= []).push([kind, name, action]); }
@@ -295,7 +294,7 @@ const SET = (() => {
   aiStyle();
   if (get('scopesStart') !== 'last') setScope({ on: get('scopesStart') === 'on' }, false);
   if (get('meterStart') !== 'last' && (get('meterStart') === 'on') !== MTR.on) meterSet(get('meterStart') === 'on');
-  api('/api/settings').then(r => { INFO = r; LIB = r.lib || {}; }).catch(() => {});
+  api('/api/settings').then(r => { INFO = r; LIB = r.lib || {}; aiStyle(); }).catch(() => {}); // (the AI switches are library settings: hide their buttons once known)
   $('#btnSettings').addEventListener('click', () => open());
   addEventListener('keydown', e => { // ⌘, (Ctrl+, off the Mac): ahead of the editor's keys, like ⌘K
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === ',') { e.preventDefault(); e.stopPropagation(); if (!$('#modal .dialog.settings')) { if (!$('#modal').hidden) closeModal(); open(); } }

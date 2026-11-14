@@ -145,6 +145,8 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.click('#set-ai-captions'); await page.keyboard.press('Escape');
   const mt = await api('/api/remote', { cmd: 'main_transcript', args: {} }), scHidden = await ev(() => getComputedStyle($('[data-tab="script"]')).display === 'none');
   const missing = await ev(() => SET.missing);
+  const libSet = (await api('/api/settings')).lib; // the switches live in the library's settings.json, so the server keeps them across a restart
+  check(`${rm}: AI: the switches are kept with the library (settings.json), where the server reads them`, libSet['ai.captions'] === false && libSet['ai.llm'] === false, JSON.stringify(libSet));
   // and the server itself: a path the page doesn't gate (a direct /api/fillers call) is refused in the job queue, before whisper
   let vid = await ev(() => [...M.values()].find(m => m.kind === 'video' && m.hasAudio)?.id);
   if (!vid) { // an empty library: one short clip with sound to aim at

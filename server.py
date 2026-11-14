@@ -1610,7 +1610,7 @@ def tier(kind):
     return {'kind': kind, 'what': what, 'unit': unit, 'refused': f'{what} needs a Mac with {rows[-1][0]} GB of memory (this one has {RAM_GB:.0f} GB)'}
 
 
-AI_OFF = set()  # AI_BUDGET kinds turned off in the editor's Settings (the page sends them: POST /api/settings/ai-off)
+AI_OFF = set()  # AI_BUDGET kinds turned off in Settings: 'ai.<kind>': false in the library's settings.json (lib_settings_apply)
 
 
 @contextlib.contextmanager
@@ -1623,13 +1623,13 @@ def ai_slot(kind, st=None, units=None):
     t = tier(kind)
     if 'refused' in t:
         raise RuntimeError(t['refused'])
-    if kind in AI_OFF:  # Settings › AI: a feature turned off is refused here too, whatever path reached it (fillers, smart combine, indexing...)
-        raise RuntimeError(f"{t['what']} is turned off in Settings (AI and this computer)")
     if st is not None and units:
         st['eta'] = max(1, round(units * t['rate']))
-    if kind in LIGHT or getattr(AI_HELD, 'n', 0):
+    if kind in LIGHT or getattr(AI_HELD, 'n', 0):  # (a job's own inner steps run under its switch: cloning's Kokoro check with voiceover off)
         yield t
         return
+    if kind in AI_OFF:  # Settings › AI (kept in the library's settings.json): refused here whatever path reached it (fillers, smart combine, indexing...)
+        raise RuntimeError(f"{t['what']} is turned off in Settings (AI and this computer)")
     me, cv = {'what': t['what']}, HEAVY['cv']
     with cv:
         HEAVY['line'].append(me)
@@ -6189,6 +6189,19 @@ def selftest():
             break
         time.sleep(0.01)
     assert JOBS[lj].get('note', '').startswith('Waiting for Smart search (2 ahead)'), JOBS[lj]
+    AI_OFF.add('voice')  # Settings › AI: an off kind is refused, but a job's own inner step of that kind runs under the job's switch
+    try:
+        with ai_slot('clone'):
+            with ai_slot('voice'):  # cloning's Kokoro comparison voices, voiceover off
+                pass
+        try:
+            with ai_slot('voice'):
+                pass
+            raise AssertionError('voiceover turned off but its job ran')
+        except RuntimeError as e:
+            assert 'turned off in Settings' in str(e), e
+    finally:
+        AI_OFF.discard('voice')
     go.set()
     ta.join(5)
     tb.join(5)
@@ -7076,6 +7089,8 @@ def lib_settings_apply():
         os.environ['CUTROOM_LLM'] = _SET0['llm']
     else:
         os.environ.pop('CUTROOM_LLM', None)
+    AI_OFF.clear()  # on disk with the library: a server restart, another tab or a stale page can't turn a switch back on
+    AI_OFF.update(k[3:] for k, v in LIBSET.items() if k.startswith('ai.') and v is False and k[3:] in AI_BUDGET)
 
 
 def lib_settings_set(body):
@@ -7100,6 +7115,11 @@ def lib_settings_set(body):
             if not re.fullmatch(r'[\w.:/-]{0,80}', str(v)):
                 raise ValueError('llm: an Ollama model name')
             new[k] = str(v)
+        elif k.startswith('ai.') and k[3:] in AI_BUDGET:  # an AI feature's switch: only 'off' is stored
+            if v is True:
+                new.pop(k, None)
+            else:
+                new[k] = False
         else:
             raise ValueError(f'no library setting {k}')
     tmp = LIB_SETTINGS.with_suffix('.tmp')
@@ -7193,10 +7213,6 @@ def settings_api(path, body=None):
         if path == '/api/settings/reveal':
             reveal_path({'log': HOME / 'server.log', 'exports': EXPORTS}.get(body.get('what'), HOME))
             return {'ok': True}
-        if path == '/api/settings/ai-off':  # the page's AI switches (per computer): every heavy job of an off kind refuses in ai_slot
-            AI_OFF.clear()
-            AI_OFF.update(k for k in (body.get('kinds') or [])[:64] if k in AI_BUDGET)
-            return {'off': sorted(AI_OFF)}
         if path == '/api/settings/pick-folder':  # the Mac's own folder chooser (elsewhere the page asks for a path)
             r = sh(['osascript', '-e', 'POSIX path of (choose folder with prompt "Exports go to")'])
             return {'path': r.stdout.strip().rstrip('/') or None}

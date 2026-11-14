@@ -57,7 +57,8 @@ Data lives in `~/Movies/Cutroom/`:
 - `packs/`: the CC0 sound and music library (`index.json`: each file's source URL, licence and SHA-256)
 - `models/`: Silero VAD
 - `trash/`: deleted projects and media, recoverable
-- `settings.json`: the Settings that travel with the library (version history, export folder, proxies, local model)
+- `settings.json`: the Settings that travel with the library (version history, export folder, proxies, local model, the AI
+  feature switches: an AI feature turned off is refused by the server's job queue on every path, across restarts)
 - `server.log`
 
 ## Heavy footage and smaller Macs
