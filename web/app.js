@@ -3322,8 +3322,66 @@ function cutScript() {
 function renderCapList() { // every caption as an editable line; click the time to jump there
   const el = $('#capList');
   if (!el) return;
-  el.innerHTML = P.captions.length ? P.captions.map(c => `<div class="caprow"><button class="ct" data-capgo="${c.id}" title="Go there">${tc(c.start).slice(0, 5)}</button><input data-capid="${c.id}" value="${esc(c.text)}" spellcheck="true" aria-label="Caption at ${tc(c.start)}"></div>`).join('')
+  el.innerHTML = P.captions.length ? P.captions.map(c => `<div class="caprow" data-row="${c.id}"><button class="ct" data-capgo="${c.id}" title="Go there">${tc(c.start).slice(0, 5)}</button><input data-capid="${c.id}" value="${esc(c.text)}" spellcheck="true" aria-label="Caption at ${tc(c.start)}">${typeof c.tr === 'string' ? `<input class="tr" data-captr="${c.id}" value="${esc(c.tr)}" spellcheck="true" aria-label="Second language line at ${tc(c.start)}">` : ''}</div>`).join('')
     : '<p class="hint">Generate captions and every line shows up here, to fix words.</p>';
+  cfSync(false);
+}
+
+// ---------- caption find and replace: the first line and the second-language line, one undo step per replace ----------
+const CF = { i: 0 };
+const cfOpts = () => ({ q: $('#cfQ')?.value || '', cs: !!$('#cfCase')?.checked, ww: !!$('#cfWord')?.checked, line: $('#cfLine')?.value || 'both' });
+const cfRe = ({ q, cs, ww }) => q ? new RegExp(`${ww ? '(?<![\\p{L}\\p{N}_])' : ''}${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${ww ? '(?![\\p{L}\\p{N}_])' : ''}`, `gu${cs ? '' : 'i'}`) : null;
+const cfFields = (c, line) => [...(line !== 'second' ? [['text', c.text]] : []), ...(line !== 'text' && typeof c.tr === 'string' ? [['tr', c.tr]] : [])];
+const cfOrder = () => [...P.captions].sort((a, b) => a.start - b.start);
+function cfFind(o) { // every match in caption order: { c, f: 'text' | 'tr', at, len }
+  const re = cfRe(o), out = [];
+  if (re) for (const c of cfOrder()) for (const [f, t] of cfFields(c, o.line)) for (const m of t.matchAll(re)) out.push({ c, f, at: m.index, len: m[0].length });
+  return out;
+}
+function cfReplace(o, repl, only) { // every match, or just `only` (one of cfFind's); -> { replaced, captions }
+  const todo = cfFind(o).filter(m => !only || (m.c === only.c && m.f === only.f && m.at === only.at));
+  if (!todo.length) return { replaced: 0, captions: 0 };
+  const re = cfRe(o), caps = new Set(todo.map(m => m.c));
+  change(() => {
+    for (const c of caps) for (const [f, t] of cfFields(c, o.line)) {
+      const v = t.replace(re, (m, off) => !only || (c === only.c && f === only.f && off === only.at) ? repl : m).trim();
+      if (v === t) continue;
+      if (f === 'tr' && !v) delete c.tr; else c[f] = v;
+      if (f === 'text') retext(c);
+    }
+  }, 'Replace in captions');
+  return { replaced: todo.length, captions: caps.size };
+}
+function cfSync(scroll = true) { // the count, the highlighted rows, the current match
+  if (!$('#cfQ')) return;
+  const ms = cfFind(cfOpts()), n = ms.length, q = $('#cfQ').value;
+  CF.i = n ? clamp(CF.i, 0, n - 1) : 0;
+  $('#cfN').textContent = !q ? '' : n ? `${CF.i + 1} of ${n}` : 'No matches';
+  for (const b of ['#cfPrev', '#cfNext', '#cfOne', '#cfAll']) $(b).disabled = !n;
+  const cur = n && ms[CF.i].c.id, hit = new Set(ms.map(m => m.c.id));
+  for (const r of $$('#capList .caprow')) { r.classList.toggle('hit', hit.has(r.dataset.row)); r.classList.toggle('cur', r.dataset.row === cur); }
+  if (scroll) $('#capList .caprow.cur')?.scrollIntoView({ block: 'nearest' });
+}
+function cfGo(d) { // next / previous match (wraps): the playhead goes to its caption
+  const ms = cfFind(cfOpts());
+  if (!ms.length) return cfSync();
+  CF.i = (CF.i + d + ms.length) % ms.length;
+  const c = ms[CF.i].c;
+  seekTo(c.start + 0.01); S.sel = { lane: 'captions', id: c.id }; renderAll(); S.dirty = true; cfSync();
+}
+function cfOne() { // replace the current match, then stand on the next one
+  const o = cfOpts(), m = cfFind(o)[CF.i];
+  if (!m) return;
+  const repl = $('#cfR').value, ord = cfOrder(), key = x => [ord.indexOf(x.c), x.f === 'tr' ? 1 : 0, x.at], after = key({ ...m, at: m.at + repl.length });
+  const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  if (!cfReplace(o, repl, m).replaced) return;
+  CF.i = Math.max(0, cfFind(o).findIndex(x => cmp(key(x), after) >= 0));
+  renderAll(); cfGo(0);
+}
+function cfAll() {
+  const r = cfReplace(cfOpts(), $('#cfR').value);
+  if (r.replaced) { renderAll(); toast(`Replaced ${r.replaced} in ${r.captions} caption${r.captions === 1 ? '' : 's'}`); }
+  cfSync();
 }
 
 // ---------- auto adjust and colour match: a few numbers, solved from the clip's own pixels ----------
@@ -6358,6 +6416,15 @@ function wire() {
     const inp = e.target.closest('[data-capid]'), c = inp && P.captions.find(x => x.id === inp.dataset.capid);
     if (c && inp.value.trim() !== c.text) change(() => { c.text = inp.value.trim(); retext(c); });
   });
+  $('#capList').addEventListener('change', e => {
+    const inp = e.target.closest('[data-captr]'), c = inp && P.captions.find(x => x.id === inp.dataset.captr);
+    if (c && inp.value.trim() !== c.tr) change(() => { if (inp.value.trim()) c.tr = inp.value.trim(); else delete c.tr; });
+  });
+  for (const id of ['cfQ', 'cfCase', 'cfWord', 'cfLine']) $(`#${id}`).addEventListener('input', () => { CF.i = 0; cfSync(); });
+  $('#cfQ').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); cfGo(e.shiftKey ? -1 : 1); } });
+  $('#cfR').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); cfOne(); } });
+  $('#cfNext').addEventListener('click', () => cfGo(1)); $('#cfPrev').addEventListener('click', () => cfGo(-1));
+  $('#cfOne').addEventListener('click', cfOne); $('#cfAll').addEventListener('click', cfAll);
   $('#capList').addEventListener('click', e => { const b = e.target.closest('[data-capgo]'), c = b && P.captions.find(x => x.id === b.dataset.capgo); if (c) { seekTo(c.start + 0.01); S.sel = { lane: 'captions', id: c.id }; renderAll(); S.dirty = true; } });
   $('#tplList').addEventListener('click', e => { const b = e.target.closest('[data-tpl]'); if (b) addTemplate(b.dataset.tpl); });
 
@@ -7394,6 +7461,13 @@ const REMOTE = {
   async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
   async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
+  async caption_find_replace({ find, replace, matchCase = false, wholeWord = false, line = 'both' }) { // no replace: list the matches; replace (may be ''): replace them all, one undo step
+    if (!find) throw new Error('find (the text to look for) is required');
+    if (!['both', 'text', 'second'].includes(line)) throw new Error('line must be both, text or second');
+    const o = { q: find, cs: matchCase, ww: wholeWord, line };
+    if (typeof replace !== 'string') { const ms = cfFind(o); return { matches: ms.length, captions: new Set(ms.map(m => m.c.id)).size, first: ms.slice(0, 20).map(m => ({ id: m.c.id, line: m.f === 'tr' ? 'second' : 'text', text: m.c[m.f] })) }; }
+    const r = cfReplace(o, replace); renderAll(); return r;
+  },
   async translate_captions({ to, bilingual = false }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to, bilingual }); },
   async clone_voice(args) { return cloneVoice(args); },
   async dub_video(args) { await loadAI(); return dubVideo(args); },

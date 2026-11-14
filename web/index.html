@@ -148,6 +148,11 @@
       <h4>Subtitle files</h4>
       <div class="actions"><label class="btn"><input id="subsIn" type="file" accept=".srt,.vtt,.txt" hidden>Import SRT / VTT / TXT</label><button id="btnSubsOut">Export SRT</button></div>
       <h4>Edit captions</h4>
+      <div class="capfind" role="search">
+        <div class="fr"><input id="cfQ" type="search" placeholder="Find" aria-label="Find in captions" spellcheck="false" autocomplete="off"><span id="cfN" class="muted" role="status" aria-live="polite"></span><button id="cfPrev" class="ghost sq" title="Previous match (Shift+Enter)" aria-label="Previous match" disabled><svg class="i" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button><button id="cfNext" class="ghost sq" title="Next match (Enter)" aria-label="Next match" disabled><svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button></div>
+        <div class="fr"><input id="cfR" placeholder="Replace with" aria-label="Replace with" spellcheck="false" autocomplete="off"><button id="cfOne" title="Replace this match" disabled>Replace</button><button id="cfAll" title="Replace every match (one undo step)" disabled>Replace all</button></div>
+        <div class="fr opts"><label><input id="cfCase" type="checkbox"> Match case</label><label><input id="cfWord" type="checkbox"> Whole word</label><select id="cfLine" aria-label="Which line"><option value="both">Both lines</option><option value="text">First line</option><option value="second">Second language</option></select></div>
+      </div>
       <div id="capList" class="caplist"></div>
     </section>
     <section id="tab-script" class="pane">

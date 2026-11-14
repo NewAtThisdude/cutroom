@@ -51,6 +51,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Automatic captions with 22 animated styles, a second-language line, keywords, emoji, lyrics and speaker labels
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
+- Find and replace in captions: match count, next and previous, replace one or all in one undo step, match case, whole word, and the second-language line
 
 ### AI features (all run on your computer)
 
