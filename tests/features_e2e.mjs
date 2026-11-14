@@ -247,12 +247,14 @@ if (run('beauty')) {
   await ev(() => loadMedia());
   await page.waitForFunction(id => M.get(id)?.ready, SK.id, { timeout: 30000 });
   await ev(id => { addMedia(id, 'main'); S.t = 1; S.sel = { lane: 'main', id: P.main[0].id }; S.itab = 'Look'; renderAll(); }, SK.id);
-  const vari = (img, x0, x1) => { let n = 0, s = 0, s2 = 0; for (let y = Math.round(img.h * 0.2); y < img.h * 0.8; y++) for (let x = Math.round(img.w * x0); x < img.w * x1; x++) { const i = (y * img.w + x) * 4, v = img.px[i + 1]; n++; s += v; s2 += v * v; } return s2 / n - (s / n) ** 2; };
+  // green's variance; luma's (Y) for the skin texture: Smooth skin is a luma bilateral (export and preview alike: 0.09 of it is left in
+  // WebKit, Chrome and Edge), and how much of the 4:2:0 colour noise reaches green is the browser's own decode (0.33-0.53 of green left)
+  const vari = (img, x0, x1, Y) => { let n = 0, s = 0, s2 = 0; for (let y = Math.round(img.h * 0.2); y < img.h * 0.8; y++) for (let x = Math.round(img.w * x0); x < img.w * x1; x++) { const i = (y * img.w + x) * 4, v = Y ? 0.299 * img.px[i] + 0.587 * img.px[i + 1] + 0.114 * img.px[i + 2] : img.px[i + 1]; n++; s += v; s2 += v * v; } return s2 / n - (s / n) ** 2; };
   const pvImg = () => ev(async () => { await waitFrame(); const cv = $('#cv'), x = document.createElement('canvas').getContext('2d'); x.canvas.width = 320; x.canvas.height = 180; x.drawImage(cv, 0, 0, 320, 180); return { w: 320, h: 180, px: [...x.getImageData(0, 0, 320, 180).data] }; });
   const e0 = await still(1, 640), p0 = await pvImg();
   await page.locator('#inspector input[data-k="c.beauty.amt"]').evaluate(e => { e.value = 1; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); });
   const e1 = await still(1, 640), p1 = await pvImg();
-  const r = [vari(e1, 0.05, 0.45) / vari(e0, 0.05, 0.45), vari(e1, 0.55, 0.95) / vari(e0, 0.55, 0.95), vari(p1, 0.05, 0.45) / vari(p0, 0.05, 0.45), vari(p1, 0.55, 0.95) / vari(p0, 0.55, 0.95)];
+  const r = [vari(e1, 0.05, 0.45, 1) / vari(e0, 0.05, 0.45, 1), vari(e1, 0.55, 0.95) / vari(e0, 0.55, 0.95), vari(p1, 0.05, 0.45, 1) / vari(p0, 0.05, 0.45, 1), vari(p1, 0.55, 0.95) / vari(p0, 0.55, 0.95)];
   check('Smooth skin evens out the skin-coloured half and leaves the blue half (export and preview)', r[0] < 0.6 && r[1] > 0.85 && r[2] < 0.6 && r[3] > 0.85, r.map(v => v.toFixed(2)).join(' '));
   await ev(() => change(() => { delete P.main[0].beauty; }));
   await page.locator('#inspector input[data-k="c.adj.blur"]').evaluate(e => { e.value = 0.5; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); });
