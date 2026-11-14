@@ -155,7 +155,7 @@ def sam2_masks(job, n, p0, p1, soft=False):
     W, H = job['w'], job['h']
     k = min(1.0, 1024 / max(W, H))
     fw, fh = max(2, int(W * k) // 2 * 2), max(2, int(H * k) // 2 * 2)
-    dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     with tempfile.TemporaryDirectory(prefix='cutroom-sam-') as td:
         subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', *job['dec'], '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'],
                         '-vf', f"{job['vf']}fps={job['fps']},scale={fw}:{fh}", '-q:v', '2', '-start_number', '0', f'{td}/%05d.jpg'], check=True)
@@ -174,7 +174,7 @@ def sam2_masks(job, n, p0, p1, soft=False):
             d.mkdir()
             for i in range(a, b + 1):
                 os.link(Path(td) / files[i], d / f'{i - a:05d}.jpg')
-            amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
+            amp = torch.autocast(dev.type, dtype=torch.bfloat16) if dev.type in ('mps', 'cuda') else torch.autocast('cpu', enabled=False)
             with torch.inference_mode(), amp:
                 st = pred.init_state(video_path=str(d), offload_video_to_cpu=True)
                 if seed is None and job.get('seed'):  # the outline the user confirmed in the preview: exactly that is followed
@@ -201,8 +201,8 @@ def sam2_masks(job, n, p0, p1, soft=False):
     del pred  # its GPU memory back before ProPainter starts (the cache kept it: SAM 2 and ProPainter held it together)
     import gc
     gc.collect()
-    if dev.type == 'mps':
-        torch.mps.empty_cache()
+    if dev.type in ('mps', 'cuda'):
+        getattr(torch, dev.type).empty_cache()
     return masks
 
 
@@ -363,8 +363,8 @@ def preview(job):
     W, H = job['w'], job['h']
     k = min(1.0, 1024 / max(W, H))
     fw, fh = max(2, int(W * k) // 2 * 2), max(2, int(H * k) // 2 * 2)
-    dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-    amp = torch.autocast('mps', dtype=torch.bfloat16) if dev.type == 'mps' else torch.autocast('cpu', enabled=False)
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    amp = torch.autocast(dev.type, dtype=torch.bfloat16) if dev.type in ('mps', 'cuda') else torch.autocast('cpu', enabled=False)
     if 'pred' not in SAM_IMG:
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -540,7 +540,7 @@ def main(path):
     del F
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
-                            *labels(job['tags']), '-c:v', 'h264_videotoolbox', '-q:v', '68', '-pix_fmt', 'yuv420p', *job['tags'],  # Apple's hardware encoder (~47 dB): the CPU stays free
+                            *labels(job['tags']), *job.get('venc', ['-c:v', 'h264_videotoolbox', '-q:v', '68']), '-pix_fmt', 'yuv420p', *job['tags'],  # Apple's hardware encoder (~47 dB): the CPU stays free
                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
     for t, fr in enumerate(frames(job, 'format=yuv444p', W, H, 3)):
         fr = fr.copy()

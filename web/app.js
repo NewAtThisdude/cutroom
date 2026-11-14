@@ -6184,7 +6184,7 @@ async function loadAI() { // fill the AI tab from what is installed
   if (!s.cloneReady) $('#dubStatus').textContent = 'The voice-clone model is not installed (README: On-device AI).';
   const gpu = s.gpu || {}; // lip sync and talking photo run on the GPU PC only: shown while it is set up and answering (cached on the server)
   $('#gpuTools').hidden = !gpu.reachable; $('#gpuHint').hidden = !!gpu.reachable;
-  $('#gpuHint').textContent = gpu.configured ? `Needs the 4090 PC (${gpu.host}): it is off or not answering right now.` : 'Needs the 4090 PC (set up with ai/gpu_setup.sh; see README).';
+  $('#gpuHint').textContent = gpu.configured ? `Needs the GPU PC (${gpu.host}): it is off or not answering right now.` : 'Needs an NVIDIA GPU with 18-24 GB on this computer, or a GPU PC you opt in to (CUTROOM_GPU_HOST; see README).';
   if (gpu.configured && (!gpu.checked || gpu.stale) && !loadAI.again) { loadAI.again = true; setTimeout(() => { loadAI.again = false; if (G.tab === 'ai') loadAI(); }, 4500); } // a check is out: ask once more
   G.ai = s; $('#btnMusic').disabled = !s.music;
   if (!s.music) $('#musicStatus').textContent = 'The music model is not installed (README: On-device AI).';
@@ -6192,16 +6192,20 @@ async function loadAI() { // fill the AI tab from what is installed
   loadCaps().catch(() => {});
 }
 const aboutSecs = s => s < 1 ? `${s.toFixed(s < 0.1 ? 2 : 1)} s` : s < 90 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`;
-async function loadCaps() { // AI tab > This Mac: what each AI job runs at here (server.py AI_BUDGET), or why it can't
+const ON = { apple: 'Apple GPU / Neural Engine', cuda: 'NVIDIA GPU (CUDA)', cpu: 'CPU', remote: 'the GPU PC' }; // where a job runs (AI_BUDGET's backend)
+async function loadCaps() { // AI tab > This computer: what it has, and where / at what size each AI job runs here (server.py AI_BUDGET), or why it can't
   const c = await api('/api/ai/caps'), el = (tag, text, cls) => { const e = document.createElement(tag); e.textContent = text; if (cls) e.className = cls; return e; };
-  $('#macSum').textContent = `${c.ram} GB memory · ${c.cores} CPU cores · ${c.gpu} GPU cores. ${c.queue[0].toUpperCase()}${c.queue.slice(1)}; exports use up to ${c.threads} CPU threads. `
+  const gpu = c.vendor === 'apple' ? `${c.gpuName ? `${c.gpuName}, ` : ''}${c.gpu} GPU cores` : c.gpuName ? `${c.gpuName}${c.vram ? ` (${c.vram} GB)` : ''}` : 'no GPU for AI';
+  $('#macSum').textContent = `${c.ram} GB memory · ${c.cores} CPU cores · ${gpu}. Video: ${c.encoder}${c.hwaccel ? `, decoding on ${c.hwaccel}` : ''}. AI models: ${c.torch || 'not installed'}. `
+    + `${c.queue[0].toUpperCase()}${c.queue.slice(1)}; exports use up to ${c.threads} CPU threads. `
     + (c.running ? `Now: ${c.running}${c.waiting ? `, ${c.waiting} waiting` : ''}. ` : '')
-    + (c.fake ? `Simulated on a ${c.real} GB Mac: the sizes are that smaller Mac's; the times are estimates scaled by GPU cores.` : 'Times are estimates for an idle Mac.');
+    + (c.fake ? `Simulated (${c.sim}) on this ${c.real} GB computer: the choices are that computer's; the times are estimates.` : 'Times are estimates for an idle computer.');
   $('#macCaps').replaceChildren(...c.jobs.map(j => {
     const row = el('div', '', j.refused ? 'mc off' : 'mc');
     row.dataset.cap = j.kind;
-    row.append(el('b', j.what), ...(j.refused ? [el('span', `Not on this Mac: ${j.refused.replace(/^.*? needs/, 'needs')}`)]
-      : [el('span', j.size + (j.smaller ? ' (smaller on this Mac)' : '')), el('span', `up to ${j.gb} GB · about ${aboutSecs(j.rate)} per ${j.unit.replace(/^s of /, 'second of ')}`)]));
+    row.append(el('b', j.what), ...(j.refused ? [el('span', `Not on this computer: ${j.refused.replace(/^.*? needs/, 'needs')}`)]
+      : [el('span', `On ${ON[j.backend] || j.backend}: ${j.size}${j.smaller ? ' (smaller here)' : ''}`),
+        el('span', `${j.gb ? `up to ${j.gb} GB · ` : ''}about ${aboutSecs(j.rate)} per ${j.unit.replace(/^s of /, 'second of ')}${j.est ? ' (estimate, not measured yet)' : ''}`)]));
     return row;
   }));
 }

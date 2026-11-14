@@ -18,8 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+WIN, MAC = os.name == 'nt', sys.platform == 'darwin'
+if WIN and not sys.flags.utf8_mode and __name__ == '__main__':  # names, captions and tool output are UTF-8; Windows' default is its
+    sys.exit(subprocess.call([sys.executable, '-X', 'utf8', *sys.orig_argv[1:]]))  # ANSI code page (cp1252). -I ignores PYTHONUTF8
 PORT = int(os.environ.get('CUTROOM_PORT', '4610'))
-HOME = Path(os.environ.get('CUTROOM_HOME', Path.home() / 'Movies' / 'Cutroom'))
+HOME = Path(os.environ.get('CUTROOM_HOME', Path.home() / ('Videos' if WIN else 'Movies') / 'Cutroom'))
 WEB = (Path(__file__).resolve().parent / 'web').resolve()
 MEDIA, PROJ, EXPORTS, CACHE = (HOME / d for d in ('media', 'projects', 'exports', 'cache'))
 WHISPER = os.environ.get('CUTROOM_WHISPER', 'whisper-cli')
@@ -58,15 +61,176 @@ NOVELTY_VOICES = {'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Ce
 ID = re.compile(r'[a-f0-9]{12}')
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
 JOBS = {}
-# CUTROOM_CORES / CUTROOM_RAM_GB: test a smaller Mac's choices (decoder, models, how much at once) on this one
-CORES = int(os.environ.get('CUTROOM_CORES') or os.cpu_count() or 8)
-REAL_GB = int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True).stdout.strip() or 8 << 30) / 2 ** 30
-RAM_GB = float(os.environ.get('CUTROOM_RAM_GB') or REAL_GB)
-# GPU cores (time estimates scale by them): a faked 8-core Mac is a base chip (8 GPU cores); CUTROOM_GPU_CORES overrides
-GPU_CORES = int(os.environ.get('CUTROOM_GPU_CORES') or (8 if os.environ.get('CUTROOM_CORES') and CORES <= 8 else 16 if os.environ.get('CUTROOM_CORES') and CORES < 12 else 0)
-          or (re.findall(r'"gpu-core-count" = (\d+)', subprocess.run(['ioreg', '-rc', 'AGXAccelerator', '-d1'], capture_output=True, text=True).stdout) or [8])[0])
-BIG_MAC = CORES >= 12 and RAM_GB >= 24  # Pro/Max chips: CPU decoding is faster there; a base M1 (8 cores, 8 GB) leans on the media engine
-PREP = threading.BoundedSemaphore(2 if BIG_MAC else 1)  # imports prepared at once: each 4K proxy takes ~500 MB, four took 2.4 GB together
+# ---------- this computer: probed once at startup (well under a second: the encoders are tried in parallel) ----------
+def quiet(cmd, timeout=10):
+    """A probe's output, '' when the tool is missing or fails (nvidia-smi on a Mac, ioreg on Windows)."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+
+def probe_ram():
+    if MAC:
+        return int(quiet(['sysctl', '-n', 'hw.memsize']).strip() or 8 << 30) / 2 ** 30
+    if WIN:
+        import ctypes
+        kb = ctypes.c_ulonglong(0)
+        return kb.value / 2 ** 20 if ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(ctypes.byref(kb)) else 8.0
+    return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 2 ** 30
+
+
+def probe_gpu():
+    """This computer's best GPU: {'vendor': apple | nvidia | intel | amd, 'name', 'vram' (GB; an Apple GPU shares the memory),
+    'cores' (Apple GPU cores), 'cc' (NVIDIA compute capability)}, or {} for none."""
+    if MAC:
+        n = re.findall(r'"gpu-core-count" = (\d+)', quiet(['ioreg', '-rc', 'AGXAccelerator', '-d1']))
+        return {'vendor': 'apple', 'name': quiet(['sysctl', '-n', 'machdep.cpu.brand_string']).strip(), 'cores': int(n[0])} if n else {}
+    if smi := quiet(['nvidia-smi', '--query-gpu=name,memory.total,compute_cap', '--format=csv,noheader,nounits']).strip():
+        name, mib, cc = (x.strip() for x in smi.splitlines()[0].split(','))
+        return {'vendor': 'nvidia', 'name': name, 'vram': round(float(mib) / 1024), 'cc': cc}
+    if not WIN:
+        return {}
+    import winreg  # Intel / AMD: the display adapters' own registry keys (no WMI, no PowerShell)
+    found, cls = [], r'SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+    for i in range(16):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf'{cls}\{i:04d}') as k:
+                name = str(winreg.QueryValueEx(k, 'DriverDesc')[0])
+                try:
+                    mem = winreg.QueryValueEx(k, 'HardwareInformation.qwMemorySize')[0]
+                except OSError:
+                    mem = 0
+        except OSError:
+            continue
+        low = name.lower()
+        vendor = 'intel' if 'intel' in low else 'amd' if 'amd' in low or 'radeon' in low else None
+        if vendor:
+            found.append({'vendor': vendor, 'name': name, 'vram': round((int.from_bytes(mem, 'little') if isinstance(mem, bytes) else int(mem or 0)) / 2 ** 30)})
+    return max(found, key=lambda g: (g['vendor'] == 'amd', g['vram']), default={})
+
+
+HW_FAMILIES = ('videotoolbox', 'nvenc', 'qsv', 'amf')  # hardware encoders, best first; libx264 / libx265 when none of them works here
+
+
+def probe_encoders():
+    """The encoder for each codec and the decoder hwaccel: every hardware encoder ffmpeg lists is tried on one frame (a listed
+    NVENC fails without an NVIDIA GPU, Quick Sync without Intel graphics), all at once; the first family that works wins."""
+    listed, ok = quiet(['ffmpeg', '-hide_banner', '-encoders']), {}
+    tries = [f'{c}_{f}' for f in HW_FAMILIES for c in ('h264', 'hevc') if f' {c}_{f} ' in listed]
+
+    def one(e):
+        try:
+            ok[e] = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=256x256:r=30', '-frames:v', '1', '-c:v', e, '-f', 'null', '-'],
+                                   capture_output=True, timeout=20).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok[e] = False
+    ts = [threading.Thread(target=one, args=(e,)) for e in tries]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    enc = {c: next((f'{c}_{f}' for f in HW_FAMILIES if ok.get(f'{c}_{f}')), sw) for c, sw in (('h264', 'libx264'), ('hevc', 'libx265'))}
+    hw = quiet(['ffmpeg', '-hide_banner', '-hwaccels']).split()
+    fam = enc['h264'].split('_')[-1]
+    accel = 'videotoolbox' if fam == 'videotoolbox' else 'cuda' if fam == 'nvenc' and 'cuda' in hw else 'd3d11va' if WIN and 'd3d11va' in hw else None
+    return enc, accel, [e for e in tries if ok.get(e)]
+
+
+def sim_profile(real, s=None):
+    """CUTROOM_PROFILE: plan as another computer (AI choices, memory limits, the AI tab) to test them here: 'mac:8', 'mac:16',
+    'win:cpu:16' (no usable GPU, 16 GB), 'win:cuda:12:32' (an NVIDIA GPU with 12 GB, 32 GB of memory), 'win:cuda:24:64'.
+    Encoders and decoders stay this computer's own: they really run here. The older CUTROOM_RAM_GB / CUTROOM_CORES /
+    CUTROOM_GPU_CORES still adjust the memory, cores and GPU cores on top."""
+    p, s = dict(real), os.environ.get('CUTROOM_PROFILE', '') if s is None else s
+    if s:
+        a = s.split(':')
+        if a[0] == 'mac':
+            ram = float(a[1])
+            cores = int(a[2]) if len(a) > 2 else 8 if ram <= 16 else 12
+            gc = 8 if cores <= 8 else 16 if cores < 12 else real['gpu'].get('cores') if real['gpu'].get('vendor') == 'apple' else 32
+            p.update(os='mac', arch='arm64', ram=ram, cores=cores, gpu={'vendor': 'apple', 'name': 'Apple Silicon (simulated)', 'cores': gc})
+        else:
+            cuda = a[1] == 'cuda'
+            p.update(os=a[0], arch='x86_64', ram=float(a[3] if cuda else a[2]),
+                     gpu={'vendor': 'nvidia', 'name': 'NVIDIA GPU (simulated)', 'vram': float(a[2])} if cuda else {})
+    if os.environ.get('CUTROOM_RAM_GB'):
+        p['ram'] = float(os.environ['CUTROOM_RAM_GB'])
+    if os.environ.get('CUTROOM_CORES'):  # a faked 8-core Mac is a base chip (8 GPU cores)
+        p['cores'] = int(os.environ['CUTROOM_CORES'])
+        if p['gpu'].get('vendor') == 'apple':
+            p['gpu'] = {**p['gpu'], 'cores': 8 if p['cores'] <= 8 else 16 if p['cores'] < 12 else p['gpu']['cores']}
+    if os.environ.get('CUTROOM_GPU_CORES') and p['gpu'].get('vendor') == 'apple':
+        p['gpu'] = {**p['gpu'], 'cores': int(os.environ['CUTROOM_GPU_CORES'])}
+    p['sim'] = s or ('ram/cores' if any(os.environ.get(k) for k in ('CUTROOM_RAM_GB', 'CUTROOM_CORES', 'CUTROOM_GPU_CORES')) else '')
+    # where AI models can run (AI_BUDGET rows): an Apple Silicon Mac on its own rows (MPS / MLX / Metal / Neural Engine);
+    # elsewhere an NVIDIA GPU (CUDA), and the CPU for the jobs small enough for it
+    v = p['gpu'].get('vendor')
+    p['backends'] = ['apple'] if v == 'apple' else ['cuda', 'cpu'] if v == 'nvidia' else ['cpu']
+    return p
+
+
+def probe_profile():
+    t0 = time.monotonic()
+    enc, accel, hw = probe_encoders() if shutil.which('ffmpeg') else ({'h264': 'libx264', 'hevc': 'libx265'}, None, [])
+    arch = os.uname().machine if hasattr(os, 'uname') else os.environ.get('PROCESSOR_ARCHITECTURE', '').lower()
+    real = {'os': 'mac' if MAC else 'win' if WIN else 'linux', 'arch': arch, 'cores': os.cpu_count() or 8, 'ram': probe_ram(),
+            'gpu': probe_gpu(), 'enc': enc, 'hwaccel': accel, 'hw_encoders': hw}
+    real['probe_s'] = round(time.monotonic() - t0, 2)
+    return real
+
+
+REAL = probe_profile()
+PROFILE = sim_profile(REAL)
+ENC, HWACCEL = REAL['enc'], REAL['hwaccel']
+VT = ENC['h264'] == 'h264_videotoolbox'  # the Mac's media engine: its decode / scale / tone-map path (scale_vt) is used only with it
+CORES, REAL_GB, RAM_GB = PROFILE['cores'], REAL['ram'], PROFILE['ram']
+GPU_CORES = PROFILE['gpu'].get('cores') or 0  # Apple GPU cores (time estimates scale by them)
+BIG = CORES >= 12 and RAM_GB >= 24  # Pro/Max chips, big PCs: CPU decoding is faster there; a base M1 (8 cores, 8 GB) leans on the media engine
+PREP = threading.BoundedSemaphore(2 if BIG else 1)  # imports prepared at once: each 4K proxy takes ~500 MB, four took 2.4 GB together
+NICE, LOW_KW = ([], {'creationflags': subprocess.BELOW_NORMAL_PRIORITY_CLASS}) if WIN else (['nice', '-n', '10'], {})  # background work yields the CPU
+
+
+def venc(q=None, br=None, codec='h264', size=None):
+    """This computer's encoder for `codec` at VideoToolbox quality q (0-100) or bitrate br: one place for every encode.
+    VideoToolbox gets exactly the -q:v / -b:v it always had; NVENC / Quick Sync / AMF / x264 / x265 a constant quality on
+    their 0-51 scale (51 - 0.37 q: q 82 -> 21, 68 -> 26, the usual near-transparent range). size (w, h): frames smaller than
+    the PC encoders take (NVENC refuses under ~145 x 49) go to x264 / x265."""
+    e = ENC[codec]
+    if size and not VT and (size[0] < 160 or size[1] < 64):
+        e = 'libx264' if codec == 'h264' else 'libx265'
+    if e.endswith('videotoolbox'):
+        return ['-c:v', e, *(['-b:v', br] if br else ['-q:v', str(q)])]
+    cq = str(max(0, min(51, round(51 - 0.37 * (q or 70)))))
+    if br:
+        return ['-c:v', e, '-b:v', br] + (['-preset', 'veryfast'] if e.startswith('lib') else [])
+    return ['-c:v', e, *{'nvenc': ['-preset', 'p5', '-rc', 'vbr', '-cq', cq, '-b:v', '0'], 'qsv': ['-global_quality', cq],
+                         'amf': ['-rc', 'cqp', '-qp_i', cq, '-qp_p', cq, '-qp_b', cq]}.get(e.split('_')[-1], ['-preset', 'fast', '-crf', cq])]
+
+
+def hw_dec():
+    """Input args to decode a video on the GPU / media engine (ffmpeg falls back to the CPU for what it can't decode)."""
+    return ['-hwaccel', 'videotoolbox', '-threads', '1'] if VT else ['-hwaccel', HWACCEL] if HWACCEL else []
+
+
+def fpath(p):
+    """A file path as a filtergraph option value, for inside '...': forward slashes, the drive's colon escaped (C\\:/x),
+    quotes escaped. Unchanged for every path on a Mac."""
+    return str(p).replace('\\', '/').replace(':', '\\:').replace("'", "'\\''")
+
+
+def retry(fn, *a):
+    """Windows refuses to replace, move or delete a file another handle has open (a request streaming it to the player):
+    tried again for up to 5 s there. Elsewhere it runs once, as before."""
+    for i in range(20):
+        try:
+            return fn(*a)
+        except PermissionError:
+            if not WIN or i == 19:
+                raise
+            time.sleep(0.25)
+
+
 # main clips per ffmpeg graph (longer main tracks pre-render in chunks): every open decoder runs ahead and holds frames, so
 # 40 cuts of 4K footage peaked at 4.5 GB with 24 to a graph. ponytail: by memory, not by each clip's resolution
 CHUNK = 24 if RAM_GB >= 24 else 12 if RAM_GB >= 16 else 6
@@ -79,8 +243,8 @@ def remote_reoffer(m):  # sent but never acknowledged (the page reloaded mid-pol
 
 
 def sh(cmd, low=False):
-    """low: background work (import proxies, filmstrips): nice'd, so the editor and its playback win the CPU."""
-    return subprocess.run(['nice', '-n', '10', *cmd] if low else cmd, capture_output=True, text=True, errors='replace')
+    """low: background work (import proxies, filmstrips): nice'd (below-normal priority on Windows), so the editor and its playback win the CPU."""
+    return subprocess.run([*NICE, *cmd] if low else cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', **(LOW_KW if low else {}))
 
 
 def meta(mid):
@@ -154,9 +318,14 @@ def import_file(name, stream, length, background=True, src=None, key=None):
     ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.bin'
     dst = MEDIA / f'{mid}{ext}'
     if src:  # a file on this Mac: an APFS clone, instant and taking no space (a 4 GB camera clip copied took 4 GB more); a copy elsewhere
-        if sh(['cp', '-c', str(src), str(dst)]).returncode:
+        try:
+            if not MAC:
+                shutil.copyfile(src, dst)
+            elif sh(['cp', '-c', str(src), str(dst)]).returncode:
+                raise OSError
+        except OSError:
             dst.unlink(missing_ok=True)
-            raise ValueError(f'could not copy {Path(src).name}')
+            raise ValueError(f'could not copy {Path(src).name}') from None
     else:
         with open(dst, 'wb') as f:
             while length > 0:
@@ -165,9 +334,9 @@ def import_file(name, stream, length, background=True, src=None, key=None):
                     break
                 f.write(b)
                 length -= len(b)
-    if ext == '.heic':  # Chrome can't decode HEIC; sips ships with macOS
+    if ext == '.heic':  # Chrome can't decode HEIC; sips ships with macOS, ffmpeg (7.1+) reads it elsewhere
         jpg = dst.with_suffix('.jpg')
-        sh(['sips', '-s', 'format', 'jpeg', str(dst), '--out', str(jpg)])
+        sh(['sips', '-s', 'format', 'jpeg', str(dst), '--out', str(jpg)] if MAC else ['ffmpeg', '-v', 'error', '-y', '-i', str(dst), '-frames:v', '1', '-q:v', '2', str(jpg)])
         dst.unlink()
         dst, ext = jpg, '.jpg'
     try:
@@ -198,10 +367,12 @@ def photo_copy(m, size):
     out = CACHE / f"{m['id']}.{size}.{'png' if m.get('trans') else 'jpg'}"
     if not out.exists():
         tmp = out.with_name(f'{uuid.uuid4().hex[:8]}.{out.name}')  # (two requests at once each write their own)
-        if sh(['sips', '-Z', str(size), '-s', 'format', fmt, str(MEDIA / m['file']), '--out', str(tmp)], low=True).returncode or not tmp.exists():
+        cmd = (['sips', '-Z', str(size), '-s', 'format', fmt, str(MEDIA / m['file']), '--out', str(tmp)] if MAC else
+               ['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vf', f'scale={size}:{size}:force_original_aspect_ratio=decrease', '-frames:v', '1', '-q:v', '3', str(tmp)])
+        if sh(cmd, low=True).returncode or not tmp.exists():
             tmp.unlink(missing_ok=True)
             return MEDIA / m['file']
-        tmp.replace(out)
+        retry(tmp.replace, out)
     return out
 
 
@@ -214,7 +385,7 @@ def alpha_mov(m):
         tmp = out.with_suffix('.tmp.mov')
         if sh(['ffmpeg', '-v', 'error', '-y', *dec, '-i', str(MEDIA / m['file']), '-vf', "scale=-2:'min(720,ih)',format=bgra", '-c:v', 'hevc_videotoolbox',
                '-alpha_quality', '0.75', '-tag:v', 'hvc1', '-an', str(tmp)]).returncode == 0:
-            tmp.replace(out)
+            retry(tmp.replace, out)
     return out if out.exists() else None
 
 
@@ -247,7 +418,7 @@ def wk_copy(m):
                    f'{codec}_metadata=colour_primaries=1:transfer_characteristics=13:matrix_coefficients={matrix}',
                    '-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1', '-colorspace', {1: 'bt709', 6: 'smpte170m', 9: 'bt2020nc'}[matrix],
                    '-movflags', '+faststart', str(tmp)]).returncode == 0:
-                tmp.replace(out)
+                retry(tmp.replace, out)
     return out if out.exists() else src
 
 
@@ -283,7 +454,7 @@ def exact_audio(m):
             tmp = out.with_suffix('.tmp.flac')
             if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vn', '-map', '0:a:0', '-c:a', 'flac', str(tmp)]).returncode:
                 return src
-            tmp.replace(out)
+            retry(tmp.replace, out)
     return out
 
 
@@ -311,7 +482,7 @@ FF_CHARS = {  # voice characters as ffmpeg filters (n: the length in samples, fo
                        'highpass=f=350:p=2,highpass=f=350:p=2,lowpass=f=3200:p=2,lowpass=f=3200:p=2,lowpass=f=3200:p=2,equalizer=f=1500:t=q:w=1:g=4',
     'megaphone': lambda n: 'volume=4,asoftclip=type=atan,highpass=f=700:p=2,highpass=f=700:p=2,lowpass=f=3800:p=2,lowpass=f=3800:p=2,lowpass=f=3800:p=2,'
                            'equalizer=f=2000:t=q:w=1.4:g=10',
-    'cave': lambda n: (f"asplit=2[cd][cw];amovie={hall_ir('cave')},aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[ci];"
+    'cave': lambda n: (f"asplit=2[cd][cw];amovie='{fpath(hall_ir('cave'))}',aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[ci];"
                        f"[cw][ci]afir=irnorm=-1:gtype=none,lowpass=f=3000[cx];[cd][cx]amix=inputs=2:normalize=0:weights=0.8 1,atrim=end_sample={n}"),
     'underwater': lambda n: 'lowpass=f=500:p=2,lowpass=f=500:p=2,aphaser=type=t:speed=0.6:decay=0.5,chorus=0.7:0.9:55|70:0.4|0.32:0.25|0.4:2|1.3,tremolo=f=5:d=0.25'}
 VOICE_CHARS = (*AI_CHARS, *FF_CHARS)
@@ -368,7 +539,7 @@ def fx_pcm(m, fx, tmp, st=None):
         return False
     raw_in = lambda f, fmt='s16le': ['-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f)]
     run = lambda af, src, dst, fmt='s16le': not sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)]).returncode
-    rnn = f"apad=whole_len={n + RNN_LAG},arnndn=m='{rnn_model()}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
+    rnn = f"apad=whole_len={n + RNN_LAG},arnndn=m='{fpath(rnn_model())}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
     if step == 'dn':  # (afftdn was 25 ms late and took only 1-5 dB)
         return run(rnn, raw_in(base), tmp)
     mid, i0 = tmp.with_suffix('.f32'), pcm_lufs(base)[0]
@@ -378,9 +549,9 @@ def fx_pcm(m, fx, tmp, st=None):
         elif step in FF_CHARS:
             ok, want = run(f'aformat=sample_fmts=flt,{FF_CHARS[step](n)},apad=whole_len={n},atrim=end_sample={n}', raw_in(base), mid, 'f32le'), i0
         else:
-            if not (AI_BIN / 'python').exists():
+            if not AI_PY.exists():
                 raise RuntimeError('the voice characters elf, giant, monster and alien need the on-device AI tools (README: On-device AI)')
-            r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'voicefx.py'), step, str(base), str(mid)], capture_output=True, text=True, env=AI_ENV)
+            r = subprocess.run([*AI_RUN, str(AI_DIR / 'voicefx.py'), step, str(base), str(mid)], capture_output=True, text=True, env=AI_ENV)
             if r.returncode:
                 raise RuntimeError(f'the {step} voice failed: ' + (r.stderr.strip().splitlines() or ['no output'])[-1][-300:])
             ok, want = True, i0
@@ -428,7 +599,7 @@ def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
                 if not ok or not tmp.exists():
                     tmp.unlink(missing_ok=True)
                     return None
-                tmp.replace(out)
+                retry(tmp.replace, out)
                 return out
             trim = '' if one else f"atrim=start={a}{f':end={b}' if b > a else ''},asetpts=PTS-STARTPTS,"
             # a span at another speed is cut from the 1x copy (raw samples: the seek is exact and instant); from the source
@@ -441,7 +612,7 @@ def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
             if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp)], low=not base).returncode:
                 tmp.unlink(missing_ok=True)
                 return None
-            tmp.replace(out)
+            retry(tmp.replace, out)
             if not one:
                 for old in sorted(CACHE.glob(f"{m['id']}.*-*.pcm"), key=lambda f: f.stat().st_mtime)[:-4]:
                     old.unlink(missing_ok=True)
@@ -470,8 +641,8 @@ def proxy(m, src, out, sw=False):
     cmd = proxy_cmd(m, src, tmp, sw)
     cmd[1:1] = ['-nostdin', '-progress', 'pipe:1', '-nostats']
     try:
-        run_ffmpeg(['nice', '-n', '10', *cmd], max(m['duration'], 0.1), lambda f: PREP_PCT.__setitem__(m['id'], round(0.9 * f, 3)))
-        tmp.replace(out)
+        run_ffmpeg([*NICE, *cmd], max(m['duration'], 0.1), lambda f: PREP_PCT.__setitem__(m['id'], round(0.9 * f, 3)), low=True)
+        retry(tmp.replace, out)
         (CACHE / f"{m['id']}.wk.mov").unlink(missing_ok=True)  # WebKit's copy was of the original: remade from the proxy
         return True
     except RuntimeError:
@@ -488,6 +659,9 @@ def proxy_cmd(m, src, out, sw=False):
     tall = 720 if heavy(m) else 1080  # 4K60 at 720p (decoding speed); a long-GOP 1080p phone clip keeps its size
     if sw or m.get('alpha'):
         dec, vf = [], ''
+    elif not VT:  # NVENC / Quick Sync / AMF / x264: the GPU decodes where it can (frames come back to the CPU, so autorotate works); HDR tone mapped (hdr_decode)
+        dec, vf = hdr_decode(m)
+        dec = dec or hw_dec()
     else:  # the copy's size in the frame's stored orientation (the pixels are turned afterwards, by hand: hw frames can't auto-rotate)
         H = min(tall, m['h'])
         W = int(m['w'] * H / m['h'] / 2 + 0.5) * 2  # halves round up, as ffmpeg's scale=-2 does (406 for a 9:16 iPhone clip, like the copies made before)
@@ -501,8 +675,7 @@ def proxy_cmd(m, src, out, sw=False):
     # each frame keeps its own time: on a 1/fps time base iPhone 120 fps frames (on a 1/600 s grid, with gaps) moved up to a
     # frame, and the preview showed a later frame than the export (which reads the original) at 3 of 5 test times
     return ['ffmpeg', '-v', 'error', '-y', *dec, '-i', src, '-vf', f"{vf}scale=-2:'min({tall},ih)'", '-fps_mode:v', 'passthrough', '-enc_time_base:v', 'demux',
-            '-c:v', 'h264_videotoolbox', '-b:v', '5M' if tall == 720 else '8M',
-            '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
+            *venc(br='5M' if tall == 720 else '8M', size=(m['w'], m['h'])), '-g', str(max(1, round(m.get('fps') or 30))), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', str(out)]
 
 
 def last_slot(skip, slot):
@@ -518,7 +691,7 @@ def prepare_(m):
             m['proxy'] = not sh(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', "scale=-2:'min(720,ih)',format=yuva420p", '-c:v', 'libvpx-vp9', '-b:v', '0',
                                  '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(tmp)], low=True).returncode
             if m['proxy']:
-                tmp.replace(CACHE / f'{mid}.proxy.webm')
+                retry(tmp.replace, CACHE / f'{mid}.proxy.webm')
         elif (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
               or m.setdefault('gop', gop(src)) > 2):  # a keyframe only every few seconds: seeks decode all of it
             out = CACHE / f'{mid}.proxy.mp4'
@@ -564,7 +737,7 @@ def timeline_assets(m):
             if not sh(['ffmpeg', '-v', 'error', '-y', *skip, '-i', str(src), '-vf', f'{last_slot(skip, d / n)}fps={n}/{d:.3f},scale=-2:72,tile={cols}x{math.ceil(n / cols)}',
                        '-frames:v', '1', '-q:v', '5', str(tmp)], low=True).returncode and tmp.exists():
                 w = int(sh(['ffprobe', '-v', 'error', '-show_entries', 'stream=width', '-of', 'csv=p=0', str(tmp)]).stdout.strip() or 0)
-                tmp.replace(out)
+                retry(tmp.replace, out)
                 m['grid'] = {'n': n, 'cols': cols, 'tw': w // cols, 'th': 72}
                 changed = True
                 break
@@ -701,7 +874,23 @@ def words_from_tokens(toks, dur):
     return out
 
 
+SAPI = ('Add-Type -AssemblyName System.Speech; [Console]::OutputEncoding = [Text.Encoding]::UTF8; '
+        '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ')  # Windows' own voices (SAPI), through PowerShell
+WIN_VOICES = []  # listed once per server run (PowerShell takes ~0.5 s to start)
+
+
+def powershell(script):
+    return sh(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', base64.b64encode(script.encode('utf-16-le')).decode()])
+
+
 def voices():
+    if WIN:  # 'Microsoft Zira Desktop|en-US'
+        if not WIN_VOICES:
+            r = powershell(SAPI + '$s.GetInstalledVoices() | Where-Object Enabled | ForEach-Object { $_.VoiceInfo.Name + "|" + $_.VoiceInfo.Culture.Name }')
+            WIN_VOICES.extend({'name': n, 'lang': l.replace('-', '_')} for n, _, l in (x.strip().partition('|') for x in r.stdout.splitlines()) if n and l)
+        return sorted(WIN_VOICES, key=lambda v: (v['lang'] != 'en_US', v['lang'], v['name']))
+    if not shutil.which('say'):
+        return []
     found = {}
     for line in sh(['say', '-v', '?']).stdout.splitlines():
         m = re.match(r'(.+?)\s+([a-z]{2,3}_[A-Z0-9]{2,3})\s+#', line)
@@ -718,13 +907,19 @@ def tts(text, voice, rate):
     if voice not in {v['name'] for v in voices()}:
         raise ValueError('unknown voice')
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
-        script, out = Path(td) / 'script.txt', Path(td) / 'voice.aiff'
-        script.write_text(text)
-        r = sh(['say', '-v', voice, '-r', str(int(fnum(rate, 90, 400))), '-o', str(out), '-f', str(script)])
+        script, out = Path(td) / 'script.txt', Path(td) / ('voice.wav' if WIN else 'voice.aiff')
+        script.write_text(text, encoding='utf-8')
+        wpm = int(fnum(rate, 90, 400))
+        if WIN:  # SAPI's rate is -10..10 around ~180 words a minute; the text is read from its file, the rest quoted as PowerShell literals
+            q = lambda x: "'" + str(x).replace("'", "''") + "'"
+            r = powershell(SAPI + f'$s.SelectVoice({q(voice)}); $s.Rate = {max(-10, min(10, round((wpm - 180) / 20)))}; $s.SetOutputToWaveFile({q(out)}); '
+                           f'$s.Speak([IO.File]::ReadAllText({q(script)}, [Text.Encoding]::UTF8)); $s.Dispose()')
+        else:
+            r = sh(['say', '-v', voice, '-r', str(wpm), '-o', str(out), '-f', str(script)])
         if r.returncode or not out.exists():
             raise RuntimeError(plain('Speaking', r.stderr, r.returncode))
         with open(out, 'rb') as fh:
-            return import_file(f"Voiceover - {' '.join(text.split()[:5])}.aiff", fh, out.stat().st_size)
+            return import_file(f"Voiceover - {' '.join(text.split()[:5])}{out.suffix}", fh, out.stat().st_size)
 
 
 def beats(mid):
@@ -739,8 +934,8 @@ def beats(mid):
     f = CACHE / f'{mid}.pcm'
     src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
     # numpy in the AI venv (ai/beats.py, the same grid) starts first: Python and numpy load while ffmpeg decodes, then ~8 ms
-    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not (AI_BIN / 'python').exists() else subprocess.Popen(
-        [str(AI_BIN / 'python'), '-I', str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
+    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not AI_PY.exists() else subprocess.Popen(
+        [*AI_RUN, str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
     raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
     if fast:
         try:
@@ -790,7 +985,18 @@ def beats(mid):
 VT_SDR = ('scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le,format=yuv420p,'
           'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,')
 
+# Without VideoToolbox (Windows, Linux): zimg (zscale, in the gyan.dev / BtbN "full" ffmpeg builds) to linear light, the hable
+# curve, back to BT.709, on the CPU. Its curve differs from VideoToolbox's; preview and export still match (both come through here)
+SW_SDR = ('zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,'
+          'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,')
+VT_DEC = ['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1']
+
 TURN = {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}  # stored pixels -> upright, by the clip's rotation
+
+
+def hdr_dec():
+    """Input args for an HDR clip: decoded on the media engine (VideoToolbox), else the GPU where it can; pixels turned by hand."""
+    return VT_DEC if VT else [*hw_dec(), '-noautorotate', '-display_rotation', '0']
 
 
 def hdr_decode(m):
@@ -800,7 +1006,7 @@ def hdr_decode(m):
         return [], ''
     tr = TURN.get(-m.get('rot', 0) % 360, '')
     # -display_rotation 0: the pixels are turned by hand, so files made from them must not carry the phone's rotation too
-    return (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1'], VT_SDR + tr)
+    return hdr_dec(), (VT_SDR if VT else SW_SDR) + tr
 
 
 def still(mid, t):
@@ -826,6 +1032,8 @@ TOOLS = Path(__file__).resolve().parent / 'tools'
 def build_tool(name):
     """Swift helpers (Apple Vision) compile on first use, and again whenever the source changes."""
     src, exe = TOOLS / f'{name}.swift', TOOLS / name
+    if not MAC or not (exe.exists() or shutil.which('swiftc')):
+        raise RuntimeError(f"{name}: Apple's Vision / Metal tools are unavailable on this computer (they need a Mac)")
     if not exe.exists() or exe.stat().st_mtime < src.stat().st_mtime:
         r = sh(['swiftc', '-O', str(src), '-o', str(exe)])
         if r.returncode:
@@ -838,8 +1046,21 @@ SYS_FONTS = []  # the Mac's font families, listed once per server run
 
 def system_fonts():
     if not SYS_FONTS:
-        r = sh([build_tool('fonts')])
-        SYS_FONTS.extend(json.loads(r.stdout or '[]') if r.returncode == 0 else [])
+        if WIN:  # the installed fonts' registry names ('Segoe UI Bold (TrueType)'), machine-wide and this user's, as families
+            import winreg
+            names = set()
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    with winreg.OpenKey(root, r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as k:
+                        for i in range(winreg.QueryInfoKey(k)[1]):
+                            for n in re.sub(r'\s*\((TrueType|OpenType|All res)\)$', '', winreg.EnumValue(k, i)[0]).split(' & '):  # 'Cambria & Cambria Math'
+                                names.add(re.sub(r'(\s+(Bold|Italic|Oblique|Light|Semilight|Semibold|SemiBold|Black|Medium|Thin|ExtraLight|Regular|Condensed|Narrow))+$', '', n).strip())
+                except OSError:
+                    pass
+            SYS_FONTS.extend(sorted((n for n in names if n), key=str.lower))
+        elif MAC:
+            r = sh([build_tool('fonts')])
+            SYS_FONTS.extend(json.loads(r.stdout or '[]') if r.returncode == 0 else [])
     return SYS_FONTS
 
 
@@ -908,9 +1129,9 @@ def follow(st, mid, t0, t1, box, t=None):
     Without the AI tools (or with too little detail in the box) Vision follows the box forward: scale = its width, no turn."""
     m = meta(mid)
     t = t0 if t is None else min(max(t, t0), t1)
-    if (AI_BIN / 'python').exists():
+    if AI_PY.exists():
         dec, vf = hdr_decode(m)
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'track.py'), str(MEDIA / m['file']), f'{t0:.4f}', f'{t1:.4f}', f'{t:.4f}',
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'track.py'), str(MEDIA / m['file']), f'{t0:.4f}', f'{t1:.4f}', f'{t:.4f}',
                                  str(float(m.get('fps') or 30)), *(f'{box[k]:.5f}' for k in 'xywh'), json.dumps(dec), vf],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=AI_ENV)
         pts, lost = [], [False, False]
@@ -939,7 +1160,7 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     m = meta(mid)
     if m['kind'] != 'video':
         raise ValueError('pick a video clip')
-    if not (AI_BIN / 'python').exists():
+    if not AI_PY.exists():
         raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
     fps = float(m.get('fps') or 30)
     if mode == 'mask':  # an AI mask: SAM 2's outline frames for the clip's mask, at most 30 a second (the mask holds between them)
@@ -986,8 +1207,8 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
                                   'boxes': boxes, 'pick': round((t - t0) * fps), 'box': [b['x'], b['y'], b['w'], b['h']], 'mode': mode,
                                   'engine': 'fast' if quality == 'fast' else 'best', 'dec': dec, 'vf': vf, 'tags': tags, 'seed': str(seed_png) if seed_png else None,
                                   'pp': size['knobs'].get('pp', [[512, 20], [384, 12]]),
-                                  'samapart': size['knobs'].get('samapart'), 'nopp': size['knobs'].get('nopp')}))
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  'samapart': size['knobs'].get('samapart'), 'nopp': size['knobs'].get('nopp'), 'venc': venc(68, size=(m['w'], m['h']))}))
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'remove.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env=AI_ENV)  # one pipe: model warnings can't fill a second one and stall it
         engine, said = 'classical', []
         for line in proc.stdout:
@@ -1017,9 +1238,9 @@ def sync_media(ids):
         raise ValueError('pick 2 to 6 recordings')
     if any(not m.get('hasAudio') for m in ms):
         raise ValueError('every angle needs its own sound to be synced: ' + ', '.join(m['name'] for m in ms if not m.get('hasAudio')))
-    if not (AI_BIN / 'python').exists():
+    if not AI_PY.exists():
         raise ValueError('syncing needs the on-device AI tools (ai/setup.sh)')
-    r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'sync.py'), *[str(MEDIA / m['file']) for m in ms]], capture_output=True, text=True, env=AI_ENV, timeout=600)
+    r = subprocess.run([*AI_RUN, str(AI_DIR / 'sync.py'), *[str(MEDIA / m['file']) for m in ms]], capture_output=True, text=True, env=AI_ENV, timeout=600)
     if r.returncode:
         raise RuntimeError((r.stderr or 'sync failed').strip().splitlines()[-1])
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -1031,7 +1252,7 @@ def mask_preview(mid, t, box, points=None, purpose='remove'):
     m = meta(mid)
     if m['kind'] != 'video':
         raise ValueError('pick a video clip')
-    if not (AI_BIN / 'python').exists() or not (AI_DIR / 'vendor' / 'sam2' / 'checkpoints' / 'sam2.1_hiera_small.pt').exists():
+    if not AI_PY.exists() or not (AI_DIR / 'vendor' / 'sam2' / 'checkpoints' / 'sam2.1_hiera_small.pt').exists():
         raise RuntimeError('SAM 2 is not installed (README: On-device AI)')
     t, b = fnum(t, 0, m['duration']), {k: fnum((box or {}).get(k), 0, 1) for k in 'xywh'}
     if b['w'] < 0.004 or b['h'] < 0.004:
@@ -1055,7 +1276,7 @@ def isolate(st, mid, keep='voice'):
     m, keep = meta(mid), keep if keep in ('voice', 'music', 'stems') else 'music'
     if not m.get('hasAudio'):
         raise ValueError('this clip has no sound')
-    if not (AI_BIN / 'python').exists():
+    if not AI_PY.exists():
         raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
     memo = CACHE / f'{mid}.isolate.json'
     done = json.loads(memo.read_text()) if memo.exists() else {}
@@ -1063,12 +1284,12 @@ def isolate(st, mid, keep='voice'):
         return {'stems': done['stems']}
     if keep != 'stems' and done.get(keep) and (MEDIA / f"{done[keep]}.json").exists():
         return {'media': done[keep]}
-    with ai_slot('isolate', st, m['duration'] * (2 if keep == 'stems' else 1)), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+    with ai_slot('isolate', st, m['duration'] * (2 if keep == 'stems' else 1)) as t, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         wav = Path(td) / 'in.wav'
         if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(MEDIA / m['file']), '-vn', '-ac', '2', '-ar', '44100', str(wav)]).returncode:
             raise RuntimeError('could not read the sound')
         two = [] if keep == 'stems' else ['--two-stems', 'vocals']  # stems: vocals, drums, bass, other
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', '-m', 'demucs', *two, '-d', 'mps', '-o', td, str(wav)],
+        proc = subprocess.Popen([*AI_RUN, '-m', 'demucs', *two, '-d', t['dev'], '-o', td, str(wav)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env={**AI_ENV, 'PYTORCH_ENABLE_MPS_FALLBACK': '1'})
         tail = ''
         while chunk := proc.stdout.read(256):  # tqdm "11.7/23.4 [" (seconds of audio) -> progress
@@ -1108,7 +1329,7 @@ def matte(st, mid, t0=None, t1=None):
         pro, out, src = Path(td) / 'cut.mov', Path(td) / 'cut.webm', MEDIA / m['file']
         if t0 is not None and t1 is not None and (t0 > 0.05 or t1 < m['duration'] - 0.05):  # cut the range first (Apple's encoder, near lossless)
             rng = Path(td) / 'range.mov'
-            r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', '-c:v', 'h264_videotoolbox', '-q:v', '80',
+            r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}', '-i', str(src), '-map', '0:v:0', '-map', '0:a?', *venc(80, size=(m['w'], m['h'])),
                     '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', str(rng)])
             if r.returncode:
                 raise RuntimeError(plain('Cutting the range', r.stderr, r.returncode))
@@ -1145,7 +1366,7 @@ def reverse(st, mid):
         for i in range(n):
             f = Path(td) / f'r{i:04d}.mkv'
             r = sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{i * 2:.3f}', '-t', '2', '-i', str(MEDIA / m['file']),
-                    *(['-vf', 'reverse', '-c:v', 'h264_videotoolbox', '-q:v', '70'] if video else ['-vn']),
+                    *(['-vf', 'reverse', *venc(70, size=(m['w'], m['h']))] if video else ['-vn']),
                     *(['-af', 'areverse', '-c:a', 'pcm_s16le'] if m['hasAudio'] else ['-an']), str(f)])
             if r.returncode:
                 raise RuntimeError(plain('Reversing', r.stderr, r.returncode))
@@ -1171,7 +1392,7 @@ def stabilize(st, mid):
         out = Path(td) / 'stab.mp4'
         vf = f"deshake=rx=48:ry=48:edge=mirror,crop=trunc(iw*0.92/2)*2:trunc(ih*0.92/2)*2,scale={even(m['w'])}:{even(m['h'])}"
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-i', str(MEDIA / m['file']),
-                    '-vf', vf, '-c:v', 'h264_videotoolbox', '-q:v', '68', '-c:a', 'copy', '-movflags', '+faststart', str(out)],
+                    '-vf', vf, *venc(68, size=(m['w'], m['h'])), '-c:a', 'copy', '-movflags', '+faststart', str(out)],
                    m['duration'], lambda x: st.update(progress=0.95 * x))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (stabilized).mp4", fh, out.stat().st_size, background=False)
@@ -1192,7 +1413,7 @@ def denoise(st, mid, t0, t1, strength='light'):
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'denoised.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}',
-                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}{nr}', '-c:v', 'h264_videotoolbox', '-q:v', '72', '-c:a', 'copy',
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}{nr}', *venc(72, size=(m['w'], m['h'])), '-c:a', 'copy',
                     '-movflags', '+faststart', str(out)], t1 - t0, lambda x: st.update(progress=0.95 * x), 'Reducing the noise')
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (denoised).mp4", fh, out.stat().st_size, background=False)
@@ -1284,11 +1505,11 @@ def retouch_job(m, t0, dur, p, out, lm, still=False):
                 tags += [opt, m[key]]
     return {'src': str(MEDIA / m['file']), 'out': str(out), 't0': t0, 'dur': dur, 'fps': float(m.get('fps') or 30), 'w': m['w'], 'h': m['h'],
             'dec': dec, 'vf': vf, 'tags': tags, 'mat': '601' if not dec and m.get('cs') in ('bt470bg', 'smpte170m') else '709',
-            'p': p, 'lm': str(lm), 'still': still, 'detect': build_tool('retouch'), 'max': 1920}
+            'p': p, 'lm': str(lm), 'still': still, 'detect': build_tool('retouch'), 'max': 1920, 'venc': venc(85, size=(m['w'], m['h']))}
 
 
 def run_retouch(jf, what):
-    r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'retouch.py'), str(jf)], capture_output=True, text=True, env=AI_ENV, timeout=120)
+    r = subprocess.run([*AI_RUN, str(AI_DIR / 'retouch.py'), str(jf)], capture_output=True, text=True, env=AI_ENV, timeout=120)
     if r.returncode:
         raise RuntimeError(f'{what} failed: ' + ((r.stderr or r.stdout).strip().splitlines() or ['no output'])[-1][-300:])
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -1297,7 +1518,7 @@ def run_retouch(jf, what):
 def retouch_preview(mid, t, p):
     """One frame retouched (the paused frame), as a PNG: the sliders' live preview. The frame's landmarks are cached."""
     m = meta(mid)
-    if m['kind'] != 'video' or not (AI_BIN / 'python').exists():
+    if m['kind'] != 'video' or not AI_PY.exists():
         raise ValueError('retouch works on video clips (and needs the on-device AI tools: ai/setup.sh)')
     t = fnum(t, 0, max(0.0, m['duration'] - 1 / (m.get('fps') or 30)))
     lm = CACHE / f'rt_{mid}_{t:.4f}.lm'
@@ -1316,7 +1537,7 @@ def retouch(st, mid, t0, t1, p):
     m, p = meta(mid), retouch_params(p)
     if m['kind'] != 'video' or m.get('alpha') or m.get('trans'):
         raise ValueError('retouch works on video clips without transparency')
-    if not (AI_BIN / 'python').exists():
+    if not AI_PY.exists():
         raise RuntimeError('the on-device AI tools are not installed (README: On-device AI)')
     t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
     if t1 - t0 < 1 / (m.get('fps') or 30):
@@ -1340,7 +1561,7 @@ def retouch(st, mid, t0, t1, p):
         if not found:
             raise RuntimeError('no face or body found in this clip')
         jf.write_text(json.dumps(retouch_job(m, t0, t1 - t0, p, out, lm)))
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'retouch.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'retouch.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env=AI_ENV)
         said = []
         for line in proc.stdout:
@@ -1372,7 +1593,7 @@ def enhance(st, mid, t0, t1, op, opt):
     m = meta(mid)
     if m['kind'] != 'video' or m.get('alpha'):
         raise ValueError('AI enhance works on video without transparency')
-    if not (AI_BIN / 'python').exists() or not (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():
+    if not AI_PY.exists() or not (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():
         raise RuntimeError('AI enhance needs the on-device AI tools (run ai/setup.sh)')
     fps = float(m.get('fps') or 30)
     t0, t1 = fnum(t0, 0, m['duration']), fnum(t1, 0, m['duration'])
@@ -1388,8 +1609,8 @@ def enhance(st, mid, t0, t1, op, opt):
     with ai_slot(op, st, units) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out, jf = Path(td) / 'enhanced.mp4', Path(td) / 'job.json'
         jf.write_text(json.dumps({'op': op, 'src': str(MEDIA / m['file']), 'out': str(out), 't0': t0, 'dur': t1 - t0, 'fps': fps, 'w': even(m['w']), 'h': even(m['h']),
-                                  'dec': dec, 'vf': vf, 'tags': src_tags(m, dec), **size['knobs'], **opt}))
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'enhance.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  'dec': dec, 'vf': vf, 'tags': src_tags(m, dec), **size['knobs'], **opt, 'venc': venc(68, size=(m['w'], m['h'])), 'venc_big': venc(68, codec='hevc')}))
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'enhance.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # one pipe, as with removal; weights come from setup.sh
         said = []
         for line in proc.stdout:
@@ -1418,7 +1639,7 @@ def relight_preview(mid, t, light):
     m = meta(mid)
     if m['kind'] != 'video' or m.get('alpha'):
         raise ValueError('relight works on video without transparency')
-    if not (AI_BIN / 'python').exists():
+    if not AI_PY.exists():
         raise RuntimeError('relight needs the on-device AI tools (run ai/setup.sh)')
     dec, vf = hdr_decode(m)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
@@ -1440,8 +1661,8 @@ def deflicker(st, mid, t0, t1):
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'deflickered.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{t0:.6f}', '-t', f'{t1 - t0:.6f}',
-                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}format=yuv444p,deflicker=size=9:mode=pm', '-c:v', 'h264_videotoolbox',
-                    '-q:v', '72', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(out)], t1 - t0, lambda x: st.update(progress=0.95 * x), 'Deflickering')
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-map', '0:a:0?', '-vf', f'{vf}format=yuv444p,deflicker=size=9:mode=pm', *venc(72, size=(m['w'], m['h'])),
+                    '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(out)], t1 - t0, lambda x: st.update(progress=0.95 * x), 'Deflickering')
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (deflickered).mp4", fh, out.stat().st_size, background=False)
     return {'media': new['id']}
@@ -1460,7 +1681,7 @@ def slowmo(st, mid, t0, t1, factor, engine='fast'):
         out = Path(td) / 'smooth.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-ss', f'{t0:.4f}', '-t', f'{t1 - t0:.4f}',
                     '-i', str(MEDIA / m['file']), '-vf', f'minterpolate=fps={fps:g}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',
-                    '-c:v', 'h264_videotoolbox', '-q:v', '68', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(out)],
+                    *venc(68, size=(m['w'], m['h'])), '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(out)],
                    t1 - t0, lambda x: st.update(progress=0.95 * x))
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (smooth {factor}x).mp4", fh, out.stat().st_size, background=False)
@@ -1487,7 +1708,7 @@ def ramp_copy(st, mid, t0, t1, mp, fps):
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out = Path(td) / 'ramp.mp4'
         run_ffmpeg(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *dec, '-ss', f'{s0:.6f}', '-t', f'{t1 - s0 + 1 / sf:.6f}',
-                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-an', '-vf', vf, '-c:v', 'h264_videotoolbox', '-q:v', '72', '-g', f'{round(fps)}',
+                    '-i', str(MEDIA / m['file']), '-map', '0:v:0', '-an', '-vf', vf, *venc(72, size=(m['w'], m['h'])), '-g', f'{round(fps)}',
                     '-movflags', '+faststart', str(out)], mp[-1][1], lambda x: st.update(progress=0.9 * x), 'Rendering the ramp')
         with open(out, 'rb') as fh:
             new = import_file(f"{Path(m['name']).stem} (ramp).mp4", fh, out.stat().st_size, background=False, key=key)
@@ -1537,12 +1758,14 @@ def speech(mid):
     segs = [[float(a) / 100, float(b) / 100] for a, b in re.findall(r'start = ([\d.]+), end = ([\d.]+)', v.stdout)]  # centiseconds
     tmp = out.with_suffix('.tmp')
     tmp.write_text(json.dumps(segs))
-    tmp.replace(out)
+    retry(tmp.replace, out)
     return segs
 
 
 AI_DIR = Path(__file__).resolve().parent / 'ai'
-AI_BIN = AI_DIR / '.venv' / 'bin'
+AI_BIN = AI_DIR / '.venv' / ('Scripts' if WIN else 'bin')
+AI_PY = AI_BIN / ('python.exe' if WIN else 'python')
+AI_RUN = [str(AI_PY), *(['-X', 'utf8'] if WIN else []), '-I']  # (-I ignores PYTHONUTF8: the AI scripts read and print UTF-8 on Windows too)
 # PyTorch's GPU cache grows to 1.7x the GPU budget (~48 GB on this 36 GB Mac) before it frees anything, and on a Mac that is
 # system memory: stock ProPainter on a head-sized hole took 30 GB and swapped for 15 minutes. Capped, the cache is freed instead
 # (that job in half precision: 54-55 s at a cap of 0.35 or 0.6), and a job that really needs more fails fast rather than swap.
@@ -1550,64 +1773,122 @@ AI_BIN = AI_DIR / '.venv' / 'bin'
 # 0.45 of the working set (~0.78 of memory) above. The ratio is of THIS Mac's working set, so a faked smaller Mac gets the cap
 # in GB that Mac would have.
 MPS_CAP = max(0.5 * min(RAM_GB, 16), 0.45 * 0.78 * RAM_GB) / (0.78 * REAL_GB)
-AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}",
-          'PYTORCH_MPS_HIGH_WATERMARK_RATIO': f'{MPS_CAP:.3f}', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': f'{MPS_CAP * 0.78:.3f}'}
+AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+          **({'PYTORCH_MPS_HIGH_WATERMARK_RATIO': f'{MPS_CAP:.3f}', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': f'{MPS_CAP * 0.78:.3f}'} if MAC else {})}
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
 HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
-# ---------- what every AI / heavy job needs, on every Apple Silicon Mac (8 to 36+ GB): this one table ----------
-# kind: (what, unit of the time estimate, tiers biggest first). A tier: (the smallest Mac it is used on in GB, the size it runs
-# at, budget GB, seconds per unit on the 36 GB M4 Max (32 GPU cores) on an idle Mac, knobs the job reads). A Mac takes the first
-# tier it has the memory for; below the last one the job is refused with that reason. Budget = the most the job's processes held
+# ---------- what every AI / heavy job needs, on every Apple Silicon Mac (8 to 36+ GB) and on Windows / Linux PCs: this one table ----------
+# kind: (what, unit of the time estimate, tiers best first). A tier: (what it needs, the size it runs at, budget GB, seconds per
+# unit, knobs the job reads). What it needs: a number = an Apple Silicon Mac with that much memory (MPS / MLX / Metal / Neural
+# Engine / VideoToolbox; seconds on the 36 GB M4 Max, 32 GPU cores, idle); ('cuda', GPU GB, memory GB) = an NVIDIA GPU with that
+# much video memory; ('cpu', 0, memory GB) = any PC, on its CPU (a Mac uses its own rows). A computer takes the first tier it has
+# the backend (PROFILE['backends']) and the memory for; past the last one the job is refused with that reason.
+# Budget = the most the job's processes held
 # at once (phys_footprint: GPU memory is system memory on these Macs; Ollama's own size for its model), measured one job at a time
-# by tests/allmacs.mjs on servers acting as 8 and 16 GB Macs (README: Every Mac). Kinds in LIGHT skip the queue (CPU only, tiny).
+# by tests/allmacs.mjs on servers acting as 8 and 16 GB Macs (README: Every Mac). The CUDA and CPU rows are ESTIMATES (marked
+# 'est' in /api/ai/caps): sized from the models' published needs, not yet measured; lip sync / talking photo / AI video timings
+# are the ones its code expects on the RTX 4090 PC. Kinds in LIGHT skip the queue (CPU only, tiny).
 AI_BUDGET = {
-    'image': ('Generate an image', 'image', [(12, 'Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps', 9.0, 48, {})]),
+    'image': ('Generate an image', 'image', [(12, 'Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps', 9.0, 48, {})]),  # MLX only: NOT_YET
     'voice': ('AI voiceover', 's of speech', [(0, 'Kokoro-82M bf16 (MLX)', 2.0, 0.8, {})]),
     'clone': ('Voice clone, AI dubbing', 's of speech', [(17, 'Chatterbox multilingual (MLX, full precision) + WavLM check', 7.0, 1.0, {}),  # 6.3 GB measured at 36
                                                          (0, 'Chatterbox multilingual (MLX, bf16 copy) + WavLM check', 3.5, 1.0, {})]),
-    'captions': ('Auto captions, transcript', 's of sound', [(0, 'whisper.cpp large-v3-turbo (Metal) + Silero VAD', 1.5, 0.2, {})]),
-    'isolate': ('Isolate voice, stems', 's of sound', [(0, 'Demucs htdemucs (MPS)', 2.5, 0.3, {})]),
+    'captions': ('Auto captions, transcript', 's of sound', [(0, 'whisper.cpp large-v3-turbo (Metal) + Silero VAD', 1.5, 0.2, {}),
+                                                         (('cuda', 2, 8), 'whisper.cpp large-v3-turbo (CUDA build) + Silero VAD', 1.5, 0.1, {}),
+                                                         (('cpu', 0, 8), 'whisper.cpp large-v3-turbo (CPU) + Silero VAD', 1.5, 1.0, {})]),
+    'isolate': ('Isolate voice, stems', 's of sound', [(0, 'Demucs htdemucs (MPS)', 2.5, 0.3, {}), (('cuda', 4, 8), 'Demucs htdemucs (CUDA)', 2.5, 0.1, {}),
+                                                     (('cpu', 0, 8), 'Demucs htdemucs (CPU, slow)', 2.5, 2.0, {})]),
     'remove': ('Remove object (Best)', 's of video', [(24, 'SAM 2.1 small + ProPainter 720 px, 40-frame batches', 17.0, 25, {'pp': [[720, 40], [512, 20]]}),
                                                      (16, 'SAM 2.1 small + ProPainter 512 px, 20-frame batches', 9.5, 30, {'pp': [[512, 20], [384, 12]], 'samapart': True}),
                                                      (0, 'SAM 2.1 small outline + aligned copy / exemplar fill (no ProPainter: 5 GB)', 3.0, 42,
+                                                      {'nopp': True, 'samapart': True}),
+                                                     (('cuda', 16, 16), 'SAM 2.1 small + ProPainter 720 px, 40-frame batches (CUDA)', 17.0, 10, {'pp': [[720, 40], [512, 20]]}),
+                                                     (('cuda', 8, 16), 'SAM 2.1 small + ProPainter 512 px, 20-frame batches (CUDA)', 9.5, 15,
+                                                      {'pp': [[512, 20], [384, 12]], 'samapart': True}),
+                                                     (('cuda', 4, 8), 'SAM 2.1 small outline + aligned copy / exemplar fill (CUDA, no ProPainter)', 3.0, 20,
                                                       {'nopp': True, 'samapart': True})]),
-    'cutout': ('Cut out object, AI outline', 's of video', [(0, 'SAM 2.1 small bf16 (MPS)', 3.0, 6, {})]),
+    'cutout': ('Cut out object, AI outline', 's of video', [(0, 'SAM 2.1 small bf16 (MPS)', 3.0, 6, {}), (('cuda', 4, 8), 'SAM 2.1 small bf16 (CUDA)', 3.0, 3, {})]),
     'interp': ('AI smooth slow-mo (RIFE)', 's of 1080p', [(24, 'RIFE 4.25 fp16 (MPS), all in-between frames at once', 5.0, 3, {}),
-                                                        (0, 'RIFE 4.25 fp16 (MPS), one in-between frame at a time', 3.0, 7, {'one': True})]),
+                                                        (0, 'RIFE 4.25 fp16 (MPS), one in-between frame at a time', 3.0, 7, {'one': True}),
+                                                        (('cuda', 8, 16), 'RIFE 4.25 fp16 (CUDA), all in-between frames at once', 5.0, 1, {}),
+                                                        (('cuda', 4, 8), 'RIFE 4.25 fp16 (CUDA), one in-between frame at a time', 3.0, 2, {'one': True})]),
     'upscale': ('AI upscale (Real-ESRGAN)', 's of 1080p input', [(16, 'Real-ESRGAN x4v3 fp16, 480 px tiles', 3.0, 12, {'tile': 480}),
-                                                            (0, 'Real-ESRGAN x4v3 fp16, 256 px tiles', 2.0, 24, {'tile': 256})]),
-    'relight': ('Relight (depth)', 's of 1080p', [(0, 'Depth Anything V2 Small fp16 (MPS)', 2.0, 5, {})]),
-    'music': ('AI music', 's of music', [(0, 'MusicGen small, fp16 copy loaded straight to the GPU', 2.5, 1.0, {})]),
+                                                            (0, 'Real-ESRGAN x4v3 fp16, 256 px tiles', 2.0, 24, {'tile': 256}),
+                                                            (('cuda', 8, 16), 'Real-ESRGAN x4v3 fp16, 480 px tiles (CUDA)', 3.0, 4, {'tile': 480}),
+                                                            (('cuda', 4, 8), 'Real-ESRGAN x4v3 fp16, 256 px tiles (CUDA)', 2.0, 8, {'tile': 256})]),
+    'relight': ('Relight (depth)', 's of 1080p', [(0, 'Depth Anything V2 Small fp16 (MPS)', 2.0, 5, {}), (('cuda', 4, 8), 'Depth Anything V2 Small fp16 (CUDA)', 2.0, 2, {})]),
+    'music': ('AI music', 's of music', [(0, 'MusicGen small, fp16 copy loaded straight to the GPU', 2.5, 1.0, {}),
+                                        (('cuda', 6, 16), 'MusicGen small, fp16 on the GPU (CUDA)', 2.5, 0.5, {})]),
     'llm': ('Shorts, translate, hooks, dubbing lines, command bar, smart combine', 'answer',
             [(24, 'qwen3.5:9b (Ollama, Q4), unloaded after 3 idle min', 8.0, 5, {'b': 9, 'ctx': 16384, 'keep': '3m'}),
              (16, 'qwen3.5:9b (Ollama, Q4), unloaded at once', 8.0, 5, {'b': 9, 'ctx': 16384, 'keep': 0}),
-             (0, 'qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once', 3.5, 4, {'b': 4, 'ctx': 8192, 'keep': 0, 'tag': '4b-q4_K_M'})]),
-    'embed': ('Smart search', 'query', [(0, 'nomic-embed-text v1.5 (Ollama)', 0.6, 0.05, {})]),
-    'speakers': ('Speaker labels', 's of sound', [(0, 'WavLM base plus SV (MPS)', 1.0, 0.4, {})]),
-    'matte': ('Remove background', 's of video', [(0, 'Vision person segmentation (ANE)', 1.0, 4, {})]),
+             (0, 'qwen3.5:4b-q4_K_M (Ollama, llama.cpp), 8k context, unloaded at once', 3.5, 4, {'b': 4, 'ctx': 8192, 'keep': 0, 'tag': '4b-q4_K_M'}),
+             (('cuda', 8, 16), 'qwen3.5:9b (Ollama, Q4) on the GPU, unloaded after 3 idle min', 8.0, 3, {'b': 9, 'ctx': 16384, 'keep': '3m'}),
+             (('cuda', 4, 8), 'qwen3.5:4b-q4_K_M (Ollama) on the GPU, 8k context, unloaded at once', 3.5, 3, {'b': 4, 'ctx': 8192, 'keep': 0, 'tag': '4b-q4_K_M'}),
+             (('cpu', 0, 16), 'qwen3.5:4b-q4_K_M (Ollama) on the CPU, 8k context, unloaded at once', 3.5, 30, {'b': 4, 'ctx': 8192, 'keep': 0, 'tag': '4b-q4_K_M'})]),
+    'embed': ('Smart search', 'query', [(0, 'nomic-embed-text v1.5 (Ollama)', 0.6, 0.05, {}), (('cpu', 0, 4), 'nomic-embed-text v1.5 (Ollama)', 0.6, 0.1, {})]),
+    'speakers': ('Speaker labels', 's of sound', [(0, 'WavLM base plus SV (MPS)', 1.0, 0.4, {}), (('cuda', 2, 8), 'WavLM base plus SV (CUDA)', 1.0, 0.1, {}),
+                                                 (('cpu', 0, 8), 'WavLM base plus SV (CPU)', 1.0, 1.0, {})]),
+    'matte': ('Remove background', 's of video', [(0, 'Vision person segmentation (ANE)', 1.0, 4, {})]),  # Apple Vision only: NOT_YET
     'faces': ('Find faces (blur faces, auto reframe)', 's of video', [(0, 'Vision faces / saliency (ANE)', 0.5, 0.7, {})]),
     'retouch': ('Retouch (face)', 's of video', [(0, 'Vision landmarks + OpenCV', 1.0, 3, {})]),
-    'track': ('Motion tracking', 's of video', [(0, 'OpenCV corners (CPU), Vision fallback', 0.6, 0.5, {})]),
-    'beats': ('Beat detection', 's of sound', [(0, 'onset envelope (NumPy, CPU)', 0.3, 0.01, {})]),
-    'proxy4k': ('4K import preview copy', 's of 4K', [(0, '720p H.264, media engine (VideoToolbox)', 1.0, 0.3, {})]),
-    'export': ('Export (above 1440p, or queued)', 's of video', [(0, 'VideoToolbox / x264, CPU threads capped', 3.0, 1.0, {})]),
-    'export8k': ('Export above 4K (up to 8K)', 's of video', [(16, 'HEVC / x264 8K, 8 encoder threads', 9.2, 3, {})]),
+    'track': ('Motion tracking', 's of video', [(0, 'OpenCV corners (CPU), Vision fallback', 0.6, 0.5, {}), (('cpu', 0, 4), 'OpenCV corners (CPU)', 0.6, 0.5, {})]),
+    'beats': ('Beat detection', 's of sound', [(0, 'onset envelope (NumPy, CPU)', 0.3, 0.01, {}), (('cpu', 0, 0), 'onset envelope (NumPy, CPU)', 0.3, 0.01, {})]),
+    'proxy4k': ('4K import preview copy', 's of 4K', [(0, '720p H.264, media engine (VideoToolbox)', 1.0, 0.3, {}),
+                                                    (('cpu', 0, 0), "720p H.264 on this computer's encoder (NVENC / Quick Sync / AMF / x264)", 1.0, 0.3, {})]),
+    'export': ('Export (above 1440p, or queued)', 's of video', [(0, 'VideoToolbox / x264, CPU threads capped', 3.0, 1.0, {}),
+                                                               (('cpu', 0, 0), "this computer's encoder (NVENC / Quick Sync / AMF) / x264, CPU threads capped", 3.0, 1.0, {})]),
+    'export8k': ('Export above 4K (up to 8K)', 's of video', [(16, 'HEVC / x264 8K, 8 encoder threads', 9.2, 3, {}), (('cpu', 0, 16), 'HEVC / x264 8K, 8 encoder threads', 9.2, 3, {})]),
+    # the big video models: an NVIDIA GPU on this computer (local ComfyUI / LatentSync), or the GPU PC over SSH when CUTROOM_GPU_HOST is set (REMOTE)
+    'lipsync': ('Lip sync', 's of video', [(('cuda', 18, 32), 'LatentSync 1.6, 20 steps (its own venv, LATENTSYNC_DIR)', 18.0, 6, {})]),
+    'talk': ('Talking photo', 's of speech', [(('cuda', 24, 32), 'Wan 2.2 S2V 14B fp8 + lightx2v 4 steps, ~480p (ComfyUI)', 22.0, 10, {})]),
+    'video': ('AI video (image to video)', 'clip', [(('cuda', 24, 32), 'Wan 2.2 I2V 14B fp8 + Lightning 4 steps, 720p, 5 s (ComfyUI)', 22.0, 150, {})]),
 }
+REMOTE = {'lipsync', 'talk', 'video'}  # kinds the GPU PC can run instead (opt-in: CUTROOM_GPU_HOST)
+NOT_YET = {'image': 'its model runs on MLX', 'voice': 'Kokoro runs on MLX', 'clone': 'Chatterbox runs on MLX',
+           'matte': "it uses Apple's Vision framework", 'faces': "it uses Apple's Vision framework", 'retouch': "it uses Apple's Vision framework"}
 AI_ROOM = RAM_GB - 4  # what one AI job may peak at: macOS and the editor keep ~4 GB (tests/allmacs.mjs holds every job to it)
 LIGHT = {'beats', 'track', 'proxy4k'}  # CPU / media engine only: never queued (proxies have their own PREP limit)
 FF_THREADS = str(max(2, min(8, CORES - 2)))  # ffmpeg's encoders/filters on big jobs: leave two cores to the editor and macOS
-SLOW = 32 / GPU_CORES  # ponytail: estimates scale by GPU cores only (memory bandwidth and thermals ignored)
+SLOW = 32 / (GPU_CORES or 32)  # Mac rows' estimates scale by GPU cores. ponytail: cores only (memory bandwidth and thermals ignored)
 HEAVY = {'cv': threading.Condition(), 'line': [], 'run': None}  # the ONE heavy-job queue: waiting turns in order, the running one
 AI_HELD = threading.local()
 
 
+def need(n):
+    """An AI_BUDGET row's need as (backend, GPU GB, memory GB): a bare number is an Apple Silicon Mac's memory."""
+    return n if isinstance(n, tuple) else ('apple', n, 0)
+
+
 def tier(kind):
-    """This Mac's size for an AI job (AI_BUDGET), or {'refused': the reason}."""
+    """This computer's size for an AI job (AI_BUDGET), or {'refused': the reason}: the first row whose backend it has and whose
+    memory fits. 'backend': apple / cuda / cpu (or remote: the GPU PC); 'dev': the PyTorch device a job uses (mps / cuda / cpu)."""
     what, unit, rows = AI_BUDGET[kind]
-    for need, size, gb, rate, knobs in rows:
-        if RAM_GB >= need:
-            return {'kind': kind, 'what': what, 'unit': unit, 'size': size, 'gb': gb, 'rate': rate * SLOW, 'knobs': knobs, 'smaller': rows[0][1] != size}
-    return {'kind': kind, 'what': what, 'unit': unit, 'refused': f'{what} needs a Mac with {rows[-1][0]} GB of memory (this one has {RAM_GB:.0f} GB)'}
+    have, vram, base = PROFILE['backends'], PROFILE['gpu'].get('vram') or 0, {'kind': kind, 'what': what, 'unit': unit}
+    for n, size, gb, rate, knobs in rows:
+        b, g, r = need(n)
+        if b in have and (RAM_GB >= g if b == 'apple' else vram >= g and RAM_GB >= r):
+            first = next(row[1] for row in rows if need(row[0])[0] == b)
+            return {**base, 'size': size, 'gb': gb, 'rate': rate * (SLOW if b == 'apple' else 1), 'knobs': knobs, 'smaller': first != size,
+                    'backend': b, 'dev': 'mps' if b == 'apple' else b, **({} if b == 'apple' else {'est': True})}
+    if kind in REMOTE and GPU_HOST:
+        return {**base, 'size': f'on the GPU PC ({GPU_HOST}) over SSH: CUTROOM_GPU_HOST', 'gb': 0, 'rate': rows[0][3], 'knobs': {}, 'smaller': False,
+                'backend': 'remote', 'dev': 'remote', 'est': True}
+    mine = [need(n) for n, *_ in rows if need(n)[0] in have]
+    if mine:  # the right hardware, too little of it
+        b, g, r = mine[-1]
+        why = (f'needs a Mac with {g} GB of memory (this one has {RAM_GB:.0f} GB)' if b == 'apple' else
+               f'needs an NVIDIA GPU with {g} GB (this one has {vram:.0f} GB)' if b == 'cuda' and vram < g else
+               f'needs {r} GB of memory (this computer has {RAM_GB:.0f} GB)')
+    else:
+        bs = list(dict.fromkeys(need(n)[0] for n, *_ in rows))
+        if bs == ['apple']:
+            why = f'needs Apple Silicon ({NOT_YET.get(kind, "a Mac-only engine")}): unavailable on this computer yet, until a CUDA port exists'
+        elif bs == ['cuda']:
+            why = f'needs an NVIDIA GPU with {min(need(n)[1] for n, *_ in rows)} GB'
+        else:
+            why = 'needs ' + ' or '.join({'apple': 'Apple Silicon', 'cuda': 'an NVIDIA GPU'}[b] for b in bs if b != 'cpu')
+    return {**base, 'refused': f'{what} {why}'}
 
 
 @contextlib.contextmanager
@@ -1653,10 +1934,31 @@ def ai_slot(kind, st=None, units=None):
             cv.notify_all()
 
 
+TORCH = {}  # the AI venv's PyTorch device, asked once per server run (main() starts it in the background: importing torch takes seconds)
+
+
+def probe_torch():
+    out = quiet([*AI_RUN, '-c', "import torch; print('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')"],
+                timeout=120).strip() if AI_PY.exists() else ''
+    TORCH['dev'] = out.splitlines()[-1] if out else None
+
+
+def whisper_build():
+    """whisper.cpp's backend, from how it was built (no run): Metal on a Mac, CUDA / Vulkan when its DLLs sit beside it."""
+    exe = shutil.which(WHISPER)
+    if not exe:
+        return None
+    d = Path(exe).resolve().parent
+    return 'metal' if MAC else 'cuda' if any(d.glob('ggml-cuda*')) else 'vulkan' if any(d.glob('ggml-vulkan*')) else 'cpu'
+
+
 def caps():
-    """The AI tab's 'This Mac' panel: every AI / heavy job's size, memory and speed here, or why it is refused."""
-    fake = bool(os.environ.get('CUTROOM_RAM_GB') or os.environ.get('CUTROOM_CORES'))
-    return {'ram': round(RAM_GB, 1), 'cores': CORES, 'gpu': GPU_CORES, 'room': round(AI_ROOM, 1), 'fake': fake, 'real': round(REAL_GB), 'threads': int(FF_THREADS),
+    """The AI tab's 'This computer' panel: what it has, and every AI / heavy job's backend, size, memory and speed here, or why it is refused."""
+    P, sim = PROFILE, PROFILE['sim']
+    torch = ({'apple': 'mps', 'cuda': 'cuda'}.get(P['backends'][0], 'cpu') if sim and sim != 'ram/cores' else TORCH.get('dev', 'checking'))
+    return {'ram': round(RAM_GB, 1), 'cores': CORES, 'gpu': GPU_CORES, 'room': round(AI_ROOM, 1), 'fake': bool(sim), 'real': round(REAL_GB), 'threads': int(FF_THREADS),
+            'os': P['os'], 'gpuName': P['gpu'].get('name', ''), 'vendor': P['gpu'].get('vendor'), 'vram': P['gpu'].get('vram'), 'backends': P['backends'], 'sim': sim,
+            'encoder': ENC['h264'], 'hevc': ENC['hevc'], 'hwaccel': HWACCEL, 'torch': torch, 'whisper': whisper_build(), 'probe_s': REAL['probe_s'],
             'queue': 'one heavy job at a time (AI, big exports); the rest wait their turn', 'jobs': [tier(k) for k in AI_BUDGET],
             'running': HEAVY['run'] and HEAVY['run']['what'], 'waiting': len(HEAVY['line'])}
 
@@ -1676,7 +1978,7 @@ def ai_worker(op, timeout=180, **req):
             p = WORKER['proc']
             if p is None or p.poll() is not None:
                 with open(CACHE / 'ai-worker.log', 'w') as log:
-                    p = WORKER['proc'] = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'worker.py'), '180' if RAM_GB > 16 else '30'],
+                    p = WORKER['proc'] = subprocess.Popen([*AI_RUN, str(AI_DIR / 'worker.py'), '180' if RAM_GB > 16 else '30'],
                                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True,
                                                           env={**AI_ENV, 'HF_HUB_OFFLINE': '1', 'CUTROOM_SMALL': '1' if RAM_GB <= 16 else ''})  # pinned weights only (ai/worker.py pinned()); small: one model at a time
                     threading.Thread(target=p.wait, daemon=True).start()  # reaped when it quits idle (it left a zombie); a blocked wait, no polling
@@ -1889,7 +2191,7 @@ def sfx_file(sid):
             w.setsampwidth(2)
             w.setframerate(SR)
             w.writeframes(pcm.tobytes())
-        tmp.replace(f)
+        retry(tmp.replace, f)
     return f
 
 
@@ -2008,7 +2310,7 @@ def install_packs_(st):
         raise RuntimeError('nothing could be downloaded: ' + '; '.join(skipped)[:400])
     tmp = d / 'index.tmp'
     tmp.write_text(json.dumps({'items': items, 'skipped': skipped, 'installed': time.time()}))
-    tmp.replace(d / 'index.json')
+    retry(tmp.replace, d / 'index.json')
     return {'items': len(items), 'skipped': skipped}
 
 
@@ -2031,7 +2333,7 @@ def pack_media(pid):
 
 def ai_status():
     """Which on-device generators are installed (weights already on disk: a status call never starts a download)."""
-    venv = (AI_BIN / 'python').exists()
+    venv = AI_PY.exists()
     manifests = Path.home() / '.ollama' / 'models' / 'manifests'
     return {'voice': venv and (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').exists(),
             'image': venv and (HOME / 'ai' / 'z-image-turbo-4bit' / 'mflux_model.json').exists(),
@@ -2048,7 +2350,7 @@ def ai_music(st, prompt, dur=20, seed=None):
     with ai_slot('music', st, job['dur']), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         out, jf = Path(td) / 'music.wav', Path(td) / 'job.json'
         jf.write_text(json.dumps({**job, 'out': str(out)}))
-        proc = subprocess.Popen([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'music.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'music.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})  # one pipe, as with removal; never a download mid-job
         said = []
         for line in proc.stdout:
@@ -2097,7 +2399,7 @@ STOCK = ('af_heart', 'am_michael', 'bf_emma', 'bm_george')  # Kokoro's stock voi
 
 
 def clone_ready():
-    return (AI_BIN / 'python').exists() and (HUB / CLONE_HUB / 'snapshots').exists()
+    return AI_PY.exists() and (HUB / CLONE_HUB / 'snapshots').exists()
 
 
 def clones():
@@ -2120,7 +2422,7 @@ def voice_check(ref, td):
         f = CACHE / f'voicecheck-{v}.wav'
         if not f.exists():
             ai_worker('voice', timeout=300, text=CHECK_LINE, voice=v, speed=1.0, out=str(td / f'{v}.wav'))
-            shutil.move(td / f'{v}.wav', f)
+            retry(shutil.move, td / f'{v}.wav', f)
         stock.append(raw16(f, td / f'{v}.raw'))
     sims = ai_worker('embed', timeout=300, files=[raw16(ref, td / 'r.raw'), raw16(td / 'c.wav', td / 'c.raw'), *stock])['sims']
     return {'similarity': sims[0], 'baseline': max(sims[1:]), 'stock': dict(zip(STOCK, sims[1:]))}
@@ -2256,10 +2558,12 @@ def ai_dub(st, voice, lang, items):
     return {'media': md['id'], 'start': 0, 'items': out}
 
 
-# ---------- AI video: image to video on the RTX 4090 PC (ComfyUI + Wan 2.2 14B, Lightning 4 steps), through an SSH tunnel ----------
-GPU_HOST = os.environ.get('CUTROOM_GPU_HOST', 'win4090')  # ~/.ssh/config alias; ComfyUI listens on that PC's 127.0.0.1:8188 only
-COMFY = {'proc': None, 'port': int(os.environ.get('CUTROOM_COMFY_PORT', '18188')), 'log': [], 'lock': threading.Lock()}
-COMFY_DIR = r'B:\AI\ComfyUI_windows_portable'
+# ---------- AI video: image to video (ComfyUI + Wan 2.2 14B, Lightning 4 steps) on this computer's NVIDIA GPU, or on a GPU PC ----------
+# through an SSH tunnel. The GPU PC is opt-in: CUTROOM_GPU_HOST names its ~/.ssh/config alias (its ComfyUI listens on its
+# 127.0.0.1:8188 only); unset, nothing runs anywhere but here (AI_BUDGET's 'lipsync' / 'talk' / 'video' rows decide).
+GPU_HOST = os.environ.get('CUTROOM_GPU_HOST', '')
+COMFY = {'proc': None, 'port': int(os.environ.get('CUTROOM_COMFY_PORT', '18188')), 'log': [], 'lock': threading.Lock(), 'local': False}
+COMFY_DIR = os.environ.get('CUTROOM_COMFY_DIR', r'B:\AI\ComfyUI_windows_portable')  # ai/gpu_setup.ps1 puts ComfyUI there
 VIDEO_NEG = ('blurry, low quality, distorted, deformed, warped face, melting, extra limbs, extra fingers, flicker, jitter, morphing, '
              'watermark, text, subtitles, static frame')
 
@@ -2272,9 +2576,17 @@ def comfy(path, body=None, timeout=60, raw=False):
         return r.read() if raw else json.loads(r.read() or b'{}')
 
 
-def comfy_up(st):
-    """ComfyUI reachable through the tunnel: started on the PC (foreground in this ssh session) if it isn't running.
-    The tunnel and that ComfyUI end with Cutroom's server, which frees the PC's GPU."""
+def gpu_where(kind):
+    """Where a big video model runs: 'local' (this computer's NVIDIA GPU) or 'remote' (the GPU PC, opt-in), else the plain reason."""
+    t = tier(kind)
+    if 'refused' in t:
+        raise RuntimeError(t['refused'])
+    return 'remote' if t['backend'] == 'remote' else 'local'
+
+
+def comfy_up(st, local=False):
+    """ComfyUI reachable on COMFY['port']: started here (local, its own process) or on the PC through the tunnel (foreground
+    in that ssh session) if it isn't running. It ends with Cutroom's server (or 10 idle minutes), which frees the GPU."""
     with COMFY['lock']:
         try:
             comfy('/system_stats', timeout=3)
@@ -2283,10 +2595,18 @@ def comfy_up(st):
             pass
         p = COMFY['proc']
         if not p or p.poll() is not None:
-            launch = f'cd /d {COMFY_DIR} && python_embeded\\python.exe -s ComfyUI\\main.py --port 8188 --disable-auto-launch'
-            p = COMFY['proc'] = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes',
-                                                  '-L', f"{COMFY['port']}:127.0.0.1:8188", GPU_HOST, f'cmd /c "{launch}"'],
-                                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            if local:
+                py = Path(COMFY_DIR) / 'python_embeded' / 'python.exe'
+                if not py.exists():
+                    raise RuntimeError(f'ComfyUI is not installed on this computer (looked in {COMFY_DIR}; CUTROOM_COMFY_DIR names another folder)')
+                cmd = [str(py), '-s', str(Path('ComfyUI') / 'main.py'), '--port', str(COMFY['port']), '--disable-auto-launch']
+            else:
+                launch = f'cd /d {COMFY_DIR} && python_embeded\\python.exe -s ComfyUI\\main.py --port 8188 --disable-auto-launch'
+                cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes',
+                       '-L', f"{COMFY['port']}:127.0.0.1:8188", GPU_HOST, f'cmd /c "{launch}"']
+            p = COMFY['proc'] = subprocess.Popen(cmd, cwd=COMFY_DIR if local else None, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                 text=True, encoding='utf-8', errors='replace')
+            COMFY['local'] = local
             COMFY['log'] = []
             threading.Thread(target=lambda: [COMFY['log'].append(x) for x in p.stdout], daemon=True).start()  # drained, or the pipe fills and ComfyUI stalls
         for i in range(240):  # first start: ComfyUI loads its nodes (~1 min)
@@ -2296,7 +2616,7 @@ def comfy_up(st):
                 return
             except OSError:
                 if p.poll() is not None:
-                    raise RuntimeError(f'the GPU PC ({GPU_HOST}) did not start ComfyUI: ' + ''.join(COMFY['log'][-6:]).strip()[-300:])
+                    raise RuntimeError(f"{'ComfyUI' if local else f'the GPU PC ({GPU_HOST})'} did not start: " + ''.join(COMFY['log'][-6:]).strip()[-300:])
                 time.sleep(1)
         raise RuntimeError('ComfyUI on the GPU PC did not answer in 4 minutes')
 
@@ -2306,6 +2626,9 @@ def comfy_down():
     the PC's other Python services) and the tunnel: the GPU's memory is free again. Closing ssh alone leaves it running."""
     p, COMFY['proc'] = COMFY['proc'], None
     if not p:
+        return
+    if COMFY['local']:  # our own process here: it alone goes
+        p.terminate()
         return
     ps = ("$ProgressPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and "
           "$_.CommandLine -like '*main.py --port 8188 --disable-auto-launch*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
@@ -2328,13 +2651,15 @@ def comfy_idle():  # 10 minutes after the last AI video, the PC gets its GPU bac
 
 
 def ai_video(st, image, prompt, ratio='9:16', quality='fast', seed=None):
+    local = gpu_where('video') == 'local'
     try:
-        return ai_video_(st, image, prompt, ratio, quality, seed)
+        with ai_slot('video', st) if local else contextlib.nullcontext():  # here: its turn in the one heavy-job queue
+            return ai_video_(st, image, prompt, ratio, quality, seed, local)
     finally:
         comfy_idle()
 
 
-def ai_video_(st, image, prompt, ratio='9:16', quality='fast', seed=None):
+def ai_video_(st, image, prompt, ratio='9:16', quality='fast', seed=None, local=False):
     """Image to video on the 4090 PC: Wan 2.2 14B fp8 + the Lightning LoRA (4 steps), 81 frames at 16 fps (~5 s), 720p
     (best: x2 RealESRGAN). The picture is a library image, or a video's frame (pass its still). -> a library item."""
     m = meta(image)
@@ -2343,7 +2668,7 @@ def ai_video_(st, image, prompt, ratio='9:16', quality='fast', seed=None):
     prompt = ' '.join(str(prompt).split())[:1500] or 'gentle natural motion, cinematic'
     w, h = (720, 1280) if ratio == '9:16' else (1280, 720) if ratio == '16:9' else (960, 960)
     seed = int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 2 ** 31
-    comfy_up(st)
+    comfy_up(st, local)
     name = f'cutroom_{uuid.uuid4().hex[:8]}'
     boundary = uuid.uuid4().hex
     data = (MEDIA / m['file']).read_bytes()
@@ -2409,14 +2734,8 @@ GPU_TTL = 60
 
 
 def gpu_configured():
-    """A GPU PC is set up: CUTROOM_GPU_HOST is set, or the default alias is a Host in ~/.ssh/config."""
-    if os.environ.get('CUTROOM_GPU_HOST'):
-        return True
-    try:
-        return any(GPU_HOST in ln.split()[1:] for ln in (Path.home() / '.ssh' / 'config').read_text(errors='replace').splitlines()
-                   if ln.strip().lower().startswith('host '))
-    except OSError:
-        return False
+    """A GPU PC is set up: CUTROOM_GPU_HOST names it (opt-in; off by default)."""
+    return bool(GPU_HOST)
 
 
 def gpu_probe():
@@ -2443,12 +2762,15 @@ def gpu_probe():
 def gpu_status():
     """For the AI tab and the MCP tool list: answers at once from the cache; a check older than GPU_TTL runs again in the
     background (the page asks again when the first one is still out). Lip sync and talking photo show only when reachable."""
+    if any(tier(k).get('backend') == 'cuda' for k in REMOTE):  # this computer's own NVIDIA GPU runs them: nothing to reach
+        return {'host': 'this computer', 'local': True, 'configured': True, 'reachable': True, 'checked': True, 'stale': False}
     c = gpu_configured()
     stale = c and time.time() - GPU['t'] > GPU_TTL
     if stale and not GPU['busy'].locked():
         threading.Thread(target=gpu_probe, daemon=True).start()
     # no timer: nothing runs while nobody asks (CPU/battery). A stale answer says so and the asker asks once more shortly
-    return {'host': GPU_HOST, 'configured': c, 'reachable': c and GPU['reachable'], 'checked': GPU['t'] > 0 or not c, 'stale': bool(stale or GPU['busy'].locked())}
+    return {'host': GPU_HOST, 'local': False, 'configured': c, 'reachable': c and GPU['reachable'], 'checked': GPU['t'] > 0 or not c,
+            'stale': bool(stale or GPU['busy'].locked())}
 
 
 def gpu_reachable():
@@ -2477,13 +2799,15 @@ def comfy_upload(f, name):
 
 
 def ai_talk(st, image, audio, a0=0.0, a1=None, prompt='', seed=None, length=None):
+    local = gpu_where('talk') == 'local'
     try:
-        return ai_talk_(st, image, audio, a0, a1, prompt, seed, length)
+        with ai_slot('talk', st) if local else contextlib.nullcontext():
+            return ai_talk_(st, image, audio, a0, a1, prompt, seed, length, local)
     finally:
         comfy_idle()
 
 
-def ai_talk_(st, image, audio, a0, a1, prompt, seed, length=None):
+def ai_talk_(st, image, audio, a0, a1, prompt, seed, length=None, local=False):
     """A picture speaks the audio's [a0, a1] (up to 30 s): Wan 2.2 S2V 14B (Apache-2.0) + lightx2v 4 steps on the 4090 PC,
     in 77-frame (4.8 s) pieces chained by WanSoundImageToVideoExtend, 16 fps, ~480p, the audio muxed in -> a library item.
     Its first frame comes out washed out (the reference frame): it is replaced by the second.
@@ -2506,8 +2830,9 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed, length=None):
     dur, seed = a1 - a0, int(fnum(seed, 0, 2 ** 31)) if seed is not None else int(time.time() * 1000) % 2 ** 31
     ar = (im.get('w') or 1) / (im.get('h') or 1)
     w, h = (832, 480) if ar > 1.2 else (480, 832) if ar < 0.83 else (640, 640)
-    gpu_reachable()
-    comfy_up(st)
+    if not local:
+        gpu_reachable()
+    comfy_up(st, local)
     have = comfy('/object_info/UNETLoader')['UNETLoader']['input']['required']['unet_name'][0]
     if S2V['unet'] not in have:
         raise RuntimeError('the talking-photo model is not on the GPU PC yet: run ai/gpu_setup.sh on this Mac (18 GB, once)')
@@ -2574,7 +2899,7 @@ def ai_talk_(st, image, audio, a0, a1, prompt, seed, length=None):
     raise RuntimeError('the GPU PC took over an hour')
 
 
-LS_DIR = 'B:/AI/LatentSync'  # ai/gpu_setup.ps1: LatentSync 1.6 at a pinned commit, its own venv, SHA-256-checked weights
+LS_DIR = os.environ.get('CUTROOM_LATENTSYNC_DIR', 'B:/AI/LatentSync')  # ai/gpu_setup.ps1: LatentSync 1.6 at a pinned commit, its own venv, SHA-256-checked weights
 LS_MEM = 3.0e9  # bytes of frames per piece the PC holds (twice over, input + output): 20 s of 720p30, ~4 s of 4K60
 
 
@@ -2587,6 +2912,12 @@ def gpu_run(cmd, timeout):
 
 
 def ai_lipsync(st, media, t0, t1, speed, audio, a0):
+    local = gpu_where('lipsync') == 'local'
+    with ai_slot('lipsync', st) if local else contextlib.nullcontext():
+        return ai_lipsync_(st, media, t0, t1, speed, audio, a0, local)
+
+
+def ai_lipsync_(st, media, t0, t1, speed, audio, a0, local=False):
     """Lip sync REAL footage to new speech (a dub): LatentSync 1.6 on the 4090 PC (ai/lipsync_gpu.py) re-makes only the mouth
     region of each frame and pastes it back, so the shot, its motion and everything outside the face stay the footage's own.
     The clip's source [t0, t1] as it plays at `speed` (timeline time) against the audio from a0 -> a library video of exactly
@@ -2607,13 +2938,15 @@ def ai_lipsync(st, media, t0, t1, speed, audio, a0):
     per = max(int(fps * 2), min(int(fps * 20), int(LS_MEM / (W * H * 3))))
     k = math.ceil(n / per)
     per = math.ceil(n / k)  # even pieces
-    gpu_reachable()
+    if not local:
+        gpu_reachable()
     comfy_down()  # Cutroom's own ComfyUI (an AI video a minute ago) holds the GPU memory this needs
     jid = uuid.uuid4().hex[:10]
     rd = f'B:/AI/cutroom_ls/{jid}'
     dec, vf = hdr_decode(m)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         td = Path(td)
+        rd = td.as_posix() if local else rd  # here: LatentSync reads and writes this folder itself
         src = td / 'src.mp4'  # the clip as it plays: its source span at its speed, the clip's own frame rate, BT.709
         r = sh(['ffmpeg', '-v', 'error', '-y', *dec, '-ss', f'{t0:.4f}', '-i', str(MEDIA / m['file']), '-an', '-sws_flags', 'accurate_rnd+full_chroma_int',
                 '-vf', f'{vf}setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps},tpad=stop=-1:stop_mode=clone,scale={W}:{H},format=yuv420p', '-frames:v', str(n),
@@ -2637,13 +2970,19 @@ def ai_lipsync(st, media, t0, t1, speed, audio, a0):
         (td / 'job.json').write_text(json.dumps({'pieces': pieces, 'w': W, 'h': H, 'fps': str(fps), 'steps': 20, 'guidance': 1.5, 'seed': 1247}))
         st['progress'] = 0.05
         try:
-            gpu_run(f'cmd /c mkdir "{win(rd)}"', 30)
-            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[str(f) for f in sorted(td.iterdir())], f'{GPU_HOST}:{rd}/'], capture_output=True, text=True, timeout=1800)
-            if r.returncode:
-                raise RuntimeError('could not copy the clip to the GPU PC: ' + r.stderr.strip()[-200:])
-            run = f'cd /d {win(LS_DIR)} && .venv\\Scripts\\python.exe -E -s {win(rd)}\\lipsync_gpu.py {win(rd)}\\job.json'
-            p = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', GPU_HOST, f'cmd /c "{run} 2>&1"'],
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            if local:
+                py = Path(LS_DIR) / '.venv' / 'Scripts' / 'python.exe'
+                if not py.exists():
+                    raise RuntimeError(f'LatentSync is not installed on this computer (looked in {LS_DIR}; CUTROOM_LATENTSYNC_DIR names another folder)')
+                cmd = [str(py), '-E', '-s', str(td / 'lipsync_gpu.py'), str(td / 'job.json')]
+            else:
+                gpu_run(f'cmd /c mkdir "{win(rd)}"', 30)
+                r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[str(f) for f in sorted(td.iterdir())], f'{GPU_HOST}:{rd}/'], capture_output=True, text=True, timeout=1800)
+                if r.returncode:
+                    raise RuntimeError('could not copy the clip to the GPU PC: ' + r.stderr.strip()[-200:])
+                run = f'cd /d {win(LS_DIR)} && .venv\\Scripts\\python.exe -E -s {win(rd)}\\lipsync_gpu.py {win(rd)}\\job.json'
+                cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', GPU_HOST, f'cmd /c "{run} 2>&1"']
+            p = subprocess.Popen(cmd, cwd=LS_DIR if local else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
             log, done, faces, t_start = [], 0, 0, time.time()
             for line in p.stdout:
                 log.append(line)
@@ -2653,16 +2992,18 @@ def ai_lipsync(st, media, t0, t1, speed, audio, a0):
                 st['progress'] = 0.05 + 0.85 * min(1, (done + min(0.95, (time.time() - t_start) / (20 + 6 * per / fps))) / k)  # ~6 s per second of 720p + model load
             if p.wait() or done < k:
                 tail = ''.join(log[-8:]).strip()
-                raise RuntimeError('the GPU PC could not lip sync: ' + (re.findall(r'[^\r\n]+', tail) or ['no output'])[-1][-300:])
+                raise RuntimeError(f"{'LatentSync' if local else 'the GPU PC'} could not lip sync: " + (re.findall(r'[^\r\n]+', tail) or ['no output'])[-1][-300:])
             if not faces:
                 raise ValueError('no face found in the clip: lip sync needs a face turned towards the camera')
             outs = [td / f'o{i}.mp4' for i in range(k)]
-            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[f'{GPU_HOST}:{rd}/o{i}.mp4' for i in range(k)], str(td)], capture_output=True, text=True, timeout=1800)
-            if r.returncode or not all(f.exists() for f in outs):
-                raise RuntimeError('could not copy the lip-synced video back from the GPU PC: ' + r.stderr.strip()[-200:])
+            if not local:
+                r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', *[f'{GPU_HOST}:{rd}/o{i}.mp4' for i in range(k)], str(td)], capture_output=True, text=True, timeout=1800)
+            if not all(f.exists() for f in outs):
+                raise RuntimeError('could not copy the lip-synced video back from the GPU PC: ' + r.stderr.strip()[-200:] if not local else 'LatentSync wrote no video')
         finally:
             try:
-                gpu_run(f'cmd /c rmdir /s /q "{win(rd)}"', 60)
+                if not local:
+                    gpu_run(f'cmd /c rmdir /s /q "{win(rd)}"', 60)
             except (OSError, subprocess.TimeoutExpired):
                 pass
         (td / 'list.txt').write_text(''.join(f"file '{f}'\n" for f in outs))
@@ -2726,7 +3067,7 @@ def lift(mid):
     return {'media': c['id']}
 
 
-OLLAMA = shutil.which('ollama') or '/opt/homebrew/bin/ollama'
+OLLAMA = shutil.which('ollama') or (str(Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'Ollama' / 'ollama.exe') if WIN else '/opt/homebrew/bin/ollama')
 LLM_URL = 'http://127.0.0.1:11434'
 
 
@@ -3129,7 +3470,7 @@ SPK_MODEL = AI_DIR / 'vendor' / 'wavlm-base-plus-sv'
 def speakers(st, items, n=0):
     """Who says each caption (speaker diarization on this Mac): ai/diarize.py embeds each caption's own sound with WavLM
     (microsoft/wavlm-base-plus-sv) and clusters the voices. items: [{media, s, e} source seconds | None] -> labels 0.. (-1 = none)."""
-    if not (AI_BIN / 'python').exists() or not (SPK_MODEL / 'pytorch_model.bin').exists():
+    if not AI_PY.exists() or not (SPK_MODEL / 'pytorch_model.bin').exists():
         raise RuntimeError('the speaker model is not installed (run ai/setup.sh)')
     segs, files = [], {}
     for it in list(items)[:5000]:
@@ -3147,7 +3488,7 @@ def speakers(st, items, n=0):
     with ai_slot('speakers', st, sum(s[2] - s[1] for s in segs if s)), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         jf = Path(td) / 'job.json'
         jf.write_text(json.dumps({'model': str(SPK_MODEL), 'segs': segs, 'speakers': int(fnum(n, 0, 12))}))
-        r = subprocess.run([str(AI_BIN / 'python'), '-I', str(AI_DIR / 'diarize.py'), str(jf)], capture_output=True, text=True, env={**AI_ENV, 'HF_HUB_OFFLINE': '1'}, timeout=1800)
+        r = subprocess.run([*AI_RUN, str(AI_DIR / 'diarize.py'), str(jf)], capture_output=True, text=True, env={**AI_ENV, 'HF_HUB_OFFLINE': '1'}, timeout=1800)
     if r.returncode:
         raise RuntimeError('finding the speakers failed: ' + r.stderr.strip()[-300:])
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -4029,7 +4370,7 @@ def afx(au, n):
     elif v == 'echo':  # three taps, 250 / 500 / 750 ms
         f.append('aecho=1:0.8:250|500|750:0.5|0.25|0.125')
     elif v == 'hall':  # the dry sound plus its convolution with the hall's impulse response (the same file the preview uses)
-        f.append(f"asplit=2[hd{n}][hw{n}];amovie={hall_ir()},aformat=sample_rates=48000:channel_layouts=stereo[hi{n}];"
+        f.append(f"asplit=2[hd{n}][hw{n}];amovie='{fpath(hall_ir())}',aformat=sample_rates=48000:channel_layouts=stereo[hi{n}];"
                  f"[hw{n}][hi{n}]afir=irnorm=-1:gtype=none[hx{n}];[hd{n}][hx{n}]amix=inputs=2:normalize=0")
     p = au.get('pan', 0)
     if p:
@@ -4079,7 +4420,7 @@ def hall_ir(kind='hall'):
         tmp = out.with_suffix('.tmp')
         with wave.open(str(tmp), 'wb') as w:
             w.setnchannels(2), w.setsampwidth(2), w.setframerate(sr), w.writeframes(bytes(fr))
-        tmp.replace(out)
+        retry(tmp.replace, out)
     return out
 
 
@@ -4158,9 +4499,9 @@ def graph(p, td):
         else:  # input seek: each clip decodes only its own range
             # VideoToolbox inputs get ONE ffmpeg thread: the media engine decodes, and ffmpeg's default frame threads only held
             # frames (a 4K60 input: 478 MB -> 137 MB, same speed). 4K on a smaller Mac decodes there too; the cores filter.
-            dec = (['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox_vld', '-noautorotate', '-display_rotation', '0', '-threads', '1'] if c.get('hdr')
+            dec = (hdr_dec() if c.get('hdr')
                    else ['-c:v', 'libvpx-vp9'] if c.get('alpha')  # native vp9 decoder drops the alpha plane
-                   else ['-hwaccel', 'videotoolbox', '-threads', '1'] if c['kind'] == 'video' and (c.get('heavy') and not BIG_MAC or p.get('light'))  # Light export: the media engine decodes, the cores stay free
+                   else hw_dec() if c['kind'] == 'video' and (c.get('heavy') and not BIG or p.get('light'))  # Light export: the media engine (or GPU) decodes, the cores stay free
                    else [])
             ins.append([*dec, '-ss', f"{ss(c):.6f}", '-t', f"{c['out'] - ss(c):.6f}", '-i', c['path']])
         return len(ins) - 1
@@ -4176,7 +4517,7 @@ def graph(p, td):
         orientation. '' = leave it full size. Not for cropped clips: the crop then falls between pixels and the picture is
         resampled twice (32 dB against the full-size path; an uncropped clip matches it at 46 dB)."""
         g = c.get('geom')
-        if not c.get('hdr') or not g or not c.get('mw') or c.get('kf') or any((c.get('crop') or {}).values()) or any(c.get(k) for k in ('blur', 'sharp', 'pix', 'beauty', 'mask', 'mask_seq', 'key', 'vig', 'glow')):
+        if not VT or not c.get('hdr') or not g or not c.get('mw') or c.get('kf') or any((c.get('crop') or {}).values()) or any(c.get(k) for k in ('blur', 'sharp', 'pix', 'beauty', 'mask', 'mask_seq', 'key', 'vig', 'glow')):
             return ''
         f = g['w'] / c['mw']  # canvas pixels per source pixel
         if f > 0.75:
@@ -4199,7 +4540,10 @@ def graph(p, td):
             v += 'setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,scale,'
         if c.get('hdr'):  # VideoToolbox HDR (HLG/PQ) -> SDR BT.709, or kept as 10-bit HDR; rotation by hand since autorotate can't touch hw frames
             pre = gpu_size(c)  # 4K into a 1080p canvas: shrunk on the GPU, so the CPU never sees the 4K frames
-            v += (f'scale_vt={pre},' if pre else '') + 'hwdownload,format=p010le,format=yuv420p10le,' if hdr else VT_SDR.replace('scale_vt=', f'scale_vt={pre}:', 1) if pre else VT_SDR
+            if not VT:  # decoded on the CPU (or downloaded from the GPU): 10-bit as it is, or tone mapped by zimg
+                v += 'format=yuv420p10le,' if hdr else SW_SDR
+            else:
+                v += (f'scale_vt={pre},' if pre else '') + 'hwdownload,format=p010le,format=yuv420p10le,' if hdr else VT_SDR.replace('scale_vt=', f'scale_vt={pre}:', 1) if pre else VT_SDR
             v += {90: 'transpose=clock,', 180: 'hflip,vflip,', 270: 'transpose=cclock,'}.get(-c['rot'] % 360, '')
         # round=up: each output frame shows the last source frame at or before its time, as the preview's <video> does
         # (nearest put 59.94 fps footage in a 60 fps project one frame early for half of every 16.7 s)
@@ -4275,14 +4619,14 @@ def graph(p, td):
             a.byteswap()
         f = Path(td) / f'grade{len(list(Path(td).glob("grade*.cube")))}.cube'
         f.write_text('LUT_3D_SIZE 33\n' + ''.join(f'{a[i] / 65535:.6f} {a[i + 1] / 65535:.6f} {a[i + 2] / 65535:.6f}\n' for i in range(0, len(a), 3)))
-        return f"{fmt}lut3d=file='{f}':interp=trilinear"
+        return f"{fmt}lut3d=file='{fpath(f)}':interp=trilinear"
 
     def tone(c):  # the UI's curve as a 1D LUT (exact at 8-bit inputs, like the preview's feComponentTransfer table)
         if not c.get('tone'):
             return ''
         f = Path(td) / f'tone{len(list(Path(td).glob("tone*.cube")))}.cube'
         f.write_text('LUT_1D_SIZE 256\n' + ''.join(f'{v / 255:.6f} {v / 255:.6f} {v / 255:.6f}\n' for v in c['tone']))
-        return f",format=rgb24,lut1d=file='{f}':interp=linear"
+        return f",format=rgb24,lut1d=file='{fpath(f)}':interp=linear"
 
     def vignetted(v, c, tag, dur):  # RGB x the UI's multiplier image, alpha untouched (cutouts stay cut out)
         if not c.get('vig'):
@@ -4312,7 +4656,7 @@ def graph(p, td):
                     last = v
             f = Path(td) / f'{tag}.cmd'
             f.write_text('\n'.join(cmds) + '\n')
-            return f",format=rgba,sendcmd=f='{f}',colorchannelmixer@{tag}=aa={pw_at(kf, 'op', 0):.4f}"
+            return f",format=rgba,sendcmd=f='{fpath(f)}',colorchannelmixer@{tag}=aa={pw_at(kf, 'op', 0):.4f}"
         op = kf[0]['op'] if kf else c['opacity']
         return f',format=rgba,colorchannelmixer=aa={op:.4f}' if op < 1 else ''
 
@@ -4507,7 +4851,7 @@ def graph(p, td):
                 last = v
         path = Path(td) / f'{tag}.cmd'
         path.write_text('\n'.join(lines) + '\n')
-        return f"sendcmd=f='{path}',"
+        return f"sendcmd=f='{fpath(path)}',"
 
     for j, f in enumerate([] if ao else p.get('fx') or []):  # video effects, in order, on everything below the text layer
         op, tag, nxt = f['op'], f'fx{j}', f'X{j}'
@@ -4632,7 +4976,7 @@ def hlg_pq_cube():
         rows = (hlg_to_pq(r / (n - 1), g / (n - 1), b / (n - 1)) for b in range(n) for g in range(n) for r in range(n))  # red fastest (.cube order)
         tmp = f.with_suffix('.part')
         tmp.write_text(f'LUT_3D_SIZE {n}\n' + ''.join(f'{x:.7f} {y:.7f} {z:.7f}\n' for x, y, z in rows))
-        tmp.replace(f)
+        retry(tmp.replace, f)
     return f
 
 
@@ -4640,7 +4984,7 @@ def hdr_tail(c, hdr):
     """The end of an HDR main clip's chain: nothing (its 10-bit YUV as it came), or HLG -> PQ through the table in 16-bit RGB."""
     if hdr != 'pq' or not c.get('hdr') or c.get('trc') != 'arib-std-b67':  # PQ footage, or a chunk already made PQ
         return ''
-    return (f",scale=in_color_matrix=bt2020:in_range=tv,format=gbrp16le,lut3d=file='{hlg_pq_cube()}':interp=tetrahedral,"
+    return (f",scale=in_color_matrix=bt2020:in_range=tv,format=gbrp16le,lut3d=file='{fpath(hlg_pq_cube())}':interp=tetrahedral,"
             'scale=out_color_matrix=bt2020:out_range=tv,format=yuv420p10le')
 
 
@@ -4673,7 +5017,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     # VideoToolbox: constant quality (High / Very high = +3 / +5); only a custom bitrate stays -b:v. Its rate control made the
     # same frames softer and different on every export (ring detail 0.31-0.76 over 4 runs, more so under load) and starts
     # soft (~10 frames of warm-up); -maxrate makes it far worse. prio_speed 0: never VT's speed mode (it varies run to run too)
-    vt = lambda c: (['-b:v', br] if mb else ['-q:v', f"{min(98, round(VT_Q[c] + 4 * math.log2(p.get('rate', 1))))}"]) + ['-prio_speed', '0']
+    vt = lambda c: venc(min(98, round(VT_Q[c] + 4 * math.log2(p.get('rate', 1)))), br if mb else None, c, (W, H)) + (['-prio_speed', '0'] if VT else [])
     pf, cs = 'yuv420p', ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
     if hdr:
         cs = ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', HDR_TRC[hdr], '-color_range', 'tv']
@@ -4701,9 +5045,9 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     elif fmt == 'prores4444':  # ProRes 4444 + 16-bit alpha: what Final Cut / Premiere / Resolve read as a transparent clip
         enc, pf = ['-c:v', 'prores_ks', '-profile:v', '4', '-alpha_bits', '16', '-vendor', 'apl0', '-c:a', 'pcm_s16le'], OUT_PIX[(fmt, bool(A))]
     elif fmt == 'hevc':  # "smaller": about 0.55-0.7x H.264's size on DJI footage, ~0.3 dB under it. HDR: Main 10
-        enc = ['-c:v', 'hevc_videotoolbox', *vt('hevc'), '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
-        if hdr:
-            enc[2:2], pf = ['-profile:v', 'main10'], 'p010le'
+        enc = [*vt('hevc'), '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k']
+        if hdr:  # (x265 takes 10-bit as yuv420p10le, the hardware encoders as p010le)
+            enc[2:2], pf = ['-profile:v', 'main10'], 'yuv420p10le' if enc[1] == 'libx265' else 'p010le'
     elif fmt in ('av1', 'av1webm'):  # SVT-AV1 preset 8, VBR to about HEVC's bitrate
         enc = ['-c:v', 'libsvtav1', '-preset', '8', '-b:v', f"{min(100000, int(kb(0.5, 1000)[:-1]))}k",  # (SVT-AV1 takes at most 100 Mbps)
                *(['-c:a', 'libopus', '-b:a', '160k'] if fmt == 'av1webm' else ['-c:a', 'aac', '-b:a', '192k'])]
@@ -4714,7 +5058,7 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         enc = ['-c:v', 'libx264', '-preset', 'medium' if p['quality'] == 'best' else 'veryfast',  # FF_THREADS (8 at most): 8K took 12.5 -> 9.2 GB, 8 % slower
                *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
-        enc = ['-c:v', 'h264_videotoolbox', *vt('h264'), '-profile:v', 'high', '-level', h264_level(W, H, F), '-c:a', 'aac', '-b:a', '192k']
+        enc = [*vt('h264'), '-profile:v', 'high', *(['-level', h264_level(W, H, F)] if VT else []), '-c:a', 'aac', '-b:a', '192k']
     if p.get('audio_file') and amap == ['-map', '[aout]']:  # render(): the mix, made before the picture
         amap, fg = ['-map', f"{ins.count('-i')}:a"], fg + ';[aout]anullsink'
         ins = ins + ['-i', p['audio_file']]
@@ -4751,7 +5095,7 @@ def plain(what, err, code=0):
     elif any(k in e for k in ('moov atom not found', 'invalid data found', 'error while decoding', 'corrupt', 'truncat', 'end of file')):
         why = f'a file is damaged or incomplete{of}'
     elif 'permission denied' in e or 'not permitted' in e:
-        why = f'macOS did not allow reading or writing a file{of}'
+        why = f"{'macOS' if MAC else 'the system'} did not allow reading or writing a file{of}"
     else:
         last = next((x for x in reversed(err.strip().splitlines()) if x.strip()), '')
         last = re.sub(r'\[[^\]]*@[^\]]*\]|0x[0-9a-fA-F]+', '', re.sub(r"(/[^\s:'\"]+)", lambda m_: name(m_[1]), last))
@@ -4762,8 +5106,8 @@ def plain(what, err, code=0):
 PROCS = {}  # job id -> its running ffmpeg (Cancel kills it)
 
 
-def run_ffmpeg(cmd, dur, report, what='Rendering', job=None, stdin=None):
-    proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+def run_ffmpeg(cmd, dur, report, what='Rendering', job=None, stdin=None, low=False):
+    proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **(LOW_KW if low else {}))
     if job:
         PROCS[job] = proc
     err = []
@@ -4923,7 +5267,7 @@ def render_gpu(p, td, out, report, what, job, intermediate=False):
         log.seek(0)
         e = log.read()
         log.close()
-        if pr.returncode and pr.returncode != -signal.SIGPIPE and not ('Broken pipe' in e or 'Error writing' in e and not gpu):
+        if pr.returncode and pr.returncode != -getattr(signal, 'SIGPIPE', 13) and not ('Broken pipe' in e or 'Error writing' in e and not gpu):
             raise RuntimeError(plain(what, e, pr.returncode))
     return err
 
@@ -5226,7 +5570,7 @@ def export(job, p):
                 st.update(state='done', progress=1.0, media=m['id'])
                 return
             dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
-            shutil.move(out, dst)
+            retry(shutil.move, out, dst)
         st.update(state='done', progress=1.0, ended=time.time(), file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}))  # dir: the page names the folder (a library elsewhere has its own)
     except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
         if st.get('cancel'):
@@ -5288,7 +5632,7 @@ def write_version(pid, proj, name=None, named=False):
     vid = f"{t}{'n' if named else 'a'}"
     tmp = d / f'.{vid}.tmp'
     tmp.write_bytes(gzip.compress(json.dumps({'name': name, 'p': proj}).encode()))
-    tmp.replace(d / f'{vid}.json.gz')
+    retry(tmp.replace, d / f'{vid}.json.gz')
     for f in sorted(d.glob('*a.json.gz'))[:-VERSION_KEEP]:
         f.unlink()
     return vid
@@ -5482,7 +5826,7 @@ def package(st, pid, trim=False):
                             save_meta({**meta(row['id']), 'sha256': h.hexdigest()})
                 z.writestr('project.json', json.dumps(p))
                 z.writestr('manifest.json', json.dumps(man, indent=1))
-            part.replace(out)
+            retry(part.replace, out)
         finally:
             part.unlink(missing_ok=True)
     return {'file': out.name, 'dir': str(EXPORTS).replace(str(Path.home()), '~', 1), 'size': out.stat().st_size, 'items': items,
@@ -5582,7 +5926,7 @@ def open_package(st, path, drop=False):
         PROJ.mkdir(parents=True, exist_ok=True)
         tmp = PROJ / f".{p['id']}.tmp"
         tmp.write_text(json.dumps(p))
-        tmp.replace(PROJ / f"{p['id']}.json")
+        retry(tmp.replace, PROJ / f"{p['id']}.json")
         return {'project': p['id'], 'name': p['name'], 'media': len(remap), 'reused': reused, 'fonts': len(fam), 'luts': len(lut)}
     except zipfile.BadZipFile:
         raise ValueError('not a Cutroom package (not a zip file)')
@@ -5810,7 +6154,7 @@ class App(BaseHTTPRequestHandler):
                 d.mkdir(parents=True, exist_ok=True)
                 tmp = d / f'.t{int(m[2])}.{uuid.uuid4().hex[:6]}'
                 tmp.write_bytes(data)
-                tmp.replace(d / f't{int(m[2])}.png')  # whole or not there: a plan checked mid-write saw a file that was still being written
+                retry(tmp.replace, d / f't{int(m[2])}.png')  # whole or not there: a plan checked mid-write saw a file that was still being written
                 return self.reply({'ok': True})
             if u.path == '/api/package/open' and 'name' in parse_qs(u.query):  # a .cutroom's bytes (Open package…, or one dropped on the window)
                 n = int(self.headers.get('Content-Length') or 0)
@@ -5875,7 +6219,7 @@ class App(BaseHTTPRequestHandler):
                 (HOME / 'trash' / 'luts').mkdir(parents=True, exist_ok=True)
                 for f in (HOME / 'luts' / f'{m[1]}.cube', HOME / 'luts' / f'{m[1]}.json'):
                     if f.exists():
-                        shutil.move(str(f), str(unique(HOME / 'trash' / 'luts' / f.name)))
+                        retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'luts' / f.name)))
                 return self.reply({'ok': True})
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/poster', u.path)) and (PROJ / f'{m[1]}.json').exists():  # the editor's preview as a JPEG, sent when you leave the project
                 jpg = base64.b64decode(str(body.get('jpg', '')), validate=True)
@@ -5884,7 +6228,7 @@ class App(BaseHTTPRequestHandler):
                 CACHE.mkdir(parents=True, exist_ok=True)
                 tmp = CACHE / f'.poster_{m[1]}.{uuid.uuid4().hex[:8]}.tmp'  # (two leaves at once each write their own)
                 tmp.write_bytes(jpg)
-                tmp.replace(CACHE / f'poster_{m[1]}.jpg')
+                retry(tmp.replace, CACHE / f'poster_{m[1]}.jpg')
                 return self.reply({'ok': True})
             if u.path == '/api/save_subs':  # subtitles (SRT / WebVTT / timed TXT made by the editor) into the exports folder
                 text = str(body.get('text', ''))
@@ -5985,7 +6329,7 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/ai/clones/([a-f0-9]{12})/trash', u.path):  # reversible, like media: voices/<id>.* -> trash/voices
                 (HOME / 'trash' / 'voices').mkdir(parents=True, exist_ok=True)
                 for f in VOICES.glob(f'{m[1]}.*'):
-                    shutil.move(f, HOME / 'trash' / 'voices' / f.name)
+                    retry(shutil.move, f, HOME / 'trash' / 'voices' / f.name)
                 return self.reply({'clones': clones()})
             if u.path == '/api/transcript':  # timestamped sentences (the MCP transcript tool)
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
@@ -6037,7 +6381,7 @@ class App(BaseHTTPRequestHandler):
                 (HOME / 'trash' / 'media').mkdir(parents=True, exist_ok=True)
                 for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
-                        shutil.move(str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
+                        retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
                 for f in CACHE.glob(f'{m[1]}*.pcm'):  # the preview's sound is remade from the file if it's restored
                     f.unlink(missing_ok=True)
                 return self.reply({'ok': True})
@@ -6050,8 +6394,8 @@ class App(BaseHTTPRequestHandler):
                 src = next((f for f in sorted(tr.glob(f'{Path(info["file"]).stem}*{Path(info["file"]).suffix}'), key=lambda f: -f.stat().st_mtime) if f.suffix != '.json'), None)
                 if not src:
                     raise ValueError('its file is not in the trash')
-                shutil.move(str(src), str(MEDIA / info['file']))
-                shutil.move(str(js[-1]), str(MEDIA / f'{m[1]}.json'))
+                retry(shutil.move, str(src), str(MEDIA / info['file']))
+                retry(shutil.move, str(js[-1]), str(MEDIA / f'{m[1]}.json'))
                 return self.reply({'ok': True, 'id': m[1]})
             if u.path == '/api/ramp':  # the knot table is checked here: it goes into an ffmpeg expression
                 t0, t1, fps, mp = fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), fnum(body['fps'], 1, 120), body['map']
@@ -6077,9 +6421,9 @@ class App(BaseHTTPRequestHandler):
                 if f.exists():
                     (HOME / 'trash').mkdir(exist_ok=True)
                     with VERSION_LOCK:
-                        shutil.move(str(f), str(to := unique(HOME / 'trash' / f.name)))
+                        retry(shutil.move, str(f), str(to := unique(HOME / 'trash' / f.name)))
                         if m[1] == 'projects' and versions_dir(m[2]).is_dir():  # its history goes with it: trash/<id> (2).versions beside trash/<id> (2).json
-                            shutil.move(str(versions_dir(m[2])), str(unique(to.with_suffix('.versions'))))
+                            retry(shutil.move, str(versions_dir(m[2])), str(unique(to.with_suffix('.versions'))))
                 return self.reply({'ok': True})
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions(?:/(\d{13}[an])/(restore|delete))?', u.path)) and (PROJ / f'{m[1]}.json').exists():
                 f = PROJ / f'{m[1]}.json'
@@ -6096,11 +6440,13 @@ class App(BaseHTTPRequestHandler):
                         write_version(m[1], cur, 'Before restore')
                     tmp = PROJ / f'.{m[1]}.tmp'
                     tmp.write_text(json.dumps(p))
-                    tmp.replace(f)
+                    retry(tmp.replace, f)
                 return self.reply(p)
             if u.path == '/api/reveal':  # Show in Finder, or play: open it in the Mac's default player (QuickTime)
                 f = EXPORTS / Path(str(body.get('file', ''))).name
-                if f.is_file():
+                if f.is_file() and WIN:  # the default player, or Explorer with the file selected
+                    os.startfile(f) if body.get('play') else subprocess.Popen(['explorer', f'/select,{f}'])
+                elif f.is_file():
                     subprocess.Popen(['open', str(f)] if body.get('play') else ['open', '-R', str(f)])
                 return self.reply({'ok': f.is_file()})
             self.reply({'error': 'not found'}, 404)
@@ -6131,13 +6477,65 @@ class App(BaseHTTPRequestHandler):
                     except (OSError, ValueError) as e:  # history is a bonus: it never blocks a save
                         print(f'version of {m[2]} not kept: {e}', file=sys.stderr, flush=True)
                 tmp.write_text(json.dumps(body))
-                tmp.replace(f)  # atomic: a crash mid-save never truncates the file
+                retry(tmp.replace, f)  # atomic: a crash mid-save never truncates the file
             self.reply({'ok': True})
         except ValueError as e:
             self.reply({'error': str(e)}, 400)
 
 
 # ---------- self-check ----------
+
+PROFILES = ('mac:8', 'mac:16', 'mac:36', 'win:cpu:16', 'win:cuda:12:32', 'win:cuda:24:64')
+
+
+def profile_choices(spec, host=''):
+    """Every AI_BUDGET job's tier on a simulated computer (a CUTROOM_PROFILE spec), with the GPU PC `host` opted in or not."""
+    keep = {k: globals()[k] for k in ('PROFILE', 'RAM_GB', 'SLOW', 'GPU_HOST')}
+    P = sim_profile(REAL, spec)
+    globals().update(PROFILE=P, RAM_GB=P['ram'], SLOW=32 / (P['gpu'].get('cores') or 32), GPU_HOST=host)
+    try:
+        return {k: tier(k) for k in AI_BUDGET}
+    finally:
+        globals().update(keep)
+
+
+def check_profiles():
+    """server.py --profiles (and the selftest): what each simulated computer runs, job by job (backend + size), or the exact refusal."""
+    want = {  # (computer, job) -> (backend, its size starts with) or the start of the refusal
+        ('mac:8', 'image'): 'Generate an image needs a Mac with 12 GB of memory (this one has 8 GB)',
+        ('mac:8', 'remove'): ('apple', 'SAM 2.1 small outline + aligned copy'), ('mac:16', 'remove'): ('apple', 'SAM 2.1 small + ProPainter 512 px'),
+        ('mac:36', 'remove'): ('apple', 'SAM 2.1 small + ProPainter 720 px'), ('mac:16', 'llm'): ('apple', 'qwen3.5:9b (Ollama, Q4), unloaded at once'),
+        ('mac:16', 'video'): 'AI video (image to video) needs an NVIDIA GPU with 24 GB',
+        ('win:cpu:16', 'voice'): 'AI voiceover needs Apple Silicon (Kokoro runs on MLX): unavailable on this computer yet, until a CUDA port exists',
+        ('win:cpu:16', 'matte'): "Remove background needs Apple Silicon (it uses Apple's Vision framework): unavailable on this computer yet",
+        ('win:cpu:16', 'remove'): 'Remove object (Best) needs Apple Silicon or an NVIDIA GPU',
+        ('win:cpu:16', 'llm'): ('cpu', 'qwen3.5:4b-q4_K_M (Ollama) on the CPU'), ('win:cpu:16', 'captions'): ('cpu', 'whisper.cpp large-v3-turbo (CPU)'),
+        ('win:cpu:16', 'isolate'): ('cpu', 'Demucs htdemucs (CPU'), ('win:cpu:16', 'export'): ('cpu', "this computer's encoder"),
+        ('win:cuda:12:32', 'remove'): ('cuda', 'SAM 2.1 small + ProPainter 512 px'), ('win:cuda:12:32', 'interp'): ('cuda', 'RIFE 4.25 fp16 (CUDA), all'),
+        ('win:cuda:12:32', 'llm'): ('cuda', 'qwen3.5:9b (Ollama, Q4) on the GPU'), ('win:cuda:12:32', 'isolate'): ('cuda', 'Demucs htdemucs (CUDA)'),
+        ('win:cuda:12:32', 'video'): 'AI video (image to video) needs an NVIDIA GPU with 24 GB (this one has 12 GB)',
+        ('win:cuda:12:32', 'lipsync'): 'Lip sync needs an NVIDIA GPU with 18 GB (this one has 12 GB)',
+        ('win:cuda:24:64', 'remove'): ('cuda', 'SAM 2.1 small + ProPainter 720 px'), ('win:cuda:24:64', 'video'): ('cuda', 'Wan 2.2 I2V 14B'),
+        ('win:cuda:24:64', 'talk'): ('cuda', 'Wan 2.2 S2V 14B'), ('win:cuda:24:64', 'lipsync'): ('cuda', 'LatentSync 1.6'),
+        ('win:cuda:24:64', 'image'): 'Generate an image needs Apple Silicon (its model runs on MLX): unavailable on this computer yet',
+        ('win:cuda:24:64', 'clone'): 'Voice clone, AI dubbing needs Apple Silicon (Chatterbox runs on MLX)',
+    }
+    for spec in PROFILES:
+        got = profile_choices(spec)
+        print(f'profile {spec}: ' + ', '.join(f'{b} {n}' for b, n in sorted({b: sum(1 for t in got.values() if t.get('backend') == b) for b in ('apple', 'cuda', 'cpu')}.items()) if n)
+              + f", {sum('refused' in t for t in got.values())} refused")
+        for k, t in got.items():
+            print(f"  {k:9} " + (f"refused: {t['refused']}" if 'refused' in t else f"{t['backend']:5} {t['size']}"))
+            w = want.get((spec, k))
+            if isinstance(w, str):
+                assert t.get('refused', '').startswith(w), (spec, k, w, t)
+            elif w:
+                assert t.get('backend') == w[0] and t['size'].startswith(w[1]), (spec, k, w, t)
+        assert all(t.get('backend') in (None, 'apple') for t in got.values()) if spec.startswith('mac') else all(t.get('backend') != 'apple' for t in got.values()), spec
+    far = profile_choices('mac:16', 'win4090')  # the GPU PC opted in: a Mac sends the big video models there, nothing else
+    assert [k for k, t in far.items() if t.get('backend') == 'remote'] == ['lipsync', 'talk', 'video'], far
+    print('profiles ok: every simulated computer gets its backend per job or the plain reason; the GPU PC only when opted in')
+
 
 def selftest():
     """Render synthetic projects end-to-end (single graph + chunked path) and check timing, layers, audio."""
@@ -6221,6 +6619,9 @@ def selftest():
     tA.join(5)
     assert order == ['B cancelled', 'A'] and HEAVY['run'] is None and not HEAVY['line'], (order, HEAVY)
     print('heavy-job queue ok: in order, re-entrant, a cancelled waiter leaves only its own place')
+    print(f"this computer: {REAL['os']} {REAL['arch']}, {REAL['cores']} cores, {REAL['ram']:.0f} GB, GPU {REAL['gpu'] or 'none'}; "
+          f"encoders {ENC['h264']} / {ENC['hevc']}, decode {HWACCEL or 'CPU'} (probed in {REAL['probe_s']} s)")
+    check_profiles()
     if RAM_GB < 12:
         try:
             with ai_slot('image'):
@@ -6286,9 +6687,10 @@ def selftest():
         d.mkdir(parents=True)
     # dub time-fitting on a stub voice (0.1 s of tone per character, 0.3 s of silence around it) and a stub model that halves a
     # line: speech starts on its slot (<= 0.15 s late), ends <= 0.15 s past it, never overlaps the next, atempo 0.8-1.25x
-    keep = {k: globals()[k] for k in ('ai_worker', 'llm', 'VOICES')}
+    keep = {k: globals()[k] for k in ('ai_worker', 'llm', 'VOICES', 'PROFILE')}
     try:
         globals()['VOICES'] = HOME / 'voices'
+        globals()['PROFILE'] = sim_profile(REAL, 'mac:36')  # (the voice model is stubbed: its queue turn needs a computer that has it)
         VOICES.mkdir()
         write_wav(VOICES / 'aaaaaaaaaaaa.wav', 24000, array('h', bytes(4800)))
 
@@ -6720,9 +7122,11 @@ def selftest():
     assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, sm
     df = meta(deflicker({}, L['id'], 0, 1)['media'])
     assert abs(df['duration'] - 1) < 0.1 and df['w'] == L['w'], df
-    if (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():  # RIFE (tests/ai_enhance.mjs measures it on real footage)
+    if AI_PY.exists() and (AI_DIR / 'vendor' / 'enhance' / 'flownet_v4.25.pkl').exists():  # RIFE (tests/ai_enhance.mjs measures it on real footage)
         sm = meta(slowmo({}, L['id'], 0, 1, 4, 'ai')['media'])
         assert abs(sm['fps'] - 120) < 1 and abs(sm['duration'] - 1) < 0.1, ('AI slow-mo', sm)
+    else:
+        print('AI slow-mo (RIFE) skipped: the AI venv or its weights are not installed here')
     rmap = [[0, 0], [0.5, 1], [1, 1.25]]  # speed ramp: 0.5x for the first half second of source, then 2x
     rp = ramp_copy({}, L['id'], 0, 1, rmap, 30)
     rm_, nm = meta(rp['media']), len(list(MEDIA.glob('*.json')))
@@ -6909,10 +7313,12 @@ def selftest():
     err = max(abs(b - round(b * 2) / 2) for b in bt['beats'][1:-1])
     assert abs(bt['bpm'] - 120) < 4 and err < 0.06, (bt['bpm'], err)
     print(f"beats ok: {bt['bpm']} BPM, grid error {err * 1000:.0f} ms")
-    vs = voices()
-    vo = tts('Cutroom voiceover test.', vs[0]['name'], 185)
-    assert vo['kind'] == 'audio' and vo['duration'] > 0.5 and still(L['id'], 1.0)['kind'] == 'image', vo
-    print(f"voiceover + freeze frame ok ({len(vs)} voices, used {vs[0]['name']})")
+    vs = voices()  # the Mac's own voices (say), Windows' (SAPI)
+    if vs:
+        vo = tts('Cutroom voiceover test.', vs[0]['name'], 185)
+        assert vo['kind'] == 'audio' and vo['duration'] > 0.5, vo
+    assert still(L['id'], 1.0)['kind'] == 'image'
+    print(f"voiceover + freeze frame ok ({len(vs)} voices, used {vs[0]['name']})" if vs else 'freeze frame ok; voiceover skipped (no system voices here)')
     sil = silences(ids['gap.m4a']['id'], -35, 0.5)
     assert len(sil) == 1 and abs(sil[0][0] - 1) < 0.1 and abs(sil[0][1] - 2) < 0.1, sil
     print('silence detection ok:', sil)
@@ -6955,7 +7361,7 @@ def selftest():
         assert wk.name.endswith('.wk.mov') and tags == {'color_space': 'bt709', 'color_primaries': 'bt709', 'color_transfer': 'iec61966-2-1'}, (src['name'], tags)
         assert md5(wk) == md5(MEDIA / src['file']), 'the WebKit copy decodes differently'
     print('webkit preview copy ok: identical frames, labelled bt709 + sRGB transfer')
-    if (AI_BIN / 'python').exists():  # object removal end to end: Vision tracks a moving square both ways, the fill must match the clean shot
+    if AI_PY.exists():  # object removal end to end: Vision tracks a moving square both ways, the fill must match the clean shot
         gen('-f', 'lavfi', '-i', 'testsrc2=s=480x270', '-frames:v', '1', str(HOME / 'bg.png'))
         gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-t', '2', '-r', '30', '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(HOME / 'clean.mp4'))
         gen('-loop', '1', '-i', str(HOME / 'bg.png'), '-f', 'lavfi', '-i', 'color=c=0xff00ff:s=40x40', '-filter_complex', "[0][1]overlay=x='60+t*120':y=110:shortest=1",
@@ -6990,7 +7396,7 @@ def selftest():
                 assert (0.008 < pv['area'] < 0.02 if purpose == 'cutout' else pv['area'] < 0.03) and min(on) == 255 and max(off) == 0, (
                     'outline preview', purpose, pv['area'], min(on), max(off))
                 print(f"outline preview ok ({purpose}, {time.monotonic() - t0_:.2f} s): {pv['area']:.4f} of the frame, all of the square")
-        if Path(AI_BIN / 'python').exists() and subprocess.run([str(AI_BIN / 'python'), '-I', '-c', 'import demucs'], capture_output=True).returncode == 0:
+        if AI_PY.exists() and subprocess.run([*AI_RUN, '-c', 'import demucs'], capture_output=True).returncode == 0:
             # isolate voice: speech over a loud 55 Hz hum + 220 Hz tone; the voice track must lose the music
             subprocess.run(['say', '-o', str(HOME / 'talk.aiff'), 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.'], check=True)
             gen('-i', str(HOME / 'talk.aiff'), '-f', 'lavfi', '-i', 'aevalsrc=0.3*sin(2*PI*55*t)+0.2*sin(2*PI*220*t):s=44100:d=6', '-filter_complex',
@@ -7005,6 +7411,8 @@ def selftest():
             drop = tone_db(HOME / 'noisy.m4a', 55) - tone_db(MEDIA / meta(vo['media'])['file'], 55)
             assert drop > 20, ('isolate voice kept the hum', drop)
             print(f'isolate voice ok: the 55 Hz hum dropped {drop:.0f} dB')
+    else:
+        print('object removal, cutout, isolate voice skipped: the AI venv is not installed here')
     shutil.rmtree(HOME)
     print('selftest OK')
 
@@ -7050,6 +7458,8 @@ def resume_prepare():
 def main():
     if '--selftest' in sys.argv:
         return selftest()
+    if '--profiles' in sys.argv:  # what each simulated computer runs, job by job
+        return check_profiles()
     if '--packs' in sys.argv:  # ai/setup.sh: the CC0 sound and music library, downloaded once into this library
         r = install_packs({})
         print(f"{r['items']} sounds and tracks in {HOME / 'packs'}" + ''.join(f'\n  left out: {s}' for s in r['skipped']))
@@ -7066,8 +7476,11 @@ def main():
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
+    print(f"This computer: {PROFILE['os']}, {CORES} cores, {RAM_GB:.0f} GB, GPU {PROFILE['gpu'].get('name') or 'none'}; AI on {'/'.join(PROFILE['backends'])}; "
+          f"video {ENC['h264']} / {ENC['hevc']}, decode {HWACCEL or 'CPU'}" + (f"; simulated: {PROFILE['sim']}" if PROFILE['sim'] else '') + f" (probed in {REAL['probe_s']} s)", flush=True)
     threading.Thread(target=resume_prepare, daemon=True).start()
     threading.Thread(target=gpu_probe, daemon=True).start()  # the AI tab knows at once whether the GPU PC's tools can show
+    threading.Thread(target=probe_torch, daemon=True).start()  # the AI venv's PyTorch device, for the AI tab
     import signal
     signal.signal(signal.SIGTERM, lambda *_: (comfy_down(), os._exit(0)))  # the app quitting: the PC's ComfyUI goes too
     try:

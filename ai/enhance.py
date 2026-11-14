@@ -24,8 +24,8 @@ import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 V = Path(__file__).resolve().parent / 'vendor' / 'enhance'
-DEV = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-HALF = torch.float16 if DEV.type == 'mps' else torch.float32
+DEV = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+HALF = torch.float16 if DEV.type in ('mps', 'cuda') else torch.float32
 DEPTH = ('depth-anything/Depth-Anything-V2-Small-hf', '5426e4f0f36572d16453bbda7a8389317b1bef99')
 YUV2RGB = torch.tensor([[1.0, 0.0, 1.5748], [1.0, -0.187324, -0.468124], [1.0, 1.8556, 0.0]])  # BT.709, limited range
 RGB2YUV = torch.linalg.inv(YUV2RGB)
@@ -55,8 +55,8 @@ def encoder(job, W, H, fps):
     big = max(W, H) > 4096  # past H.264's size: HEVC
     return subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps:g}', '-i', '-',
                              '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # the first sound only: iPhones add an APAC (spatial) track no decoder reads
-                             *(['-vf', 'setparams=' + ':'.join(kv)] if kv else []), '-c:v', 'hevc_videotoolbox' if big else 'h264_videotoolbox',
-                             *(['-tag:v', 'hvc1'] if big else []), '-q:v', '68', '-pix_fmt', 'yuv420p', *job['tags'],
+                             *(['-vf', 'setparams=' + ':'.join(kv)] if kv else []), *job.get('venc_big' if big else 'venc', ['-c:v', 'hevc_videotoolbox' if big else 'h264_videotoolbox', '-q:v', '68']),  # this computer's encoder (server.py venc)
+                             *(['-tag:v', 'hvc1'] if big else []), '-pix_fmt', 'yuv420p', *job['tags'],
                              '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
 
 

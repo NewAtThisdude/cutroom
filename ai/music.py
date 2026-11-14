@@ -40,13 +40,13 @@ def load(dev):
     """MusicGen in half precision, loaded straight onto the GPU from a half-precision copy (FP16, made once from the hub's
     float32 file): 2.4 GB peak for 8 s of music instead of 4.2-4.5 (reading the 2.4 GB float32 file and casting it took the
     rest), so it fits the ~4 GB an 8 GB Mac has for AI."""
-    if dev.type != 'mps':
+    if dev.type not in ('mps', 'cuda'):
         return MusicgenForConditionalGeneration.from_pretrained(MODEL)
     if not (FP16 / 'model.safetensors').exists():
         tmp = FP16.with_name(FP16.name + '.tmp')
         MusicgenForConditionalGeneration.from_pretrained(MODEL, torch_dtype=torch.float16).save_pretrained(tmp)
         tmp.replace(FP16)
-    return MusicgenForConditionalGeneration.from_pretrained(FP16, torch_dtype=torch.float16, device_map='mps')
+    return MusicgenForConditionalGeneration.from_pretrained(FP16, torch_dtype=torch.float16, device_map=dev.type)
 
 
 def main(path):
@@ -54,7 +54,7 @@ def main(path):
     dur = float(min(60.0, max(4.0, job['dur'])))
     if job.get('seed') is not None:
         torch.manual_seed(int(job['seed']))
-    dev = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     proc = AutoProcessor.from_pretrained(MODEL)
     model = load(dev)
     say(0.05)

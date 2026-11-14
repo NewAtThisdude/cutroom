@@ -1,7 +1,8 @@
 # Cutroom
 
 A free video editor for Mac that runs entirely on your machine. No account, no uploads, no watermark,
-no subscription. Captions, voice, cut-outs and the other AI tools run on your Mac too.
+no subscription. Captions, voice, cut-outs and the other AI tools run on your Mac too. The editor also runs on
+Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardware or says why it can't.
 
 ![The Cutroom editor: library, preview, inspector and timeline](docs/screenshot.png)
 
@@ -27,6 +28,19 @@ Needs an Apple Silicon Mac on macOS 14 or later, with [Homebrew](https://brew.sh
 
 Then open **~/Applications/Cutroom.app**. `./cutroom` opens the same editor in a Chrome app window instead.
 
+### Windows 10/11 (the editor; AI tools partly)
+
+Needs Python 3.12 or later (tested with 3.14) and an ffmpeg **full** build (zimg for HDR, NVENC / Quick Sync / AMF):
+the tested one is gyan.dev's `ffmpeg-9.0.2-full_build.zip` from github.com/GyanD/codexffmpeg/releases/tag/9.0.2,
+SHA-256 `759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b`. Unzip it anywhere and put its `bin` on PATH
+(or only for the shell that starts Cutroom), then:
+
+    python -X utf8 -I server.py   # -X utf8: names, captions and tool output are UTF-8 (the server restarts itself in it if you forget)
+
+and open http://127.0.0.1:4610 in Edge or Chrome (`msedge --app=http://127.0.0.1:4610/` gives it its own window). The
+library is `%USERPROFILE%\Videos\Cutroom`. There is no app shell, launcher or install script for Windows yet, and no
+Windows AI setup script: see **This computer** below for what runs where, and Limits.
+
 Optional: `ai/setup.sh` installs the on-device AI tools (voices, image generation, object removal, upscaling and
 more; several GB, each model pinned and checksummed). What each one is and its licence: [THIRD_PARTY.md](THIRD_PARTY.md).
 A few optional models are for non-commercial use only; they are marked there and can be left out.
@@ -39,10 +53,12 @@ A few optional models are for non-commercial use only; they are marked there and
 - Self-check after any engine change: `python3 -I server.py --selftest` (about 3 min). It renders synthetic projects
   through the render paths and checks the results pixel by pixel.
 - `CUTROOM_PORT` and `CUTROOM_HOME` (the library folder) work for the app, the launcher and the server;
-  `CUTROOM_MODEL` points captions at another whisper ggml model.
+  `CUTROOM_MODEL` points captions at another whisper ggml model. `CUTROOM_PROFILE` makes the server plan as another
+  computer (see This computer); `CUTROOM_GPU_HOST` opts in to a GPU PC over SSH; `CUTROOM_COMFY_DIR` and
+  `CUTROOM_LATENTSYNC_DIR` say where ComfyUI and LatentSync live on a Windows PC with an NVIDIA GPU.
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [GPL v3 or later](LICENSE): free to use, change and share; versions you distribute stay open under the same terms.
 
-Data lives in `~/Movies/Cutroom/`:
+Data lives in `~/Movies/Cutroom/` (`~/Videos/Cutroom` on Windows):
 - `media/`: imported copies (a file opened from this Mac is an APFS clone: instant, no extra space)
 - `projects/`: one JSON per project, and `<id>.versions/` beside it: its version history
 - `exports/`
@@ -101,12 +117,34 @@ and CPU shares are what carry over.
 | Export 40 cuts of 4K + a 4K overlay at 1080p | 4.5 GB peak | 4.5 GB, 28 s | 1.3 GB, 40 s |
 | Edit a 1,200-clip timeline (one change) | 116 ms | 6 ms | 6 ms |
 
-## Every Mac: AI and heavy jobs
+## This computer: every Mac, and Windows PCs
+
+Everything runs on the computer Cutroom is on, chosen from what that computer has; nothing silently runs anywhere else.
+At startup the server probes it once (about 0.25 s on this M4 Max, 0.75-1.8 s on the Windows test PC): OS, cores, memory,
+the GPU (an Apple GPU's cores; an NVIDIA GPU's name, video memory and compute capability from `nvidia-smi`; Intel / AMD
+from the display adapters' registry keys), the video encoder (every hardware encoder ffmpeg lists is tried on one frame,
+all at once: VideoToolbox, then NVENC, Quick Sync, AMF, else x264 / x265) and the decoder (VideoToolbox, CUDA or
+D3D11VA); the AI venv's PyTorch device and whisper.cpp's build are asked once in the background. The server prints it
+(`This computer: ...`) and the AI tab's **This computer** panel shows it with, per job, where it runs.
 
 Cutroom runs on any Apple Silicon Mac from 8 GB up, nothing in the cloud and no PC needed. One table in `server.py`
-(`AI_BUDGET`) says, for every AI or heavy job, what it runs at on each size of Mac and how much memory that takes; a Mac
-too small for a job refuses it with the reason. The AI tab's **This Mac** panel lists the same (`/api/ai/caps`), and a
-job that will take a minute or more says roughly how long when it starts.
+(`AI_BUDGET`) says, for every AI or heavy job, its options best first: on a Mac, what it runs at on each size of Mac and
+how much memory that takes (measured, below); on a PC, the NVIDIA (CUDA) and CPU options with the video and system
+memory they need. A computer takes the first option it has the hardware and memory for, else the job is refused with
+the reason ("needs a Mac with 12 GB of memory", "needs an NVIDIA GPU with 24 GB", "needs Apple Silicon or an NVIDIA
+GPU"). The AI tab's **This computer** panel lists the same (`/api/ai/caps`), and a job that will take a minute or more
+says roughly how long when it starts.
+
+- **On Windows / Linux PCs** the CUDA and CPU options are **estimates** from the models' published needs, marked so in
+  the panel; none has been measured yet (there is no Windows AI setup script yet, so no PyTorch tool is installed on a
+  PC). Models that run only on MLX (Kokoro voices, Chatterbox voice clone and dubbing, Z-Image image generation) and the
+  Apple Vision tools (remove background, find faces, retouch) say "unavailable on this computer yet" until a CUDA port
+  exists. Lip sync, talking photo and AI video need an NVIDIA GPU with 18-24 GB (ComfyUI / LatentSync installed on
+  that PC); on a Mac they run only on a GPU PC you opt in to with `CUTROOM_GPU_HOST` (an `~/.ssh/config` alias; off by default).
+- **Simulated computers for tests:** `CUTROOM_PROFILE=mac:8`, `mac:16`, `win:cpu:16`, `win:cuda:12:32` (12 GB NVIDIA GPU,
+  32 GB of memory), `win:cuda:24:64` make the server plan as that computer (AI choices, memory limits, the panel); the
+  encoders stay this computer's own. `python3 -I server.py --profiles` prints every job's choice or refusal on each of
+  them and checks the expected ones (the selftest runs it too). The older `CUTROOM_RAM_GB` / `CUTROOM_CORES` still work.
 
 - **One heavy job at a time, on every Mac.** AI models (MPS, MLX, Metal whisper, Ollama, Vision) and exports above
   1440p take turns in one queue; the next waits and says so ("Waiting for AI music (1 ahead)"), the MCP included. Two
@@ -277,7 +315,7 @@ and for AI enhance (`ai/enhance.py`) RIFE 4.25, Real-ESRGAN x4v3 and Depth Anyth
 | AI music (Audio tab, `generate_music`, smart combine "AI music, made to fit") | MusicGen small (Meta; weights CC-BY-NC 4.0, so personal use) via transformers on the GPU; past 30 s it continues from the last 10 s | 10 s in 11 s and 45 s in 41 s, model load included; asked for 120 BPM, the beat measured 121 |
 | Voice clone (AI tab, `clone_voice`; needs the speaker's consent, ticked) | Chatterbox multilingual v3 (Resemble AI, MIT) via mlx-audio, from 3-15 s of the clip; its S3 tokenizer (mlx-community/S3TokenizerV2 from FunAudioLLM/CosyVoice2-0.5B, Apache-2.0); checked with WavLM speaker-verification x-vectors (microsoft/wavlm-base-plus-sv, CC BY-SA 3.0 via microsoft/UniSpeech, attribution required) against 4 Kokoro stock voices. All pinned and SHA-256-checked; the worker runs with HF_HUB_OFFLINE=1 | about 40-60 s with the check. Speaker cosine to the reference: 0.99 (synthetic voice) and 0.96 (a real phone recording), the closest stock voice 0.71 / 0.84 |
 | AI dubbing (AI tab, `dub_video`), 23 languages | captions -> qwen3.5 translation -> Chatterbox in the cloned voice per sentence, trimmed and fitted to its slot (atempo 0.8-1.25x, never outside; too long = the model says it in fewer words, up to 3 tries; still long = starts up to 0.15 s early into a gap, else it runs over and the status says so) | a 31 s English clip into Spanish (10 sentences), 3 runs, 81-94 s each: every sentence starts 0-61 ms after its slot and ends at most 15 ms past it, tempo 0.80-1.21x, 7-9 of 10 said shorter by the model (tests/voice_dub.mjs). Since 2026-11-10 its clip is 10 separate takes (38 s; one take of the whole script made whisper hear commas, 3 slots): 3 runs, 46-63 s each, every sentence starts at most 91 ms after its slot and ends at most 71 ms past it, tempo 0.80-1.25x |
-| Lip sync (`lip_sync`, AI tab; like talking photo, its button and MCP tool show only while the GPU PC is set up and answering: a cached check, the AI tab says "Needs the 4090 PC" otherwise) | LatentSync 1.6 (ByteDance; code Apache-2.0, weights CreativeML OpenRAIL++-M) on the RTX 4090 PC in its own venv (`ai/gpu_setup.sh`; with whisper tiny, MIT; SD VAE ft-MSE, MIT; InsightFace buffalo_l detector + landmarks, non-commercial research use) via `ai/lipsync_gpu.py`: only the face crop of the ORIGINAL footage is re-made for the new speech and warped back, so the shot, its motion and everything outside the face stay as filmed; the clip's own frame rate; any length (pieces of ~20 s at 720p30, one model load); the clip keeps its length | not run yet (built and kept for later; the PC was off, and the shipping part is voice clone + dubbing on this Mac) (tests/voice_dub.mjs `lip` gates it: mouth vs speech r above the p90 of 40 shifted controls, PSNR > 40 dB outside the face) |
+| Lip sync (`lip_sync`, AI tab; like talking photo, its button and MCP tool show only on a PC with a big enough NVIDIA GPU, or while a GPU PC you opted in to (`CUTROOM_GPU_HOST`) is answering: a cached check, the AI tab says what it needs otherwise) | LatentSync 1.6 (ByteDance; code Apache-2.0, weights CreativeML OpenRAIL++-M) on the NVIDIA PC in its own venv (`ai/gpu_setup.sh`; with whisper tiny, MIT; SD VAE ft-MSE, MIT; InsightFace buffalo_l detector + landmarks, non-commercial research use) via `ai/lipsync_gpu.py`: only the face crop of the ORIGINAL footage is re-made for the new speech and warped back, so the shot, its motion and everything outside the face stay as filmed; the clip's own frame rate; any length (pieces of ~20 s at 720p30, one model load); the clip keeps its length | not run yet (built and kept for later; the PC was off, and the shipping part is voice clone + dubbing on this Mac) (tests/voice_dub.mjs `lip` gates it: mouth vs speech r above the p90 of 40 shifted controls, PSNR > 40 dB outside the face) |
 | Talking photo (`talking_photo`) | Wan 2.2 S2V 14B fp8 + lightx2v 4-step LoRA (Apache-2.0; its audio encoder wav2vec2_large_english_fp16 = jonatasgrosman/wav2vec2-large-xlsr-53-english, Apache-2.0, repackaged by Comfy-Org) in the 4090 PC's ComfyUI: RE-ANIMATES a still (head, face and all), up to 30 s; a photo clip keeps its length, a longer one is refused | 8 s at 480x832 in about 85 s (2 min with ComfyUI's start) |
 | Background removal for photos | Apple Vision `VNGenerateForegroundInstanceMaskRequest` | under a second; any subject, not only people |
 | Remove object, Best | SAM 2.1 small (bf16 on the GPU, about 5 frames/s) + ProPainter (half precision, about 0.6 s per frame of a 720 px crop) | 4 s of 720p: about 30 s on a still camera, 1-2 min on a moving one. SAM 2's outline of a walking fox: 0.94 IoU against the true silhouette. Fills against the clean footage: 41-44 dB where other frames show the background; a handheld shot of a cyclist behind trees came out clean |
@@ -428,8 +466,9 @@ libass/freetype, and drawing text once in the browser also guarantees the export
   the server.
 - **On-device AI:** image quality is close to the cloud generators, but each image takes 25-50 s. Kokoro sounds
   best in English; the other languages have fewer, plainer voices. A subject cut-out can drop thin details (steam,
-  smoke). Video generation and lip sync are not part of the Mac app (too heavy for it); they run only on an optional
-  RTX 4090 PC.
+  smoke). Video generation and lip sync are not part of the Mac app (too heavy for it); they run on a PC with an NVIDIA
+  GPU (18-24 GB), or from a Mac on a GPU PC you opt in to (`CUTROOM_GPU_HOST`). Run on the PC itself (local ComfyUI /
+  LatentSync, no SSH) they are wired up but not yet run end to end.
 - **Remove object:** Best is slower than CapCut's cloud on long clips (minutes for a 10 s handheld shot). ProPainter
   works on the crop at up to 720 px, so on 4K the filled area is a little softer than its surroundings. What no frame
   shows is the model's invention: convincing on walls, foliage, roads and shelves, but it can't know what was really
@@ -481,6 +520,15 @@ libass/freetype, and drawing text once in the browser also guarantees the export
   The clip menus, the inspector and the transport and toolbar tooltips follow your keys; some hints written into toasts, the tour
   and the source viewer's In / Out buttons still name the default keys. Escape always closes a dialog.
 - **MCP control** needs the editor open (it opens the app itself). Commands run one at a time.
+- **Windows:** the server, import, preview copies (NVENC / Quick Sync / AMF / x264), HDR tone mapping (zimg's hable
+  curve: not VideoToolbox's, so the same HLG clip looks a little different than on a Mac; preview and export still
+  match), export, fonts (from the registry), voiceover (SAPI voices), Show in Explorer / play and the selftest work on
+  the RTX 4090 test PC (`--selftest` passes there in about 2 minutes). Not yet: an app window, a launcher or installer, a
+  Windows AI setup (`ai/setup.ps1`), the Apple Vision tools (remove background, faces, retouch, photo cut-out, sticker
+  cut-out), the MLX models, the effects pack on the GPU (it renders with ffmpeg `geq` on the CPU, 25-150 s per 3 s of
+  1080p). HEIC photos convert with ffmpeg (7.1+), untested with real phone photos. Quick Sync and AMF encoder settings
+  are untested (the test PC used NVENC); a GPU encoder refuses tiny frames (under 160 x 64), which go to x264.
+  The keyboard hints still show Mac symbols (⌘ ⌥ ⇧) and some labels say "Mac".
 - **Timeline hand-off** (FCPXML, EDL) carries the edit, not the look: effects, filters, grades, masks, keys, crop, position and
   scale of overlays, keyframes (volume envelopes too), clip animations, fades and text styling stay in Cutroom (titles come over
   as plain Basic Titles with their text). Every transition becomes a cross dissolve of the same length, split evenly round the cut.

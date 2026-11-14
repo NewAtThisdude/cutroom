@@ -454,7 +454,7 @@ def main(path):
     W, H = job['w'], job['h']
     enc = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f'{W}x{H}', '-r', f'{fps}', '-i', '-',
                             '-ss', f"{job['t0']:.6f}", '-t', f"{job['dur']:.6f}", '-i', job['src'], '-map', '0:v', '-map', '1:a:0?',  # (an iPhone's 2nd track is spatial audio: no decoder)
-                            *labels(job['tags']), '-c:v', 'h264_videotoolbox', '-q:v', '85', '-pix_fmt', 'yuv420p', *job['tags'],
+                            *labels(job['tags']), *job.get('venc', ['-c:v', 'h264_videotoolbox', '-q:v', '85']), '-pix_fmt', 'yuv420p', *job['tags'],
                             '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', job['out']], stdin=subprocess.PIPE)
     i = -1
     for i, fr in enumerate(frames(job)):
