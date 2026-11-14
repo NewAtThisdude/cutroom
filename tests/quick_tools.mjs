@@ -8,7 +8,7 @@
 //  3. Cover: a frame or an image (with an optional title) is saved next to the video and embedded as its cover (attached_pic, ffprobe).
 //   B=<server on a scratch library> CUTROOM_HOME=<its library> node quick_tools.mjs   (never 4610)
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { browser } from './browser.mjs';
 const B = process.env.B, OUT = fileURLToPath(new URL('./out/quick_tools/', import.meta.url));
@@ -81,6 +81,7 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.screenshot({ path: `${OUT}${rm}-fullscreen.png` });
 
   // ---- 2. caption find and replace ----
+  const uBase = await ev(() => undo.length);
   await ev(() => {
     importSubs('1\n00:00:00,000 --> 00:00:01,000\nHello world, hello there\n\n2\n00:00:01,000 --> 00:00:02,000\nThe world is big\n\n3\n00:00:02,000 --> 00:00:03,000\nWorldwide news\n\n4\n00:00:03,000 --> 00:00:04,000\nNo match here\n');
     change(() => { P.captions[1].tr = 'El mundo es grande'; P.captions[2].tr = 'Noticias del mundo'; });
@@ -138,7 +139,58 @@ for (const rm of ['no-preference', 'reduce']) {
   const rem = await ev(() => [P.captions[0].text, undo.length]);
   check(`${rm}: the MCP command lists matches (2) without replace, replaces with it (match case honoured: HELLO finds none, Hello 1), one undo step`,
     r1.ok && r1.result.matches === 2 && r1.result.first.length === 2 && r2.ok && r2.result.replaced === 0 && r3x.ok && r3x.result.replaced === 1 && rem[0] === 'Hi world, hello there' && rem[1] === u4 + 1, JSON.stringify({ r1, r2, r3x, rem }));
-  await ev(() => { while (undo.length) restore(undo, redo); });
+  await ev(u => { while (undo.length > u) restore(undo, redo); }, uBase);
+
+  // ---- 3. cover image ----
+  const EXD = `${HOME}/exports`, probe = f => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,codec_type:stream_disposition=attached_pic', '-of', 'json', f]).toString()).streams;
+  const rgb = f => [...execFileSync('ffmpeg', ['-v', 'error', '-i', f, '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])];
+  const sim = (a, b2) => { const r = spawnSync('ffmpeg', ['-i', a, '-i', b2, '-lavfi', '[1:v][0:v]scale2ref[y][x];[x][y]ssim', '-f', 'null', '-'], { encoding: 'utf8' }); return +(/All:([\d.]+)/.exec(r.stderr)?.[1] || 0); };
+  const doExport = async (fmt, o) => { // through the dialog: the cover options, then Export; -> the status text and the saved file name
+    await page.click('#btnExport'); await page.waitForSelector('#exFmt');
+    await page.fill('#exName', o.name); await page.selectOption('#exRes', '0'); await page.selectOption('#exFmt', fmt);
+    const on = await page.isEnabled('#exCover');
+    if (on) {
+      await page.setChecked('#exCover', o.cover !== false);
+      if (o.cover !== false) { await page.selectOption('#exCvSrc', o.src || 'frame'); if (o.img) await page.selectOption('#exCvImg', o.img); await page.fill('#exCvTitle', o.title || ''); await page.selectOption('#exCvPreset', o.preset || 'Title'); await page.selectOption('#exCvFmt', o.cfmt || 'jpg'); }
+    }
+    await page.click('#exGo');
+    await page.waitForFunction(() => /Saved|failed/.test($('#exStatus')?.textContent || ''), null, { timeout: 180000 });
+    const out = await ev(() => ({ s: $('#exStatus').textContent, f: $('#exStatus b')?.textContent }));
+    await page.keyboard.press('Escape');
+    return { ...out, on };
+  };
+  await ev(() => { while (P.captions.length) P.captions.pop(); S.t = 1; });
+  const nogif = await (async () => { await page.click('#btnExport'); await page.waitForSelector('#exFmt'); await page.selectOption('#exFmt', 'gif'); const d = await page.isDisabled('#exCover'), hid = await ev(() => $('#exCoverBox').hidden); await page.keyboard.press('Escape'); return d && hid; })();
+  const nm = `qcover-${rm}`;
+  const plain = await doExport('mp4', { name: `${nm}-plain`, cover: false });
+  const withT = await doExport('mp4', { name: `${nm}-title`, title: 'COVER TITLE', cfmt: 'jpg' });
+  const sA = probe(`${EXD}/${nm}-title.mp4`), sP = probe(`${EXD}/${nm}-plain.mp4`);
+  const pic = `${EXD}/${nm}-title.jpg`, magic = fs.existsSync(pic) ? fs.readFileSync(pic).subarray(0, 3).toString('hex') : '';
+  check(`${rm}: Export with a cover: the MP4 carries it as its attached_pic (ffprobe: mjpeg, attached_pic 1), a JPG lands next to it; without the option there is neither`,
+    plain.f === `${nm}-plain.mp4` && withT.f === `${nm}-title.mp4` && sA.some(s => s.codec_name === 'mjpeg' && s.disposition.attached_pic === 1) && sA.filter(s => s.codec_type === 'video').length === 2 && magic === 'ffd8ff' && !sP.some(s => s.disposition.attached_pic) && !fs.existsSync(`${EXD}/${nm}-plain.jpg`) && nogif, JSON.stringify({ plain, withT, sA, magic, nogif }));
+  // the title is drawn: the same frame without a title differs
+  const noT = await doExport('mp4', { name: `${nm}-notitle`, cfmt: 'png' });
+  const s1 = sim(pic, `${EXD}/${nm}-notitle.png`);
+  check(`${rm}: the title is drawn on the cover (same frame with and without it: similarity ${s1.toFixed(3)} < 0.995), and a PNG cover embeds as png`,
+    s1 > 0 && s1 < 0.995 && probe(`${EXD}/${nm}-notitle.mp4`).some(s => s.codec_name === 'png' && s.disposition.attached_pic === 1) && noT.on, String(s1));
+  // a library picture as the cover
+  const im = await doExport('mp4', { name: `${nm}-image`, src: 'image', img: picId, cfmt: 'png' });
+  const [r, g, bl] = rgb(`${EXD}/${nm}-image.png`);
+  check(`${rm}: a picture from the library as the cover (the blue 800x800 picture fills the frame: rgb ${r},${g},${bl}), embedded`,
+    Math.abs(r - 34) < 14 && Math.abs(g - 85) < 14 && Math.abs(bl - 170) < 14 && probe(`${EXD}/${nm}-image.mp4`).some(s => s.disposition.attached_pic === 1), JSON.stringify({ im, rgb: [r, g, bl] }));
+  // a MOV cannot carry one: the picture is saved beside it, and the dialog says so
+  const mov = await doExport('prores', { name: `${nm}-mov`, title: 'MOV' });
+  check(`${rm}: a ProRes MOV gets the picture beside it only (ffmpeg's MOV writer has no cover), and the dialog says so`,
+    fs.existsSync(`${EXD}/${nm}-mov.mov`) && fs.existsSync(`${EXD}/${nm}-mov.jpg`) && !probe(`${EXD}/${nm}-mov.mov`).some(s => s.disposition.attached_pic) && /MOV cannot carry/.test(mov.s), mov.s);
+  // remembered per project: saved with it, back after a reload
+  await ev(id => { P.cover = { on: true, src: 'image', media: id, title: 'Remembered', preset: 'Title', fmt: 'png' }; scheduleSave(); }, picId);
+  await page.waitForTimeout(1500); await open();
+  await page.click('#btnExport'); await page.waitForSelector('#exFmt');
+  const mem = await ev(() => ({ on: $('#exCover').checked, src: $('#exCvSrc').value, title: $('#exCvTitle').value, fmt: $('#exCvFmt').value, box: !$('#exCoverBox').hidden, p: P.cover?.title }));
+  await page.screenshot({ path: `${OUT}${rm}-cover.png` });
+  await page.keyboard.press('Escape');
+  check(`${rm}: the cover options are kept with the project (on, picture, title "Remembered", PNG) after a reload`, mem.on && mem.src === 'image' && mem.title === 'Remembered' && mem.fmt === 'png' && mem.box && mem.p === 'Remembered', JSON.stringify(mem));
+  await ev(() => { delete P.cover; });
 
   check(`${rm}: no page errors`, !errs.length, errs.join(' | '));
   await ctx.close();

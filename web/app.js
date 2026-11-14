@@ -5136,6 +5136,14 @@ function openExport() {
     ${M.get(G.brand.logo) && !wmOf() ? '<label class="row chk" title="The brand logo in its corner, for this export only: the project stays as it is"><span>Add watermark</span><input id="exWm" type="checkbox"></label>' : ''}
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label class="row chk" id="exCoverRow" title="A picture saved next to the video. In an MP4 it is also embedded as the video's cover: Finder, Explorer and players show it (a MOV cannot carry one)"><span>Cover image</span><input id="exCover" type="checkbox"></label>
+    <div id="exCoverBox" hidden>
+      <label class="row"><span>Cover from</span><select id="exCvSrc"><option value="frame">The frame at the playhead</option><option value="image">A picture from the library</option></select></label>
+      <label class="row" id="exCvImgRow" hidden><span>Picture</span><select id="exCvImg" aria-label="Cover picture">${[...M.values()].filter(m => m.kind === 'image' && !m.slate).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('') || '<option value="">No pictures in the library</option>'}</select></label>
+      <label class="row"><span>Title</span><input id="exCvTitle" placeholder="Optional" aria-label="Cover title"></label>
+      <label class="row"><span>Title style</span><select id="exCvPreset" aria-label="Cover title style">${Object.keys(TEXT_PRESETS).map(k => `<option>${esc(k)}</option>`).join('')}</select></label>
+      <label class="row"><span>Cover file</span><select id="exCvFmt"><option value="jpg">JPG</option><option value="png">PNG</option></select></label>
+    </div>
     <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
     <p class="muted" id="exHint"></p><p class="muted" id="exHdrHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
@@ -5143,6 +5151,7 @@ function openExport() {
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
+    cvSync();
     $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
     const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
     $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
@@ -5176,6 +5185,17 @@ function openExport() {
       edl: `The main track's cuts and dissolves as a CMX3600 EDL at ${+P.fps.toFixed(3)} fps${[29.97, 59.94].includes(+P.fps.toFixed(2)) ? ' drop-frame' : ''}, for apps that read EDLs.`,
       chapters: P.markers.length ? `${P.markers.length} marker${P.markers.length === 1 ? '' : 's'} as YouTube chapters ("0:00 Intro" lines, named after the text on screen), to paste in the description` : 'No markers yet: press M where each chapter starts.', png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f], ...notes].join(' ');
   };
+  const cvSync = () => { // the cover options: only for the containers that carry one
+    const ok = COVER_FMTS.includes($('#exFmt').value);
+    $('#exCover').disabled = !ok; $('#exCoverBox').hidden = !ok || !$('#exCover').checked; $('#exCvImgRow').hidden = $('#exCvSrc').value !== 'image';
+  };
+  const cv0 = coverOf();
+  $('#exCover').checked = cv0.on; $('#exCvSrc').value = cv0.src; $('#exCvTitle').value = cv0.title; $('#exCvPreset').value = cv0.preset; $('#exCvFmt').value = cv0.fmt;
+  if (M.get(cv0.media)) $('#exCvImg').value = cv0.media;
+  for (const id of ['exCover', 'exCvSrc', 'exCvImg', 'exCvTitle', 'exCvPreset', 'exCvFmt']) $(`#${id}`).addEventListener(id === 'exCvTitle' ? 'input' : 'change', () => { // kept with the project
+    P.cover = { on: $('#exCover').checked, src: $('#exCvSrc').value, media: $('#exCvImg').value, title: $('#exCvTitle').value, preset: $('#exCvPreset').value, fmt: $('#exCvFmt').value };
+    cvSync(); scheduleSave();
+  });
   const preset = () => { // fills the fields; any of them can still be changed afterwards
     const k = $('#exPreset').value;
     if (!k) return hint();
@@ -5204,6 +5224,30 @@ function exportUI(pct, msg, done) { // the dialog when it's open (it can be clos
   const b = $('#btnExport');
   b.classList.toggle('busy', busy); b.style.setProperty('--pct', `${busy ? pct : 0}%`); b.title = busy ? `Exporting… ${pct}%` : '';
 }
+// ---------- cover image: a frame or a picture, with an optional title, saved next to the video and embedded as its cover ----------
+// P.cover = { on, src: 'frame' | 'image', media, title, preset, fmt: 'jpg' | 'png' }: kept with the project (the Export dialog starts on it)
+const COVER_FMTS = ['mp4', 'hevc', 'av1', 'prores', 'prores4444']; // the MP4 and MOV containers (server.py COVER_FORMATS)
+const coverOf = () => ({ on: false, src: 'frame', media: '', title: '', preset: 'Title', fmt: 'jpg', ...P.cover });
+async function coverImage(w, h, cv) { // -> a PNG as base64, drawn by the export renderer: the frame at the playhead (or the picture) and the title on top
+  const t = cv.src === 'image' ? 0 : clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)), m = cv.src === 'image' && M.get(cv.media), title = cv.title.trim();
+  if (cv.src === 'image' && m?.kind !== 'image') throw new Error('the cover picture is not in the library any more: choose another');
+  const make = P0 => {
+    const p = structuredClone(P0);
+    if (m) Object.assign(p, { main: [{ id: hex12(), media: m.id, start: 0, in: 0, out: 1, speed: 1, volume: 0, fit: 'fill', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }], overlay: [], audio: [], text: [], captions: [], fx: [], markers: [], mute: {} });
+    if (title) p.text = [...p.text, { id: hex12(), start: t, dur: 1, text: title, x: 0.5, y: 0.5, style: { ...TEXT_PRESETS[TEXT_PRESETS[cv.preset] ? cv.preset : 'Title'] } }];
+    return p;
+  };
+  const t0 = S.t;
+  return borrowP(make, async () => {
+    S.t = t;
+    try {
+      const plan = await buildPlan(w, h, 'fast', 'cover', false, 'png');
+      plan.still = t;
+      return (await api('/api/still_frame', plan)).image;
+    } finally { S.t = t0; }
+  });
+}
+
 async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
   if (S.exporting) return;
   const [res, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
@@ -5225,6 +5269,8 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       return;
     }
     const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt));
+    const cv = coverOf();
+    if (cv.on && COVER_FMTS.includes(fmt)) { exportUI(0, 'Making the cover…'); const k = Math.min(1, 1920 / Math.max(w, h)); plan.cover = { image: await coverImage(even(w * k), even(h * k), cv), fmt: cv.fmt }; }
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
@@ -5238,7 +5284,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
         S.exporting = null; S.exportsDir = j.dir || S.exportsDir;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${j.cover ? `. Cover: <b>${esc(j.cover)}</b>${j.coverEmbedded ? ', embedded in the video' : ' (beside the video; a MOV cannot carry one)'}` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
         tell(`Exported ${j.file} (${S.exportsDir || 'the exports folder'})`);
         break;
       }

@@ -4143,6 +4143,14 @@ def clean_plan(p, claimed=False):  # claimed: a retried interrupted export, whos
     elif out['hdr']:
         out['format'] = hv
     out['alpha'] = bool(p.get('alpha')) and out['format'] in ALPHA_FORMATS  # transparent background
+    if isinstance(cv := p.get('cover'), dict) and out['format'] in COVER_FORMATS:  # a cover picture (a PNG the page drew): saved beside the video, embedded in it
+        try:
+            img = base64.b64decode(str(cv.get('image', '')), validate=True)
+        except ValueError:
+            img = b''
+        if not 100 < len(img) < 40_000_000 or not img.startswith(b'\x89PNG'):
+            raise ValueError('the cover must be a PNG picture')
+        out['cover'] = {'png': img, 'fmt': 'png' if cv.get('fmt') == 'png' else 'jpg'}
     return out
 
 
@@ -5761,8 +5769,31 @@ def interrupted_list():
     return out
 
 
+COVER_FORMATS = ('mp4', 'hevc', 'av1', 'prores', 'prores4444')  # a cover picture is saved beside these; the MP4 ones also carry it (attached_pic: Finder, Explorer and players show it)
+
+
+def make_cover(p, td, out):
+    """The cover picture as td/cover.<jpg|png>, and `out` (an MP4: copied, not re-encoded; a MOV cannot carry one) with it attached as its cover. -> (picture or None, embedded)"""
+    cv, pic, src = p['cover'], Path(td) / f"cover.{p['cover']['fmt']}", Path(td) / 'cover_src.png'
+    src.write_bytes(cv['png'])
+    if cv['fmt'] == 'png':
+        shutil.copyfile(src, pic)
+    elif sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-vf', 'format=yuvj420p', '-q:v', '2', str(pic)]).returncode or not pic.exists():
+        return None, False
+    if out.suffix != '.mp4':  # ffmpeg's MOV writer keeps no cover picture: it is saved beside the video only
+        return pic, False
+    tmp = Path(td) / f'covered{out.suffix}'
+    r = sh(['ffmpeg', '-v', 'error', '-y', '-i', str(out), '-i', str(pic), '-map', '0', '-map', '1', '-c', 'copy', '-disposition:v:1', 'attached_pic',
+            *(['-movflags', '+faststart'] if out.suffix == '.mp4' else []), str(tmp)])
+    if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > out.stat().st_size:
+        retry(shutil.move, tmp, out)
+        return pic, True
+    return pic, False  # the video stays as it was; the picture still lands beside it
+
+
 def export(job, p):
     st = JOBS[job]
+    extra = {}
     try:
         if p.get('format') == 'png' and not p.get('library'):
             p = still_cut(p)
@@ -5803,9 +5834,13 @@ def export(job, p):
                 m = import_file(stem + out.suffix, None, 0, background=False, src=out)
                 st.update(state='done', progress=1.0, media=m['id'])
                 return
+            pic, embedded = make_cover(p, td, out) if p.get('cover') else (None, False)
             dst = unique(EXPORTS / f"{p['name']}{out.suffix}")
             retry(shutil.move, out, dst)
-        st.update(state='done', progress=1.0, ended=time.time(), file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}))  # dir: the page names the folder (a library elsewhere has its own)
+            if pic:
+                retry(shutil.copyfile, pic, dst.with_suffix(pic.suffix))
+                extra = {'cover': dst.with_suffix(pic.suffix).name, 'coverEmbedded': embedded}
+        st.update(state='done', progress=1.0, ended=time.time(), file=dst.name, dir=str(EXPORTS).replace(str(Path.home()), '~', 1), **({'sdr': p['sdr']} if p.get('sdr') else {}), **extra)  # dir: the page names the folder (a library elsewhere has its own)
     except Exception as e:  # surfaced to the UI (a cancelled one leaves nothing: it rendered in the temporary folder)
         if st.get('cancel'):
             st.update(state='cancelled', ended=time.time())

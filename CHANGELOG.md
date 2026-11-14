@@ -73,6 +73,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
+- Cover image: pick the frame at the playhead or a library picture, add a title in any text style; it is saved as a JPG or PNG next to the video and embedded as the MP4's cover (Finder, Explorer and players show it). Remembered per project
 
 ### Templates, brand kit and batch
 
