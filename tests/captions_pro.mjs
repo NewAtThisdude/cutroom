@@ -2,7 +2,7 @@
 // and speaker labels, end to end in headless WebKit against a scratch server, with measured numbers.
 //   tiles     every preset is a tile drawn by drawText; still until hovered, then it plays (both reduced-motion modes);
 //             an export with every preset keeps the layer workers (S.layerMode 'workers')
-//   keywords  podcast-episode: whisper captions -> the local model picks 1-2 key words each (+ an emoji per sentence);
+//   keywords  podcast-episode (fixtures.mjs aiFootage: one voice, ~1 min): whisper captions -> the local model picks 1-2 key words each (+ an emoji per sentence);
 //             preview == export on a marked caption
 //   bilingual the same captions translated (local model) into a second line; preview == export, and the line is in the export
 //   lyrics    a song made here (MusicGen music + Kokoro vocals at known times): lyric captions via Demucs vocals + whisper,
@@ -13,6 +13,7 @@ import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { aiFootage } from './fixtures.mjs';
 const B = process.env.B, LIB = process.env.CUTROOM_HOME, only = process.argv[2], OUT = fileURLToPath(new URL('./out/captions_pro/', import.meta.url));
 if (!B || !LIB || B.endsWith(':4610')) throw new Error('run on a scratch server: B=http://127.0.0.1:<port> CUTROOM_HOME=<its library>');
 fs.mkdirSync(OUT, { recursive: true });
@@ -147,8 +148,9 @@ if (run('export')) {
 }
 
 // ---------- keywords (and emoji) on podcast-episode ----------
-const pod = await ev(() => [...M.values()].find(m => /podcast-episode/.test(m.name))?.id);
-if ((run('keywords') || run('bilingual')) && pod) {
+const pod = run('keywords') || run('bilingual') ? (await aiFootage(['podcast'])).podcast?.id : null;
+if (pod) await ev(() => loadMedia());
+if ((run('keywords') || run('bilingual')) && pod) try { // (a failure here is reported, and the lyrics and speakers below still run)
   await fresh('Podcast captions');
   await ev(id => { addMedia(id, 'main'); renderAll(); }, pod);
   let t0 = performance.now();
@@ -202,7 +204,8 @@ if ((run('keywords') || run('bilingual')) && pod) {
       check(`bilingual (${preset}): preview == export, and the second line is in the export`, d.mean <= 4 && d.worst <= 28 && changed > 12 * trLen, `mean ${d.mean}, worst block ${d.worst} @${d.t}s, ${changed} px from the second line (${trLen} characters)`);
     }
   }
-} else if (run('keywords') || run('bilingual')) check('podcast-episode in the library', false);
+} catch (e) { check('keywords / bilingual ran to the end', false, String(e.message).split('\n')[0]); }
+else if (run('keywords') || run('bilingual')) console.log('SKIP keywords / bilingual: no speech service on this computer for the podcast fixture');
 
 // ---------- lyrics: a song made here ----------
 if (run('lyrics')) {

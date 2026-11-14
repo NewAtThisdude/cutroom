@@ -1127,7 +1127,7 @@ def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     return {'points': pts, 'lost': lost}
 
 
-def follow(st, mid, t0, t1, box, t=None):
+def follow(st, mid, t0, t1, box, t=None, span=(0.0, 1.0)):
     """Motion tracking for attaching things and blurring: position, scale and rotation (ai/track.py, OpenCV corners), both
     ways from the picked frame t. Points {t, cx, cy, x, y, w, h, s, r}: s and r (clockwise degrees) relative to that frame.
     Without the AI tools (or with too little detail in the box) Vision follows the box forward: scale = its width, no turn."""
@@ -1142,7 +1142,7 @@ def follow(st, mid, t0, t1, box, t=None):
         for line in proc.stdout:
             d = json.loads(line)
             if 'p' in d:
-                st['progress'] = d['p']
+                st['progress'] = span[0] + (span[1] - span[0]) * d['p']
             elif 'lost' in d:
                 lost = d['lost']
             else:
@@ -1158,7 +1158,7 @@ def follow(st, mid, t0, t1, box, t=None):
 
 
 def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=None):
-    """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
+    """CapCut's "Remove object" for video: Vision (a PC: OpenCV corners) follows the box both ways from t, then every frame of
     [t0, t1] gets the background filled in (ai/remove.py; best = SAM 2 outline + ProPainter when installed)
     -> a new library item covering just that range."""
     m = meta(mid)
@@ -1180,10 +1180,17 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     with ai_slot(kind, st, t1 - t0) if kind else contextlib.nullcontext({'knobs': {}}) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         if mode in ('cutout', 'mask'):  # SAM 2 follows the subject itself
             pass
+        elif not MAC:  # no Vision on a PC: OpenCV corners (ai/track.py) follow the box both ways from t; a box with too little
+            try:       # detail to follow holds where it was drawn (as where Vision loses it)
+                r = follow(st, mid, t0, t1, b, t, span=(0.0, 0.3))  # the bar's first part, as Vision's two passes on a Mac
+                pts, lost = [{k: p[k] for k in ('t', 'x', 'y', 'w', 'h')} for p in r['points']], r['lost']
+            except RuntimeError as e:
+                if 'need a Mac' not in str(e):
+                    raise
         elif t1 - t > 1 / fps:
             r = track(st, mid, t, t1, b, span=(0.0, 0.15))
             pts, lost = pts + r['points'], r['lost']
-        if mode not in ('cutout', 'mask') and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
+        if MAC and mode not in ('cutout', 'mask') and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
             rev = Path(td) / 'rev.mp4'
             if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t - t0 + 1 / fps:.6f}', '-i', src, '-vf', 'scale=-2:480,reverse', '-an',
                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', str(rev)]).returncode:
@@ -2442,8 +2449,8 @@ def ai_clone(st, media, t0, t1, name='', consent=False):
     """A voice from a clip's speech (3-15 s of it; ~10 s clones best) -> voices/<id>.wav, checked against the stock voices."""
     if consent is not True:
         raise ValueError(CONSENT)
-    if not clone_ready():
-        raise RuntimeError('the voice-clone model is not installed (README: On-device AI, ai/setup.sh)')
+    if not clone_ready():  # a PC: why (Chatterbox is MLX), not "install it"
+        raise RuntimeError(tier('clone').get('refused') or 'the voice-clone model is not installed (README: On-device AI, ai/setup.sh)')
     m = meta(media)
     if not m.get('hasAudio'):
         raise ValueError(f"{m['name']} has no sound to clone a voice from")
@@ -6721,7 +6728,8 @@ class App(BaseHTTPRequestHandler):
                     threading.Timer(5, remote_reoffer, (m,)).start()
                 return self.reply(m)
             if path == '/api/ai/status':
-                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
+                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status(),
+                                   'refused': {k: t['refused'] for k in ('image', 'clone') if 'refused' in (t := tier(k))}})  # why, where this computer can't (MLX only)
             if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
                 return self.reply(caps())
             if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)

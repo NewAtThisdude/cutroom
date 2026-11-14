@@ -57,3 +57,11 @@ export async function stopChild(child) {
   await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => { killChild(child, 'SIGKILL'); resolve(); }, 5000); })]);
   clearTimeout(timer);
 }
+
+// process.exit() within ~200 ms of a fetch() aborts Node 24 on Windows ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)",
+// exit 0xC0000409), so an early SKIP exit there failed its suite. ponytail: a fixed 300 ms wait (200 ms already exited cleanly 4/4 on the PC);
+// drop it once Node fixes the race
+export async function exitAfterFetch(code) {
+  if (process.platform === 'win32') await new Promise(resolve => setTimeout(resolve, 300));
+  process.exit(code);
+}
