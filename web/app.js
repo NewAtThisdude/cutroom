@@ -132,11 +132,11 @@ const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip 
   ['slideup', 'Slide up'], ['slidedown', 'Slide down'], ['squeezeh', 'Squeeze'], ['squeezev', 'Squeeze sideways'], ['circleopen', 'Circle open'], ['circleclose', 'Circle close'],
   ['radial', 'Clock'], ['vertopen', 'Doors'], ['horzopen', 'Split open'], ['diagtl', 'Diagonal'], ['diagbr', 'Diagonal back'], ['hlslice', 'Slices'], ['vuslice', 'Blinds'],
   ['blurfade', 'Blur dissolve'], ['whipup', 'Whip up'], ['whipdown', 'Whip down'], ...Object.entries(TRX).map(([k, d]) => [k, d.n])]; // TRX: web/fxpack.js
-const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter']];
-const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace']];
+const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter'], ...TEXT_FX_IN];
+const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace'], ...TEXT_FX_OUT];
 const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float'],
   ['breathe', 'Breathe'], ['orbit', 'Orbit'], ['bounce', 'Bounce'], ['jitter', 'Jitter']];
-const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
+const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle'], ...TEXT_FX_LOOPS];
 const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'],
   ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
   ['pngseq', 'PNG sequence (zip)'], ['mp3', 'Audio · MP3'], ['m4a', 'Audio · AAC (M4A)'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'],
@@ -160,7 +160,7 @@ function presetFields(k) { // -> the dialog's values for preset k on this projec
   const res = x.master ? (sizes.filter(([, w, h]) => !src || w * h <= src[0] * src[1]).at(-1) || sizes[1])[0] : x.res;
   return { res, fmt: x.fmt, q: 'fast', fps: x.master ? 0 : hi ? 60 : 30, mbps: x.mbps ? x.mbps[hi ? 1 : 0] : 0, loud: x.loud };
 }
-const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
+const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot', 'curve'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror'], ['heart', 'Heart'], ['star', 'Star'], ['polygon', 'Polygon'], ['pen', 'Pen']]; // + 'ai' (SAM 2 subject), made by a job
 const BLENDS = [['normal', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'], ['darken', 'Darken'], ['lighten', 'Lighten'], // canvas modes; the export runs the same formulas
   ['color-dodge', 'Color dodge'], ['color-burn', 'Color burn'], ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'], ['exclusion', 'Exclusion']];
@@ -1167,7 +1167,7 @@ function setEase(c, f, kind) { // a preset on one keyframe's segment (a split's 
 }
 const setBz = (f, b) => { f.ease = true; f.bz = b; delete f.eu0; delete f.eu1; };
 // the keyframe graph: clip time across, each segment's eased progress up (room above and below for overshoot)
-const KG_PROPS = [['scale', 'Scale', '#7f9dd0'], ['x', 'Position X', '#6fb39a'], ['y', 'Position Y', '#ad91cf'], ['opacity', 'Opacity', '#c4c4c9'], ['rot', 'Rotate', '#cf9b76']];
+const KG_PROPS = [['scale', 'Scale', '#7f9dd0'], ['x', 'Position X', '#6fb39a'], ['y', 'Position Y', '#ad91cf'], ['opacity', 'Opacity', '#c4c4c9'], ['rot', 'Rotate', '#cf9b76'], ['curve', 'Curve', '#92c9be']];
 const KG_LO = -0.4, KG_HI = 1.6, KG_P = 8;
 const kgBz = (c, f) => (easeKind(c, f) === 'linear' ? [1 / 3, 1 / 3, 2 / 3, 2 / 3] : f.bz || EASES.inout); // the handles drawn for a segment
 function kgGeo(c, cv) { // CSS px <-> clip time / progress
@@ -1580,6 +1580,7 @@ function textPanel(c, lane) {
     + (cap && P.captions.some(x => x.kw) ? tick('cap.kw', 'Keyword highlight', !!P.capStyle.kw) : '') + (cap && P.captions.some(x => x.spk != null) ? tick('cap.spk', 'Speaker labels', !!P.capStyle.spk) : '')
     + `<h4>Layout</h4>${segs('align', 'Align', st.align || 'center', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']])}`
     + slider(`${r}.ls`, 'Letter spacing', st.ls || 0, -0.05, 0.5, 0.005, '%') + slider(`${r}.lh`, 'Line height', st.lh, 0.8, 2.2, 0.01) + slider(`${r}.maxW`, 'Max width', st.maxW, 0.2, 1, 0.01, '%') + tick(`${r}.upper`, 'All caps', st.upper)
+    + slider(cap ? `${r}.curve` : 'c.curve', 'Curve', cap ? st.curve : pr.curve, -100, 100, 1)
     + `<h4>Outline</h4>${slider(`${r}.strokeW`, 'Width', st.strokeW, 0, 20, 0.5)}${colour(`${r}.stroke`, 'Colour', st.stroke)}`
     + `<h4>Shadow</h4>${tick(`${r}.shadow`, 'Shadow', st.shadow)}${st.shadow ? colour(`${r}.shc`, 'Colour', st.shc) + slider(`${r}.sha`, 'Opacity', st.sha, 0, 1, 0.01, '%') + slider(`${r}.shb`, 'Blur', st.shb, 0, 1, 0.01, '%')
       + slider(`${r}.shx`, 'Offset X', st.shx, -0.5, 0.5, 0.005, '%') + slider(`${r}.shy`, 'Offset Y', st.shy, -0.5, 0.5, 0.005, '%') : ''}`
@@ -7029,7 +7030,15 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   return o;
 }
 const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease', 'sndLead', 'sndTail',
-  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt', 'label']);
+  'adj', 'look', 'crop', 'key', 'mask', 'anim', 'style', 'text', 'start', 'dur', 'in', 'out', 'kf', 'fx', 'amt', 'label', 'curve']);
+function checkTextStyle(style) { // shared command validation: a typo must not silently become a fade
+  if (style == null) return;
+  if (typeof style !== 'object' || Array.isArray(style)) throw new Error('style must be an object');
+  for (const [k, opts] of [['anim', ANIMS], ['out', OUTS], ['loop', LOOPS]]) if (style[k] != null && !opts.some(([id]) => id === style[k])) throw new Error(`${k} must be one of ${opts.map(x => x[0]).join(', ')}`);
+  for (const k of ['animT', 'outT']) if (style[k] != null && (!Number.isFinite(style[k]) || style[k] < 0.1 || style[k] > 5)) throw new Error(`${k} must be 0.1-5 seconds`);
+  checkTextCurve(style.curve);
+}
+function checkTextCurve(curve) { if (curve != null && (!Number.isFinite(curve) || curve < -100 || curve > 100)) throw new Error('curve must be a number from -100 to 100'); }
 function merge(o, patch) { // deep merge; null deletes
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete o[k];
@@ -7143,6 +7152,11 @@ const REMOTE = {
   async update_clip({ id, set = {} }) {
     const [c, L] = cfind(id), bad = Object.keys(set).filter(k => !EDITABLE.has(k));
     if (bad.length) throw new Error(`not editable: ${bad.join(', ')}. Editable: ${[...EDITABLE].join(', ')}`);
+    if (L === 'text' || L === 'captions') {
+      checkTextStyle(set.style); checkTextCurve(set.curve);
+      if (L === 'text' && set.style && Object.hasOwn(set.style, 'curve')) { set = structuredClone(set); set.curve = set.curve ?? set.style.curve; delete set.style.curve; }
+      for (const f of Array.isArray(set.kf) ? set.kf : []) checkTextCurve(f?.curve);
+    } else if (set.curve !== undefined) throw new Error('Curve is a text option');
     if (set.fx !== undefined && !FX[set.fx] && set.fx !== 'adjust') throw new Error(`fx must be one of ${Object.keys(FX).join(', ')}, adjust`);
     if (set.label === '' || set.label === 'none') set.label = null;
     if (set.label != null && !LABEL_N[set.label]) throw new Error(`label must be one of ${LABELS.map(x => x[0]).join(', ')}, or null for none`);
@@ -7211,11 +7225,16 @@ const REMOTE = {
     change(() => { if (L === 'main' && index !== undefined) { P.main.splice(P.main.indexOf(c), 1); P.main.splice(clamp(index, 0, P.main.length), 0, c); } else if (start !== undefined) c.start = Math.max(0, start); });
     return brief(c, L);
   },
-  async add_text({ text, preset = 'Title', start = S.t, duration = 3, x, y, style }) {
+  async add_text({ text, preset = 'Title', start = S.t, duration = 3, x, y, style, curve }) {
     if (!TEXT_PRESETS[preset]) throw new Error(`preset must be one of ${Object.keys(TEXT_PRESETS).join(', ')}`);
-    S.t = start; addText(preset);
+    checkTextStyle(style); checkTextCurve(curve);
+    if (!Number.isFinite(start) || start < 0 || !Number.isFinite(duration) || duration <= 0) throw new Error('start must be nonnegative and duration must be positive');
+    const props = { text: String(text), dur: duration };
+    if (x !== undefined) props.x = x; if (y !== undefined) props.y = y;
+    if (curve != null || style?.curve != null) props.curve = curve ?? style.curve;
+    const cleanStyle = { ...style }; delete cleanStyle.curve;
+    S.t = start; addText(preset, props, cleanStyle);
     const [c] = cfind(S.sel.id);
-    change(() => { c.text = String(text); c.dur = duration; if (x !== undefined) c.x = x; if (y !== undefined) c.y = y; if (style) merge(c.style, style); });
     return brief(c, 'text');
   },
   async set_transition({ after, type, duration = 0.5, all }) {
