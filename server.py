@@ -10,7 +10,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, contextlib, gzip, hashlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, gzip, hashlib, html, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from fractions import Fraction
 import xml.etree.ElementTree as ET
@@ -5141,7 +5141,7 @@ HDR_TRC = {'hlg': 'arib-std-b67', 'pq': 'smpte2084'}
 VT_Q = {'h264': 82, 'hevc': 80}  # Standard, VideoToolbox quality (whole steps): DJI 4K60 / 1080p60 at ~0.9-1.1x the old -b:v sizes, PSNR at or above them
 
 SUB_CODECS = {'mp4': 'mov_text', 'hevc': 'mov_text', 'av1': 'mov_text', 'prores': 'mov_text', 'prores4444': 'mov_text',
-              'webm': 'webvtt', 'av1webm': 'webvtt', 'mkv': 'srt'}
+              'webm': 'webvtt', 'av1webm': 'webvtt', 'mkv': 'webvtt'}  # MKV: WebVTT, not SRT: SRT has no escape, players read '<b & c>' in a caption as markup
 FIT_FORMATS = ('mp4', 'hevc', 'av1', 'av1webm', 'webm', 'mkv', 'gif', 'mp3', 'm4a')
 
 
@@ -5155,6 +5155,8 @@ def clean_subtitles(tracks, p):
         raise ValueError('Export supports up to 32 subtitle languages')
     out = []
     for track in tracks:
+        if not isinstance(track, dict) or not all(isinstance(c, dict) and {'start', 'end', 'text'} <= c.keys() for c in track.get('cues') or []):
+            raise ValueError('Each subtitle track needs a language and cues with start, end and text')
         lang = str(track.get('language', 'und')).lower()
         if not re.fullmatch('[a-z]{3}', lang):
             raise ValueError('Subtitle language must be a three-letter ISO 639-2 code (or und for unknown)')
@@ -5164,7 +5166,7 @@ def clean_subtitles(tracks, p):
         clean = []
         for c in cues:
             a, b = int(fnum(c['start'], 0, 21600000)), int(fnum(c['end'], 0, 21600000))
-            txt = str(c['text']).replace('\r', '').replace('\x00', '').strip()
+            txt = re.sub(r'\n\s*\n', '\n', str(c['text']).replace('\r', '').replace('\x00', '').strip())  # a blank line would end the cue in SRT / WebVTT
             if b <= a or b > round(p['duration'] * 1000) + 1 or not txt or len(txt) > 10000:
                 raise ValueError('Subtitle cues need text and valid times within the export')
             clean.append({'start': a, 'end': b, 'text': txt})
@@ -5174,19 +5176,33 @@ def clean_subtitles(tracks, p):
 
 
 def mux_subtitles(p, td, out, job=None):
+    """Each track as its container's own text, written here so every caption survives literally (ffmpeg's SRT reader takes
+    '<...>' / '{...}' as markup: 'a < b & c > d' came out as 'a  d'). WebVTT (WebM, MKV): entity-escaped, stream-copied.
+    mov_text: from WebVTT (millisecond times) unless a cue has '{' or a backslash, which ffmpeg's WebVTT reader re-escapes and
+    its mov_text writer keeps; those tracks go through ASS (centisecond times), where only a backslash before n/N and '{'
+    before a backslash are markup: a word joiner (invisible) breaks those two."""
     if not p.get('subtitles'):
         return
-    tm = lambda ms: f'{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}'
+    vtt_t = lambda ms: f'{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02}.{ms % 1000:03}'
+    ass_t = lambda cs: f'{cs // 360000}:{cs // 6000 % 60:02}:{cs // 100 % 60:02}.{cs % 100:02}'
+    mov = SUB_CODECS[p['format']] == 'mov_text'
     ins, maps = [], []
     for i, track in enumerate(p['subtitles']):
-        f = Path(td) / f'subtitle-{i}.srt'
-        f.write_text('\n'.join(f"{n + 1}\n{tm(c['start'])} --> {tm(c['end'])}\n{c['text']}\n" for n, c in enumerate(track['cues'])), encoding='utf-8')
+        if mov and any('{' in c['text'] or '\\' in c['text'] for c in track['cues']):
+            f = Path(td) / f'subtitle-{i}.ass'
+            esc = lambda t: re.sub(r'\\(?=[nN])', '\\\\\u2060', t).replace('{\\', '{\u2060\\').replace('\n', '\\N')
+            f.write_text('[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
+                         + ''.join(f"Dialogue: 0,{ass_t(round(c['start'] / 10))},{ass_t(max(round(c['start'] / 10) + 1, round(c['end'] / 10)))},Default,,0,0,0,,{esc(c['text'])}\n"
+                                   for c in track['cues']), encoding='utf-8')
+        else:
+            f = Path(td) / f'subtitle-{i}.vtt'
+            f.write_text('WEBVTT\n\n' + ''.join(f"{vtt_t(c['start'])} --> {vtt_t(c['end'])}\n{html.escape(c['text'], quote=False)}\n\n" for c in track['cues']), encoding='utf-8')
         ins += ['-i', str(f)]
         maps += ['-map', f'{i + 1}:s:0', f'-metadata:s:s:{i}', f"language={track['language']}",
                  f'-metadata:s:s:{i}', f"title={track['language']}", f'-disposition:s:{i}', 'default' if i == 0 else '0']
     dst = Path(td) / ('subtitled' + out.suffix)
     run_ffmpeg(['ffmpeg', '-y', '-v', 'error', '-nostdin', '-progress', 'pipe:1', '-i', str(out), *ins,
-                '-map', '0:v?', '-map', '0:a?', *maps, '-c', 'copy', '-c:s', SUB_CODECS[p['format']],
+                '-map', '0:v?', '-map', '0:a?', *maps, '-c', 'copy', *(['-c:s', 'mov_text'] if mov else []),
                 *(['-movflags', '+faststart'] if out.suffix in ('.mp4', '.mov') else []), str(dst)], p['duration'], lambda x: None, 'Storing subtitles', job)
     retry(dst.replace, out)
 
