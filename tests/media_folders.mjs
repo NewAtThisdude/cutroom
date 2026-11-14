@@ -19,7 +19,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // seed: two videos, a sound, a photo (own names, so a busy library does not matter)
 const FILES = [['fold-alpha.mp4', ['-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-shortest']],
   ['fold-beta.mp4', ['-f', 'lavfi', '-i', 'testsrc2=size=180x320:rate=30:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30']],
-  ['fold-gamma.wav', ['-f', 'lavfi', '-i', 'sine=frequency=330:duration=2']], ['fold-gamma (voice).wav', ['-f', 'lavfi', '-i', 'sine=frequency=550:duration=2']], ['fold-delta.png', ['-f', 'lavfi', '-i', 'testsrc2=size=200x120:rate=1', '-frames:v', '1']]];
+  ['fold-gamma.wav', ['-f', 'lavfi', '-i', 'sine=frequency=330:duration=2']], ['fold-gamma (voice).wav', ['-f', 'lavfi', '-i', 'sine=frequency=550:duration=2']], ['fold-delta.png', ['-f', 'lavfi', '-i', 'testsrc2=size=200x120:rate=1', '-frames:v', '1']],
+  ['fold-pad1.png', ['-f', 'lavfi', '-i', 'testsrc2=size=68x64:rate=1', '-frames:v', '1']], ['fold-pad2.png', ['-f', 'lavfi', '-i', 'testsrc2=size=76x64:rate=1', '-frames:v', '1']], ['fold-pad3.png', ['-f', 'lavfi', '-i', 'testsrc2=size=84x64:rate=1', '-frames:v', '1']], ['fold-pad4.png', ['-f', 'lavfi', '-i', 'testsrc2=size=92x64:rate=1', '-frames:v', '1']], ['fold-pad5.png', ['-f', 'lavfi', '-i', 'testsrc2=size=100x64:rate=1', '-frames:v', '1']], ['fold-pad6.png', ['-f', 'lavfi', '-i', 'testsrc2=size=108x64:rate=1', '-frames:v', '1']]];
 for (const [n, a] of FILES) {
   if (!fs.existsSync(OUT + n)) execFileSync('ffmpeg', ['-v', 'error', '-y', ...a, OUT + n]);
   if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${encodeURIComponent(n)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
@@ -34,7 +35,7 @@ const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   console.log(`--- reducedMotion: ${rm}`);
   await reset();
-  const ctx = await b.newContext({ viewport: { width: 1517, height: 1500 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];
+  const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];
   page.on('pageerror', e => errs.push(e.message));
   await page.route(u => u.pathname === '/api/remote/next', async r => { await sleep(15000); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
   const ev = (f, a) => page.evaluate(f, a);
@@ -157,7 +158,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: a second project sees the same folders`, (await snap(page)) === s1 && (await foldNames()).includes('Talks'));
   await smartOpen('Not used anywhere'); const un2 = await cards(); await smartOpen('Not used anywhere');
   check(`${rm}: in the second project "Not used anywhere" still leaves out what project A uses (saved)`, !un2.includes('fold-alpha.mp4') && un2.includes('fold-gamma.wav'), un2.join());
-  const page2 = await (await b.newContext({ viewport: { width: 1517, height: 1500 }, reducedMotion: rm })).newPage();
+  const page2 = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   page2.on('pageerror', e => errs.push(e.message));
   await page2.route(u => u.pathname === '/api/remote/next', async r => { await sleep(15000); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
   await open(page2);
@@ -182,6 +183,31 @@ for (const rm of ['no-preference', 'reduce']) {
   await cmd({ action: 'move', media: ['fold-gamma'], to: 'Mix' });
   st = await api('/api/folders');
   check(`${rm}: media given by name resolves like every other command: "fold-gamma" is fold-gamma.wav, not "fold-gamma (voice).wav"`, st.of[id.gamma] === Object.keys(st.folders).find(k => st.folders[k].name === 'Mix') && st.of[id['gamma (voice)']] !== st.of[id.gamma], JSON.stringify(st.of));
+  // ---- a real library is longer than the window: the path bar, Move to and the folder tiles stay pinned while the cards scroll ----
+  await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
+  const pane = '#tab-media';
+  const geo = () => ev(p => { const q = $(p), r = q.getBoundingClientRect(), f = sel => { const b = $(sel)?.getBoundingClientRect(); return b && { top: Math.round(b.top - r.top), bottom: Math.round(b.bottom - r.top) }; };
+    return { scroll: q.scrollTop, can: q.scrollHeight - q.clientHeight, bar: f('#folderBar'), tile: f('#folderList .fold'), last: f('#mediaList .mitem:last-child'), view: r.height }; }, pane);
+  const toBottom = async () => { await ev(p => { const q = $(p); q.scrollTop = q.scrollHeight; }, pane); await page.waitForTimeout(150); };
+  await toBottom();
+  const g1 = await geo();
+  check(`${rm}: at 904 px the library scrolls (${g1.can} px), and scrolled to the bottom the path bar and the folder tiles are still on screen`,
+    g1.can > 100 && g1.scroll > 100 && g1.bar.top >= 0 && g1.bar.top < 8 && g1.tile && g1.tile.top >= 0 && g1.tile.bottom <= g1.view && g1.last.bottom <= g1.view + 2, JSON.stringify(g1));
+  const lastId = await ev(() => $$('#mediaList .mitem[data-media]').pop().dataset.media);
+  const fid = name => api('/api/folders').then(j => Object.entries(j.folders).find(([, f]) => f.name === name)[0]);
+  const tk = await fid('Talks');
+  await page.click(`#mediaList .mitem[data-media="${lastId}"]`, { modifiers: ['Control'] });
+  const bb = await geo();
+  check(`${rm}: selecting a card at the bottom shows "N selected / Move to" on screen (pinned)`, /1 selected/.test(await ev(() => $('.fdsel')?.textContent || '')) && (await page.locator('#fdMoveTo').boundingBox()).y >= 0 && bb.bar.top < 8, JSON.stringify(bb));
+  await page.selectOption('#fdMoveTo', tk); await page.waitForTimeout(400);
+  check(`${rm}: Move to files the card from the bottom of the list into Talks`, (await api('/api/folders')).of[lastId] === tk);
+  await toBottom();
+  await drag(`#mediaList .mitem[data-media="${lastId}"]`, '#folderList .fold:has(b:text-is("Music")) b'); await page.waitForTimeout(400);
+  const mu = await fid('Music');
+  check(`${rm}: dragging a card from the bottom onto a pinned folder tile files it there`, (await api('/api/folders')).of[lastId] === mu, JSON.stringify((await api('/api/folders')).of[lastId]));
+  await toBottom();
+  await drag(`#mediaList .mitem[data-media="${lastId}"]`, '#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(400);
+  check(`${rm}: dragging it from the bottom onto the pinned All media crumb takes it out of the folder again`, !(await api('/api/folders')).of[lastId]);
   // ---- neighbours of the feature stay whole: library still lists everything, old media untouched ----
   check(`${rm}: all my media is still in the library`, (await api('/api/media')).filter(m => ALL.includes(m.id)).length === ALL.length);
   check(`${rm}: no page errors`, errs.length === 0, errs.join(' | '));
