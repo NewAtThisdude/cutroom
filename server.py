@@ -692,7 +692,7 @@ def prepare_(m):
                                  '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(tmp)], low=True).returncode
             if m['proxy']:
                 retry(tmp.replace, CACHE / f'{mid}.proxy.webm')
-        elif (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
+        elif (pol := proxy_pref(m)) == 'always' or pol == 'auto' and (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
               or m.setdefault('gop', gop(src)) > 2):  # a keyframe only every few seconds: seeks decode all of it
             out = CACHE / f'{mid}.proxy.mp4'
             m['proxy'] = proxy(m, src, out) or proxy(m, src, out, sw=True)
@@ -1891,6 +1891,9 @@ def tier(kind):
     return {**base, 'refused': f'{what} {why}'}
 
 
+AI_OFF = set()  # AI_BUDGET kinds turned off in Settings: 'ai.<kind>': false in the library's settings.json (lib_settings_apply)
+
+
 @contextlib.contextmanager
 def ai_slot(kind, st=None, units=None):
     """A heavy job's turn in the ONE queue: GPU / Neural Engine work (every AI model, MPS/MLX, Metal whisper, big exports) runs
@@ -1903,9 +1906,11 @@ def ai_slot(kind, st=None, units=None):
         raise RuntimeError(t['refused'])
     if st is not None and units:
         st['eta'] = max(1, round(units * t['rate']))
-    if kind in LIGHT or getattr(AI_HELD, 'n', 0):
+    if kind in LIGHT or getattr(AI_HELD, 'n', 0):  # (a job's own inner steps run under its switch: cloning's Kokoro check with voiceover off)
         yield t
         return
+    if kind in AI_OFF:  # Settings › AI (kept in the library's settings.json): refused here whatever path reached it (fillers, smart combine, indexing...)
+        raise RuntimeError(f"{t['what']} is turned off in Settings (AI and this computer)")
     me, cv = {'what': t['what']}, HEAVY['cv']
     with cv:
         HEAVY['line'].append(me)
@@ -3111,6 +3116,8 @@ NO_FORMAT = set()  # models Ollama serves without structured output
 def llm(system, user, ctx=8192, images=None):
     """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes).
     images: base64 JPEGs for a vision model (qwen3.5 sees)."""
+    if 'llm' in AI_OFF:  # off in Settings even as a step inside another job (dubbing's shorter lines fall back to the tempo cap)
+        raise RuntimeError(f"{tier('llm')['what']} is turned off in Settings (AI and this computer)")
     if not ollama_up():
         raise RuntimeError(f'the local language model is not available (install Ollama, then {LLM_HINT})')
     model = llm_model()
@@ -3549,7 +3556,7 @@ def scenes(mid, thr=0.3):
 
 # ---------- command bar (⌘K): plain language -> the MCP's own commands, planned by the local model ----------
 _MCP = []
-PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
+PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'list_templates', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
              'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'relink_media', 'compound_clip',
              'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media', 'open_package'}  # need a box, a path or a picture to look at, or only read
 PILOT_ENUM = {('auto_captions', 'style'): 'captionPresets', ('add_text', 'preset'): 'textPresets', ('set_transition', 'type'): 'transitions', ('add_effect', 'type'): 'effects',
@@ -3806,6 +3813,8 @@ def ptext(p):
 
 
 def index_many(st, mids):
+    if 'llm' in AI_OFF:  # (indexing describes pictures with the local model: off in Settings, no speech-only index either)
+        raise RuntimeError(f"{tier('llm')['what']} is turned off in Settings (AI and this computer)")
     done, errs = 0, []  # no ids: every item not indexed yet
     mids = [x for x in dict.fromkeys(map(str, mids or [f.stem for f in MEDIA.glob('*.json') if not (CACHE / f'{f.stem}.index.json').exists()]))
             if (MEDIA / f'{x}.json').exists()][:500]
@@ -5922,6 +5931,7 @@ def open_package(st, path, drop=False):
             if isinstance(o, dict) and isinstance(o.get('lut'), dict) and o['lut'].get('id') in lut:
                 o['lut']['id'] = lut[o['lut']['id']]
         fix(p)
+        brand_adopt(p)
         p.update(id=uuid.uuid4().hex[:12], name=str(p.get('name') or 'Packaged project')[:200])
         PROJ.mkdir(parents=True, exist_ok=True)
         tmp = PROJ / f".{p['id']}.tmp"
@@ -5934,6 +5944,360 @@ def open_package(st, path, drop=False):
         shutil.rmtree(work, ignore_errors=True)
         if drop:
             Path(path).unlink(missing_ok=True)
+
+
+# ---------- templates you make and share ----------
+# A template is an edit whose footage became numbered slots ("slot:N"), its synthesized sounds by name ("sfx:whoosh") and
+# the rest (sound-library sounds, stickers, music you keep) library ids. Starters ship in the repo's templates/; yours live
+# in <library>/templates, with the poster and hover preview the page rendered once from slates (placeholder footage).
+# A .cutroom-template is a stored zip of one: template.json (with a files list: size, SHA-256), poster.jpg, preview.mp4,
+# and the media, fonts and LUTs it keeps. Never slot media. The page does the rest (filling, timing, the preview's plan).
+TPL = HOME / 'templates'
+TPL_STARTERS = Path(__file__).resolve().parent / 'templates'
+TPL_NAME = re.compile(r'template\.json|poster\.jpg|preview\.mp4|media/[a-f0-9]{12}\.[a-z0-9]{1,5}|fonts/[a-f0-9]{12}\.(?:ttf|otf|woff2)|luts/[a-f0-9]{12}\.cube')
+TPL_CAP = {'template.json': 16 << 20, 'poster.jpg': 4 << 20, 'preview.mp4': 64 << 20, 'media': 256 << 20, 'fonts': 32 << 20, 'luts': 64 << 20}  # bytes per entry
+TPL_TOTAL = 1 << 30  # a whole .cutroom-template
+
+
+def tpl_list():
+    """Starters first, then yours by name; a template of yours with a starter's id wins over it."""
+    out = {}
+    for d, starter in ((TPL_STARTERS, True), (TPL, False)):
+        for f in sorted(d.glob('*.json')):
+            try:
+                t = json.loads(f.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if isinstance(t, dict) and t.get('id') == f.stem and ID.fullmatch(f.stem) and isinstance(t.get('project'), dict):
+                jpg, mp4 = TPL / f'{f.stem}.jpg', TPL / f'{f.stem}.mp4'
+                pv = int(jpg.stat().st_mtime) if jpg.is_file() and jpg.stat().st_mtime >= f.stat().st_mtime else 0  # older than the template (changed since): made again
+                out[f.stem] = {**t, 'starter': starter, 'poster': bool(pv), 'preview': bool(pv) and mp4.is_file(), 'pv': pv}
+    return sorted(out.values(), key=lambda t: (not t['starter'], str(t.get('name', '')).lower()))
+
+
+def tpl_get(tid):
+    if t := next((x for x in tpl_list() if x['id'] == tid), None):
+        return t
+    raise ValueError('no such template')
+
+
+def tpl_slates(slots):
+    """Placeholder footage for a template's preview: per slot the page's PNG (graphite, the slot number, its label) as a
+    photo, or for a video slot that PNG with an amber bar running along its foot over the slot's length. Library items
+    marked slate: hidden from the library, removed once the preview is made. The same slate is made once."""
+    import hashlib
+    MEDIA.mkdir(parents=True, exist_ok=True)
+    out = []
+    for s in slots[:64]:
+        png = base64.b64decode(str(s.get('png', '')), validate=True)
+        if not (wh := png_size(png)) or len(png) > 8 << 20:
+            raise ValueError('a slate is not a PNG')
+        image, need = s.get('kind') == 'image', round(fnum(s.get('need', 3), 0.5, 600), 2)
+        sid = hashlib.sha1(png + f'{need}{image}'.encode()).hexdigest()[:12]
+        if (MEDIA / f'{sid}.json').is_file() and has_file(sid):
+            out.append(meta(sid))
+            continue
+        f = MEDIA / f"{sid}.{'png' if image else 'mp4'}"
+        if image:
+            f.write_bytes(png)
+        else:
+            src = CACHE / f'slate-{sid}.png'
+            CACHE.mkdir(parents=True, exist_ok=True)
+            src.write_bytes(png)
+            try:
+                r = sh(['ffmpeg', '-v', 'error', '-y', '-loop', '1', '-framerate', '30', '-i', str(src), '-f', 'lavfi', '-i', f'color=c=0xf0b23e:s={wh[0]}x{max(2, wh[1] // 90 * 2)}:r=30',
+                        '-filter_complex', f"[0][1]overlay=x='-w+w*t/{need}':y=H-h:shortest=1,format=yuv420p", '-t', str(need), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-an', str(f)], low=True)
+            finally:
+                src.unlink(missing_ok=True)
+            if r.returncode or not f.is_file():
+                f.unlink(missing_ok=True)
+                raise RuntimeError(f'the slate could not be made: {r.stderr.strip()[-200:]}')
+        info = probe(f)
+        if image:
+            info.update(duration=0, hasAudio=False, hdr=False)
+        m = {'id': sid, 'name': f"Slot {s.get('n', '')}".strip(), 'file': f.name, 'kind': 'image' if image else 'video', **info, 'ready': True, 'added': time.time(), 'slate': True}
+        save_meta(m)
+        out.append(m)
+    return out
+
+
+def tpl_unslate(ids):
+    for sid in ids:
+        if ID.fullmatch(str(sid)) and (j := MEDIA / f'{sid}.json').is_file():
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                m = json.loads(j.read_text())
+                if m.get('slate'):  # (only what tpl_slates made)
+                    (MEDIA / m['file']).unlink(missing_ok=True)
+                    j.unlink()
+
+
+def tpl_preview(tid, file, at, slates):
+    """The page's export of the template on slates -> its hover preview, and the frame at `at` as its poster."""
+    tpl_get(tid)
+    src = EXPORTS / Path(str(file)).name
+    if src.suffix != '.mp4' or not src.is_file():
+        raise ValueError('no such export')
+    TPL.mkdir(parents=True, exist_ok=True)
+    mp4, jpg = TPL / f'{tid}.mp4', TPL / f'{tid}.jpg'
+    retry(shutil.move, str(src), str(mp4))
+    at = min(fnum(at, 0, 1e5), max(0.0, probe(mp4)['duration'] - 0.1))
+    sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{at:.3f}', '-i', str(mp4), '-frames:v', '1', '-q:v', '3', str(jpg)], low=True)
+    tpl_unslate(slates)
+    return {'poster': jpg.is_file(), 'preview': True}
+
+
+def tpl_share(tid):
+    """<exports>/<name>.cutroom-template: the template, its poster and preview, and the media, fonts and LUTs it keeps."""
+    import hashlib
+    t = {k: v for k, v in tpl_get(tid).items() if k not in ('starter', 'poster', 'preview', 'pv')}
+    p = t['project']
+    refs = {d['media'] for d in dicts(p) if isinstance(d.get('media'), str) and ID.fullmatch(d['media'])}
+    ids = [i for i in dict.fromkeys(re.findall(r'"([a-f0-9]{12})"', json.dumps(p))) if has_file(i)]  # (clip ids match the pattern too: only library items count)
+    if gone := refs - set(ids):
+        raise ValueError(f"{len(gone)} file{'s' if len(gone) > 1 else ''} this template keeps {'are' if len(gone) > 1 else 'is'} no longer in the library")
+    fams = {d[k] for d in dicts(p) for k in ('font', 'biFont') if isinstance(d.get(k), str)}
+    fonts = [f for f in (json.loads(x.read_text()) for x in (HOME / 'fonts').glob('*.json')) if f['family'] in fams]
+    luts = sorted({d['lut']['id'] for d in dicts(p) if isinstance(d.get('lut'), dict) and ID.fullmatch(str(d['lut'].get('id'))) and (HOME / 'luts' / f"{d['lut']['id']}.cube").is_file()})
+    entries = [(f"media/{i}{Path(meta(i)['file']).suffix.lower()}", MEDIA / meta(i)['file'], {'id': i, 'name': meta(i)['name'], 'kind': meta(i)['kind'], **{k: meta(i)[k] for k in PKG_META if k in meta(i)}}) for i in ids]
+    entries += [(f"fonts/{f['file']}", HOME / 'fonts' / f['file'], {'id': f['id'], 'family': f['family']}) for f in fonts]
+    for lid in luts:
+        info = json.loads((HOME / 'luts' / f'{lid}.json').read_text()) if (HOME / 'luts' / f'{lid}.json').is_file() else {}
+        entries.append((f'luts/{lid}.cube', HOME / 'luts' / f'{lid}.cube', {'id': lid, 'name': info.get('name', 'LUT')}))
+    entries += [(n, TPL / f'{tid}{x}', {}) for n, x in (('poster.jpg', '.jpg'), ('preview.mp4', '.mp4')) if (TPL / f'{tid}{x}').is_file()]
+    t.update(format='cutroom-template', files=[])
+    for name, f, row in entries:
+        h = hashlib.sha256()
+        with open(f, 'rb') as fh:
+            while b := fh.read(1 << 20):
+                h.update(b)
+        t['files'].append({**row, 'file': name, 'size': f.stat().st_size, 'sha256': h.hexdigest()})
+    EXPORTS.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(t.get('name') or '')).strip(' .')[:100] or 'Template'
+    out = unique(EXPORTS / f'{stem}.cutroom-template')
+    part = out.with_name(f'.{out.name}.part')
+    try:
+        with zipfile.ZipFile(part, 'w', zipfile.ZIP_STORED, allowZip64=True) as z:
+            for name, f, _ in entries:
+                z.write(f, name)
+            z.writestr('template.json', json.dumps(t))
+        retry(part.replace, out)
+    finally:
+        part.unlink(missing_ok=True)
+    return {'file': out.name, 'dir': str(EXPORTS).replace(str(Path.home()), '~', 1), 'size': out.stat().st_size, 'files': len(entries)}
+
+
+def tpl_import(path):
+    """A .cutroom-template into this library under a new id: only the names one has, each within its cap and checksum
+    (zip-slip: a ../ or absolute name refuses it all), kept media reused when the same bytes are here, every reference remapped."""
+    import hashlib
+    work = CACHE / f'tpl-{uuid.uuid4().hex[:8]}'
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = {}
+            for i in z.infolist():
+                if not TPL_NAME.fullmatch(i.filename) or i.filename in infos or i.flag_bits & 1 or i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) \
+                        or i.file_size > TPL_CAP[i.filename.split('/')[0]]:
+                    raise ValueError(f'not a Cutroom template: it holds {i.filename[:80]!r}')
+                infos[i.filename] = i
+            if 'template.json' not in infos or sum(i.file_size for i in infos.values()) > TPL_TOTAL:
+                raise ValueError('not a Cutroom template')
+            t = json.loads(z.read('template.json'))
+            if not isinstance(t, dict) or t.get('format') != 'cutroom-template' or not isinstance(t.get('project'), dict) or not isinstance(t.get('slots'), list) \
+                    or not isinstance(t.get('files', []), list):
+                raise ValueError('not a Cutroom template')
+            if int(fnum(t.get('v', 2), 1, 1e6)) > 2:
+                raise ValueError('this template was made by a newer Cutroom')
+            rows = t.pop('files', [])
+            if any(not isinstance(r, dict) or r.get('file') not in infos or r['file'] == 'template.json' for r in rows):
+                raise ValueError('the template is damaged: its list names a file it does not hold')
+            work.mkdir(parents=True)
+            remap, fam, lut, got = {}, {}, {}, {}
+            for r in rows:
+                f, h = work / Path(r['file']).name, hashlib.sha256()
+                with z.open(infos[r['file']]) as src, open(f, 'wb') as out:
+                    while b := src.read(1 << 20):
+                        h.update(b)
+                        out.write(b)
+                if r.get('sha256') != h.hexdigest():
+                    raise ValueError(f"the template is damaged: {r['file']} does not match its checksum")
+                kind, rid = r['file'].split('/')[0], str(r.get('id', ''))
+                if kind == 'media':
+                    if not (m := same_file(f, h.hexdigest())):
+                        m = import_file(Path(str(r.get('name') or 'media')).stem[:150] + f.suffix, None, 0, src=f)
+                        if not m.pop('dup', None):
+                            m.update(name=str(r.get('name') or m['name'])[:200], sha256=h.hexdigest(), **{x: r[x] for x in PKG_META if x in r})
+                            m.pop('srckey', None)
+                            save_meta(m)
+                    remap[rid] = m['id']
+                elif kind == 'fonts':
+                    fam[str(r.get('family'))] = import_font(f"{r.get('family') or 'Font'}{f.suffix}", f.read_bytes())['family']
+                elif kind == 'luts':
+                    text, d = f.read_text(errors='replace'), HOME / 'luts'
+                    if not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):
+                        raise ValueError('the template is damaged: a LUT in it is not a .cube')
+                    d.mkdir(parents=True, exist_ok=True)
+                    lid = rid if ID.fullmatch(rid) and not ((d / f'{rid}.cube').exists() and (d / f'{rid}.cube').read_text(errors='replace') != text) else uuid.uuid4().hex[:12]
+                    if not (d / f'{lid}.cube').exists():
+                        (d / f'{lid}.cube').write_text(text)
+                        (d / f'{lid}.json').write_text(json.dumps({'id': lid, 'name': str(r.get('name') or 'LUT')[:80]}))
+                    lut[rid] = lid
+                else:
+                    got[r['file']] = f
+
+        def fix(o):  # every reference to a file it brought, wherever it sits
+            for k, v in (o.items() if isinstance(o, dict) else enumerate(o)):
+                if isinstance(v, str):
+                    o[k] = remap.get(v, fam.get(v, v) if k in ('font', 'biFont') else v)
+                elif isinstance(v, (dict, list)):
+                    fix(v)
+            if isinstance(o, dict) and isinstance(o.get('lut'), dict) and o['lut'].get('id') in lut:
+                o['lut']['id'] = lut[o['lut']['id']]
+        fix(t)
+        t.update(id=uuid.uuid4().hex[:12], name=str(t.get('name') or 'Template')[:80], imported=time.time())
+        t.pop('format', None)
+        TPL.mkdir(parents=True, exist_ok=True)
+        tmp = TPL / f".{t['id']}.tmp"
+        tmp.write_text(json.dumps(t))
+        retry(tmp.replace, TPL / f"{t['id']}.json")
+        for name, x, ok in (('poster.jpg', '.jpg', lambda b: b[:2] == b'\xff\xd8'), ('preview.mp4', '.mp4', lambda b: b[4:8] == b'ftyp')):
+            if (f := got.get(name)) and ok(f.read_bytes()[:8]):
+                retry(shutil.move, str(f), str(TPL / f"{t['id']}{x}"))
+                (TPL / f"{t['id']}{x}").touch()  # (newer than the template: not made again)
+        return {**t, 'media': len(remap), 'fonts': len(fam), 'luts': len(lut)}
+    except zipfile.BadZipFile:
+        raise ValueError('not a Cutroom template (not a zip file)')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def tpl_route_get(h, path):  # -> True when it answered
+    if path == '/api/templates':
+        return h.reply(tpl_list()) or True
+    if m := re.fullmatch(r'/api/templates/([a-f0-9]{12})/(poster\.jpg|preview\.mp4)', path):
+        return h.file(TPL / f"{m[1]}{Path(m[2]).suffix}") or True
+
+
+def tpl_route_post(h, u):  # -> True when it answered
+    if u.path == '/api/templates/import':  # a .cutroom-template's bytes (Import…, or one dropped on the window)
+        n = int(h.headers.get('Content-Length') or 0)
+        if n > TPL_TOTAL:
+            raise ValueError('that template is too big (1 GB at most)')
+        CACHE.mkdir(parents=True, exist_ok=True)
+        f = CACHE / f'tpl-{uuid.uuid4().hex[:8]}.zip'
+        try:
+            with open(f, 'wb') as out:
+                while n > 0 and (b := h.rfile.read(min(n, 1 << 20))):
+                    out.write(b)
+                    n -= len(b)
+            if n:
+                raise ValueError('the upload was cut off')
+            return h.reply(tpl_import(f)) or True
+        finally:
+            f.unlink(missing_ok=True)
+    if not (m := re.fullmatch(r'/api/templates/([a-f0-9]{12})/(slates|preview|share)', u.path)):
+        return None
+    body = h.body()
+    if m[2] == 'slates':
+        tpl_get(m[1])
+        return h.reply(tpl_slates(body.get('slots') or [])) or True
+    if m[2] == 'preview':
+        if body.get('file') is None:  # the render failed: its slates go anyway
+            return h.reply(tpl_unslate(body.get('slates') or []) or {'ok': True}) or True
+        return h.reply(tpl_preview(m[1], body['file'], body.get('at', 1), body.get('slates') or [])) or True
+    return h.reply(tpl_share(m[1])) or True
+
+
+# ---------- brand kit ----------
+# One brand per library: <library>/brand/brand.json. Its logo, intro and outro are library items (Media), so a project that
+# applies the brand plays them like any clip (preview == export) and packages carry them. The page does the applying; the
+# server only keeps the file. A project that applied it holds a copy (p['brand']): opening its package in a library with no
+# brand yet makes it that library's brand.
+BRAND = HOME / 'brand' / 'brand.json'
+CORNERS = ('tl', 'tr', 'bl', 'br')
+
+
+def brand_get():
+    try:
+        return json.loads(BRAND.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def brand_clean(b):
+    """The brand as sent by the page -> only the known fields, each checked (it is drawn into every branded project)."""
+    if not isinstance(b, dict):
+        raise ValueError('brand: an object')
+    fam = lambda v: re.sub(r'[^\w\- ]', '', str(v)).strip()[:60]  # (as import_font names them: it goes into a CSS font string)
+    mid = lambda v: v if isinstance(v, str) and ID.fullmatch(v) else None
+    num = lambda v, lo, hi, d: min(hi, max(lo, float(v))) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    out = {'name': str(b.get('name') or 'Brand')[:80], 'colors': [c.lower() for c in (b.get('colors') or []) if isinstance(c, str) and HEX.fullmatch(c)][:5],
+           'logo': mid(b.get('logo')), 'intro': mid(b.get('intro')), 'outro': mid(b.get('outro')), 'auto': b.get('auto') is not False,
+           'cap': str(b.get('cap') or '')[:40] or None}
+    for k in ('head', 'body'):
+        f = b.get(k) if isinstance(b.get(k), dict) else {}
+        out[k] = {'font': fam(f.get('font') or '') or None, 'weight': int(num(f.get('weight'), 100, 900, 0)) or None}
+    w = b.get('wm') if isinstance(b.get('wm'), dict) else {}
+    out['wm'] = {'on': w.get('on') is True, 'corner': w.get('corner') if w.get('corner') in CORNERS else 'br',
+                 'size': num(w.get('size'), 0.03, 0.5, 0.12), 'opacity': num(w.get('opacity'), 0.05, 1.0, 0.8)}
+    return out
+
+
+def brand_set(b):
+    b = brand_clean(b)
+    BRAND.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BRAND.with_name(f'.brand.{uuid.uuid4().hex[:6]}')
+    tmp.write_text(json.dumps(b, indent=1))
+    tmp.replace(BRAND)
+    return b
+
+
+def brand_adopt(p):  # open_package: the project's brand (its references already remapped) becomes this library's if it has none
+    b = brand_get()
+    if isinstance(p.get('brand'), dict) and not (b.get('logo') or b.get('intro') or b.get('outro') or b.get('colors') or (b.get('head') or {}).get('font')):
+        with contextlib.suppress(ValueError, OSError):
+            brand_set(p['brand'])
+
+
+# ---------- batch editing: saved recipes (one JSON each in <library>/recipes). The page runs the batch itself (its plans
+# are the preview's), so all the server keeps is the recipes. GET /api/batch/recipes; POST /api/batch/recipes {name, ...};
+# POST /api/batch/recipes/<id>/delete ----------
+RECIPES = HOME / 'recipes'
+RECIPE_STEPS = ('template', 'pauses', 'captions', 'loudness', 'brand')
+
+
+def batch_recipes():
+    return sorted((json.loads(f.read_text()) for f in RECIPES.glob('*.json')), key=lambda r: r.get('name', '').lower()) if RECIPES.is_dir() else []
+
+
+def batch_recipe_save(body):
+    """A recipe as the page sends it, checked: a name, known steps in order, shapes, an export preset or resolution."""
+    if not isinstance(body, dict):
+        raise ValueError('expected an object')
+    name = str(body.get('name') or '').strip()[:80]
+    if not name:
+        raise ValueError('a recipe needs a name')
+    steps = body.get('steps') or []
+    if not isinstance(steps, list) or any(not isinstance(x, dict) or x.get('step') not in RECIPE_STEPS for x in steps):
+        raise ValueError(f"steps: a list of {{step: {'|'.join(RECIPE_STEPS)}, ...}}")
+    shapes = body.get('shapes') or []
+    if not isinstance(shapes, list) or any(x not in ('9:16', '16:9', '1:1', '4:5') for x in shapes):
+        raise ValueError('shapes: a list of 9:16, 16:9, 1:1, 4:5')
+    rid = body.get('id') if re.fullmatch(r'[a-f0-9]{12}', str(body.get('id') or '')) else next((r['id'] for r in batch_recipes() if r.get('name') == name), uuid.uuid4().hex[:12])
+    r = {**{k: v for k, v in body.items() if k in ('fit', 'preset', 'res', 'fmt')}, 'id': rid, 'name': name, 'steps': steps, 'shapes': shapes, 'saved': time.time()}
+    RECIPES.mkdir(exist_ok=True)
+    tmp = RECIPES / f'.{rid}.tmp'
+    tmp.write_text(json.dumps(r))
+    tmp.replace(RECIPES / f'{rid}.json')
+    return r
+
+
+def batch_route(path, body=None):  # -> the answer, or None when the path isn't one of these
+    if path == '/api/batch/recipes':
+        return batch_recipes() if body is None else batch_recipe_save(body)
+    if body is not None and (m := re.fullmatch(r'/api/batch/recipes/([a-f0-9]{12})/delete', path)):
+        (RECIPES / f'{m[1]}.json').unlink(missing_ok=True)
+        return {'ok': True}
+    return None
 
 
 # ---------- HTTP ----------
@@ -6036,13 +6400,15 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
             if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
                 return self.reply(caps())
+            if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
+                return self.reply(settings_api(path))
             if path == '/api/remote/status':
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
             if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
                 return self.reply(sorted(({**m, 'prep': PREP_PCT[m['id']]} if m['id'] in PREP_PCT and not m.get('ready') else m
-                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file()), key=lambda m: -m.get('added', 0)))
+                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file() and not m.get('slate')), key=lambda m: -m.get('added', 0)))  # (slate: a template preview's placeholder)
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':
@@ -6107,14 +6473,18 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'luts').glob('*.json')), key=lambda x: x.get('name', '').lower()))
             if m := re.fullmatch(r'/luts/([a-f0-9]{12})\.cube', path):
                 return self.file(HOME / 'luts' / f'{m[1]}.cube')
+            if path == '/api/brand':  # the library's brand kit ({} = none yet)
+                return self.reply(brand_get())
             if path == '/api/fonts':  # imported fonts
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'fonts').glob('*.json')), key=lambda x: x['family'].lower()))
             if path == '/api/fonts/system':  # the Mac's installed families (drawn by name; nothing to load)
                 return self.reply(system_fonts())
             if m := re.fullmatch(r'/fonts/([a-f0-9]{12}\.(?:ttf|otf|woff2))', path):
                 return self.file(HOME / 'fonts' / m[1])
-            if path == '/api/templates':
-                return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
+            if path.startswith('/api/batch/') and (r := batch_route(path)) is not None:  # batch editing (its block above)
+                return self.reply(r)
+            if path.startswith('/api/templates') and tpl_route_get(self, path):  # templates you make and share (their block, above)
+                return
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
                 return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.aimask/\d{5}\.png)', path):  # AI mask frames
@@ -6135,6 +6505,8 @@ class App(BaseHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
+            if u.path.startswith('/api/templates/') and tpl_route_post(self, u):  # templates you make and share (their block, above)
+                return
             if u.path == '/api/import':
                 name = parse_qs(u.query).get('name', ['file'])[0]
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
@@ -6171,6 +6543,10 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError('the upload was cut off')
                 return self.reply({'job': run_job(open_package, f, True)})
             body = self.body()
+            if u.path == '/api/brand':  # the brand kit, whole (brand_clean keeps the known fields)
+                return self.reply(brand_set(body))
+            if u.path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
+                return self.reply(settings_api(u.path, body))
             if u.path == '/api/package/open':  # the MCP server: a package on this Mac by its path
                 f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
                 if not f.is_file():
@@ -6339,6 +6715,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
                 return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
+            if u.path.startswith('/api/batch/') and (r := batch_route(u.path, body)) is not None:  # batch editing (its block above)
+                return self.reply(r)
             if u.path == '/api/silences':
                 return self.reply({'silences': silences(body['media'], fnum(body.get('noise', -35), -90, 0), fnum(body.get('min', 0.5), 0.05, 30))})
             if u.path == '/api/speech':
@@ -6424,6 +6802,9 @@ class App(BaseHTTPRequestHandler):
                         retry(shutil.move, str(f), str(to := unique(HOME / 'trash' / f.name)))
                         if m[1] == 'projects' and versions_dir(m[2]).is_dir():  # its history goes with it: trash/<id> (2).versions beside trash/<id> (2).json
                             retry(shutil.move, str(versions_dir(m[2])), str(unique(to.with_suffix('.versions'))))
+                        for x in ('.jpg', '.mp4') if m[1] == 'templates' else ():  # a template's poster and preview go with it
+                            if f.with_suffix(x).is_file():
+                                retry(shutil.move, str(f.with_suffix(x)), str(to.with_suffix(x)))
                 return self.reply({'ok': True})
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions(?:/(\d{13}[an])/(restore|delete))?', u.path)) and (PROJ / f'{m[1]}.json').exists():
                 f = PROJ / f'{m[1]}.json'
@@ -6578,6 +6959,19 @@ def selftest():
             break
         time.sleep(0.01)
     assert JOBS[lj].get('note', '').startswith('Waiting for Smart search (2 ahead)'), JOBS[lj]
+    AI_OFF.add('voice')  # Settings › AI: an off kind is refused, but a job's own inner step of that kind runs under the job's switch
+    try:
+        with ai_slot('clone'):
+            with ai_slot('voice'):  # cloning's Kokoro comparison voices, voiceover off
+                pass
+        try:
+            with ai_slot('voice'):
+                pass
+            raise AssertionError('voiceover turned off but its job ran')
+        except RuntimeError as e:
+            assert 'turned off in Settings' in str(e), e
+    finally:
+        AI_OFF.discard('voice')
     go.set()
     ta.join(5)
     tb.join(5)
@@ -7439,9 +7833,9 @@ def resume_prepare():
         wk = CACHE / f"{m.get('id')}.wk.mov"
         if wk.exists() and 'iec61966-2-1' not in sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
                                                        '-of', 'csv=p=0', str(wk)]).stdout:
-            wk.unlink()  # from before its container was relabelled too (WebKit showed it lifted): remade on the next request
+            wk.unlink(missing_ok=True)  # (Clear preview cache may have taken it meanwhile) from before its container was relabelled too (WebKit showed it lifted): remade on the next request
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
-                not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
+                not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and proxy_pref(m) != 'never' and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
             save_meta(m)
             prepare(m)
@@ -7453,6 +7847,192 @@ def resume_prepare():
             with PREP:  # the zoomable filmstrip and waveform, once, for items from before them
                 if timeline_assets(m):
                     save_meta(m)
+
+
+# ---------- settings that live with the library: <library>/settings.json (the page's Settings window; the rest are per
+# computer, in the page's localStorage). Each one sets a value the code above already reads at call time. ----------
+LIB_SETTINGS = HOME / 'settings.json'
+LIBSET = {}
+_SET0 = {'keep': VERSION_KEEP, 'gap': VERSION_GAP, 'llm': os.environ.get('CUTROOM_LLM')}
+REGEN = ('.proxy.mp4', '.proxy.webm', '.wk.mov', '.strip.jpg', '.grid.jpg', '.wave.png', '.peaks', '.320.jpg', '.320.png', '.2560.jpg', '.2560.png')  # made again from the media
+
+
+def lib_settings_apply():
+    global VERSION_KEEP, VERSION_GAP, EXPORTS
+    VERSION_KEEP = LIBSET.get('versionsKeep', _SET0['keep'])
+    VERSION_GAP = LIBSET['versionsGap'] * 60 if 'versionsGap' in LIBSET and not os.environ.get('CUTROOM_VERSION_GAP') else _SET0['gap']  # (tests set the env)
+    d = LIBSET.get('exportDir')
+    EXPORTS = Path(d) if d and Path(d).is_dir() else HOME / 'exports'  # a chosen folder that went away (a drive unplugged): the library's
+    if LIBSET.get('llm'):
+        os.environ['CUTROOM_LLM'] = LIBSET['llm']  # llm_model() picks it when Ollama has it
+    elif _SET0['llm']:
+        os.environ['CUTROOM_LLM'] = _SET0['llm']
+    else:
+        os.environ.pop('CUTROOM_LLM', None)
+    AI_OFF.clear()  # on disk with the library: a server restart, another tab or a stale page can't turn a switch back on
+    AI_OFF.update(k[3:] for k, v in LIBSET.items() if k.startswith('ai.') and v is False and k[3:] in AI_BUDGET)
+
+
+def lib_settings_set(body):
+    new = dict(LIBSET)
+    for k, v in body.items():
+        if v is None:
+            new.pop(k, None)
+        elif k == 'versionsKeep':
+            new[k] = int(fnum(v, 5, 500))
+        elif k == 'versionsGap':
+            new[k] = fnum(v, 1, 60)
+        elif k == 'proxy':
+            if v not in ('auto', 'always', 'never'):
+                raise ValueError('proxy: auto, always or never')
+            new[k] = v
+        elif k == 'exportDir':
+            p = Path(os.path.expanduser(str(v))).resolve() if v else None
+            if p and not (p.is_dir() and os.access(p, os.W_OK)):
+                raise ValueError(f'not a folder this computer can write to: {p}')
+            new[k] = str(p) if p else ''
+        elif k == 'llm':
+            if not re.fullmatch(r'[\w.:/-]{0,80}', str(v)):
+                raise ValueError('llm: an Ollama model name')
+            new[k] = str(v)
+        elif k.startswith('ai.') and k[3:] in AI_BUDGET:  # an AI feature's switch: only 'off' is stored
+            if v is True:
+                new.pop(k, None)
+            else:
+                new[k] = False
+        else:
+            raise ValueError(f'no library setting {k}')
+    tmp = LIB_SETTINGS.with_suffix('.tmp')
+    tmp.write_text(json.dumps(new, indent=1))
+    tmp.replace(LIB_SETTINGS)
+    LIBSET.clear()
+    LIBSET.update(new)
+    lib_settings_apply()
+    return LIBSET
+
+
+def proxy_pref(m):
+    """The proxy policy for this file: 'always' (every video), 'never' (4K and other heavy SDR files WebKit plays as they
+    are: the preview reads the original), else 'auto' (prepare_'s own rules). HDR, ProRes, MKV, 4:2:2 always get one."""
+    p = LIBSET.get('proxy', 'auto')
+    plays = (m.get('codec') in PREVIEW_CODECS and Path(m.get('file', '')).suffix.lower() in PREVIEW_EXT and hw_pix(m)
+             and not m.get('hdr') and not (m.get('alpha') or m.get('trans')))
+    return 'auto' if p == 'never' and not plays else p
+
+
+def du(p, match=None):
+    n = 0
+    for root, _, files in os.walk(p):
+        for f in files:
+            if match is None or f.endswith(match):
+                try:
+                    n += os.lstat(os.path.join(root, f)).st_size
+                except OSError:
+                    pass
+    return n
+
+
+def clear_preview_cache():
+    """Proxies, filmstrips, waveforms and photo thumbnails only (never media, projects, transcripts or the AI's caches),
+    then every library item is prepared again in the background, one at a time like an import."""
+    removed = size = 0
+    for f in CACHE.iterdir():
+        if f.is_file() and f.name.endswith(REGEN):
+            size += f.stat().st_size
+            f.unlink(missing_ok=True)
+            removed += 1
+    again = []
+    for f in MEDIA.glob('*.json'):
+        try:
+            m = json.loads(f.read_text())
+        except ValueError:
+            continue
+        if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file():
+            for k in REMADE:
+                m.pop(k, None)
+            m['ready'] = False  # the page polls until it is ready again and reloads its players
+            save_meta(m)
+            again.append(m)
+    # shortest first: one 5-minute 4K clip's proxy (3.5 min) held 13 short items 'preparing' behind it. One worker: a second
+    # Clear while it runs restarts its list (two workers took both PREP slots and an import waited minutes for one)
+    with REMAKE_LOCK:
+        start = not REMAKE['on']
+        REMAKE.update(ids=[m['id'] for m in sorted(again, key=lambda m: m.get('duration') or 0)], on=True)
+    if start:
+        threading.Thread(target=remake_cache, daemon=True).start()
+    return {'removed': removed, 'bytes': size, 'rebuilding': len(again)}
+
+
+REMAKE, REMAKE_LOCK = {'ids': [], 'on': False}, threading.Lock()  # what Clear preview cache has still to make again
+REMADE = ('grid', 'peaks', 'stripN', 'wave', 'proxy')  # the media fields that say a cache file is there
+
+
+def remake_cache():
+    while True:
+        with REMAKE_LOCK:
+            if not REMAKE['ids']:
+                REMAKE['on'] = False
+                return
+            mid = REMAKE['ids'].pop(0)
+        try:
+            m = meta(mid)
+            if not (MEDIA / m['file']).is_file():
+                continue
+            for k in REMADE:  # again here: an item that was being made when Clear came is made again
+                m.pop(k, None)
+            prepare(m)
+        except Exception as e:  # one bad item mustn't leave the rest 'preparing' for good
+            print(f'preview cache: {mid} not made again: {e!r}', file=sys.stderr, flush=True)
+
+
+def reveal_path(p):
+    p = str(p)
+    cmd = ['open', '-R', p] if sys.platform == 'darwin' else ['explorer', f'/select,{p}'] if os.name == 'nt' else ['xdg-open', os.path.dirname(p)]
+    subprocess.Popen(cmd)
+
+
+def settings_api(path, body=None):
+    if body is None:  # GET
+        if path == '/api/settings':
+            git = sh(['git', '-C', str(Path(__file__).resolve().parent), 'rev-parse', '--short', 'HEAD']).stdout.strip()
+            return {'lib': LIBSET, 'home': str(HOME), 'exports': str(EXPORTS), 'libExports': str(HOME / 'exports'), 'log': str(HOME / 'server.log'),
+                    'version': '1.0', 'commit': git, 'pickFolder': sys.platform == 'darwin', 'gpuHost': bool(os.environ.get('CUTROOM_GPU_HOST'))}
+        if path == '/api/settings/storage':
+            return {'cache': sum(du(CACHE, x) for x in REGEN), 'cacheAll': du(CACHE), 'trash': du(HOME / 'trash')}
+        if path == '/api/settings/llm':  # the installed models that fit this computer, and the one used now
+            try:
+                names = [m['name'] for m in json.loads(urllib.request.urlopen(LLM_URL + '/api/tags', timeout=2).read()).get('models', [])]
+                size = lambda n: float(b[1]) if (b := re.search(r':(\d+(?:\.\d+)?)b', n)) else 0
+                return {'models': [n for n in names if size(n) <= LLM_MAX_B and 'embed' not in n], 'pick': llm_model()}
+            except (OSError, ValueError):
+                return {'models': [], 'pick': None, 'why': 'Ollama is not running'}
+        if path == '/api/settings/thirdparty':
+            return {'text': (Path(__file__).resolve().parent / 'THIRD_PARTY.md').read_text()}
+    else:
+        if path == '/api/settings':
+            return {'lib': lib_settings_set(body)}
+        if path == '/api/settings/clear-cache':
+            return clear_preview_cache()
+        if path == '/api/settings/empty-trash':
+            n = du(HOME / 'trash')
+            shutil.rmtree(HOME / 'trash', ignore_errors=True)
+            (HOME / 'trash').mkdir(exist_ok=True)
+            return {'bytes': n}
+        if path == '/api/settings/reveal':
+            reveal_path({'log': HOME / 'server.log', 'exports': EXPORTS}.get(body.get('what'), HOME))
+            return {'ok': True}
+        if path == '/api/settings/pick-folder':  # the Mac's own folder chooser (elsewhere the page asks for a path)
+            r = sh(['osascript', '-e', 'POSIX path of (choose folder with prompt "Exports go to")'])
+            return {'path': r.stdout.strip().rstrip('/') or None}
+    raise KeyError(path)
+
+
+try:
+    LIBSET.update(json.loads(LIB_SETTINGS.read_text()))
+except (OSError, ValueError):
+    pass
+lib_settings_apply()
+# ---------- end of library settings ----------
 
 
 def main():

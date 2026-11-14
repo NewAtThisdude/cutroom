@@ -1,0 +1,120 @@
+{
+ "id": "cafe0000a003",
+ "v": 2,
+ "name": "Podcast clip",
+ "w": 1080,
+ "h": 1920,
+ "fps": 30,
+ "dur": 8.5,
+ "slots": [
+  {
+   "kind": "video",
+   "name": "talk.mp4",
+   "label": "The speaker",
+   "w": 1280,
+   "h": 720,
+   "need": 8.5
+  }
+ ],
+ "texts": [
+  {
+   "id": "97e5b75f4e21"
+  },
+  {
+   "id": "f4d181b01513"
+  }
+ ],
+ "recaption": true,
+ "project": {
+  "fps": 30,
+  "bg": "#000000",
+  "main": [
+   {
+    "id": "6d4289e42614",
+    "media": "slot:0",
+    "start": 0,
+    "in": 0,
+    "out": 8.5,
+    "speed": 1,
+    "volume": 1,
+    "fit": "blur",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   }
+  ],
+  "overlay": [],
+  "audio": [],
+  "text": [
+   {
+    "id": "97e5b75f4e21",
+    "start": 0,
+    "dur": 8.5,
+    "text": "The one thing nobody tells you",
+    "x": 0.5,
+    "y": 0.16,
+    "style": {
+     "font": "Montserrat",
+     "weight": 800,
+     "size": 56,
+     "box": true,
+     "anim": "fade"
+    }
+   },
+   {
+    "id": "f4d181b01513",
+    "start": 0.6,
+    "dur": 3.4,
+    "text": "Guest name · Show name",
+    "x": 0.5,
+    "y": 0.62,
+    "style": {
+     "font": "Montserrat",
+     "weight": 500,
+     "size": 40,
+     "ls": 0.22,
+     "upper": true,
+     "anim": "fade",
+     "out": "fade"
+    }
+   }
+  ],
+  "captions": [],
+  "fx": [],
+  "markers": [],
+  "name": "Podcast clip",
+  "w": 1080,
+  "h": 1920,
+  "tracks": {},
+  "mute": {
+   "main": false,
+   "overlay": false,
+   "audio": false,
+   "text": false,
+   "captions": false,
+   "fx": false
+  },
+  "capStyle": {
+   "font": "Anton",
+   "weight": 400,
+   "size": 100,
+   "color": "#ffffff",
+   "stroke": "#000000",
+   "strokeW": 7,
+   "hl": "#ffc400",
+   "upper": true,
+   "pop": true,
+   "y": 0.7,
+   "kar": "sweep"
+  },
+  "v": 2
+ }
+}

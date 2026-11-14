@@ -23,7 +23,8 @@ Times are seconds on the timeline; a clip's in/out are seconds in its source fil
 clips play back to back), overlay (picture-in-picture, free start), audio, text, captions, fx (video effects: they change
 everything under them for their duration; text stays on top). Call options for valid values (transitions, looks, effects,
 sound effects, animations, text and caption presets, fonts, voices, formats).
-Exports land in the library's exports folder (~/Movies/Cutroom/exports unless CUTROOM_HOME says otherwise)."""
+Exports land in the library's exports folder (~/Movies/Cutroom/exports unless CUTROOM_HOME says otherwise), or the folder
+chosen in Settings (export returns the path)."""
 
 CLIP_PROPS = """Clip properties (objects merge, null deletes a key):
 speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit fit|fill|blur (blur = blurred background, main only)
@@ -119,7 +120,17 @@ TOOLS = [
      S({'path': {**txt, 'description': 'absolute path or ~/...'}, 'add_to': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num}, ['path']), None),
     ('projects', 'List saved projects.', S(), 'projects'),
     ('open_project', 'Open a project by id or (part of its) name.', S({'project': txt}, ['project']), 'open_project'),
-    ('new_project', 'Start a new empty project.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt}), 'new_project'),
+    ('new_project', 'Start a new empty project. With a brand kit set up it starts branded (intro, outro, watermark, caption style) unless '
+                    'branded=false, or the brand\'s auto is off.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt, 'branded': boo}), 'new_project'),
+    ('brand', 'The library\'s brand kit (one per library). action get (default): the brand, applied = the open project carries it, watermark = it has one. '
+              'set: merges `set` into it (null clears a field): logo (an image, library id or name), intro, outro (videos or images), '
+              'colors (up to 5 "#rrggbb"), head / body: {font, weight} (heading and body fonts: options().fonts, imported ones included), '
+              'cap (a caption preset the brand\'s caption style starts from), wm: {on, corner tl|tr|bl|br, size (logo width / canvas width, 0.03-0.5), '
+              'opacity 0.05-1}, auto (new projects start branded, default true). Brand presets then come first in options(): '
+              'text "Brand title", "Brand text", "Brand label", caption "Brand". '
+              'apply: on the open project, one undo step: the intro first and the outro last on the main track, the watermark on a locked top overlay '
+              'track spanning the edit, the caption style; applying again replaces the earlier brand clips.',
+     S({'action': {'type': 'string', 'enum': ['get', 'set', 'apply']}, 'set': obj}), 'brand'),
     ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), markers (list of seconds: the timeline markers, also the YouTube chapter starts), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
     ('add_clip', 'Put a library item on a track. Main clips append (or insert at start); overlay/audio clips start at start (default: playhead).',
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
@@ -287,6 +298,14 @@ TOOLS = [
     ('open_package', 'Open a .cutroom package from this Mac by its path: its files go into the library (one already there with the same content is '
                      'reused), its fonts and LUTs are imported, and its project is added under a new id and opened.',
      S({'path': txt}, ['path']), 'open_package'),
+    ('list_templates', 'The templates (Cutroom\'s starters and the user\'s own): id, name, shape, duration, each numbered slot (kind, need = seconds of '
+                       'footage it uses, label = what it asks for; a sound slot is optional) and the texts that can change (id and current words).',
+     S(), 'list_templates'),
+    ('use_template', 'Make a new project from a template (id or name) and open it: media = library items (id or name) for slots 1, 2, ... in order '
+                     '(null leaves an optional sound slot empty); a clip longer than its slot gives its middle unless starts = {slot number: '
+                     'second in the clip to start at}; texts = {text id, or its number 1, 2..., or its current words: new words} (the style stays); '
+                     'captions=true makes captions from the new speech on this Mac when the template asks for them. The timing is the template\'s.',
+     S({'id': txt, 'media': {'type': 'array', 'items': {'type': ['string', 'null']}}, 'texts': obj, 'starts': obj, 'captions': boo}, ['id']), 'use_template'),
     ('meter', 'The preview\'s loudness meter (EBU R128): momentary (400 ms), short-term (3 s) and integrated (since reset) LUFS of what has played, '
               'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
               'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
@@ -295,9 +314,22 @@ TOOLS = [
                 'the step the project is at now); or goto a step: the project as it was just after it (0 = the oldest state kept). '
                 'Steps after it stay redoable until the next edit.',
      S({'action': {'type': 'string', 'enum': ['undo', 'redo', 'list', 'goto']}, 'step': {'type': 'integer'}}, ['action']), 'history'),
-    ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
+    ('settings', 'The editor\'s Settings: with no arguments, every option with its value, label, section, options and where it is kept '
+     '(this computer or this library). set = {key: value} changes them at once (null = back to the default), e.g. {"snap": false, "pq": "half", '
+     '"ratio": "16:9", "fps": 60, "exportDir": "/Users/me/Desktop", "ai.music": false}. A feature turned off (ai.<kind>) is refused by its tools.',
+     S({'set': obj}), 'settings'),
+    ('snapshot','Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
+    ('batch', 'Batch editing: one recipe over many library videos. Each video gets its own project (named after it): the recipe\'s steps in this order, '
+              'template (start from a saved template: {step: "template", id: template id or name}; its video slots take the video), '
+              'pauses (trim silences: {step: "pauses", min: seconds, default 0.5}), captions (on-device speech to text: {step: "captions", style: a caption preset, lang, per: words each}), '
+              'loudness ({step: "loudness", lufs: -14|-16|-23}, applied on export), brand (the brand kit, skipped when this version has none); '
+              'then one export per shape in recipe.shapes (9:16|16:9|1:1|4:5, laid out like export also), queued in the editor\'s Exports panel and rendered one after another. '
+              'recipe = {steps: [...], shapes: [...], fit: fill|fit|blur (default fill), preset: tiktok|reels|shorts|yt1080|yt4k, res: 720p|1080p|1440p|4K (default 1080p)} or a saved recipe\'s name; '
+              'save = a name to keep the recipe for later. media = list of ids or names, or "last import". A video that fails is reported and the rest carry on. '
+              'No arguments: the saved recipes, the steps (and which are unavailable) and the last import. Returns per video: project id, state, each step\'s result, files with sizes.',
+     S({'media': {'type': ['array', 'string'], 'items': txt, 'description': 'media ids or names, or "last import"'}, 'recipe': {'type': ['object', 'string']}, 'save': txt}), 'batch'),
     ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
                '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption; '
                'fcpxml = the whole timeline for Final Cut Pro / DaVinci Resolve; edl = a CMX3600 EDL of the main track; '
@@ -306,12 +338,13 @@ TOOLS = [
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
                'loudness: false | true (-14 LUFS) | -14 (social) | -16 (podcast) | -23 (EBU broadcast): one gain for the whole edit. '
-               'show=true opens the result in the Mac\'s player when it is done. '
+               'show=true opens the result in the Mac\'s player when it is done. watermark=true adds the brand logo (see brand) to this export only, '
+               'if the project has no watermark of its own. '
                'also = more shapes to export in the same go, e.g. ["9:16", "1:1"] (of 9:16|16:9|1:1|4:5): each is a copy of the edit laid out for that canvas '
                '(main clips keep their fit, overlays and text keep their place and scale with the short side); every export renders one after another '
                'in the editor\'s Exports panel, and the result lists them under `also`.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt,
-        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo,
+        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo, 'watermark': boo,
         'also': {'type': 'array', 'items': {'type': 'string', 'enum': ['9:16', '16:9', '1:1', '4:5']}, 'description': 'more shapes, rendered in the same queue'}}), 'export'),
 ]
 def here(text):  # the descriptions say "this Mac"; elsewhere they say "this computer" (Windows: the library is ~/Videos/Cutroom)
@@ -347,7 +380,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'batch')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

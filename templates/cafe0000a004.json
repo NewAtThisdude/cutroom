@@ -1,0 +1,329 @@
+{
+ "id": "cafe0000a004",
+ "v": 2,
+ "name": "Travel montage",
+ "w": 1080,
+ "h": 1920,
+ "fps": 30,
+ "dur": 8,
+ "slots": [
+  {
+   "kind": "video",
+   "name": "tall1.mp4",
+   "label": "Wide view",
+   "w": 540,
+   "h": 960,
+   "need": 2
+  },
+  {
+   "kind": "video",
+   "name": "tall2.mp4",
+   "label": "A street",
+   "w": 540,
+   "h": 960,
+   "need": 1
+  },
+  {
+   "kind": "video",
+   "name": "tall3.mp4",
+   "label": "Food",
+   "w": 540,
+   "h": 960,
+   "need": 1
+  },
+  {
+   "kind": "video",
+   "name": "tall4.mp4",
+   "label": "A detail",
+   "w": 540,
+   "h": 960,
+   "need": 1
+  },
+  {
+   "kind": "video",
+   "name": "tall5.mp4",
+   "label": "People",
+   "w": 540,
+   "h": 960,
+   "need": 1
+  },
+  {
+   "kind": "video",
+   "name": "tall6.mp4",
+   "label": "Sunset",
+   "w": 540,
+   "h": 960,
+   "need": 2
+  },
+  {
+   "kind": "audio",
+   "name": "beat.m4a",
+   "label": "Your music",
+   "need": 8
+  }
+ ],
+ "texts": [
+  {
+   "id": "e7f9835873d9"
+  },
+  {
+   "id": "d9805df3d4e7"
+  }
+ ],
+ "recaption": false,
+ "project": {
+  "fps": 30,
+  "bg": "#000000",
+  "main": [
+   {
+    "id": "22e31bfbac84",
+    "media": "slot:0",
+    "start": 0,
+    "in": 0,
+    "out": 2,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "kbin",
+     "amt": 1
+    }
+   },
+   {
+    "id": "06dd29361587",
+    "media": "slot:1",
+    "start": 2,
+    "in": 0,
+    "out": 1,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "5c1afe31baf8",
+    "media": "slot:2",
+    "start": 3,
+    "in": 0,
+    "out": 1,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "25028c6786a5",
+    "media": "slot:3",
+    "start": 4,
+    "in": 0,
+    "out": 1,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "ccb01c5c6ab8",
+    "media": "slot:4",
+    "start": 5,
+    "in": 0,
+    "out": 1,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "acb311777628",
+    "media": "slot:5",
+    "start": 6,
+    "in": 0,
+    "out": 2,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "kbin",
+     "amt": 1
+    }
+   }
+  ],
+  "overlay": [],
+  "audio": [
+   {
+    "id": "a853041c9008",
+    "media": "slot:6",
+    "start": 0,
+    "in": 0,
+    "out": 8,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 1,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   }
+  ],
+  "text": [
+   {
+    "id": "e7f9835873d9",
+    "start": 0.13333333333333333,
+    "dur": 1.8,
+    "text": "Wander",
+    "x": 0.5,
+    "y": 0.42,
+    "style": {
+     "font": "Anton",
+     "weight": 400,
+     "size": 124,
+     "strokeW": 7,
+     "upper": true,
+     "anim": "zoom",
+     "out": "fade"
+    }
+   },
+   {
+    "id": "d9805df3d4e7",
+    "start": 6,
+    "dur": 2,
+    "text": "Lisbon · Porto · Sintra",
+    "x": 0.5,
+    "y": 0.8,
+    "style": {
+     "font": "Montserrat",
+     "weight": 500,
+     "size": 44,
+     "ls": 0.22,
+     "upper": true,
+     "anim": "fade"
+    }
+   }
+  ],
+  "captions": [],
+  "fx": [
+   {
+    "id": "939364d44df9",
+    "fx": "flash",
+    "start": 2,
+    "dur": 0.26666666666666666,
+    "amt": 1
+   },
+   {
+    "id": "bd9a6d8f470b",
+    "fx": "flash",
+    "start": 4,
+    "dur": 0.26666666666666666,
+    "amt": 1
+   },
+   {
+    "id": "de39595aba4f",
+    "fx": "flash",
+    "start": 6,
+    "dur": 0.26666666666666666,
+    "amt": 1
+   }
+  ],
+  "markers": [
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "name": "Travel montage",
+  "w": 1080,
+  "h": 1920,
+  "tracks": {},
+  "mute": {
+   "main": false,
+   "overlay": false,
+   "audio": false,
+   "text": false,
+   "captions": false,
+   "fx": false
+  },
+  "capStyle": {
+   "font": "Montserrat",
+   "weight": 900,
+   "size": 78,
+   "color": "#ffffff",
+   "stroke": "#000000",
+   "strokeW": 7,
+   "hl": "#ffd400",
+   "upper": true,
+   "pop": true,
+   "y": 0.72
+  },
+  "v": 2
+ }
+}

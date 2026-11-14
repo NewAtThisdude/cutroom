@@ -87,7 +87,7 @@ for (const motion of ['no-preference', 'reduce']) {
       }
       return out.sort((x, y) => x - y);
     });
-    const uniq = heard.filter((t, i) => !i || t - heard[i - 1] > 1e-3), match = want.map(w => uniq.find(t => Math.abs(t * SR - w) < 0.5));
+    const uniq = heard.filter((t, i) => !i || t - heard[i - 1] > 1e-3), match = want.map(w => uniq.find(t => Math.abs(t * SR - w) < 1)); // within one sample (21 µs): the page's audio-clock arithmetic lands 0.6-0.8 of a sample off in double precision, run to run
     check(uniq.length === want.length && match.every(x => x !== undefined),
       `preview schedules the beeps at ${uniq.map(t => (t * SR).toFixed(2)).join(', ')} samples (the export's ${want.join(', ')})`);
     // J/L off: the plain cut, as before

@@ -13,6 +13,10 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
 };
+// the Settings window (settings.js, loaded after this file): opt(k) = this computer's or this library's choice, or its default
+const opt = (k, d) => (typeof SET === 'object' ? SET.get(k) : d);
+const reducedMotion = () => ({ reduce: true, full: false })[document.documentElement.dataset.motion] ?? matchMedia('(prefers-reduced-motion: reduce)').matches; // Settings can override the system
+const fillName = (pat, o = {}) => String(pat).replace(/\{(\w+)\}/g, (s, k) => ({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), ...o })[k] ?? s).trim();
 
 // Keys and words follow the computer: ⌘ ⌥ ⇧ and "this Mac" on a Mac (written that way in the code), Ctrl+ Alt+ Shift+ and
 // "this computer" on Windows and Linux. plat() rewrites one label; off the Mac platWatch() runs it over everything the page shows.
@@ -477,7 +481,7 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
   }
   if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
-function touched() { reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+function touched() { brandFit(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) { if (from.length) jump(undo.length + (from === undo ? -1 : 1)); }
 function jump(k) { // to the state just after step k (0 = the oldest kept): the steps in between move across, one render at the end
@@ -651,7 +655,7 @@ function drawStrips() {
     const g = cv.getContext('2d');
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, h);
     const wave = m.peaks && (lane === 'audio' || lane === 'main'), vh = m.kind === 'video' && lane !== 'audio' ? (wave ? Math.round(h * 0.68) : h) : 0;
-    if (vh && m.grid) {
+    if (vh && m.grid && opt('thumbs', true)) { // (Settings: timeline thumbnails off draws the clips' colour only)
       const G = m.grid, img = gridImg(m);
       if (img.complete && img.naturalWidth) {
         const dw = (vh * G.tw) / G.th;
@@ -850,7 +854,7 @@ const KEYMAP0 = [
   }],
   ['help', 'These shortcuts', ['?'], () => shortcuts()],
 ];
-const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = { 'Mod+KeyK': 'the command bar', Tab: 'moving between controls' };
+const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = { 'Mod+KeyK': 'the command bar', 'Mod+,': 'Settings', Tab: 'moving between controls' };
 let KEYOWN = (() => { try { const o = JSON.parse(store.get('cutroom.keys')) || {}; return Object.fromEntries(Object.entries(o).filter(([id, v]) => KEYDEF[id] && Array.isArray(v) && v.every(k => typeof k === 'string'))); } catch { return {}; } })(); // this Mac's changes
 let KEYBY = new Map();
 const keysOf = id => KEYOWN[id] || KEYDEF[id][2];
@@ -884,22 +888,28 @@ function keyCapture(e) { // the shortcut sheet is listening: the next key (with 
   else { setKeys(id, [k, ...keysOf(id).slice(1)]); applyKeys(true); KC.msg = `${name}: ${keyText(k)}`; }
   shortcuts(true, id);
 }
-function shortcuts(keep, focus) { // the sheet; click a key to change it (kept per Mac in localStorage 'cutroom.keys')
+function shortcuts(keep, focus) { // ? = a read-only quick view; Settings > Shortcuts (#setKeys) is where a key is changed (kept per Mac in localStorage 'cutroom.keys')
   if (!keep) Object.assign(KC, { for: null, conf: null, msg: '' });
-  const top = $('#modal .dialog.keysheet')?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
+  const host = $('#setKeys'), scroller = host ? host.closest('.setmain') : $('#modal .dialog.keysheet');
+  const top = scroller?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
     const ks = keysOf(id), wait = KC.for === id;
+    if (!host) return `<tr><td>${ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</td><td>${esc(d)}</td></tr>`;
     return `<tr><td><button class="kb${wait ? ' on' : ''}" data-keyfor="${id}" title="Change the shortcut" aria-label="${esc(d)}: ${wait ? 'press the new key' : esc(ks.map(keyText).join(' or ') || 'no shortcut')}. Change">${wait ? 'Press a key…' : ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</button></td><td>${esc(d)}</td><td>${KEYOWN[id] ? `<button class="ghost" data-keyreset="${id}">Reset</button>` : ''}</td></tr>`;
   };
-  modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels).${IS_MAC ? ' Ctrl works wherever ⌘ is shown.' : ''}</p>`
+  const html = host ? `<p class="hint">Click a shortcut, then press the new key (Esc cancels).${IS_MAC ? ' Ctrl works wherever ⌘ is shown.' : ''}</p>`
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
-    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
-  const dlg = $('#modal .dialog');
-  dlg.scrollTop = top;
+    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button></div>`
+    : `<h3>Keyboard shortcuts</h3><p class="hint">${IS_MAC ? 'Ctrl works wherever ⌘ is shown. ' : ''}To change a shortcut, edit it in Settings.</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
+    + '<div class="actions"><button data-settings>Edit in Settings</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>';
+  if (host) host.replaceChildren(document.createRange().createContextualFragment(html)); else modal(html, 'keysheet'); // (every value in it went through esc)
+  const dlg = host || $('#modal .dialog');
+  (host ? scroller : dlg).scrollTop = top;
   (focus && dlg.querySelector(`[data-keyfor="${focus}"]`))?.focus();
-  dlg.addEventListener('click', e => {
+  dlg.onclick = e => { // (onclick: Settings keeps its #setKeys between redraws)
     const b = e.target.closest('button'), d = b?.dataset;
     if (!b) return;
+    if ('settings' in d) { SET.open('keys'); return; }
     if ('tour' in d) { closeModal(); tourShow(0); return; }
     if ('setup' in d) { closeModal(); setupAns = {}; setupShow(0); return; }
     if (d.keyfor) { KC.for = KC.for === d.keyfor ? null : d.keyfor; KC.conf = null; KC.msg = KC.for ? `Press the new key for ${KEYDEF[d.keyfor][1].toLowerCase()}` : ''; }
@@ -916,7 +926,7 @@ function shortcuts(keep, focus) { // the sheet; click a key to change it (kept p
     } else if ('keyall' in d) { KEYOWN = {}; applyKeys(true); KC.msg = 'Every shortcut is back to its default'; }
     else return;
     shortcuts(true, d.keyfor || d.keyreset);
-  });
+  };
 }
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
@@ -932,7 +942,7 @@ function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
   const q = $('#mediaSearch')?.value.trim().toLowerCase(), used = G.mfilter === 'proj' && P ? new Set(LANES.flatMap(L => P[L.key].map(c => c.media))) : null; // null, not false: false?.has is undefined, and calling it threw
   const by = { name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }), dur: (a, b) => (b.duration || 0) - (a.duration || 0) }[$('#mediaSort')?.value]; // 'new': the server's order
-  const list = [...M.values()].filter(m => (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
+  const list = [...M.values()].filter(m => !m.slate && (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
   if (by) list.sort(by);
   const items = list.map(m => { const r = srcRange(m.id); return `<div class="mitem${S.src?.id === m.id ? ' src' : ''}" draggable="true" data-media="${m.id}" title="${m.kind === 'video' ? 'Hover to skim · click to mark a range · drag onto a track' : 'Drag onto a track'}">
       <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span>${r ? `<i class="srng" style="left:${(r[0] / m.duration) * 100}%;width:${((r[1] - r[0]) / m.duration) * 100}%"></i>` : ''}</div>
@@ -941,7 +951,7 @@ function renderMediaList() {
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
   if (!up && !items && M.size) $('#mediaList .hint').textContent = 'Nothing matches.';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
-  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
+  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video' && !x.slate).map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
   if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name))}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
   if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name, 22))} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
@@ -1047,7 +1057,8 @@ const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's
 const fill = el => el.style.setProperty('--p', `${(el.value - el.min) / (el.max - el.min) * 100}%`); // slider track fill
 const slider = (k, label, v, min, max, step, unit = '', extra = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}"${extra} min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${clamp((v - min) / (max - min), 0, 1) * 100}%"><output title="Click to type a value">${fmt(v, unit)}</output></label>`;
 const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><select data-k="${k}"${typeof opts[0][0] === 'number' ? ' data-num' : ''}>${opts.map(([val, txt]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
-const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"></label>`;
+const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"${G.brand.colors?.length ? ' list="brandColours"' : ''}></label>`; // (the brand's colours as the picker's suggestions)
+const brandSwatches = () => (G.brand.colors?.length ? `<div class="row"><span>Brand colours</span><div class="bcols">${G.brand.colors.map(x => `<button class="bsw" data-brandc="${x}" style="background:${x}" title="${x}" aria-label="Brand colour ${x}"></button>`).join('')}</div></div>` : '');
 const tick = (k, label, v) => `<label class="row chk"><span>${label}</span><input type="checkbox" data-k="${k}"${v ? ' checked' : ''}></label>`;
 const segs = (attr, label, v, opts) => `<div class="row"><span>${label}</span><div class="seg">${opts.map(([val, txt]) => `<button data-${attr}="${val}" class="${val === v ? 'on' : ''}">${txt}</button>`).join('')}</div></div>`;
 const animTiles = (k, v, opts) => `<div class="presets small anims">${opts.map(([val, txt]) => `<button data-animk="${k}" data-animv="${val}" class="${val === v ? 'on' : ''}">${esc(txt)}</button>`).join('')}</div>`;
@@ -1059,7 +1070,7 @@ function pickAnim(k, v) { // an animation tile: set it, then play its span on th
   const kind = /\.(in|anim)$/.test(k) ? 'in' : /\.out$/.test(k) ? 'out' : 'loop', d = tdur(c, lane), A = c.anim || {}, st = c.media ? null : textStyle(c, lane);
   const n = kind === 'loop' ? Math.min(d, 3) : Math.min(d, c.media ? (kind === 'in' ? A.ind : A.outd) ?? 0.5 : animLen(st, kind === 'out'));
   const a = kind === 'out' ? c.start + d - n : c.start, b = Math.max(a, Math.min(kind === 'out' ? Infinity : a + n, c.start + d - 1 / P.fps)); // its end, on screen (a loop plays its first 3 s, not the whole clip)
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return seekTo(b);
+  if (reducedMotion()) return seekTo(b);
   seekTo(a); play(); S.end = b;
 }
 
@@ -1455,9 +1466,10 @@ async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person 
   } catch (e) { setStatus(e.message); throw e; }
 }
 function fontPick(k, v) { // Cutroom's own fonts, the imported ones, then every family on this Mac
-  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f)), all = [...FONTS, ...mine, ...mac];
+  const bnd = [...new Set([G.brand.head?.font, G.brand.body?.font].filter(Boolean))], not = f => !bnd.includes(f); // the brand's fonts first
+  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f)), all = [...bnd, ...FONTS, ...mine, ...mac];
   const grp = (label, fs) => (fs.length ? `<optgroup label="${label}">${fs.map(f => `<option value="${esc(f)}"${f === v ? ' selected' : ''}>${esc(f)}</option>`).join('')}</optgroup>` : '');
-  return `<label class="row"><span>Font</span><select data-k="${k}">${all.includes(v) ? '' : `<option value="${esc(v)}" selected>${esc(v)}</option>`}${grp('Cutroom', FONTS)}${grp('Imported', mine)}${grp('This Mac', mac)}</select></label>`
+  return `<label class="row"><span>Font</span><select data-k="${k}">${all.includes(v) ? '' : `<option value="${esc(v)}" selected>${esc(v)}</option>`}${grp('Brand', bnd)}${grp('Cutroom', FONTS.filter(not))}${grp('Imported', mine.filter(not))}${grp('This Mac', mac.filter(not))}</select></label>`
     + '<div class="actions"><label class="btn"><input type="file" data-fontin hidden accept=".ttf,.otf,.woff2">Import font…</label></div>';
 }
 const fontsOn = new Set();
@@ -1486,7 +1498,7 @@ function textPanel(c, lane) {
       + `<div class="actions"><button data-act="capall" title="Every caption takes this caption's style">Apply to all captions</button></div>`
       : `<div class="presets small">${Object.keys(TEXT_PRESETS).map(n => `<button data-textpreset="${n}">${n}</button>`).join('')}</div>`)
     + fontPick(`${r}.font`, st.font) + pick(`${r}.weight`, 'Weight', ws.includes(st.weight) ? st.weight : ws[0], ws.map(w => [w, WEIGHT_NAMES[w] || String(w)]))
-    + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Colour', st.color)
+    + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + brandSwatches() + colour(`${r}.color`, 'Colour', st.color)
     + (cap ? colour(`${r}.hl`, 'Highlight', st.hl) + tick(`${r}.pop`, 'Pop active word', st.pop) : '')
     + (cap && P.captions.some(x => x.tr) ? `<h4>Second line</h4>${tick('cap.bi', 'Show translation', !!P.capStyle.bi)}${P.capStyle.bi ? colour('cap.biColor', 'Colour', P.capStyle.biColor || '#ffe27a') + slider('cap.biSize', 'Size', P.capStyle.biSize ?? 0.6, 0.3, 1, 0.01, '%') : ''}` : '')
     + (cap && P.captions.some(x => x.kw) ? tick('cap.kw', 'Keyword highlight', !!P.capStyle.kw) : '') + (cap && P.captions.some(x => x.spk != null) ? tick('cap.spk', 'Speaker labels', !!P.capStyle.spk) : '')
@@ -3319,7 +3331,7 @@ function frame(now) {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
       if ((first || was || Math.abs(tl - S.t) > 0.06 * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
     }
-    if (S.t >= S.end) pause();
+    if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
     if (S.playing && S.shown !== undefined && f - S.shown > 1 && now - S.playAt > 500 && pqMode() === 'auto' && !S.pqLow) { // auto quality: frames missed (4 skips in 2 s) -> half resolution until pause
       S.miss = (S.miss || []).filter(x => now - x < 2000).concat(now);
@@ -3349,9 +3361,16 @@ function addMedia(id, lane, t, range) { // range: [in, out] marked in the source
   const m = M.get(id);
   if (!m) return;
   lane = m.kind === 'audio' ? 'audio' : lane === 'overlay' ? 'overlay' : 'main';
-  const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
+  const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? opt('imgDur', 3) : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
   change(() => {
-    if (lane === 'main') { packMain(); P.main.splice(t === undefined ? P.main.length : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, 0, c); }
+    if (lane === 'main') {
+      packMain(); const i = t === undefined ? P.main.length - (P.main.at(-1)?.brand === 'outro') : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, tr = opt('trType', 'none');
+      if (tr !== 'none') { // (Settings: a default transition on each new cut)
+        if (i > 0 && !P.main[i - 1].tr) P.main[i - 1].tr = { type: tr, d: opt('trDur', 0.5) };
+        if (i < P.main.length) c.tr = { type: tr, d: opt('trDur', 0.5) };
+      }
+      P.main.splice(i, 0, c); // (before a brand outro)
+    }
     else { c.start = Math.max(0, t ?? S.t); P[lane].push(c); }
     S.sel = { lane, id: c.id };
   });
@@ -3420,10 +3439,7 @@ async function makeCompound(sel = selection()) {
   delete inner.main.at(-1).tr;
   const P0 = P, name = `Compound ${new Date().toLocaleTimeString().replace(/:\d\d\s/, ' ')}`;
   const sub = migrate({ ...structuredClone(P0), id: hex12(), name, ...inner, captions: [], markers: [], tracks: {}, mute: {} });
-  let plan;
-  S.hold = true; // the preview and autosave leave the borrowed project alone
-  try { P = sub; packMain(); plan = await buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  const plan = await borrowP(sub, () => { packMain(); return buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); });
   Object.assign(plan, { library: true, rate: 2.5 });
   const j = await job('/api/export', plan, 'Making the compound clip');
   await loadMedia();
@@ -3455,7 +3471,7 @@ function breakCompound(c) { // the clips it was made of, back where they were (e
 }
 function addText(name, props = {}, style = {}) { // one undo step, whatever it starts with
   change(() => {
-    const c = { id: hex12(), start: S.t, dur: 3, text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
+    const c = { id: hex12(), start: S.t, dur: opt('textDur', 3), text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
     P.text.push(c);
     S.sel = { lane: 'text', id: c.id };
   });
@@ -3564,15 +3580,14 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
   } catch (e) { toast(e.message); throw e; }
   finally { btn.disabled = false; }
 }
+async function silenceMap(ids, min) { const sil = new Map(); for (const id of ids) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min })).silences); return sil; } // media id -> its pauses (also the batch's Trim silences)
 async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect, then split main clips around the gaps
   const ids = [...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))];
   if (!ids.length) return toast('Remove pauses works on main-track clips with sound');
   const min = typeof minSec === 'number' ? minSec : +$('#pauseLen').value, pad = 0.1, btn = $('#btnPauses');
   btn.disabled = true;
   try {
-    const sil = new Map();
-    for (const id of ids) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min })).silences);
-    const next = cutMain(sil, pad);
+    const next = cutMain(await silenceMap(ids, min), pad);
     const before = packMain();
     if (JSON.stringify(next) === JSON.stringify(P.main)) return toast(`No pauses longer than ${min} s`);
     change(() => { P.main = next; });
@@ -3973,51 +3988,256 @@ function toggleMarker() {
   const i = P.markers.findIndex(t => Math.abs(t - S.t) < 0.5 / P.fps);
   change(() => { if (i >= 0) P.markers.splice(i, 1); else P.markers.push(S.t); });
 }
+// ---------- templates you make and share (CapCut's are its moat; these are open) ----------
+// A template is the edit with its footage as numbered slots ("slot:N", each used part starting at 0), its synthesized sounds
+// by name ("sfx:whoosh") and the files it keeps (sound-library sounds, stickers, your music) as library ids. Using one puts
+// new media in the slots (a longer clip gives its middle, or the part you slide to) and new words in its texts, styles kept.
+// The gallery's poster and hover preview are the template itself rendered once by the export on slates: a graphite card per
+// slot with its number, an amber bar along the foot running for the slot's length. The server's block: "templates you make and share".
 let tplCache = [];
-async function saveTemplate(name = prompt('Template name', P.name)) { // media become numbered slots
-  if (!name) return;
-  const t = structuredClone(P), slots = [], idx = new Map();
+const TPL = { sel: [], fill: null, busy: null, tried: new Set() };
+const tplSecs = x => (x < 60 ? `${(+x).toFixed(1)} s` : fmtDur(x));
+const tplVisual = k => k !== 'audio';
+const tplTexts = t => t.texts || (t.project.text || []).map(c => ({ id: c.id })); // (templates made before texts were chosen: every one)
+const tplStart = (t, i, m) => (t.v >= 2 && m.kind !== 'image' ? Math.max(0, (m.duration - (t.slots[i].need || 0)) / 2) : 0); // the middle of a longer clip
+const tplHTML = (el, s) => el.replaceChildren(document.createRange().createContextualFragment(s)); // (every name in s went through esc)
+function tplMeta(t) { return `${t.slots.length} slot${t.slots.length === 1 ? '' : 's'} · ${t.dur ? fmtDur(t.dur) : '?'} · ${shapeOf(t.w, t.h)}`; }
+function tplKeepDefault(m) { return m.kind === 'audio' ? !!(m.pack || m.licence) : !!m.trans && m.kind === 'image'; } // sound-library sounds and cut-out stickers travel with it
+
+function openSaveTemplate() { return act(openSaveTpl); } // (the open project, not a template preview's borrowed one)
+function openSaveTpl() {
+  if (!LANES.some(L => P[L.key].length)) return toast('Add something to the timeline first');
+  const media = [...new Set(LANES.flatMap(L => P[L.key].map(c => c.ramp && M.get(c.ramp.src) ? c.ramp.src : c.rt && M.get(c.rt.src) ? c.rt.src : c.media)).filter(id => M.get(id) && !(M.get(id).sfx && !M.get(id).pack)))];
+  modal(`<h2>Save as template</h2><p class="hint">The edit stays: cuts, timing, text styles, effects, transitions, sounds. Footage becomes numbered slots that whoever uses it fills.</p>
+    <label class="row"><span>Name</span><input id="tsName" maxlength="80" value="${esc(P.name)}"></label>
+    ${media.length ? `<h4>Media</h4><div class="tslist">${media.map(id => { const m = M.get(id); return `<div class="tsrow"><span class="tthumb" style="${thumbStyle(m)}"></span><span class="tsname"><b title="${esc(m.name)}">${esc(m.name)}</b><small>${m.kind}${m.kind === 'image' ? '' : ` · ${fmtDur(m.duration)}`}</small></span>`
+      + `<select data-tskeep="${id}" aria-label="What ${esc(m.name)} becomes"><option value="slot">Slot</option><option value="keep"${tplKeepDefault(m) ? ' selected' : ''}>Keep in template</option></select><input data-tslabel="${id}" maxlength="40" placeholder="Label, e.g. Wide shot" title="What the slot asks for: shown on its placeholder and when filling it" aria-label="Placeholder label for ${esc(m.name)}"${tplKeepDefault(m) ? ' disabled' : ''}></div>`; }).join('')}</div>` : ''}
+    ${P.text.length ? `<h4>Editable texts</h4><div class="tslist">${P.text.map(c => `<label class="row chk"><span title="${esc(c.text)}">${esc(short(String(c.text).replace(/\s+/g, ' '), 46))}</span><input type="checkbox" data-tstext="${c.id}"${/^[\p{Extended_Pictographic}\s‍️]+$/u.test(c.text) ? '' : ' checked'}></label>`).join('')}</div>` : ''}
+    ${P.captions.length ? '<label class="row chk" title="The captions here are this video\'s words: a template keeps their style and makes new ones from the new footage\'s speech"><span>Captions: make them again from the new speech</span><input type="checkbox" id="tsRecap" checked></label>' : ''}
+    <div class="actions"><button data-close>Cancel</button><button class="primary" data-savetplgo>Save template</button></div>`);
+}
+function saveTemplate(o) { return act(() => saveTpl(o)); }
+async function saveTpl({ name = P.name, keep = [], labels = {}, texts, recaption = false } = {}) { // -> the template
+  name = String(name || '').trim().slice(0, 80) || 'Template';
+  packMain();
+  const t = structuredClone(P), slots = [], idx = new Map(), kept = new Set(keep);
   for (const L of LANES) for (const c of t[L.key]) {
     if (!c.media) continue;
     if (c.ramp) { if (c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c); delete c.ramp; } // a ramp's copy belongs to its own footage: the slot gets the original range
     if (c.rt) { if (rtOn(c)) unretouch(c); delete c.rt; } // so does a retouched copy
-    if (!idx.has(c.media)) { const m = M.get(c.media); idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', need: 0 }); }
-    const s = idx.get(c.media);
-    slots[s].need = Math.max(slots[s].need, c.out);
-    c.media = `slot:${s}`;
-  }
-  const id = hex12();
-  await api(`/api/templates/${id}`, { id, name, slots, w: t.w, h: t.h, project: t }, 'PUT');
-  toast(`Template "${name}" saved with ${slots.length} media slot${slots.length === 1 ? '' : 's'}`);
-}
-async function openTemplates() {
-  tplCache = await api('/api/templates').catch(() => []);
-  modal(`<h2>Templates</h2><p class="hint">A template keeps the edit (cuts, timing, text, caption style, effects) and swaps in new media.</p>
-    <div class="actions"><button data-savetpl>Save this project as a template</button></div>
-    <div class="plist">${tplCache.map(t => `<div class="prow"><button class="pitem" data-tpl="${t.id}"><b>${esc(t.name)}</b><span>${t.w}×${t.h} · ${t.slots.length} media slots</span></button><button class="pdel" data-deltpl="${t.id}">Delete</button></div>`).join('') || '<p class="hint">No templates yet.</p>'}</div>
-    <div id="tplSlots"></div><div class="actions"><button data-close>Close</button></div>`);
-}
-function showTemplate(id) {
-  const t = tplCache.find(x => x.id === id);
-  const opts = kind => [...M.values()].filter(m => m.kind === kind || (kind !== 'audio' && m.kind !== 'audio')).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
-  $('#tplSlots').innerHTML = `<h4>${esc(t.name)}: choose media</h4>${t.slots.map((s, i) => `<label class="row"><span>${i + 1}. ${esc(s.kind)}, ${fmtDur(s.need)}+</span><select data-slot="${i}">${opts(s.kind)}</select></label>`).join('')}
-    <div class="actions"><button class="primary" data-usetpl="${t.id}">Create project</button></div>`;
-}
-function useTemplate(id) {
-  const t = tplCache.find(x => x.id === id), pick = $$('[data-slot]').map(s => s.value);
-  if (pick.some(v => !v)) return toast('Import media for every slot first');
-  const p = structuredClone(t.project);
-  p.id = hex12();
-  p.name = `${t.name} ${new Date().toLocaleDateString()}`;
-  for (const L of LANES) for (const c of p[L.key] || []) { // templates made before a lane existed don't have it
-    if (typeof c.media !== 'string' || !c.media.startsWith('slot:')) continue;
-    const m = M.get(pick[+c.media.slice(5)]);
-    c.media = m.id;
-    if (m.kind !== 'image') { c.out = Math.min(c.out, m.duration); c.in = Math.min(c.in, Math.max(0, c.out - 0.1)); }
+    const m = M.get(c.media);
+    if (m?.sfx && !m.pack) { c.media = `sfx:${m.sfx}`; continue; } // synthesized by Cutroom: made again by name on any Mac
+    if (kept.has(c.media)) continue;
+    if (!idx.has(c.media)) { idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', label: String(labels[c.media] || '').slice(0, 40), w: m?.w, h: m?.h, a: Infinity, b: 0 }); }
+    const s = slots[idx.get(c.media)];
+    s.a = Math.min(s.a, c.in); s.b = Math.max(s.b, c.out);
+    c.media = `slot:${idx.get(c.media)}`;
     delete c.beats;
   }
-  setProject(p); scheduleSave(); closeModal();
+  for (const L of LANES) for (const c of t[L.key]) if (String(c.media).startsWith('slot:')) { const s = slots[+c.media.slice(5)]; c.in = r3(c.in - s.a); c.out = r3(c.out - s.a); } // each slot's used part starts at 0
+  for (const s of slots) { s.need = r3(s.b - s.a); delete s.a; delete s.b; }
+  if (recaption) t.captions = [];
+  const id = hex12(), tx = (texts ?? t.text.map(c => c.id)).filter(x => t.text.some(c => c.id === x)).map(x => ({ id: x }));
+  const tpl = { id, v: 2, name, w: t.w, h: t.h, fps: t.fps, dur: r3(total()), slots, texts: tx, recaption: !!recaption, created: Date.now() / 1000, project: { ...t, id: undefined } };
+  await api(`/api/templates/${id}`, tpl, 'PUT');
+  toast(`Template "${name}" saved with ${slots.length} slot${slots.length === 1 ? '' : 's'}`);
+  return tpl;
+}
+async function tplProject(t, pick, textVals = {}, starts = {}) { // the template's edit with media pick[i] in slot i (null: an empty sound slot, its clips go)
+  const p = migrate(structuredClone(t.project)), sfx = new Set();
+  for (const L of LANES) for (const c of p[L.key]) if (String(c.media).startsWith('sfx:')) sfx.add(c.media.slice(4));
+  const made = Object.fromEntries(await Promise.all([...sfx].map(async s => [s, (await api('/api/sfx/add', { id: s })).id])));
+  if (sfx.size && Object.values(made).some(id => !M.get(id))) await loadMedia();
+  for (const L of LANES) p[L.key] = p[L.key].filter(c => {
+    if (typeof c.media !== 'string') return true;
+    if (c.media.startsWith('sfx:')) { c.media = made[c.media.slice(4)]; return true; }
+    if (!c.media.startsWith('slot:')) { if (!M.get(c.media)) throw new Error('this template keeps a file that is not in the library (import its .cutroom-template again)'); return true; }
+    const i = +c.media.slice(5), m = M.get(pick[i]);
+    if (!m) return false;
+    c.media = m.id;
+    if (m.kind === 'image') { c.out = r3(c.out - c.in); c.in = 0; } // a photo: as long as the slot's clip was
+    else {
+      const off = starts[i] ?? tplStart(t, i, m);
+      c.in = r3(c.in + off); c.out = r3(c.out + off);
+      if (c.out > m.duration) { c.out = r3(m.duration); c.in = Math.min(c.in, Math.max(0, r3(c.out - 0.1))); } // a shorter clip: it ends early
+    }
+    return true;
+  });
+  for (const e of tplTexts(t)) { const c = p.text.find(x => x.id === e.id), v = textVals[e.id]; if (c && v != null && String(v).trim()) c.text = String(v); } // only the words: the style stays
+  return Object.assign(p, { id: hex12(), name: `${t.name} ${new Date().toLocaleDateString()}` });
+}
+function useTemplate(...a) { return act(() => useTpl(...a)); } // (a preview's borrow would put its project back over the new one)
+async function useTpl(t, pick, textVals = {}, { starts = {}, captions = false } = {}) {
+  const miss = t.slots.findIndex((s, i) => tplVisual(s.kind) && !M.get(pick[i]));
+  if (miss >= 0) throw new Error(`fill slot ${miss + 1} first`);
+  setProject(await tplProject(t, pick, textVals, starts)); scheduleSave(); closeModal();
   toast('Project created from the template');
+  if (captions && t.recaption) await autoCaptions(true).catch(e => toast(e.message)); // on this Mac (whisper), with the template's caption style
+  return P;
+}
+
+// the gallery: a card per template, its poster, and its preview playing while the pointer is on it
+async function openTemplates() {
+  tplCache = await api('/api/templates').catch(() => []);
+  modal(`<div class="phead"><h2>Templates</h2><div class="pnew"><label class="btn" title="A .cutroom-template someone shared">Import…<input type="file" id="tplIn" hidden accept=".cutroom-template"></label><button class="primary" data-savetpl>Save this project as a template</button></div></div>
+    <p class="hint">A template keeps the edit (cuts, timing, text, caption style, effects, sounds) and takes new footage in its numbered slots. Point at one to play it.</p><p id="tplStatus" class="muted" hidden></p>
+    <div class="pgrid">${tplCache.map(tplCard).join('') || '<p class="hint">No templates yet.</p>'}</div>
+    <div class="actions"><button data-close>Close</button></div>`, 'wide');
+  tplRenderMissing();
+}
+function tplCard(t) {
+  const v = Math.round(t.updated || t.pv || 0); // (the poster's time: a remade one isn't the cached one)
+  return `<div class="pcard tplcard" data-tcard="${t.id}"><button class="pitem" data-tpl="${t.id}" title="Use ${esc(t.name)}"><span class="pthumb">${t.poster ? `<img src="/api/templates/${t.id}/poster.jpg?v=${v}" alt="" loading="lazy" onerror="this.remove()">` : `<small class="tmaking">${TPL.tried.has(t.id) && TPL.busy !== t.id ? 'No preview' : 'Making the preview…'}</small>`}${t.preview ? `<video muted loop playsinline preload="none" data-src="/api/templates/${t.id}/preview.mp4?v=${v}"></video>` : ''}<i>${t.dur ? fmtDur(t.dur) : ''}</i></span>`
+    + `<b>${esc(t.name)}</b><span class="pmeta">${tplMeta(t)}${t.starter ? ' · Starter' : ''}</span></button>`
+    + `<span class="pacts"><button class="pdel" data-tplshare="${t.id}" title="Share: save a .cutroom-template file" aria-label="Share ${esc(t.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/></svg></button>`
+    + (t.starter ? '' : `<button class="pdel" data-deltpl="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`) + '</span></div>';
+}
+function tplHover(e, on) {
+  const card = e.target.closest?.('.tplcard'), v = card?.querySelector('video');
+  if (!v || card.contains(e.relatedTarget)) return; // (moving between the card's own parts)
+  if (on) { if (!v.src) v.src = v.dataset.src; card.classList.add('playing'); v.play().catch(() => {}); }
+  else { v.pause(); v.currentTime = 0; card.classList.remove('playing'); }
+}
+async function tplRenderMissing() { // one at a time, each once a session, while the gallery is open
+  if (TPL.busy) return;
+  for (;;) {
+    const t = tplCache.find(x => !x.poster && !TPL.tried.has(x.id));
+    if (!t || !$('.tplcard')) return;
+    TPL.tried.add(t.id); TPL.busy = t.id;
+    try { await tplRender(t); t.poster = t.preview = true; t.updated = Date.now() / 1000; }
+    catch (e) { console.warn('template preview', t.name, e.message); }
+    finally { TPL.busy = null; }
+    const card = $(`.tplcard[data-tcard="${t.id}"]`);
+    if (card) card.replaceWith(document.createRange().createContextualFragment(tplCard(t)));
+  }
+}
+function slatePNG(n, label, ar) { // the placeholder for slot n: graphite, its number large, its label under it
+  ar = clamp(ar || 1, 0.25, 4);
+  const w = even(ar >= 1 ? 360 * ar : 360), h = even(ar >= 1 ? 360 : 360 / ar), cv = document.createElement('canvas'), x = cv.getContext('2d'), s = Math.min(w, h);
+  cv.width = w; cv.height = h;
+  x.fillStyle = '#232325'; x.fillRect(0, 0, w, h);
+  x.strokeStyle = 'rgba(237, 237, 237, .18)'; x.lineWidth = 2; x.strokeRect(s * 0.06, s * 0.06, w - s * 0.12, h - s * 0.12);
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#ededed';
+  x.font = `700 ${Math.round(s * 0.4)}px Montserrat, system-ui, sans-serif`; x.fillText(String(n), w / 2, h / 2 - (label ? s * 0.06 : 0));
+  if (label) { x.fillStyle = '#a1a1a6'; x.font = `500 ${Math.round(s * 0.075)}px -apple-system, system-ui, sans-serif`; x.fillText(short(label, 28), w / 2, h / 2 + s * 0.24); }
+  return cv.toDataURL('image/png').split(',')[1];
+}
+async function tplPlan(p, extra, w, h, name) { // buildPlan for project p, not the open one (borrowed like a compound clip's), with media extra known
+  for (const m of extra) M.set(m.id, m);
+  try { return await borrowP(p, () => { packMain(); return buildPlan(w, h, 'fast', name, false, 'mp4'); }, true); } // (in the background: after any action in progress)
+  finally { for (const m of extra) M.delete(m.id); }
+}
+async function tplRender(t) {
+  await document.fonts.load('700 100px Montserrat');
+  const vis = t.slots.map((s, i) => [s, i]).filter(([s]) => tplVisual(s.kind));
+  const slates = await api(`/api/templates/${t.id}/slates`, { slots: vis.map(([s, i]) => ({ n: i + 1, kind: s.kind, need: Math.max(1, s.need || 3), png: slatePNG(i + 1, s.label, s.w && s.h ? s.w / s.h : t.w / t.h) })) });
+  const pick = t.slots.map(() => null);
+  vis.forEach(([, i], k) => { pick[i] = slates[k].id; });
+  const ids = slates.map(m => m.id);
+  let file = null;
+  try {
+    for (const m of slates) M.set(m.id, m); // (tplProject reads them)
+    const p = await tplProject(t, pick, {}, Object.fromEntries(vis.map(([, i]) => [i, 0])));
+    Object.assign(p, { hdr: 'sdr', alpha: false });
+    const k = 480 / Math.max(t.w, t.h), plan = await tplPlan(p, slates, even(t.w * k), even(t.h * k), `Template preview ${t.id}`);
+    const j = await job('/api/export', { ...plan, queue: true }, 'Template preview', () => {});
+    file = j.file;
+    const tx = tplTexts(t).map(e => p.text.find(c => c.id === e.id)).filter(Boolean), dur = t.dur || plan.duration; // the poster: a moment its first text is on screen
+    await api(`/api/templates/${t.id}/preview`, { file, slates: ids, at: tx.length ? Math.min(dur * 0.9, Math.min(...tx.map(c => c.start)) + 1.2) : dur * 0.3 });
+  } finally {
+    for (const id of ids) M.delete(id);
+    if (!file) await api(`/api/templates/${t.id}/preview`, { file: null, slates: ids }).catch(() => {});
+  }
+}
+
+// using one: the slots, a library to fill them from, the texts
+function showTemplate(id) {
+  const t = tplCache.find(x => x.id === id);
+  if (!t) return;
+  TPL.fill = { t, pick: t.slots.map(() => null), starts: {} };
+  TPL.sel = [];
+  const lib = [...M.values()].filter(m => m.ready || m.kind === 'image');
+  modal(`<div class="phead"><h2>${esc(t.name)}</h2><span class="muted">${tplMeta(t)}</span></div>
+    <div class="tfill"><div><h4>Slots</h4><div id="tslots" class="tslots"></div></div>
+      <div><h4 class="tlhead">Library <button data-tplfill title="The selected items, in the order you picked them, into the slots in order">Fill from selection</button></h4>
+        <div class="tlib">${lib.map(m => `<button class="tlitem" draggable="true" data-tlm="${m.id}" title="${esc(m.name)}: click to select, or drag onto a slot"><span class="tthumb" style="${thumbStyle(m)}"></span><b>${esc(m.name)}</b><small>${m.kind === 'image' ? 'photo' : fmtDur(m.duration)}</small><i></i></button>`).join('') || '<p class="hint">Import some footage first.</p>'}</div></div></div>
+    ${tplTexts(t).length ? `<h4>Texts</h4><div class="ttexts">${tplTexts(t).map((e, n) => { const c = (t.project.text || []).find(x => x.id === e.id); if (!c) return ''; const f = String(c.style?.font || '').replace(/[^\w \-]/g, ''); return `<label class="row"><span>Text ${n + 1}</span><textarea rows="1" data-ttext="${c.id}" style="font-family:'${f}', system-ui" aria-label="Text ${n + 1}">${esc(c.text)}</textarea></label>`; }).join('')}</div>` : ''}
+    ${t.recaption ? '<label class="row chk" title="Whisper on this Mac, in the template\'s caption style"><span>Make captions from the new speech</span><input type="checkbox" id="tplCaps" checked></label>' : ''}
+    <div class="actions"><button data-tplback>Back</button><button class="primary" data-usetpl="${t.id}">Create project</button></div>`, 'wide');
+  tplDrawSlots();
+}
+function tplDrawSlots() {
+  const { t, pick, starts } = TPL.fill;
+  tplHTML($('#tslots'), t.slots.map((s, i) => {
+    const m = M.get(pick[i]), need = s.need || 0, vid = m && m.kind !== 'image' && tplVisual(s.kind), a = vid ? starts[i] ?? tplStart(t, i, m) : 0, room = vid ? m.duration - need : 0;
+    const say = !tplVisual(s.kind) ? `a sound · ${tplSecs(need)} · optional` : s.kind === 'image' ? `a photo, or ${tplSecs(need)} of video` : `needs ${tplSecs(need)}`;
+    return `<div class="tslot${m ? ' on' : ''}" data-tslot="${i}"><span class="tnum">${i + 1}</span><span class="tthumb" style="${m ? thumbStyle(m) : ''}">${m ? '' : 'Drop here'}</span>
+      <span class="tsinfo"><b>${esc(m ? m.name : s.label || (tplVisual(s.kind) ? `Slot ${i + 1}` : 'Music or sound'))}</b><small>${say}</small>
+      ${vid ? `<span class="tuse"><span class="tbar"><i style="left:${(a / m.duration) * 100}%;width:${(Math.min(need, m.duration) / m.duration) * 100}%"></i></span>${room > 0.05 ? `<input type="range" data-tstart="${i}" min="0" max="${r3(room)}" step="0.05" value="${r3(a)}" aria-label="Which part of ${esc(m.name)} slot ${i + 1} uses">` : ''}<small>${room >= -0.05 ? `uses ${tplSecs(a)}–${tplSecs(a + need)} of ${tplSecs(m.duration)}` : `shorter than the slot by ${tplSecs(-room)}: its clips end early`}</small></span>` : ''}</span>
+      ${m ? `<button class="ghost" data-tclear="${i}" aria-label="Empty slot ${i + 1}">Clear</button>` : ''}</div>`;
+  }).join(''));
+  for (const r of $$('#tslots input[type=range]')) fill(r);
+  for (const b of $$('.tlitem')) { const k = TPL.sel.indexOf(b.dataset.tlm); b.classList.toggle('on', k >= 0); b.querySelector('i').textContent = k >= 0 ? k + 1 : ''; }
+}
+function tplPut(i, id) { // -> false (with a toast) when the slot takes another kind
+  const s = TPL.fill.t.slots[i], m = M.get(id);
+  if (!m || tplVisual(s.kind) !== tplVisual(m.kind)) { toast(`Slot ${i + 1} takes ${tplVisual(s.kind) ? 'a video or a photo' : 'a sound'}`); return false; }
+  TPL.fill.pick[i] = id; delete TPL.fill.starts[i];
+  return true;
+}
+function tplFillSel(ids = TPL.sel) { // in the order picked: pictures into the picture slots in order, sounds into the sound slots
+  const { t } = TPL.fill, free = { v: t.slots.map((s, i) => i).filter(i => tplVisual(t.slots[i].kind)), a: t.slots.map((s, i) => i).filter(i => !tplVisual(t.slots[i].kind)) };
+  let n = 0;
+  for (const id of ids) { const m = M.get(id), q = m && free[tplVisual(m.kind) ? 'v' : 'a']; if (q?.length) { tplPut(q.shift(), id); n++; } }
+  tplDrawSlots();
+  return n;
+}
+function tplFields() { return Object.fromEntries($$('[data-ttext]').map(x => [x.dataset.ttext, x.value])); }
+async function importTemplateFile(f) {
+  const r = await fetch(`/api/templates/import?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: f });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'the template could not be read');
+  await Promise.all([loadMedia(), loadFonts(), api('/api/luts').then(l => { G.luts = l; }).catch(() => {})]);
+  toast(`Imported the template "${j.name}"${j.media ? ` with ${j.media} file${j.media === 1 ? '' : 's'}` : ''}`);
+  return j;
+}
+function tplWire() { // the gallery's and the fill dialog's own events (the modal's clicks go through tplClick)
+  const md = $('#modal');
+  md.addEventListener('pointerover', e => tplHover(e, true));
+  md.addEventListener('pointerout', e => tplHover(e, false));
+  md.addEventListener('dragstart', e => { const b = e.target.closest?.('[data-tlm]'); if (b) { e.dataTransfer.setData('text/cutroom-media', b.dataset.tlm); e.dataTransfer.effectAllowed = 'copy'; } });
+  md.addEventListener('dragover', e => { const s = e.target.closest?.('[data-tslot]'); if (s && e.dataTransfer.types.includes('text/cutroom-media')) { e.preventDefault(); s.classList.add('drop'); } });
+  md.addEventListener('dragleave', e => { const s = e.target.closest?.('[data-tslot]'); if (s && !s.contains(e.relatedTarget)) s.classList.remove('drop'); });
+  md.addEventListener('drop', e => { const s = e.target.closest?.('[data-tslot]'), id = e.dataTransfer.getData('text/cutroom-media'); if (!s || !id) return; e.preventDefault(); e.stopPropagation(); tplPut(+s.dataset.tslot, id); tplDrawSlots(); });
+  md.addEventListener('input', e => { const i = e.target.dataset?.tstart; if (i != null && TPL.fill) { TPL.fill.starts[i] = +e.target.value; tplDrawSlots(); $(`[data-tstart="${i}"]`)?.focus(); } });
+  md.addEventListener('change', e => {
+    if (e.target.id === 'tplIn' && e.target.files[0]) importTemplateFile(e.target.files[0]).then(openTemplates, err => toast(err.message));
+    const k = e.target.dataset?.tskeep, lab = k && $(`[data-tslabel="${k}"]`);
+    if (lab) lab.disabled = e.target.value === 'keep'; // a kept file is no slot: nothing to label
+  });
+}
+async function tplClick(d, b) { // -> true when it was one of the templates' buttons
+  if ('savetpl' in d) openSaveTemplate();
+  else if ('savetplgo' in d) {
+    const keep = $$('[data-tskeep]').filter(x => x.value === 'keep').map(x => x.dataset.tskeep), labels = Object.fromEntries($$('[data-tslabel]').map(x => [x.dataset.tslabel, x.value.trim()]));
+    b.disabled = true;
+    try { await saveTemplate({ name: $('#tsName').value, keep, labels, texts: $$('[data-tstext]').filter(x => x.checked).map(x => x.dataset.tstext), recaption: !!$('#tsRecap')?.checked }); } finally { b.disabled = false; }
+    await openTemplates();
+  }
+  else if (d.tpl) showTemplate(d.tpl);
+  else if ('tplback' in d) openTemplates();
+  else if (d.tlm) { const k = TPL.sel.indexOf(d.tlm); if (k >= 0) TPL.sel.splice(k, 1); else TPL.sel.push(d.tlm); tplDrawSlots(); }
+  else if ('tplfill' in d) { if (!TPL.sel.length) toast('Select library items first (click them in the order you want)'); else tplFillSel(); }
+  else if (d.tclear) { TPL.fill.pick[+d.tclear] = null; tplDrawSlots(); }
+  else if (d.usetpl) { const { t, pick, starts } = TPL.fill; await useTemplate(t, pick, tplFields(), { starts, captions: !!$('#tplCaps')?.checked }); }
+  else if (d.tplshare) {
+    const r = await api(`/api/templates/${d.tplshare}/share`, {}), st = $('#tplStatus');
+    if (st) { st.hidden = false; st.textContent = `Saved ${r.file} (${(r.size / 1e6).toFixed(1)} MB) in ${r.dir} `; const x = document.createElement('button'); x.className = 'ghost'; x.dataset.reveal = r.file; x.textContent = 'Show in Finder'; st.append(x); }
+    else toast(`Saved ${r.file} in ${r.dir}`);
+  }
+  else if (d.deltpl) { if (confirm(plat('Delete this template? It moves to Movies/Cutroom/trash.'))) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+  else return false;
+  return true;
 }
 async function uploadOne(file) {
   const r = await fetch(`/api/import?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: file });
@@ -4344,55 +4564,62 @@ async function autoCaptions(force) { // words come back in source time; map them
     // placed on the timeline as it is NOW (edits while it listened move the words with them), in the project it was asked in
     if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
     packMain(); src = speech().filter(c => words.has(c.media));
-    const all = [];
-    for (const c of src) {
-      for (const w of words.get(c.media)) {
-        if (w.e <= c.in || w.s >= c.out) continue;
-        const a = c.start + (Math.max(w.s, c.in) - c.in) / c.speed, b = c.start + (Math.min(w.e, c.out) - c.in) / c.speed;
-        if (b - a > 0.02) all.push({ w: w.w, s: a, e: b });
-      }
-    }
-    all.sort((x, y) => x.s - y.s);
-    const caps = [];
-    let cur = [];
-    const flush = () => {
-      if (!cur.length) return;
-      const s = cur[0].s, e = cur.at(-1).e;
-      caps.push({ id: hex12(), start: s, dur: Math.max(0.2, e - s), text: cur.map(w => w.w).join(' '), words: cur.map(w => ({ w: w.w, s: w.s - s, e: w.e - s })) });
-      cur = [];
-    };
-    for (const w of all) {
-      const prev = cur.at(-1);
-      if (prev && (cur.length >= per || w.s - prev.e > 0.6 || /[.?!]$/.test(prev.w))) flush();
-      cur.push(w);
-    }
-    flush();
-    for (let i = 0; i + 1 < caps.length; i++) { // hold each caption until the next one so they don't flicker
-      const gap = caps[i + 1].start - (caps[i].start + caps[i].dur);
-      if (gap > 0 && gap < 0.5) caps[i].dur += gap;
-      else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
-    }
+    const caps = capsFromWords(src, words, per), nw = caps.reduce((n, c) => n + c.words.length, 0);
     const EXTRA = ['style', 'tr', 'kw', 'emoji', 'spk'], kept = new Map(P.captions.filter(c => EXTRA.some(k => c[k] !== undefined)).map(c => [c.text, c])); // a restyled (translated, labelled...) caption keeps that when captions are re-made after a cut
     for (const c of caps) if (kept.has(c.text)) for (const k of EXTRA) if (kept.get(c.text)[k] !== undefined) c[k] = structuredClone(kept.get(c.text)[k]);
     change(() => { P.captions = caps; S.sel = null; });
-    status.textContent = caps.length ? `${caps.length} captions from ${all.length} words. Click one to edit it.` : 'No speech found.';
+    status.textContent = caps.length ? `${caps.length} captions from ${nw} words. Click one to edit it.` : 'No speech found.';
   } catch (e) { status.textContent = e.message; throw e; }
   finally { btn.disabled = false; }
+}
+function capsFromWords(src, words, per) { // clips (on the timeline as it is now) + media id -> words in source time: caption clips of up to per words (also the batch's captions)
+  const all = [];
+  for (const c of src) {
+    for (const w of words.get(c.media)) {
+      if (w.e <= c.in || w.s >= c.out) continue;
+      const a = c.start + (Math.max(w.s, c.in) - c.in) / c.speed, b = c.start + (Math.min(w.e, c.out) - c.in) / c.speed;
+      if (b - a > 0.02) all.push({ w: w.w, s: a, e: b });
+    }
+  }
+  all.sort((x, y) => x.s - y.s);
+  const caps = [];
+  let cur = [];
+  const flush = () => {
+    if (!cur.length) return;
+    const s = cur[0].s, e = cur.at(-1).e;
+    caps.push({ id: hex12(), start: s, dur: Math.max(0.2, e - s), text: cur.map(w => w.w).join(' '), words: cur.map(w => ({ w: w.w, s: w.s - s, e: w.e - s })) });
+    cur = [];
+  };
+  for (const w of all) {
+    const prev = cur.at(-1);
+    if (prev && (cur.length >= per || w.s - prev.e > 0.6 || /[.?!]$/.test(prev.w))) flush();
+    cur.push(w);
+  }
+  flush();
+  for (let i = 0; i + 1 < caps.length; i++) { // hold each caption until the next one so they don't flicker
+    const gap = caps[i + 1].start - (caps[i].start + caps[i].dur);
+    if (gap > 0 && gap < 0.5) caps[i].dur += gap;
+    else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
+  }
+  return caps;
 }
 
 // ---------- import ----------
 async function loadMedia() {
-  const list = await api('/api/media');
+  const list = await api('/api/media'), noPct = m => JSON.stringify({ ...m, prep: 0 }), same = list.length === M.size && list.every(m => M.has(m.id) && noPct(M.get(m.id)) === noPct(m)); // (a poll while something prepares: only its % moved)
   for (const m of list) { // a proxy may exist now: make players reload
     const old = M.get(m.id);
     if (old && !old.ready && m.ready) for (const v of pool.values()) if (v.dataset.media === m.id) v.dataset.media = '';
   }
+  const slates = [...M.values()].filter(m => m.slate); // a template preview's placeholders: never listed, kept while it renders (this poll runs whenever anything is preparing)
   M.clear();
-  for (const m of list) M.set(m.id, m);
+  for (const m of [...list, ...slates]) M.set(m.id, m);
   renderMediaList();
-  renderTimeline();
-  if (G.tab === 'audio') renderAudio();
-  S.dirty = true;
+  if (!same) { // nothing redraws at rest: a 4K proxy can take minutes, and this polls every 1.5 s meanwhile
+    renderTimeline();
+    if (G.tab === 'audio') renderAudio();
+    S.dirty = true;
+  }
   clearTimeout(loadMedia.t);
   if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
 }
@@ -4434,7 +4661,8 @@ const handOff = (name, format) => api('/api/interchange', { format, name: name |
 function importFiles(files) {
   for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
   for (const f of [...files].filter(x => /\.cutroom$/i.test(x.name))) openPackageFile(f).catch(e => toast(e.message));
-  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom)$/i.test(x.name));
+  for (const f of [...files].filter(x => /\.cutroom-template$/i.test(x.name))) importTemplateFile(f).then(() => { if ($('.tplcard')) openTemplates(); }, e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom|cutroom-template)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -4643,11 +4871,24 @@ function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main
   }
   return Object.assign(p, { w: W2, h: H2 });
 }
-async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+// buildPlan reads the global P, so a plan for another project (a compound clip's, another shape's, a template preview's) borrows it:
+// P is that project until the plan is built. One borrow at a time; act() (saving or using a template, every REMOTE command) waits
+// for a borrow to end, and a background borrow (template previews) waits for acts: neither reads or replaces the other's P
+let heldP = null, acting = 0;
+async function borrowP(p, fn, background = false) { // -> fn()'s result, with P = p (or p(the open project)) meanwhile
+  for (;;) { if (heldP) await heldP.catch(() => {}); else if (background && acting) await sleep(100); else break; }
   const P0 = P;
-  S.hold = true; // ponytail: borrowed like a compound clip's plan; an edit made during these seconds lands on the copy
-  try { P = reshape(P0, ...RATIOS[ratio]); const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return await buildPlan(w, h, ...args); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  S.hold = true; P = typeof p === 'function' ? p(P0) : p; // the preview and autosave leave the borrowed project alone
+  heldP = (async () => fn())();
+  try { return await heldP; } finally { P = P0; S.hold = false; S.dirty = true; heldP = null; }
+}
+async function act(fn) { // fn on the open project, never on a borrowed one
+  while (heldP) await heldP.catch(() => {});
+  acting++;
+  try { return await fn(); } finally { acting--; }
+}
+async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+  return borrowP(P0 => reshape(P0, ...RATIOS[ratio]), () => { const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return buildPlan(w, h, ...args); });
 }
 S.q = []; // the Exports panel: every export the page started, in order; the server renders them one at a time (ai_slot)
 const node = (tag, cls, parent, text = '') => { const e = parent.appendChild(document.createElement(tag)); e.className = cls; e.textContent = text; return e; };
@@ -4672,7 +4913,7 @@ function qPoll() { // only while something is waiting or rendering
     const live = S.q.filter(q => q.st.state === 'running');
     await Promise.all(live.map(async q => {
       q.st = await api(`/api/jobs/${q.job}`).catch(() => q.st);
-      if (q.st.state === 'done') { S.exportsDir = q.st.dir || S.exportsDir; q.ok(q.st); }
+      if (q.st.state === 'done') { S.exportsDir = q.st.dir || S.exportsDir; q.ok(q.st); if (typeof SET === 'object') SET.exported(q.st); }
       else if (q.st.state !== 'running') q.no(new Error(q.st.state === 'cancelled' ? 'Export cancelled' : q.st.error || 'The export failed'));
     }));
     qTimer = 0; qDraw();
@@ -4708,6 +4949,7 @@ function openExport() {
     <label class="row" id="exMbpsRow" hidden><span>Mbps</span><input id="exMbps" type="number" min="0.5" max="400" step="0.5" value="10"></label>
     <label class="row" title="One gain for the whole edit, measured first (true peak held at −1.5 dBTP)"><span>Loudness</span><select id="exLoud"><option value="off">Off (as mixed)</option><option value="-14">−14 LUFS · social</option><option value="-16">−16 LUFS · podcast</option><option value="-23">−23 LUFS · broadcast (EBU)</option></select></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
+    ${M.get(G.brand.logo) && !wmOf() ? '<label class="row chk" title="The brand logo in its corner, for this export only: the project stays as it is"><span>Add watermark</span><input id="exWm" type="checkbox"></label>' : ''}
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
@@ -4717,7 +4959,7 @@ function openExport() {
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
-    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
+    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
     const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
     $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
     $('#exHdr').disabled = !['mp4', 'hevc', 'prores'].includes(f);
@@ -4755,7 +4997,7 @@ function openExport() {
     if (!k) return hint();
     const v = presetFields(k);
     $('#exRes').value = String(Math.max(0, exportSizes().findIndex(x => x[0] === v.res))); $('#exFmt').value = v.fmt; $('#exQ').value = v.q; $('#exFps').value = String(v.fps);
-    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? '-14' : 'off';
+    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? String(opt('loud', -14)) : 'off'; // (Settings: the loudness a preset aims at)
     hint();
   };
   $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
@@ -4763,6 +5005,7 @@ function openExport() {
   $('#exPreset').addEventListener('change', preset);
   if (PREFS.preset && EX_PRESETS[PREFS.preset]) { $('#exPreset').value = PREFS.preset; preset(); } // the first-start answers
   for (const x of $$('#exAlso input')) if ((PREFS.also || []).includes(x.value)) x.checked = true;
+  if (typeof SET === 'object') SET.exportOpened(); // file name pattern, Light, the folder (Settings > Export)
   hint();
   S.qHide = false; qDraw();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
@@ -4780,7 +5023,7 @@ function exportUI(pct, msg, done) { // the dialog when it's open (it can be clos
 async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
   if (S.exporting) return;
   const [res, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
-  const also = $$('#exAlso input:checked:not(:disabled)').map(x => x.value);
+  const also = $$('#exAlso input:checked:not(:disabled)').map(x => x.value), wm = !!$('#exWm:checked:not(:disabled)');
   S.exporting = { pct: 0 };
   exportUI(0, 'Rendering text layer…', '');
   const tell = msg => { if ($('#modal').hidden || !$('#exStatus')) toast(msg); };
@@ -4797,14 +5040,14 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       exportUI(100, `Saved <b>${esc(r.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${r.notes.length ? `<br>${esc(r.notes.join(' '))}` : ''}`, `<button data-reveal="${esc(r.file)}">Show in Finder</button>`);
       return;
     }
-    const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
+    const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt));
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
     S.exporting.job = job;
     for (const r of also) { // queued behind it; the dialog's own progress stays this one's
       exportUI(0, `Laying out ${r}…`);
-      await enqueue({ ...(await shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt)), ...same }, r);
+      await enqueue({ ...(await withWm(wm, () => shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt))), ...same }, r);
     }
     for (;;) {
       await new Promise(r => setTimeout(r, 400));
@@ -4824,6 +5067,377 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
   finally { if (S.exporting) { S.exporting = null; exportUI(0); } }
 }
 
+// ---------- brand kit: one per library (/api/brand: <library>/brand/brand.json). Applied, it is plain clips (the intro first and
+// the outro last on the main track, the logo on a locked overlay track on top) plus brand text and caption presets, so the preview
+// and the export show it alike and History undoes it in one step. Its logo, intro and outro are library items ----------
+G.brand = {};
+const brandOn = () => !!(G.brand.logo || G.brand.intro || G.brand.outro || G.brand.colors?.length || G.brand.head?.font);
+const wmOf = (p = P) => p.overlay.find(c => c.brand === 'wm');
+function putFirst(o, add) { const rest = Object.entries(o).filter(([k]) => !k.startsWith('Brand')); for (const k of Object.keys(o)) delete o[k]; Object.assign(o, add, Object.fromEntries(rest)); }
+function brandPresets() { // the brand's text styles and caption style, first wherever presets are offered (tiles, inspector, MCP options)
+  const b = G.brand, c = b.colors || [], hf = b.head?.font, bf = b.body?.font || hf, on = brandOn();
+  const head = { ...(hf ? { font: hf } : {}), ...(b.head?.weight ? { weight: b.head.weight } : {}) }, body = { ...(bf ? { font: bf } : {}), ...(b.body?.weight ? { weight: b.body.weight } : {}) };
+  putFirst(TEXT_PRESETS, on ? { 'Brand title': { ...TEXT_PRESETS.Title, ...head, color: c[0] || '#ffffff' }, 'Brand text': { ...TEXT_PRESETS.Subtitle, ...body, color: c[1] || '#ffffff' },
+    'Brand label': { ...TEXT_PRESETS.Label, ...body, color: c[2] || '#ffffff', boxColor: c[0] || '#000000', boxAlpha: 1 } } : {});
+  const base = b.cap && b.cap !== 'Brand' && CAP_PRESETS[b.cap] ? b.cap : 'Clean';
+  putFirst(CAP_PRESETS, on ? { Brand: { ...CAP_PRESETS[base], ...head, ...(c[0] ? { hl: c[0] } : {}) } } : {});
+  $('#brandColours').replaceChildren(...c.map(x => Object.assign(document.createElement('option'), { value: x }))); // the colour pickers' suggestions
+}
+async function loadBrand() { G.brand = await api('/api/brand').catch(() => G.brand); brandPresets(); }
+async function brandSave(b) { // the whole brand; the server keeps the known fields
+  G.brand = await api('/api/brand', b);
+  brandPresets(); renderPane();
+  if (S.sel) renderInspector();
+  return G.brand;
+}
+function brandClip(id, extra) { const m = M.get(id); return m && { id: hex12(), media: id, start: 0, in: 0, out: m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, ...extra }; }
+function brandWmInto() { // the logo in its corner on a new top overlay track, locked; size = its width as a share of the canvas width
+  const w = G.brand.wm || {}, m = M.get(G.brand.logo);
+  if (!m?.w) return null;
+  const c = brandClip(m.id, { brand: 'wm', volume: 0, opacity: w.opacity ?? 0.8 }), s0 = Math.min(P.w / m.w, P.h / m.h), gw = (w.size ?? 0.12) * P.w, gh = (gw * m.h) / m.w;
+  const pad = 0.04 * Math.min(P.w, P.h), cn = w.corner || 'br', n = P.overlay.length ? rows('overlay').n : 0;
+  Object.assign(c, { scale: gw / (m.w * s0), x: ((cn[1] === 'l' ? -1 : 1) * ((P.w - gw) / 2 - pad)) / P.w, y: ((cn[0] === 't' ? -1 : 1) * ((P.h - gh) / 2 - pad)) / P.h, track: n });
+  P.tracks[`overlay:${n}`] = { ...trk('overlay', n), lock: true };
+  P.overlay.push(c);
+  brandFit();
+  return c;
+}
+function brandFit() { // the watermark spans the whole edit, whatever the edit around it does (touched() calls this after every edit)
+  const w = wmOf();
+  if (!w) return;
+  packMain();
+  let t = 0;
+  for (const L of LANES) for (const c of P[L.key]) if (c !== w) t = Math.max(t, c.start + tdur(c, L.key));
+  if (t > 0 && Math.abs(w.out - w.in - t) > 1e-6) Object.assign(w, { start: 0, in: 0, out: t });
+}
+function brandInto() { // P branded: earlier brand clips out, then the intro, outro, watermark and caption style; a copy of the brand rides along (packages)
+  const b = G.brand;
+  for (const L of ['main', 'overlay']) P[L] = P[L].filter(c => { if (c.brand === 'wm') delete trk('overlay', c.track).lock; return !c.brand; });
+  const i = b.intro && brandClip(b.intro, { brand: 'intro' }), o = b.outro && brandClip(b.outro, { brand: 'outro' });
+  if (i) P.main.unshift(i);
+  if (o) P.main.push(o);
+  if (b.wm?.on) brandWmInto();
+  if (b.cap || b.head?.font || b.colors?.length) P.capStyle = capPreset('Brand');
+  P.brand = structuredClone(b);
+  S.sel = null;
+}
+function brandApply() {
+  if (!brandOn()) throw new Error('Set up the brand first (Text > Brand kit…)');
+  change(brandInto, 'Apply brand');
+  toast('Brand applied');
+}
+function newBranded(ratio, branded = G.brand.auto !== false && brandOn()) { // a new project from the user (not the smart tools' ones)
+  setProject(newProject(ratio));
+  if (branded) { brandInto(); renderAll(); }
+  scheduleSave();
+}
+async function withWm(on, fn) { // fn() with the watermark added to a copy of the project: for one export, the project stays as it is
+  if (!on || wmOf() || !M.get(G.brand.logo)) return fn();
+  const P0 = P;
+  S.hold = true; // (like shapePlan: the preview and autosave leave the borrowed project alone)
+  try { P = structuredClone(P0); brandWmInto(); return await fn(); } finally { P = P0; S.hold = false; S.dirty = true; }
+}
+function openBrand() {
+  const b = G.brand, w = b.wm || {}, cols = b.colors || [], ic = d => `<svg class="i" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+  const items = kinds => [...M.values()].filter(m => kinds.includes(m.kind));
+  const asset = (k, label, kinds, accept) => `<div class="row"><span>${label}</span><div class="bpick"><select data-bk="${k}" aria-label="${label}"><option value="">None</option>${items(kinds).map(m => `<option value="${m.id}"${m.id === b[k] ? ' selected' : ''} title="${esc(m.name)}">${esc(short(m.name, 30))}</option>`).join('')}</select>`
+    + `<label class="btn" title="Import a file from this Mac for the ${label.toLowerCase()}">Import…<input type="file" data-bin="${k}" hidden accept="${accept}"></label></div></div>`;
+  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f));
+  const font = (k, label) => { const v = b[k]?.font || ''; return `<div class="row"><span>${label}</span><div class="bpick"><select data-bf="${k}" aria-label="${label}"><option value="">The preset's own</option>${[['Cutroom', FONTS], ['Imported', mine], ['This Mac', mac]].filter(g => g[1].length).map(([g, fs]) => `<optgroup label="${g}">${fs.map(f => `<option value="${esc(f)}"${f === v ? ' selected' : ''}>${esc(f)}</option>`).join('')}</optgroup>`).join('')}</select>`
+    + `<label class="btn" title="Import a .ttf, .otf or .woff2 for the ${label.toLowerCase()}">Import…<input type="file" data-bfin="${k}" hidden accept=".ttf,.otf,.woff2"></label></div></div>`; };
+  modal(`<h2>Brand</h2><p class="hint">One brand for the library. Apply puts the intro first and the outro last on the main track and the logo on a locked overlay track, in one undo step; text and caption presets offer the brand's colours and fonts first.</p>
+    ${asset('logo', 'Logo', ['image'], 'image/*')}${asset('intro', 'Intro', ['video', 'image'], 'video/*,image/*')}${asset('outro', 'Outro', ['video', 'image'], 'video/*,image/*')}
+    <div class="row"><span>Colours</span><div class="bcols">${cols.map((x, i) => `<input type="color" data-bc="${i}" value="${x}" aria-label="Brand colour ${i + 1}">`).join('')}
+      ${cols.length < 5 ? `<button class="ghost" data-brand="cadd" title="Add a colour" aria-label="Add a colour">${ic('M12 5v14M5 12h14')}</button>` : ''}${cols.length ? `<button class="ghost" data-brand="cdel" title="Remove the last colour" aria-label="Remove the last colour">${ic('M5 12h14')}</button>` : ''}</div></div>
+    ${font('head', 'Heading font')}${font('body', 'Body font')}
+    <label class="row"><span>Caption style</span><select data-bcap><option value="">Clean</option>${Object.keys(CAP_PRESETS).filter(n => n !== 'Brand').map(n => `<option${n === b.cap ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+    <h4>Watermark</h4>${tick('wm.on', 'Logo as a watermark', w.on)}
+    ${segs('bcorner', 'Corner', w.corner || 'br', [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right']])}
+    ${slider('wm.size', 'Size', w.size ?? 0.12, 0.03, 0.5, 0.01, '%')}${slider('wm.opacity', 'Opacity', w.opacity ?? 0.8, 0.05, 1, 0.01, '%')}
+    ${tick('auto', 'New projects start branded', b.auto !== false)}
+    <p id="brandStatus" class="muted"></p>
+    <div class="actions"><button data-close>Close</button><button class="primary" data-brand="apply"${brandOn() ? '' : ' disabled'} title="Intro, outro, watermark and caption style on this project (one undo step)">Apply to this project</button></div>`);
+  const dlg = $('#modal .dialog'), say = sayIn('#brandStatus'), save = patch => { const n = structuredClone(G.brand); merge(n, patch); return brandSave(n).then(() => openBrand()).catch(err => say(err.message)); };
+  dlg.addEventListener('input', e => { const t = e.target; if (t.type === 'range') { fill(t); const o = t.parentElement.querySelector('output'); if (o) o.textContent = fmt(+t.value, t.dataset.unit); } });
+  dlg.addEventListener('change', e => {
+    const t = e.target, d = t.dataset;
+    if (d.bk) save({ [d.bk]: t.value || null });
+    else if (d.bf) save({ [d.bf]: { font: t.value || null } });
+    else if ('bcap' in d) save({ cap: t.value || null });
+    else if (d.bc) { const c = [...cols]; c[+d.bc] = t.value; save({ colors: c }); }
+    else if (d.k === 'auto') save({ auto: t.checked });
+    else if (d.k?.startsWith('wm.')) save({ wm: { [d.k.slice(3)]: t.type === 'checkbox' ? t.checked : +t.value } });
+    else if (d.bin && t.files[0]) { say(`Importing ${t.files[0].name}…`); uploadOne(t.files[0]).then(m => save({ [d.bin]: m.id })).catch(err => say(err.message)); }
+    else if (d.bfin && t.files[0]) importFont(t.files[0]).then(f => save({ [d.bfin]: { font: f.family } })).catch(err => say(err.message));
+  });
+  dlg.addEventListener('click', e => {
+    const x = e.target.closest('button');
+    if (!x) return;
+    if (x.dataset.bcorner) save({ wm: { corner: x.dataset.bcorner } });
+    else if (x.dataset.brand === 'cadd') save({ colors: [...cols, ['#f0b23e', '#ffffff', '#111111', '#4cc38a', '#5f93d0'][cols.length]] });
+    else if (x.dataset.brand === 'cdel') save({ colors: cols.slice(0, -1) });
+    else if (x.dataset.brand === 'apply') { try { brandApply(); closeModal(); } catch (err) { say(err.message); } }
+  });
+}
+
+// ---------- batch editing: one recipe over many library videos ----------
+// Each video gets its own project (named after it): the recipe's steps in order, then every shape's export into the one
+// queue above (the Exports panel; the server renders one at a time). A recipe: { name, steps: [{ step, ...its options }],
+// shapes: ['9:16', ...], fit, preset, res }. Steps are plugins: BATCH_STEPS[k] = { name, avail() -> '' or why not, run(ctx, s)
+// -> a note or { skip: why } }, ctx = { p: the video's project, m: the video, lufs }. A step that isn't available here is
+// skipped with its reason; a step or export that fails fails that video only, the rest carry on. The plans are built in this
+// page from the same code as the dialog's, so preview == export holds for every one.
+const BATCH_STEPS = {
+  template: { name: 'Template', avail: () => '', async run(ctx, s) { // first whatever the order: it is the edit the other steps work on
+    const t = (tplCache = await api('/api/templates')).find(x => x.id === s.id || x.name === s.id);
+    if (!t) throw new Error(`no template "${s.id || ''}"`);
+    const q = migrate({ ...structuredClone(t.project), id: ctx.p.id, name: ctx.p.name }), m = ctx.m;
+    let gone = 0;
+    for (const L of LANES) q[L.key] = (q[L.key] || []).filter(c => { // the template's video and photo slots all take this video; a sound slot has nothing to take
+      if (typeof c.media !== 'string' || !c.media.startsWith('slot:')) return true;
+      if (t.slots[+c.media.slice(5)]?.kind === 'audio') { gone++; return false; }
+      c.media = m.id; c.out = Math.min(c.out, m.duration); c.in = Math.min(c.in, Math.max(0, c.out - 0.1)); delete c.beats;
+      return true;
+    });
+    ctx.p = q;
+    return `${t.name}${gone ? ` (${gone} sound clip${gone === 1 ? '' : 's'} left out)` : ''}`;
+  } },
+  pauses: { name: 'Trim silences', avail: () => '', async run(ctx, s) { // Remove pauses' own path: silencedetect, then cutMain with its 0.1 s of air
+    if (!ctx.m.hasAudio) return { skip: 'no sound' };
+    const min = clamp(+s.min || 0.5, 0.1, 5), sil = await silenceMap([ctx.m.id], min);
+    const cut = onP(ctx.p, () => { const d0 = packMain(); P.main = cutMain(sil, 0.1); return d0 - packMain(); });
+    return cut > 0.05 ? `${cut.toFixed(1)} s cut` : `no pauses over ${min} s`;
+  } },
+  captions: { name: 'Auto captions', avail: () => '', async run(ctx, s) { // whisper through the server's queue (one heavy job at a time), then the Captions tab's grouping
+    if (!ctx.m.hasAudio) return { skip: 'no sound' };
+    const lang = s.lang || 'auto', m = ctx.m, spans = onP(ctx.p, () => usedSpans(m.id, P.main));
+    const words = new Map([[m.id, await fetchWords(m.id, lang, spans)]]);
+    const n = onP(ctx.p, () => { packMain(); P.captions = capsFromWords(P.main.filter(c => c.media === m.id && c.volume > 0), words, clamp(+s.per || 3, 1, 6)); if (CAP_PRESETS[s.style]) P.capStyle = capPreset(s.style); return P.captions.length; });
+    return n ? `${n} captions` : 'no speech found';
+  } },
+  loudness: { name: 'Loudness', avail: () => '', run(ctx, s) { ctx.lufs = [-14, -16, -23].includes(+s.lufs) ? +s.lufs : -14; return `${ctx.lufs} LUFS on export`; } },
+  brand: { name: 'Brand kit', avail: () => (typeof applyBrand === 'function' ? '' : 'no brand kit in this version'), // the brand kit feature defines applyBrand(project, options)
+    async run(ctx, s) { const r = await onPAsync(ctx.p, () => applyBrand(ctx.p, s)); return typeof r === 'string' ? r : 'applied'; } },
+};
+const BATCH_ORDER = ['template', 'pauses', 'captions', 'loudness', 'brand'];
+const BATCH_FMTS = ['mp4', 'hevc', 'av1', 'webm', 'prores'];
+function onP(p, fn) { const P0 = P; P = p; try { return fn(); } finally { P = P0; } } // synchronous: nothing else runs while it is borrowed
+async function onPAsync(p, fn) { // across awaits (a plan's text layer): the preview and autosave leave the borrowed project alone
+  const P0 = P;
+  S.hold = true; P = p; // ponytail: like shapePlan, an edit made in these seconds lands on the batch's project
+  try { return await fn(); } finally { P = P0; S.hold = false; S.dirty = true; }
+}
+const BATCH = { items: [], running: false, recipes: [] };
+function batchRecipe(r) { // checked and in the run order; throws a sentence
+  if (!r || typeof r !== 'object') throw new Error('recipe must be an object (or a saved recipe\'s name)');
+  const steps = (r.steps || []).map(s => (typeof s === 'string' ? { step: s } : s));
+  for (const s of steps) if (!BATCH_STEPS[s?.step]) throw new Error(`steps must be of ${BATCH_ORDER.join(', ')}`);
+  const shapes = [...new Set(r.shapes || [])];
+  if (shapes.some(x => !SHAPES.includes(x))) throw new Error(`shapes must be of ${SHAPES.join(', ')}`);
+  if (r.preset && !EX_PRESETS[r.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
+  if (r.res && !['720p', '1080p', '1440p', '4K'].includes(r.res)) throw new Error('res must be 720p, 1080p, 1440p or 4K');
+  if (r.fmt && !BATCH_FMTS.includes(r.fmt)) throw new Error(`fmt must be one of ${BATCH_FMTS.join(', ')}`);
+  return { ...r, steps: steps.sort((a, b) => BATCH_ORDER.indexOf(a.step) - BATCH_ORDER.indexOf(b.step)), shapes, fit: ['fit', 'fill', 'blur'].includes(r.fit) ? r.fit : 'fill' };
+}
+function batchProject(m, r) { // the video alone on the main track, on the recipe's first shape (else its own)
+  const own = shapeOf(m.w || 1920, m.h || 1080), shape = r.shapes[0] || (RATIOS[own] ? own : (m.h > m.w ? '9:16' : '16:9'));
+  const p = newProject(shape);
+  p.name = m.name.replace(/\.[^.]+$/, '');
+  if (m.fps > 1 && m.fps <= 120) p.fps = m.fps;
+  p.main = [{ id: hex12(), media: m.id, start: 0, in: 0, out: m.duration, speed: 1, volume: 1, fit: r.fit, scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }];
+  return p;
+}
+async function batchPrep(it, r) { // steps, the project saved, every shape queued -> a promise of the exports' end
+  const m = M.get(it.media), ctx = { m, lufs: null };
+  const stop = () => { if (it.cancel) throw Object.assign(new Error('Cancelled'), { cancelled: true }); };
+  it.state = 'running';
+  try {
+    if (m?.kind !== 'video' || !m.duration) throw new Error('not a video in the library');
+    ctx.p = batchProject(m, r);
+    for (const st of it.steps.filter(x => x.kind === 'step')) {
+      stop();
+      const d = BATCH_STEPS[st.step], why = d.avail();
+      if (why) { st.state = 'skipped'; st.note = why; bDraw(); continue; }
+      st.state = 'running'; bDraw();
+      try { const out = await d.run(ctx, st.opts); if (out?.skip) { st.state = 'skipped'; st.note = out.skip; } else { st.state = 'done'; st.note = out || ''; } }
+      catch (e) { st.state = 'failed'; st.note = e.message; throw new Error(`${d.name}: ${e.message}`); }
+      bDraw();
+    }
+    stop();
+    const p = ctx.p;
+    await api(`/api/projects/${p.id}`, p, 'PUT'); it.project = p.id; it.pname = p.name;
+    const pf = r.preset ? onP(p, () => presetFields(r.preset)) : {}, res = r.res || pf.res || '1080p', fmt = pf.fmt || r.fmt || 'mp4';
+    const lufs = ctx.lufs ?? (pf.loud ? -14 : false);
+    for (const st of it.steps.filter(x => x.kind === 'export')) {
+      stop();
+      st.state = 'running'; st.note = 'laying out'; bDraw();
+      try {
+        const plan = await onPAsync(p, () => shapePlan(st.shape, res, 'fast', `${p.name} ${st.shape.replace(':', 'x')}`, lufs, fmt));
+        Object.assign(plan, { rate: 1, light: false, efps: pf.fps || 0, ...(pf.mbps ? { mbps: pf.mbps } : {}) });
+        st.q = await enqueue(plan, st.shape); st.note = '';
+      } catch (e) { st.state = 'failed'; st.note = e.message; throw new Error(`Export ${st.shape}: ${e.message}`); }
+      if (it.cancel) api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+    }
+    return { end: Promise.allSettled(it.steps.filter(x => x.q).map(x => x.q.done)).then(() => batchEnd(it)) }; // (wrapped: an async function's returned promise would be waited for)
+  } catch (e) {
+    for (const st of it.steps) if (!st.q && (st.state === 'waiting' || st.state === 'running')) { st.state = e.cancelled ? 'cancelled' : 'skipped'; st.note = ''; }
+    for (const st of it.steps) if (st.q?.st.state === 'running') api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+    if (it.steps.some(x => x.q)) await Promise.allSettled(it.steps.filter(x => x.q).map(x => x.q.done)); // what it had queued is over before it reports
+    for (const st of it.steps) if (st.q) bExportState(st);
+    it.state = e.cancelled ? 'cancelled' : 'failed'; it.error = e.cancelled ? '' : e.message; bDraw();
+  }
+}
+function bExportState(st) { const j = st.q?.st || {}; st.state = j.state === 'done' ? 'done' : j.state === 'cancelled' ? 'cancelled' : 'failed'; st.note = j.state === 'done' ? j.file : j.state === 'cancelled' ? '' : j.error || 'the export failed'; }
+function batchEnd(it) { // every export of the video is over: saved, cancelled or failed
+  const xs = it.steps.filter(x => x.kind === 'export');
+  for (const st of xs) bExportState(st);
+  const bad = xs.find(x => x.state === 'failed');
+  it.state = bad ? 'failed' : xs.some(x => x.state === 'cancelled') || it.cancel ? 'cancelled' : 'done';
+  if (bad) it.error = `Export ${bad.shape}: ${bad.note}`;
+  bDraw();
+}
+async function runBatch(ids, recipe) { // -> per video { media, name, project, state, steps, files, error }
+  if (BATCH.running) throw new Error('A batch is already running: cancel it or let it finish');
+  const r = batchRecipe(recipe), ms = ids.map(q => mediaBy(q));
+  if (!ms.length) throw new Error('pick one or more videos');
+  BATCH.running = true; BATCH.recipe = r;
+  BATCH.items = ms.map(m => ({ media: m.id, name: m.name, state: 'waiting', steps: [...r.steps.map(s => ({ kind: 'step', step: s.step, name: BATCH_STEPS[s.step].name, opts: s, state: 'waiting', note: '' })),
+    ...r.shapes.map(x => ({ kind: 'export', shape: x, name: `Export ${x}`, state: 'waiting', note: '' }))] }));
+  busy(1); bDraw();
+  BATCH.tick = setInterval(bDraw, 500); // only while a batch runs: the export rows' progress
+  try {
+    const ends = [];
+    for (const it of BATCH.items) ends.push(it.cancel ? (it.state = 'cancelled', null) : (await batchPrep(it, r))?.end); // one video's steps at a time; its exports render while the next one is prepared
+    await Promise.all(ends);
+    for (const it of BATCH.items) if (it.state === 'cancelled') for (const st of it.steps) if (st.state === 'waiting') st.state = 'cancelled';
+  } finally { BATCH.running = false; clearInterval(BATCH.tick); busy(-1); bDraw(); }
+  const ok = BATCH.items.filter(x => x.state === 'done').length;
+  toast(`Batch: ${ok} of ${BATCH.items.length} video${BATCH.items.length === 1 ? '' : 's'} done`);
+  return BATCH.items.map(it => ({ media: it.media, name: it.name, project: it.project || null, state: it.state, ...(it.error ? { error: it.error } : {}),
+    steps: it.steps.map(st => ({ step: st.kind === 'export' ? `export ${st.shape}` : st.step, state: st.state, ...(st.note ? { note: st.note } : {}) })),
+    files: it.steps.filter(x => x.state === 'done' && x.kind === 'export').map(x => ({ shape: x.shape, file: x.q.st.file, size: `${x.q.w}x${x.q.h}` })) }));
+}
+function batchCancel(i) { // one video (i) or all: steps not reached are skipped, its queued and rendering exports cancelled
+  for (const [k, it] of BATCH.items.entries()) {
+    if (i != null && k !== i) continue;
+    if (['done', 'failed', 'cancelled'].includes(it.state)) continue;
+    it.cancel = true;
+    for (const st of it.steps) if (st.q?.st.state === 'running') api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+  }
+  bDraw();
+}
+const B_SAY = { waiting: 'Waiting', running: 'Working', done: 'Done', failed: 'Failed', cancelled: 'Cancelled', skipped: 'Skipped' };
+function bDraw() { // the Batch window's progress list, while it is open (rows are kept: a click on Cancel is never redrawn away)
+  const box = $('#bRun');
+  if (!box) return;
+  for (const [i, it] of BATCH.items.entries()) {
+    if (!it.el || it.el.parentElement !== box) {
+      it.el = node('div', 'brun', box); const top = node('div', 'qtop', it.el);
+      node('b', '', top, it.name.replace(/\.[^.]+$/, '')); it.sayEl = node('small', '', top);
+      it.cancelEl = node('button', 'ghost', top, 'Cancel'); it.cancelEl.dataset.bcancel = i;
+      it.stepsEl = node('div', 'bsteps', it.el);
+      for (const st of it.steps) st.el = node('span', '', it.stepsEl);
+    }
+    it.el.dataset.state = it.state;
+    it.sayEl.textContent = it.state === 'failed' ? `Failed: ${it.error}` : it.state === 'done' && it.pname ? `Done · project "${it.pname}"` : B_SAY[it.state];
+    it.sayEl.title = it.error || '';
+    it.cancelEl.hidden = ['done', 'failed', 'cancelled'].includes(it.state) || !!it.cancel;
+    for (const st of it.steps) {
+      const j = st.q?.st, live = st.state === 'running' && j?.state === 'running';
+      const say = live ? (j.started ? `${Math.round((j.progress || 0) * 100)}%` : 'in the queue') : st.note;
+      st.el.dataset.state = st.state;
+      st.el.textContent = `${st.name} · ${say || B_SAY[st.state].toLowerCase()}`;
+      st.el.title = st.note || '';
+    }
+  }
+  if ($('#bGo')) { $('#bGo').disabled = BATCH.running; $('#bCancelAll').hidden = !BATCH.running; }
+}
+function bForm() { // the window's recipe
+  return { name: $('#bName').value.trim(), steps: BATCH_ORDER.filter(k => $(`#bs_${k}`).checked && !$(`#bs_${k}`).disabled).map(k => ({ step: k,
+    ...{ template: { id: $('#bTpl').value }, pauses: { min: +$('#bMin').value }, captions: { style: $('#bCap').value, lang: $('#bLang').value }, loudness: { lufs: +$('#bLufs').value }, brand: {} }[k] })),
+    shapes: $$('#bShapes input:checked').map(x => x.value), fit: $('#bFit').value, preset: $('#bPreset').value || undefined, res: $('#bRes').value };
+}
+function bFill(r) {
+  const on = new Map((r.steps || []).map(s => [s.step, s]));
+  for (const k of BATCH_ORDER) if (!$(`#bs_${k}`).disabled) $(`#bs_${k}`).checked = on.has(k);
+  const s = k => on.get(k) || {}, set = (sel, v) => { if (v != null && [...$(sel).options].some(o => o.value === String(v))) $(sel).value = String(v); };
+  set('#bTpl', s('template').id); set('#bMin', s('pauses').min); set('#bCap', s('captions').style); set('#bLang', s('captions').lang); set('#bLufs', s('loudness').lufs);
+  for (const x of $$('#bShapes input')) x.checked = (r.shapes || []).includes(x.value);
+  set('#bFit', r.fit || 'fill'); $('#bPreset').value = r.preset || ''; set('#bRes', r.res || '1080p'); $('#bName').value = r.name || '';
+}
+const bRecipeOpts = sel => { $('#bRecipe').replaceChildren(new Option('New recipe', ''), ...BATCH.recipes.map(x => new Option(x.name, x.id, false, x.id === sel))); $('#bDel').hidden = !$('#bRecipe').value; };
+function importGroups() { // the library's videos by import, newest first: one import = files added within 2 minutes of each other
+  const groups = [];
+  for (const m of [...M.values()].filter(m => m.kind === 'video').sort((a, b) => (b.added || 0) - (a.added || 0))) { const g = groups.at(-1); if (g && (g.at(-1).added || 0) - (m.added || 0) < 120) g.push(m); else groups.push([m]); }
+  return groups;
+}
+async function openBatch() {
+  const groups = importGroups(), vids = groups.flat();
+  [BATCH.recipes, tplCache] = await Promise.all([api('/api/batch/recipes').catch(() => []), api('/api/templates').catch(() => tplCache)]);
+  const when = t => (t ? new Date(t * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Earlier');
+  const opt = (v, n, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(n)}</option>`, brandWhy = BATCH_STEPS.brand.avail();
+  modal(`<h2>Batch edit</h2>
+    <p class="hint">One recipe over many videos. Each video gets its own project, named after it; its exports join the Exports panel and render one after another.</p>
+    <div class="bgrid"><div>
+      <h4 class="bhead"><span>Videos</span><small id="bCount"></small></h4>
+      <div class="blist" id="bList">${groups.map((g, i) => `<div class="bgrp"><span>${when(g[0].added)} · ${g.length} video${g.length === 1 ? '' : 's'}</span><button class="ghost" data-bimport="${i}" title="Tick every video from this import">Select this import</button></div>`
+        + g.map(m => `<label class="bvid"><input type="checkbox" value="${m.id}" data-g="${i}"><span>${esc(m.name)}</span><small>${fmtDur(m.duration)}</small></label>`).join('')).join('') || '<p class="hint">Import some videos first.</p>'}</div>
+    </div><div>
+      <h4>Recipe</h4>
+      <label class="row"><span>Saved recipes</span><select id="bRecipe"></select><button id="bDel" class="ghost" title="Delete this saved recipe">Delete</button></label>
+      <label class="row chk" title="${tplCache.length ? 'Starts each project from a template; its video slots take the video' : 'No templates saved yet (Templates, top bar)'}"><span>Start from a template</span><input type="checkbox" id="bs_template"${tplCache.length ? '' : ' disabled'}></label>
+      <label class="row"><span>Template</span><select id="bTpl"${tplCache.length ? '' : ' disabled'}>${tplCache.map(t => opt(t.id, t.name)).join('') || opt('', 'None saved')}</select></label>
+      <label class="row chk"><span>Trim silences</span><input type="checkbox" id="bs_pauses" checked></label>
+      <label class="row"><span>Longer than</span><select id="bMin">${[0.3, 0.5, 1, 2].map(v => opt(v, `${v} s`, v === 0.5)).join('')}</select></label>
+      <label class="row chk" title="On-device speech to text, one video at a time"><span>Auto captions</span><input type="checkbox" id="bs_captions"></label>
+      <label class="row"><span>Caption style</span><select id="bCap">${Object.keys(CAP_PRESETS).map(k => opt(k, k)).join('')}</select></label>
+      <label class="row"><span>Language</span><select id="bLang">${$$('#capLang option').map(o => opt(o.value, o.textContent, o.value === $('#capLang').value)).join('')}</select></label>
+      <label class="row chk"><span>Loudness</span><input type="checkbox" id="bs_loudness" checked></label>
+      <label class="row"><span>Target</span><select id="bLufs">${opt(-14, '−14 LUFS · social')}${opt(-16, '−16 LUFS · podcast')}${opt(-23, '−23 LUFS · broadcast (EBU)')}</select></label>
+      <label class="row chk" title="${esc(brandWhy || 'Your logo, colours and fonts on every video')}"><span>Brand kit${brandWhy ? ' (not set up)' : ''}</span><input type="checkbox" id="bs_brand"${brandWhy ? ' disabled' : ''}></label>
+      <h4>Export</h4>
+      <div class="row" id="bShapes"><span>Shapes</span><div class="exalso">${SHAPES.map(r => `<label title="${RATIO_NAMES[r]}"><input type="checkbox" value="${r}"${r === '9:16' ? ' checked' : ''}>${r}</label>`).join('')}</div></div>
+      <label class="row"><span>Fit</span><select id="bFit">${opt('fill', 'Fill (crop to the shape)')}${opt('fit', 'Fit (bars)')}${opt('blur', 'Blurred background')}</select></label>
+      <label class="row"><span>Preset</span><select id="bPreset">${opt('', 'None')}${Object.entries(EX_PRESETS).filter(([k]) => k !== 'master').map(([k, x]) => opt(k, x.name)).join('')}</select></label>
+      <label class="row"><span>Resolution</span><select id="bRes">${['720p', '1080p', '1440p', '4K'].map(v => opt(v, v, v === '1080p')).join('')}</select></label>
+      <div class="row"><span>Save as</span><input id="bName" placeholder="Recipe name"><button id="bSave">Save recipe</button></div>
+    </div></div>
+    <div id="bRun"></div><p class="muted" id="bStatus"></p>
+    <div class="actions"><button data-close>Close</button><button id="bCancelAll" hidden>Cancel all</button><button id="bGo" class="primary">Run batch</button></div>`, 'wide');
+  bRecipeOpts('');
+  const count = () => { $('#bCount').textContent = `${$$('#bList input:checked').length} of ${vids.length} selected`; };
+  $('#bList').addEventListener('change', count);
+  $('#bRecipe').addEventListener('change', e => { const r = BATCH.recipes.find(x => x.id === e.target.value); if (r) bFill(r); $('#bDel').hidden = !r; });
+  $('#modal .dialog').addEventListener('click', async e => {
+    const b = e.target.closest('button'), say = msg => { $('#bStatus').textContent = msg; };
+    if (!b) return;
+    if (b.dataset.bimport) { const xs = $$(`#bList input[data-g="${b.dataset.bimport}"]`), all = xs.every(x => x.checked); for (const x of xs) x.checked = !all; count(); }
+    else if (b.dataset.bcancel != null) { b.hidden = true; batchCancel(+b.dataset.bcancel); }
+    else if (b.id === 'bCancelAll') batchCancel();
+    else if (b.id === 'bSave') {
+      const r = bForm();
+      if (!r.name) return say('Give the recipe a name first');
+      try { const s = await api('/api/batch/recipes', { ...r, id: BATCH.recipes.find(x => x.id === $('#bRecipe').value && x.name === r.name)?.id }); BATCH.recipes = await api('/api/batch/recipes'); bRecipeOpts(s.id); say(`Saved "${s.name}"`); }
+      catch (err) { say(err.message); }
+    } else if (b.id === 'bDel') {
+      const id = $('#bRecipe').value, r = BATCH.recipes.find(x => x.id === id);
+      if (!r || !confirm(`Delete the recipe "${r.name}"?`)) return;
+      await api(`/api/batch/recipes/${id}/delete`, {}); BATCH.recipes = BATCH.recipes.filter(x => x.id !== id); bRecipeOpts(''); say(`Deleted "${r.name}"`);
+    } else if (b.id === 'bGo') {
+      const ids = $$('#bList input:checked').map(x => x.value);
+      if (!ids.length) return say('Tick one or more videos first');
+      say('');
+      $('#bRun').replaceChildren();
+      runBatch(ids, bForm()).then(rs => say(`${rs.filter(x => x.state === 'done').length} of ${rs.length} done${rs.some(x => x.state === 'failed') ? `; ${rs.filter(x => x.state === 'failed').length} failed (see each video)` : ''}`)).catch(err => say(err.message));
+    }
+  });
+  const cur = BATCH.running ? BATCH.recipe : BATCH.recipes[0]; // the running batch's recipe, else the first saved one
+  if (cur) { bRecipeOpts(BATCH.recipes.some(x => x.id === cur.id) ? cur.id : ''); bFill(cur); }
+  for (const it of BATCH.items) if (it.el) $('#bRun').append(it.el); // the last run, as it stands (it may still be going)
+  if (BATCH.items.length) { const sel = new Set(BATCH.items.map(x => x.media)); for (const x of $$('#bList input')) x.checked = sel.has(x.value); }
+  count(); bDraw();
+}
+
 // ---------- projects ----------
 function migrate(p) {
   const q = { fps: 30, bg: '#000000', main: [], overlay: [], audio: [], text: [], captions: [], fx: [], markers: [], ...p,
@@ -4835,7 +5449,11 @@ function migrate(p) {
   return q;
 }
 const PREFS = (() => { try { return JSON.parse(store.get('cutroom.prefs')) || {}; } catch { return {}; } })(); // the first-start answers (tour.js): shape, frame rate, export preset, captions
-function newProject(ratio = PREFS.ratio || '9:16') { const [w, h] = RATIOS[ratio] || RATIOS['9:16']; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h, ...(PREFS.fps ? { fps: PREFS.fps } : {}) }); }
+function newProject(ratio = PREFS.ratio || '9:16') {
+  const [w, h] = RATIOS[ratio] || RATIOS['9:16'], cs = opt('capStyle', 'Bold'); // (Settings: name pattern, ripple all, caption style)
+  return migrate({ id: hex12(), name: fillName(opt('newName', 'Untitled {date}')) || 'Untitled', w, h, ...(PREFS.fps ? { fps: PREFS.fps } : {}), ...(opt('ripple', false) ? { rippleAll: true } : {}),
+    ...(cs !== 'Bold' && CAP_PRESETS[cs] ? { capStyle: { y: 0.72, ...TEXT_BASE, ...CAP_PRESETS[cs] } } : {}) });
+}
 function sendPoster(leaving) { // the projects screen's card = the preview as you left it (its shape, its text), up to 480 px on the long side
   if (!P || !LANES.some(L => P[L.key].length)) return;
   const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
@@ -4866,7 +5484,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
   await sendPoster(); // (this one's card shows it as it is now)
   const list = await api('/api/projects').catch(() => []);
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
-  modal(`<div class="phead"><h2>Projects</h2><div class="pnew"><label class="btn" title="A .cutroom made by Package project, on this Mac or another">Open package…<input type="file" id="pkgIn" hidden accept=".cutroom"></label><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div></div>
+  modal(`<div class="phead"><h2>Projects</h2><div class="pnew"><label class="btn" title="A .cutroom made by Package project, on this Mac or another">Open package…<input type="file" id="pkgIn" hidden accept=".cutroom"></label><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === (PREFS.ratio || '9:16') ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div></div>
     <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb">${p.pic ? `<img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
       + `<span class="pacts"><button class="pdel" data-versions="${p.id}" title="Versions" aria-label="Versions of ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg></button><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-pkg="${p.id}" title="Package project…" aria-label="Package ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
     <div class="actions"><button data-close>Close</button></div>`, 'wide');
@@ -4875,7 +5493,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
 async function openVersions(id = P.id) { // CapCut keeps no history: snapshots while you edit, versions you name, each restorable
   if (id === P?.id) await flushSave(); // (the list and a new version start from what's on screen)
   const list = await api(`/api/projects/${id}/versions`).catch(() => []);
-  modal(`<h2>Versions</h2><p class="hint">A snapshot is kept every few minutes while you edit (the last 60), and every version you save. Restoring keeps the current state as a version first.</p>
+  modal(`<h2>Versions</h2><p class="hint">A snapshot is kept every few minutes while you edit (the last ${opt('versionsKeep', 60)}), and every version you save. Restoring keeps the current state as a version first.</p>
     <div class="vsave"><input id="verName" maxlength="80" placeholder="Name (optional)" aria-label="Version name"><button class="primary" data-vsave="${id}">Save version</button></div>
     <div class="vlist">${list.map(v => `<div class="vrow"><span title="${new Date(v.t * 1000).toLocaleString()}"><b>${esc(v.name || 'Snapshot')}</b><small>${ago(v.t)} · ${fmtDur(v.dur || 0)} · ${v.clips} clip${v.clips === 1 ? '' : 's'}</small></span><button data-vrestore="${v.id}" data-pid="${id}">Restore</button>`
       + (v.named ? `<button class="pdel" data-vdel="${v.id}" data-pid="${id}" title="Delete version" aria-label="Delete ${esc(v.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : '<i></i>') + '</div>').join('') || '<p class="hint">None yet: the first snapshot is kept with your next edit.</p>'}</div>
@@ -4961,8 +5579,9 @@ function modal(html, cls = '') { const m = $('#modal'); m.innerHTML = `<div clas
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
 // ---------- timeline interaction ----------
-function magnet(t, self) { // nearest playhead / clip edge within 8 px -> [time, distance]; distance Infinity = no snap
-  let best = t, bd = 8 / S.pps, hit = false;
+function magnet(t, self) { // nearest playhead / clip edge within 8 px (Settings: off, or 4 / 8 / 16 px) -> [time, distance]; distance Infinity = no snap
+  if (!opt('snap', true)) return [t, Infinity];
+  let best = t, bd = opt('snapPx', 8) / S.pps, hit = false;
   const near = p => { if (Math.abs(p - t) < bd) { bd = Math.abs(p - t); best = p; hit = true; } };
   near(0); near(S.t);
   for (const L of LANES) for (const x of P[L.key]) if (x !== self) { near(x.start); near(x.start + tdur(x, L.key)); }
@@ -5281,8 +5900,10 @@ function wire() {
     await api(`/api/ai/clones/${o.value}/trash`, {}); await loadAI(); $('#dubStatus').textContent = 'Voice moved to the Trash.';
   });
   $('#btnTemplates').addEventListener('click', openTemplates);
+  $('#btnBatch').addEventListener('click', () => openBatch().catch(err => toast(err.message)));
   $('#btnVersions').addEventListener('click', () => openVersions().catch(err => toast(err.message)));
   $('#btnHistory').addEventListener('click', openHistory);
+  $('#btnBrandText').addEventListener('click', openBrand);
   $('#heads').addEventListener('click', e => {
     const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
     if (!b) return;
@@ -5343,7 +5964,7 @@ function wire() {
   for (const [id, unit] of [['trDur', 's'], ['lookAmt', '%']]) $(`#${id}`).addEventListener('input', e => { fill(e.target); e.target.nextElementSibling.textContent = fmt(+e.target.value, unit); });
   $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
   $('#btnTrNone').addEventListener('click', () => applyTransition('none'));
-  $('#btnAddText').addEventListener('click', () => { addText('Subtitle'); editText(); });
+  $('#btnAddText').addEventListener('click', () => { addText(TEXT_PRESETS[opt('textPreset')] ? opt('textPreset') : 'Subtitle'); editText(); });
   $('#musicStyles').innerHTML = Object.keys(MUSIC_STYLES).map(k => `<button data-mstyle="${esc(k)}">${esc(k)}</button>`).join('');
   $('#musicStyles').addEventListener('click', e => { const b = e.target.closest('[data-mstyle]'); if (b) { $('#musicPrompt').value = MUSIC_STYLES[b.dataset.mstyle]; for (const x of $('#musicStyles').children) x.classList.toggle('on', x === b); } });
   $('#btnMusic').addEventListener('click', async () => {
@@ -5713,6 +6334,7 @@ function wire() {
     else if (d.fit) change(() => { c.fit = d.fit; });
     else if (d.cappreset) change(() => { P.capStyle = capPreset(d.cappreset); });
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
+    else if (d.brandc) change(() => { c.style ??= {}; c.style.color = d.brandc; });
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
     else if (d.voice) quiet(setVoice(c, d.voice));
@@ -5811,8 +6433,8 @@ function wire() {
     if (!b) return;
     const d = b.dataset;
     if ('close' in d) closeModal();
-    else if (d.new) { setProject(newProject(d.new)); scheduleSave(); closeModal(); }
-    else if ('newsel' in d) { setProject(newProject($('#newRatio').value)); scheduleSave(); closeModal(); }
+    else if (d.new) { newBranded(d.new); closeModal(); }
+    else if ('newsel' in d) { newBranded($('#newRatio').value); closeModal(); }
     else if (d.open) { await openProject(d.open).catch(err => toast(err.message)); closeModal(); }
     else if (b.id === 'exGo') runExport();
     else if (b.id === 'exCancel' && S.exporting?.job) { b.disabled = true; api(`/api/jobs/${S.exporting.job}/cancel`, {}).catch(() => {}); }
@@ -5823,10 +6445,7 @@ function wire() {
     else if (d.vrestore) { await restoreVersion(d.pid, d.vrestore); closeModal(); toast('Version restored. Undo (⌘Z) brings the last state back.'); }
     else if (d.vdel) { if (confirm('Delete this version? It cannot be recovered.')) { await api(`/api/projects/${d.pid}/versions/${d.vdel}/delete`, {}); openVersions(d.pid); } }
     else if (d.dup) { const p = await api(`/api/projects/${d.dup}`); p.id = hex12(); p.name = `${p.name} (copy)`; await api(`/api/projects/${p.id}`, p, 'PUT'); openProjects(); }
-    else if ('savetpl' in d) { await saveTemplate(); openTemplates(); }
-    else if (d.tpl) showTemplate(d.tpl);
-    else if (d.usetpl) useTemplate(d.usetpl);
-    else if (d.deltpl) { if (confirm(plat('Delete this template? It moves to Movies/Cutroom/trash.'))) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+    else if (await tplClick(d, b)) { /* the templates' buttons */ }
     else if (d.pkg) openPackage(d.pkg);
     else if (d.pkgo) { // the dialog may be closed meanwhile: then the result is a toast
       const out = (msg, file) => {
@@ -5844,12 +6463,13 @@ function wire() {
     else if (d.play) open(`/exports/${encodeURIComponent(d.play)}`, '_blank', 'noopener');
   };
   $('#modal').addEventListener('click', e => { modalClick(e).catch(err => toast(err.message)); });
+  tplWire();
   $('#modal').addEventListener('change', e => { if (e.target.id === 'pkgIn' && e.target.files[0]) { const f = e.target.files[0]; closeModal(); openPackageFile(f).catch(err => toast(err.message)); } });
 
   addEventListener('keydown', e => {
     if (!P) return;
     if (!$('#modal').hidden) { // (History: ↑ ↓ step through it)
-      if (KC.for && $('#modal .keysheet')) keyCapture(e);
+      if (KC.for && $('#modal .keysheet, #setKeys')) keyCapture(e);
       else if (e.key === 'Escape') closeModal();
       else if ($('#histList') && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); jump(undo.length + (e.key === 'ArrowUp' ? 1 : -1)); openHistory(); }
       return;
@@ -6245,7 +6865,7 @@ async function loadCaps() { // AI tab > This computer: what it has, and where / 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function cfind(id) { for (const L of LANES) { const c = P[L.key].find(x => x.id === id); if (c) return [c, L.key]; } throw new Error(`no clip with id ${id}`); }
 function mediaBy(q) {
-  const s0 = String(q).toLowerCase(), all = [...M.values()];
+  const s0 = String(q).toLowerCase(), all = [...M.values()].filter(m => !m.slate); // a template preview's slates are not library media
   const stem = x => x.name.replace(/\.[^.]+$/, '').toLowerCase(); // 'podcast-episode' is podcast-episode.mp4, not its 'podcast-episode (voice).m4a'
   const m = M.get(q) || all.find(x => x.name === q) || all.find(x => stem(x) === s0) || all.find(x => x.name.toLowerCase().includes(s0));
   if (!m) throw new Error(`no media "${q}" in the library (call media to list it, or import_media)`);
@@ -6276,6 +6896,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   if (c.duck) o.duck = c.duck;
   if (c.label) o.label = c.label;
+  if (c.brand) o.brand = c.brand; // intro | outro | wm (the watermark): put there by Apply brand
   return o;
 }
 const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease', 'sndLead', 'sndTail',
@@ -6319,7 +6940,7 @@ const REMOTE = {
     return { ...(await REMOTE.status()), markers: P.markers,
       tracks: Object.fromEntries(LANES.map(L => [L.key, L.key === 'captions' ? P.captions.map(c => ({ id: c.id, start: r3(c.start), dur: r3(c.dur), text: c.text })) : P[L.key].map(c => brief(c, L.key))])) };
   },
-  async media() { await loadMedia(); return [...M.values()].map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
+  async media() { await loadMedia(); return [...M.values()].filter(m => !m.slate).map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
   async projects() { return api('/api/projects'); },
   async open_project({ project }) {
     await openProject(await projectId(project));
@@ -6328,15 +6949,46 @@ const REMOTE = {
   async package_project({ project, trim = false }) { // the project (default: the open one) and every file it uses in one .cutroom in the exports folder
     return packageProject(project == null ? P.id : await projectId(project), trim === true, () => {});
   },
+  async list_templates() { // the gallery: starters and yours, each slot's kind and needed length, the texts that can change
+    tplCache = await api('/api/templates');
+    return tplCache.map(t => ({ id: t.id, name: t.name, starter: !!t.starter, shape: shapeOf(t.w, t.h), w: t.w, h: t.h, duration: r3(t.dur || 0), captionsFromSpeech: !!t.recaption,
+      slots: t.slots.map((s, i) => ({ slot: i + 1, kind: s.kind === 'audio' ? 'sound (optional)' : s.kind === 'image' ? 'photo or video' : 'video or photo', need: r3(s.need || 0), label: s.label || undefined })),
+      texts: tplTexts(t).map(e => ({ id: e.id, text: (t.project.text || []).find(c => c.id === e.id)?.text })).filter(x => x.text != null) }));
+  },
+  async use_template({ id, media = [], texts = {}, starts = {}, captions = false }) { // a new project from it: media[i] (id or name) into slot i + 1
+    if (!tplCache.some(t => t.id === id || t.name === id)) tplCache = await api('/api/templates');
+    const t = tplCache.find(x => x.id === id) || tplCache.find(x => x.name.toLowerCase() === String(id).toLowerCase());
+    if (!t) throw new Error(`no template "${id}" (list_templates lists them)`);
+    if (media.length > t.slots.length) throw new Error(`"${t.name}" has ${t.slots.length} slots`);
+    const pick = t.slots.map((s, i) => (media[i] == null || media[i] === '' ? null : mediaBy(media[i]).id)), ids = tplTexts(t).map(e => e.id), vals = {};
+    for (const [k, v] of Object.entries(texts)) vals[ids.includes(k) ? k : ids[+k - 1] ?? (t.project.text || []).find(c => c.text === k)?.id ?? k] = v; // by id, by number (1 = the first), or by its current words
+    const st = Object.fromEntries(Object.entries(starts).map(([k, v]) => [+k - 1, +v]));
+    await useTemplate(t, pick, vals, { starts: st, captions: captions === true });
+    return { ...(await REMOTE.status()), slots: P.main.concat(P.overlay, P.audio).filter(c => pick.includes(c.media)).map(c => brief(c, P.main.includes(c) ? 'main' : P.overlay.includes(c) ? 'overlay' : 'audio')), texts: P.text.filter(c => ids.includes(c.id)).map(c => c.text) };
+  },
   async open_package({ path }) {
     if (!path) throw new Error('path: a .cutroom file on this Mac');
     const r = await packageOpened(await job('/api/package/open', { path: String(path) }, 'Opening the package', () => {}));
     return { ...r, now: await REMOTE.status() };
   },
-  async new_project({ ratio = '9:16', name }) {
+  async new_project({ ratio = PREFS.ratio || '9:16', name, branded }) { // branded: default = the brand's "New projects start branded"
     if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
-    setProject(newProject(ratio)); if (name) P.name = name; scheduleSave(); renderAll();
-    return REMOTE.status();
+    newBranded(ratio, branded ?? undefined); if (name) P.name = name; scheduleSave(); renderAll();
+    return { ...(await REMOTE.status()), branded: !!P.brand };
+  },
+  async brand({ action = 'get', set } = {}) { // the library's brand kit: get | set (merged; null clears a field) | apply (to the open project, one undo step)
+    if (action === 'get') { await loadBrand(); return { ...G.brand, applied: !!P.brand, watermark: !!wmOf() }; }
+    if (action === 'set') {
+      if (!set || typeof set !== 'object') throw new Error('set: the fields to change, e.g. {colors: ["#f0b23e"], head: {font}, logo, intro, outro, cap, wm: {on, corner, size, opacity}, auto}');
+      const s = structuredClone(set);
+      for (const k of ['logo', 'intro', 'outro']) if (s[k] != null) s[k] = mediaBy(s[k]).id; // ids or names
+      if (s.cap != null && !CAP_PRESETS[s.cap]) throw new Error(`cap must be one of ${Object.keys(CAP_PRESETS).filter(n => n !== 'Brand').join(', ')}`);
+      const n = structuredClone(G.brand);
+      merge(n, s);
+      return brandSave(n);
+    }
+    if (action === 'apply') { brandApply(); const t = await REMOTE.timeline(); return { main: t.tracks.main, overlay: t.tracks.overlay }; }
+    throw new Error('action must be get, set or apply');
   },
   async set_project({ set = {} }) {
     change(() => {
@@ -6671,10 +7323,21 @@ const REMOTE = {
     return { shown: MTR.on, listening: !!MTR.node && actx?.state === 'running', momentary: r1(MTR.M), shortTerm: r1(MTR.S), integrated: r1(MTR.I),
       peak: { left: r1(MTR.hold[0]), right: r1(MTR.hold[1]) }, clipped: MTR.clip, target: MTR.target };
   },
+  async batch({ media, recipe, save } = {}) { // the Batch window's run: one project per video, every export in the queue -> per video results
+    if (media == null && recipe == null) return { recipes: await api('/api/batch/recipes'), shapes: SHAPES, presets: Object.keys(EX_PRESETS), lastImport: (importGroups()[0] || []).map(m => m.name),
+      steps: Object.fromEntries(BATCH_ORDER.map(k => [k, BATCH_STEPS[k].avail() ? `${BATCH_STEPS[k].name} (unavailable: ${BATCH_STEPS[k].avail()})` : BATCH_STEPS[k].name])) };
+    let r = recipe;
+    if (typeof r === 'string') { const q = r.toLowerCase(); r = (await api('/api/batch/recipes')).find(x => x.id === recipe || x.name.toLowerCase() === q); if (!r) throw new Error(`no saved recipe "${recipe}" (batch with no arguments lists them)`); }
+    batchRecipe(r);
+    if (save) await api('/api/batch/recipes', { ...r, id: undefined, name: String(save) });
+    const ids = media === 'last import' ? (importGroups()[0] || []).map(m => m.id) : Array.isArray(media) ? media : [media];
+    const videos = await runBatch(ids, r);
+    return { done: videos.filter(x => x.state === 'done').length, failed: videos.filter(x => x.state === 'failed').length, cancelled: videos.filter(x => x.state === 'cancelled').length, videos };
+  },
   async export(a) {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
     const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
-    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [] } = a;
+    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [], watermark = false } = a;
     if (!Array.isArray(also) || also.some(r => !SHAPES.includes(r))) throw new Error(`also must be a list of shapes: ${SHAPES.join(', ')}`);
     if (fps && !EXPORT_FPS.includes(+fps)) throw new Error(`fps must be one of ${EXPORT_FPS.join(', ')} (or 0 = the project's)`);
     const sz = exportSizes().find(x => x[0] === resolution);
@@ -6685,14 +7348,15 @@ const REMOTE = {
     if (HAND_FMT.includes(format)) { const r = await handOff(name, format); return { file: r.file, path: `${plat('~/Movies/Cutroom/exports/')}${r.file}`, format, notes: r.notes, ...(r.text ? { text: r.text } : {}) }; }
     S.exporting = true;
     try {
-      const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS
+      if (watermark && !M.get(G.brand.logo)) throw new Error('watermark: the brand has no logo (brand action set, logo)');
+      const plan = await withWm(watermark, () => buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format)); // true = -14 LUFS
       plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
       const own = shapeOf(sz[1], sz[2]), rest = [...new Set(also)].filter(r => r !== own), q = await enqueue(plan, own), more = [];
-      for (const r of rest) more.push(await enqueue({ ...(await shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format)), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
+      for (const r of rest) more.push(await enqueue({ ...(await withWm(watermark, () => shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format))), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
       const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `${plat('~/Movies/Cutroom/exports/')}${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
-        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${plat('~/Movies/Cutroom/exports/')}${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
+      return { file: jb.file, path: `${jb.dir || plat('~/Movies/Cutroom/exports')}/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
+        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${j.dir || plat('~/Movies/Cutroom/exports')}/${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
     } finally { S.exporting = false; }
   },
 };
@@ -6707,12 +7371,13 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     api('/api/remote/ack', { id: m.id }).catch(() => {});
     let ok = true, result;
     remoteLog = [];
-    const p0 = P, u0 = undo.length;
     busy(1);
-    try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
-    catch (e) { ok = false; result = e.message; }
-    finally { busy(-1); }
-    if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    await act(async () => { // (never on a template preview's borrowed project)
+      const p0 = P, u0 = undo.length;
+      try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
+      catch (e) { ok = false; result = e.message; }
+      if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    }).finally(() => busy(-1));
     const log = remoteLog;
     remoteLog = null;
     await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});
@@ -6733,7 +7398,7 @@ async function pilotCtx() { // the project in brief for the planner: clip ids, c
 }
 async function pilotRun(steps, say = () => {}) { // one step = one undo step; a step that fails is reported, the others still run
   const done = [], failed = [];
-  for (const [i, s] of steps.entries()) {
+  for (const [i, s] of steps.entries()) await act(async () => {
     say(i, 'run');
     const before = JSON.stringify(P), u0 = undo.length, log0 = remoteLog;
     remoteLog = [];
@@ -6744,13 +7409,14 @@ async function pilotRun(steps, say = () => {}) { // one step = one undo step; a 
       if (JSON.stringify(P) !== before) { undo.length = u0; step(before); syncHistory(); }
       s.log = remoteLog; remoteLog = log0;
     }
-    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); continue; }
+    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); return; }
     done.push(s); say(i, 'ok', s.log.at(-1));
-  }
+  });
   return { done, failed };
 }
 function pilotOpen() {
   if (!P || !$('#modal').hidden) return;
+  if (!opt('ai.llm', true)) return toast('The local language model is turned off in Settings (AI and this computer)');
   modal(`<h3>Ask Cutroom</h3><input id="pilotQ" type="text" autocomplete="off" spellcheck="true" placeholder="cut the silences · add captions in Bold · export for TikTok" aria-label="What should Cutroom do?">
     <p class="hint">Planned by the local model on this Mac, then run step by step. Every step is one undo (⌘Z).</p>
     <ol id="pilotSteps" class="pilot"></ol><p id="pilotMsg" class="muted" role="status"></p>
@@ -6845,12 +7511,14 @@ Object.assign(REMOTE, {
     await loadMedia();
     G.luts = await api('/api/luts').catch(() => []);
     await loadFonts();
+    await loadBrand();
     api('/api/fonts/system').then(l => { G.sysFonts = l; }).catch(() => {});
     const list = await api('/api/projects'), last = store.get('cutroom.last');
     const id = (list.find(p => p.id === last) || list[0])?.id;
     if (id) await openProject(id);
     else { setProject(newProject()); scheduleSave(); }
     tourMaybe(); // tour.js: once, on a first start (an empty library)
+    if (id && !opt('openLast', true) && !$('#tour')) openProjects(); // (Settings: not straight into the last project: pick one)
     loadVoices();
     loadAI();
     const ping = await api('/api/ping');

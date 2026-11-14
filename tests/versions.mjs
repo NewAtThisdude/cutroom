@@ -71,7 +71,8 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.goto(B + '/', { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
   const ev = (f, a) => page.evaluate(f, a);
-  const pid = await ev(async s => { const p = await api(`/api/projects/${s}`); p.id = hex12(); p.name = 'Versions test'; await api(`/api/projects/${p.id}`, p, 'PUT'); await openProject(p.id); return p.id; }, src.id);
+  const pid = await ev(async s => { const p = await api(`/api/projects/${s}`); p.id = hex12(); p.name = 'Versions test'; await api(`/api/projects/${p.id}`, p, 'PUT'); await openProject(p.id); scheduleSave(); await flushSave(); return p.id; }, src.id);
+  // (saved once as the editor saves it: a source written raw by another test, or by an older Cutroom, is migrated and packed on its first save, so restore could never match it)
   await page.click('#btnVersions');
   await page.waitForSelector('.vrow');
   check(`${rm}: Versions lists the snapshot of a new project`, await page.locator('.vrow').count() >= 1 && /just now/.test(await page.locator('.vrow small').first().textContent()));

@@ -6,6 +6,7 @@
 <title>Cutroom</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f0b23e'/%3E%3Cpath d='M9 8v16M15 8v16M21 8l4 8-4 8' stroke='%2317130a' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="settings.css">
 </head>
 <body>
 <header class="top">
@@ -13,12 +14,14 @@
   <div class="brand"><i><svg class="i" viewBox="0 0 24 24"><path d="M6 5v14M11 5v14M15 5l5 7-5 7"/></svg></i>Cutroom</div>
   <button id="btnProjects" class="ghost" title="Projects"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Projects</button>
   <button id="btnTemplates" class="ghost" title="Templates"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Templates</button>
+  <button id="btnBatch" class="ghost" title="Batch edit: one recipe over many videos, a project and exports for each"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="3" width="13" height="10" rx="1.5"/><path d="M5 7v8.5A1.5 1.5 0 0 0 6.5 17H17"/><path d="M2 11v6.5A1.5 1.5 0 0 0 3.5 19H13"/></svg>Batch</button>
   <button id="btnVersions" class="ghost" title="Versions: snapshots of this project, restore any"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg>Versions</button>
   <button id="btnHistory" class="ghost" title="History (H): every edit step, go back to any"><svg class="i" viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10"/><path d="M6.5 3.5 4 6l2.5 2.5"/></svg>History</button>
   </div>
   <input id="projName" class="name" spellcheck="false" aria-label="Project name">
   <div class="tright">
   <span id="saveState" class="muted"></span>
+  <button id="btnSettings" class="ghost sq" title="Settings (⌘,)" aria-label="Settings"><svg class="i" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
   <button id="btnAsk" class="ghost" title="Ask Cutroom (⌘K): say what to do, the local model plans it"><svg class="i" viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M13 18h6"/></svg>Ask<kbd>⌘K</kbd></button>
   <button id="btnExport" class="primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Export</button>
   </div>
@@ -82,6 +85,7 @@
     </section>
     <section id="tab-text" class="pane">
       <button id="btnAddText" class="primary wide first"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add text</button>
+      <button id="btnBrandText" class="wide ghostline" title="Logo, colours, fonts, caption style, intro, outro and watermark: the brand's styles come first below">Brand kit…</button>
       <div class="phead"><b>Templates</b><span>several layers at once</span></div>
       <div id="tplList" class="ttiles tpl"></div>
       <div class="phead"><b>Styles</b><span>click to add at the playhead</span></div>
@@ -307,7 +311,9 @@
 <script src="grade.js"></script>
 <script src="draw.js"></script>
 <script src="fxpack.js"></script>
+<datalist id="brandColours"></datalist>
 <script src="app.js"></script>
 <script src="tour.js"></script>
+<script src="settings.js"></script>
 </body>
 </html>

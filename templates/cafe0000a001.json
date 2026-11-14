@@ -1,0 +1,237 @@
+{
+ "id": "cafe0000a001",
+ "v": 2,
+ "name": "Vlog intro",
+ "w": 1080,
+ "h": 1920,
+ "fps": 30,
+ "dur": 6.4,
+ "slots": [
+  {
+   "kind": "video",
+   "name": "tall1.mp4",
+   "label": "Opening shot",
+   "w": 540,
+   "h": 960,
+   "need": 2.4
+  },
+  {
+   "kind": "video",
+   "name": "tall2.mp4",
+   "label": "A detail",
+   "w": 540,
+   "h": 960,
+   "need": 1.9
+  },
+  {
+   "kind": "video",
+   "name": "tall3.mp4",
+   "label": "You, on camera",
+   "w": 540,
+   "h": 960,
+   "need": 2.6
+  }
+ ],
+ "texts": [
+  {
+   "id": "87a81bfbee54"
+  },
+  {
+   "id": "3224ec980bc7"
+  }
+ ],
+ "recaption": false,
+ "project": {
+  "fps": 30,
+  "bg": "#000000",
+  "main": [
+   {
+    "id": "1551c6f06570",
+    "media": "slot:0",
+    "start": 0,
+    "in": 0,
+    "out": 2.4,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "kbin",
+     "amt": 1
+    },
+    "tr": {
+     "type": "whipleft",
+     "d": 0.3
+    }
+   },
+   {
+    "id": "a26e86b80202",
+    "media": "slot:1",
+    "start": 2.1,
+    "in": 0,
+    "out": 1.9,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "tr": {
+     "type": "zoomin",
+     "d": 0.3
+    }
+   },
+   {
+    "id": "4c2022a78252",
+    "media": "slot:2",
+    "start": 3.7,
+    "in": 0,
+    "out": 2.6,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "drift",
+     "amt": 1
+    }
+   }
+  ],
+  "overlay": [],
+  "audio": [
+   {
+    "id": "347f5fc08646",
+    "media": "sfx:whoosh",
+    "start": 1.7666666666666666,
+    "in": 0,
+    "out": 0.9,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "0c5ca464761f",
+    "media": "sfx:swish",
+    "start": 3.85,
+    "in": 0,
+    "out": 0.4,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   }
+  ],
+  "text": [
+   {
+    "id": "87a81bfbee54",
+    "start": 0.2,
+    "dur": 2.6,
+    "text": "My week in Lisbon",
+    "x": 0.5,
+    "y": 0.4,
+    "style": {
+     "font": "Bebas Neue",
+     "weight": 400,
+     "size": 150,
+     "color": "#ffd400",
+     "shadow": true,
+     "anim": "pop",
+     "out": "fade"
+    }
+   },
+   {
+    "id": "3224ec980bc7",
+    "start": 4.1,
+    "dur": 2.3,
+    "text": "Day 1",
+    "x": 0.5,
+    "y": 0.78,
+    "style": {
+     "font": "Montserrat",
+     "weight": 800,
+     "size": 58,
+     "box": true,
+     "anim": "slide",
+     "out": "fade"
+    }
+   }
+  ],
+  "captions": [],
+  "fx": [],
+  "markers": [],
+  "name": "Vlog intro",
+  "w": 1080,
+  "h": 1920,
+  "tracks": {},
+  "mute": {
+   "main": false,
+   "overlay": false,
+   "audio": false,
+   "text": false,
+   "captions": false,
+   "fx": false
+  },
+  "capStyle": {
+   "font": "Montserrat",
+   "weight": 900,
+   "size": 78,
+   "color": "#ffffff",
+   "stroke": "#000000",
+   "strokeW": 7,
+   "hl": "#ffd400",
+   "upper": true,
+   "pop": true,
+   "y": 0.72
+  },
+  "v": 2
+ }
+}
