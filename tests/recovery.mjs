@@ -101,6 +101,29 @@ try {
   await page.waitForFunction(() => /Export done|Export failed/.test($('#toast').textContent) || false, null, { timeout: 240000, polling: 300 });
   check('3: Retry renders it', /Export done/.test(await page.textContent('#toast')) && fs.readdirSync(`${lib}/exports`).filter(n => n.endsWith('.mp4')).length >= 1 && fs.readdirSync(`${lib}/exports`).length > before, await page.textContent('#toast'));
   check('3: and nothing is left to report', (await api('/api/interrupted')).length === 0 && fs.readdirSync(`${lib}/jobs`).length === 0);
+  // 3b. the same with a text layer + a vignette (Path and bytes in the cleaned plan): the retry must still render
+  const crash = async (nm, js) => {
+    const pl = await page.evaluate(js, mid); const { job: jb } = await api('/api/export', pl);
+    for (let i = 0; i < 50 && !fs.existsSync(`${lib}/jobs/${jb}.json`); i++) await sleep(100);
+    await sleep(1500);
+    const sp2 = realPid(); let k2 = []; try { k2 = execFileSync('pgrep', ['-P', String(sp2)]).toString().split(/\s+/).filter(Boolean); } catch {}
+    await killServer(); for (const k of k2) try { process.kill(+k, 'SIGKILL'); } catch {}
+    await startServer(); return jb;
+  };
+  const run = async jb => { const r = await api(`/api/interrupted/${jb}/retry`, {}); let j = {}; for (let i = 0; i < 480 && (!r.job || (j = await api(`/api/jobs/${r.job}`)).state === 'running'); i++) await sleep(500); return j; };
+  const jt = await crash('text', async id => { setProject(newProject('16:9')); addMedia(id, 'main'); packMain(); addText('Text', { text: 'Hello' }); return buildPlan(1920, 1080, 'best', 'text retry'); });
+  const dir = r => fs.readdirSync(`${lib}/cache/layers`).filter(n => n.includes('.'));
+  const had = fs.existsSync(`${lib}/cache/layers`) ? dir() : [];
+  check('3b: an interrupted export with text is listed and its layer dir is kept', (await api('/api/interrupted')).some(x => x.job === jt), JSON.stringify(had));
+  const jr = await run(jt);
+  check('3b: Retry renders the text export', jr.state === 'done', JSON.stringify(jr));
+  const jv = await crash('vig', async id => { setProject(newProject('16:9')); addMedia(id, 'main'); packMain(); P.main[0].adj = { ...(P.main[0].adj || {}), vig: 0.5 }; addText('Text', { text: 'Hi' }); return buildPlan(1920, 1080, 'best', 'vig retry'); });
+  const jr2 = await run(jv);
+  check('3b: Retry renders text + vignette', jr2.state === 'done', JSON.stringify(jr2));
+  const jd = await crash('dismiss', async id => { setProject(newProject('16:9')); addMedia(id, 'main'); packMain(); addText('Text', { text: 'Bye' }); return buildPlan(1920, 1080, 'best', 'dismiss me'); });
+  const before2 = fs.existsSync(`${lib}/cache/layers`) ? dir().length : 0;
+  await api(`/api/interrupted/${jd}/dismiss`, {});
+  check('3b: Dismiss removes the record and its claimed layer dir', !fs.existsSync(`${lib}/jobs/${jd}.json`) && (fs.existsSync(`${lib}/cache/layers`) ? dir().length : 0) < before2 + (before2 ? 0 : 1) && (before2 === 0 || dir().length === before2 - 1), `${before2} -> ${fs.existsSync(`${lib}/cache/layers`) ? dir().length : 0}`);
   await br.close().catch(() => {});
 } finally {
   for (const p of [server, chrome]) try { p?.kill('SIGKILL'); } catch {}

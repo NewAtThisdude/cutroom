@@ -3925,7 +3925,7 @@ def png_size(b):
     return None
 
 
-def clean_plan(p):
+def clean_plan(p, claimed=False):  # claimed: a retried interrupted export, whose text layer dir was already claimed (<id>.<8 hex>) by the first run
     """Validate the client's render plan; media ids resolve to files server-side (the client never sends paths)."""
     W, H = int(fnum(p['w'], 16, 8192)), int(fnum(p['h'], 16, 8192))
     if W * H > 4096 * 2304 and p.get('format') not in SOUND and 'refused' in (t := tier('export8k')):  # an 8K export of two 4K clips peaked at 5.8 GB (HEVC) to 9.2 GB (x264)
@@ -4038,12 +4038,15 @@ def clean_plan(p):
     out['audio'] = [clip(c, True) for c in p.get('audio', [])]
     t = p.get('text') or {}
     if t.get('layer'):  # uploaded before the plan (POST /api/layer/<id>/<i>): PNGs of one crop box, laid at its corner
-        if not re.fullmatch(r'[0-9a-f]{12}', str(t['layer'])) or len(t.get('box') or []) != 4:
+        if not re.fullmatch(r'[0-9a-f]{12}(\.[0-9a-f]{8})?' if claimed else r'[0-9a-f]{12}', str(t['layer'])) or len(t.get('box') or []) != 4:
             raise ValueError('bad text layer')
         out['box'] = [int(fnum(v, 0, 8192)) for v in t['box']]
-        d = CACHE / 'layers' / f"{t['layer']}.{uuid.uuid4().hex[:8]}"
+        d = CACHE / 'layers' / (t['layer'] if claimed and '.' in t['layer'] else f"{t['layer']}.{uuid.uuid4().hex[:8]}")
         try:  # claimed: from here on the files are this plan's alone (a second plan naming the same upload, a late upload or the cleanup of another export can't touch what it renders)
-            (CACHE / 'layers' / t['layer']).rename(d)
+            if d.name != t['layer']:
+                (CACHE / 'layers' / t['layer']).rename(d)
+            elif not d.is_dir():
+                raise OSError
         except OSError:
             raise ValueError('text layer upload missing (or used by another export already)') from None
         os.utime(d)  # main() leaves day-young layers alone (another server on this library may be exporting this one)
@@ -5540,12 +5543,13 @@ def loud_gain(p, td, job):
 JOBDIR = HOME / 'jobs'
 
 
-def start_export(p):
+def start_export(raw, claimed=False):
+    p = clean_plan(raw, claimed)
     job = uuid.uuid4().hex[:12]
     JOBS[job] = {'state': 'running', 'progress': 0.0}
     try:
         JOBDIR.mkdir(exist_ok=True)
-        (JOBDIR / f'.{job}.tmp').write_text(json.dumps({'pid': os.getpid(), 't': time.time(), 'plan': p}, default=str))
+        (JOBDIR / f'.{job}.tmp').write_text(json.dumps({'pid': os.getpid(), 't': time.time(), 'plan': {**raw, 'text': {**raw['text'], 'layer': p['layer_dir'].name}} if p.get('layer_dir') else raw}))
         retry((JOBDIR / f'.{job}.tmp').replace, JOBDIR / f'{job}.json')
     except OSError as e:  # a bonus: the export runs anyway
         print(f'export {job} not recorded: {e}', file=sys.stderr, flush=True)
@@ -6805,12 +6809,19 @@ class App(BaseHTTPRequestHandler):
                         HEAVY['cv'].notify_all()
                 return self.reply({'ok': True})
             if u.path == '/api/export':
-                return self.reply({'job': start_export(clean_plan(body))})
+                return self.reply({'job': start_export(body)})
             if m := re.fullmatch(r'/api/interrupted/([a-f0-9]{12})/(retry|dismiss)', u.path):
                 f = JOBDIR / f'{m[1]}.json'
                 rec = json.loads(f.read_text())  # (gone: FileNotFoundError, a 404)
-                f.unlink()
-                return self.reply({'ok': True} if m[2] == 'dismiss' else {'job': start_export(rec['plan'])})
+                if m[2] == 'dismiss':  # (the claimed text layer goes with it)
+                    f.unlink()
+                    if l := (rec['plan'].get('text') or {}).get('layer'):
+                        if re.fullmatch(r'[0-9a-f]{12}\.[0-9a-f]{8}', str(l)):
+                            shutil.rmtree(CACHE / 'layers' / l, ignore_errors=True)
+                    return self.reply({'ok': True})
+                job = start_export(rec['plan'], True)  # (a failed plan raises before the record goes: it can be retried again)
+                f.unlink(missing_ok=True)
+                return self.reply({'job': job})
             if u.path == '/api/matte':
                 return self.reply({'job': run_job(matte, body['media'], *([fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6)] if body.get('t1') else []))})
             if u.path == '/api/denoise':
