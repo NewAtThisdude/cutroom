@@ -194,7 +194,8 @@ export const seedFixtures = options => seedLibrary({ ...options, baseUrl: option
 // in out/fixtures, imported through the API when the library lacks them, and found BY NAME (ids differ per library):
 //   podcast  podcast-episode-v1.mp4: ~1 min of one voice, sentences apart, over a quiet noise bed
 //   fox      fox-walk-v1.mp4 and its clean plate fox-plate-v1.mp4: an orange "fox" with dark legs walking right over a still
-//            textured ground, 1280x720 30 fps, 120 frames (tests/fox_truth.py takes the two files: their difference is the fox)
+//            textured ground, 1280x720 30 fps, 120 frames (tests/fox_truth.py takes the two files: their difference is the fox);
+//            PHOTOS/fox-walk.mp4 + PHOTOS/talk-with-music.mp4 (the real shot and its plate) instead when they are there
 //   drive    night-drive-{1,2,3}-v1.mp4 (~1 min of talk each, long pauses) and the project "Midnight Highway Journey" that uses a
 //            short span of each; "Cutroom demo (fixture)": the podcast on the main track (edit by script)
 const AI_TALK = [
@@ -257,7 +258,9 @@ export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
   };
   const files = {};
   if (names.includes('podcast') || names.includes('drive')) files.podcast = aiSpeechMedia('podcast-episode-v1.mp4', AI_TALK, 900, 'testsrc2=s=1280x720:r=30');
-  if (names.includes('fox')) { const f = foxFiles(); files.fox = f.walk; files.plate = f.plate; }
+  // the real fox clip and its clean plate (Marat's footage, where SAM 2 is unsure of a loose box) when PHOTOS has them, else the stand-in
+  const real = ['fox-walk.mp4', 'talk-with-music.mp4'].map(f => process.env.PHOTOS && path.join(process.env.PHOTOS, f));
+  if (names.includes('fox')) { const f = real.every(x => x && fs.existsSync(x)) ? { walk: real[0], plate: real[1] } : foxFiles(); files.fox = f.walk; files.plate = f.plate; }
   if (names.includes('drive')) AI_DRIVE.forEach((lines, i) => { files[`drive${i}`] = aiSpeechMedia(`night-drive-${i + 1}-v1.mp4`, lines, 2500, 'testsrc2=s=640x360:r=30'); });
   let lib = await api('/api/media');
   const out = {};
@@ -273,7 +276,7 @@ export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
     await pause(250);
   }
   for (const k of Object.keys(out)) if (out[k]) out[k] = lib.find(m => m.id === out[k].id);
-  const res = { podcast: out.podcast, fox: out.fox, plate: out.plate };
+  const res = { podcast: out.podcast, fox: out.fox, plate: out.plate, realFox: files.fox === real[0] };
   if (names.includes('drive')) {
     res.drive = [0, 1, 2].map(i => out[`drive${i}`]);
     if (res.drive.every(Boolean) && res.podcast) {

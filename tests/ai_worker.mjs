@@ -18,7 +18,8 @@ const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_H
 if (!HOME || /4610$/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port>');
 const PY = path.join(import.meta.dirname, '..', 'ai', '.venv', ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'])), TRUTH = path.join(import.meta.dirname, 'fox_truth.py');
 const BOX = { x: 0.21, y: 0.62, w: 0.16, h: 0.26 }; // the fox at 1 s, ~2 % margin
-const LOOSE = { x: 0.18, y: 0.596, w: 0.2258, h: 0.3167 }; // 5 % margin round it: SAM 2's box-only candidates hold no fox
+const LOOSE = { x: 0.18, y: 0.596, w: 0.2258, h: 0.3167 }; // 5 % margin round it: SAM 2's box-only candidates hold no fox (the real shot)
+const EMPTY = { x: 0.6, y: 0.3, w: 0.15, h: 0.25 }; // bare ground in the stand-in: nothing for SAM 2 to be sure of
 const want = process.argv.slice(2), run = n => !want.length || want.includes(n);
 const F = await aiFootage([...(run('api') || run('remove') ? ['fox'] : []), ...(run('ui') || run('captions') || run('pauses') ? ['drive'] : [])]);
 if (F.drive && !F.driveProject) { console.log('SKIP ai_worker: no speech service on this computer for the night-drive footage'); await exitAfterFetch(0); }
@@ -52,8 +53,9 @@ if (run('api') || run('remove')) {
   const [loose] = await ask({ box: LOOSE });
   fs.writeFileSync(path.join(tmp, 'loose.png'), Buffer.from(loose.mask, 'base64'));
   const tl = truth('mask', foxFile(F.fox), foxFile(F.plate), '1', path.join(tmp, 'loose.png'));
-  check('a 5 %-margin box: the centre point still finds the fox, and it is flagged unsure', tl.fox >= 0.95 && loose.unsure,
+  if (F.realFox) check('a 5 %-margin box: the centre point still finds the fox, and it is flagged unsure', tl.fox >= 0.95 && loose.unsure,
     `covers ${(tl.fox * 100).toFixed(1)} % of the fox (+${tl.extra_px} px), unsure ${loose.unsure}, scores ${loose.scores}`);
+  else console.log(`SKIP a 5 %-margin box flagged unsure: needs the real fox-walk.mp4 + talk-with-music.mp4 in PHOTOS (SAM 2 is sure of the stand-in's flat fox: covers ${(tl.fox * 100).toFixed(1)} %, scores ${loose.scores})`);
 }
 if (run('remove')) {
   const { job } = await api('/api/remove_object', { media: FOX, t: 1, t0: 0, t1: 4, box: BOX, quality: 'best', mode: 'remove', seed: outline.mask });
@@ -111,7 +113,7 @@ if (run('ui') || run('captions') || run('pauses')) {
         const unsure = { flag: S.maskPreview?.unsure, text: $('#confirmBar span').textContent };
         endPreview('cancel');
         return { sure, ms, changed, unsure, hidden: $('#confirmBar').hidden };
-      }, [BOX, LOOSE]);
+      }, [BOX, F.realFox ? LOOSE : EMPTY]);
       check(`${rm}: a sure outline asks to remove the pink part`, /Remove the pink part/.test(ui.sure), ui.sure);
       check(`${rm}: a refine click on the frame redraws the outline < 300 ms`, ui.changed && ui.ms < 300, `${ui.ms.toFixed(0)} ms`);
       check(`${rm}: a box SAM 2 is unsure of says so`, ui.unsure.flag && /Not sure what you boxed/.test(ui.unsure.text), JSON.stringify(ui.unsure));
