@@ -13,7 +13,8 @@ const DEFAULT_TESTS = [
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
   'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync',
-  'audio_tools', 'voiceover',
+  'audio_tools', 'voiceover', 'audio_packs', 'fx_pack', 'ramp_play',
+  'export_hdr_alpha', 'hdr_iphone',
 ];
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -96,16 +97,22 @@ if (options.list) {
 if (process.platform === 'darwin' && !process.env.CUTROOM_GPU_LOCK_HELD) {
   const shared = '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/gpu.lock';
   const lock = process.env.CUTROOM_GPU_LOCK || (fs.existsSync(path.dirname(shared)) ? shared : path.join(os.tmpdir(), 'cutroom-gpu.lock'));
-  console.log(`Waiting for shared GPU lock: ${lock}`);
-  const locked = spawn('lockf', ['-k', lock, process.execPath, fileURLToPath(import.meta.url), ...args], {
-    cwd: ROOT, env: { ...process.env, CUTROOM_GPU_LOCK_HELD: '1' }, stdio: 'inherit',
-  });
-  locked.once('error', error => { console.error(`FAIL GPU lock: ${error.message}`); process.exitCode = 1; });
-  locked.once('exit', (code, signal) => { process.exitCode = code ?? (signal ? 130 : 1); });
-  process.on('SIGINT', () => locked.kill('SIGINT'));
-  process.on('SIGTERM', () => locked.kill('SIGTERM'));
-  await new Promise(resolve => { locked.once('close', resolve); locked.once('error', resolve); });
-  process.exit(process.exitCode || 0);
+  // Two lanes (Marat, 2026-11-14): two runs may share this Mac at once; each takes whichever lock is free.
+  const lanes = [lock, lock]; // one lane: two at once overheated the Mac (2026-11-14)
+  console.log(`Waiting for a shared GPU lane: ${lanes.join(' or ')}`);
+  let locked = null;
+  process.on('SIGINT', () => locked?.kill('SIGINT'));
+  process.on('SIGTERM', () => locked?.kill('SIGTERM'));
+  for (let i = 0; ; i++) {
+    locked = spawn('lockf', ['-t', '0', '-k', lanes[i % 2], process.execPath, fileURLToPath(import.meta.url), ...args], {
+      cwd: ROOT, env: { ...process.env, CUTROOM_GPU_LOCK_HELD: '1' }, stdio: ['inherit', 'inherit', 'pipe'],
+    });
+    locked.stderr.on('data', d => { if (!/already locked/.test(d)) process.stderr.write(d); });
+    const r = await new Promise(resolve => { locked.once('error', error => resolve({ error })); locked.once('close', (code, signal) => resolve({ code, signal })); });
+    if (r.error) { console.error(`FAIL GPU lock: ${r.error.message}`); process.exit(1); }
+    if (r.code !== 75) process.exit(r.code ?? (r.signal ? 130 : 1)); // 75 = that lane is busy (lockf -t 0)
+    if (i % 2) await new Promise(resolve => setTimeout(resolve, 3000));
+  }
 }
 
 // A Windows Job Object owns the complete process tree, including browser processes and
