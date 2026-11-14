@@ -134,7 +134,8 @@ const TRANSITIONS = [['none', 'None'], ['fade', 'Dissolve'], ['fadeblack', 'Dip 
   ['blurfade', 'Blur dissolve'], ['whipup', 'Whip up'], ['whipdown', 'Whip down'], ...Object.entries(TRX).map(([k, d]) => [k, d.n])]; // TRX: web/fxpack.js
 const ANIMS = [['none', 'None'], ['pop', 'Pop in'], ['fade', 'Fade in'], ['slide', 'Slide up'], ['zoom', 'Zoom in'], ['drop', 'Drop in'], ['type', 'Typewriter']];
 const OUTS = [['none', 'None'], ['pop', 'Pop out'], ['fade', 'Fade out'], ['slide', 'Slide out'], ['zoom', 'Zoom out'], ['type', 'Backspace']];
-const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float']];
+const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken Burns out'], ['drift', 'Drift'], ['pulse', 'Pulse'], ['shake', 'Shake'], ['sway', 'Sway'], ['float', 'Float'],
+  ['breathe', 'Breathe'], ['orbit', 'Orbit'], ['bounce', 'Bounce'], ['jitter', 'Jitter']];
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle']];
 const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'],
   ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
@@ -163,7 +164,8 @@ const KF_PROPS = ['scale', 'x', 'y', 'opacity', 'rot'];
 const MASKS = [['none', 'None'], ['circle', 'Circle'], ['rect', 'Rectangle'], ['linear', 'Linear'], ['mirror', 'Mirror'], ['heart', 'Heart'], ['star', 'Star'], ['polygon', 'Polygon'], ['pen', 'Pen']]; // + 'ai' (SAM 2 subject), made by a job
 const BLENDS = [['normal', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'], ['darken', 'Darken'], ['lighten', 'Lighten'], // canvas modes; the export runs the same formulas
   ['color-dodge', 'Color dodge'], ['color-burn', 'Color burn'], ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'], ['exclusion', 'Exclusion']];
-const CLIP_ANIMS = [['none', 'None'], ['fade', 'Fade'], ['grow', 'Zoom in'], ['shrink', 'Zoom out'], ['left', 'Slide left'], ['right', 'Slide right'], ['up', 'Slide up'], ['down', 'Slide down'], ['rotate', 'Rotate'], ['spin', 'Spin']];
+const CLIP_ANIMS = [['none', 'None'], ['fade', 'Fade'], ['grow', 'Zoom in'], ['shrink', 'Zoom out'], ['left', 'Slide left'], ['right', 'Slide right'], ['up', 'Slide up'], ['down', 'Slide down'], ['rotate', 'Rotate'], ['spin', 'Spin'],
+  ['bounce', 'Bounce'], ['elastic', 'Elastic'], ['whip', 'Whip'], ['roll', 'Roll'], ['tilt', 'Tilt'], ['snap', 'Snap']];
 const WEIGHTS = { Montserrat: [400, 500, 600, 700, 800, 900], Poppins: [800, 900], Anton: [400], 'Bebas Neue': [400], 'Helvetica Neue': [300, 400, 500, 700], 'Arial Black': [900], Impact: [400],
   Futura: [500, 700], 'Avenir Next': [400, 500, 600, 700, 800], Georgia: [400, 700], 'Marker Felt': [400], 'American Typewriter': [400, 700], Menlo: [400, 700] }; // weights each font really has
 const WEIGHT_NAMES = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold', 900: 'Black' };
@@ -231,15 +233,21 @@ function animSpans(c, d) { // in/out animation lengths, capped so the two never 
 function clipAnim(c, lt, d, pr) { // CapCut-style clip in/out animation on top of the keyframed props (preview live; export gets it baked by bakeKf)
   if (!c.anim) return pr;
   const { ind, outd } = animSpans(c, d), r = { ...pr };
-  const one = (type, q, dir) => { // q: 1 = fully away .. 0 = at rest; dir: -1 arriving, +1 leaving (names say which way it moves)
+  const one = (type, q, dir, p) => { // q: eased distance from rest; p: uneased visibility, 0 = away .. 1 = settled
     if (type === 'fade') r.opacity *= 1 - q;
     else if (type === 'grow' || type === 'shrink') { r.scale *= 1 + (type === 'grow' ? dir : -dir) * 0.6 * q; r.opacity *= 1 - q; }
     else if (type === 'rotate') { r.rot += dir * 90 * q; r.scale *= 1 - 0.5 * q; r.opacity *= 1 - q; }
     else if (type === 'spin') { r.rot += dir * 360 * q; r.scale *= 1 - 0.7 * q; r.opacity *= 1 - q; }
+    else if (type === 'bounce') { r.y += dir * 0.65 * (1 - bounceEase(p)); r.opacity *= Math.min(1, p * 4); }
+    else if (type === 'elastic') { r.scale *= 0.3 + 0.7 * elasticEase(p); r.opacity *= Math.min(1, p * 4); }
+    else if (type === 'whip') { r.x += dir * 1.2 * q; r.rot += dir * 12 * q; r.opacity *= p; }
+    else if (type === 'roll') { r.x += dir * q; r.rot += dir * 180 * q; r.opacity *= p; }
+    else if (type === 'tilt') { r.rot += dir * 28 * q; r.y += dir * 0.2 * q; r.scale *= 1 - 0.25 * q; r.opacity *= p; }
+    else if (type === 'snap') { r.scale *= 0.2 + 0.8 * easeOutBack(p); r.rot += dir * 8 * (1 - p) ** 2; r.opacity *= Math.min(1, p * 3); }
     else { const [vx, vy] = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] }[type] || [0, 0]; r.x += vx * q * dir; r.y += vy * q * dir; }
   };
-  if (ind > 0 && lt < ind) one(c.anim.in, (1 - clamp(lt / ind, 0, 1)) ** 3, -1); // ease out on arrival
-  if (outd > 0 && lt > d - outd) one(c.anim.out, clamp((lt - (d - outd)) / outd, 0, 1) ** 3, 1); // ease in on the way out
+  if (ind > 0 && lt < ind) { const p = clamp(lt / ind, 0, 1); one(c.anim.in, (1 - p) ** 3, -1, p); }
+  if (outd > 0 && lt > d - outd) { const p = clamp((d - lt) / outd, 0, 1); one(c.anim.out, (1 - p) ** 3, 1, p); }
   const L = c.anim.loop, s = c.anim.amt ?? 1, u = d > 0 ? clamp(lt / d, 0, 1) : 0; // whole-clip motion
   if (L === 'kbin') r.scale *= 1 + 0.15 * s * u;
   else if (L === 'kbout') r.scale *= 1 + 0.15 * s * (1 - u);
@@ -248,6 +256,10 @@ function clipAnim(c, lt, d, pr) { // CapCut-style clip in/out animation on top o
   else if (L === 'shake') { r.x += 0.012 * s * wob(lt * 11); r.y += 0.012 * s * wob(lt * 13 + 5); }
   else if (L === 'sway') r.rot += 3 * s * Math.sin((2 * Math.PI * lt) / 2);
   else if (L === 'float') r.y += 0.015 * s * Math.sin((2 * Math.PI * lt) / 2.5);
+  else if (L === 'breathe') r.scale *= 1 + 0.035 * s * (1 - Math.cos(Math.PI * lt));
+  else if (L === 'orbit') { r.x += 0.025 * s * Math.cos(Math.PI * lt); r.y += 0.025 * s * Math.sin(Math.PI * lt); }
+  else if (L === 'bounce') r.y -= 0.04 * s * Math.sin(Math.PI * lt) ** 2;
+  else if (L === 'jitter') { r.x += 0.008 * s * Math.sin(12 * Math.PI * lt); r.rot += 0.8 * s * Math.sin(20 * Math.PI * lt); }
   return r;
 }
 function bakeKf(c, lane) { // export keyframes: the user's, plus in/out animations sampled at every frame (exact at frame times)

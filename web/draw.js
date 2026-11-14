@@ -16,6 +16,13 @@ const WORD_T = 0.22; // a caption word's own entrance (pop, bounce, rise...), se
 const SPK_C = ['#ffd400', '#4fd8ff', '#ff6fa8', '#7dff8b', '#c79bff', '#ff9f43']; // speaker colours, in order
 const capLive = st => !!(st.kar || st.wanim || st.reveal === 'char' || st.emoji); // a caption style that changes every frame (the export draws each one)
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+const elasticEase = t => t <= 0 ? 0 : t >= 1 ? 1 : 1 - 2 ** (-10 * t) * Math.cos(t * Math.PI * 6);
+function bounceEase(t) {
+  if (t < 1 / 2.75) return 7.5625 * t * t;
+  if (t < 2 / 2.75) return 7.5625 * (t - 1.5 / 2.75) ** 2 + 0.75;
+  if (t < 2.5 / 2.75) return 7.5625 * (t - 2.25 / 2.75) ** 2 + 0.9375;
+  return t >= 1 ? 1 : 7.5625 * (t - 2.625 / 2.75) ** 2 + 0.984375;
+}
 const ss3 = x => x * x * (3 - 2 * x);
 // keyframe easing: ease = true is the smoothstep (ease-in-out, = cubic-bezier(1/3, 0, 2/3, 1)); bz = [x1, y1, x2, y2] makes it that cubic-bezier instead
 const EASES = { linear: null, in: [0.42, 0, 1, 1], out: [0, 0, 0.58, 1], inout: [1 / 3, 0, 2 / 3, 1], back: [0.34, 1.56, 0.64, 1] }; // back: past the end, then settles
