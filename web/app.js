@@ -1099,7 +1099,8 @@ function trPanel(c) {
   return `<h3>Transition</h3><p class="muted">${esc(M.get(c.media)?.name || 'clip')} → ${esc(M.get(next?.media)?.name || 'clip')}</p>
     <div class="presets small">${TRANSITIONS.map(([v, n]) => `<button data-tr="${v}" class="${cur === v ? 'on' : ''}">${n}</button>`).join('')}</div>
     ${c.tr ? `${slider('c.tr.d', 'Duration', c.tr.d, 0.1, 2, 0.05, 's')}<p class="hint">Using ${(trF(i) / P.fps).toFixed(2)} s here (at most half the shorter clip). The clips overlap, so the video gets that much shorter.</p>` : ''}
-    <div class="actions"><button data-act="trall">Apply to all cuts</button>${c.tr ? '<button data-act="delete">Remove</button>' : ''}</div>`;
+    <div class="actions"><button data-act="trall">Apply to all cuts</button>${c.tr ? '<button data-act="delete">Remove</button>' : ''}</div>
+    ${TRX[cur] ? `<div class="actions"><button data-act="fxsave" title="A small .cutroom-fx file you can share">Save as file</button>${FXSHARED.has(cur) ? '<button data-act="fxrm" title="Take it out of the library (cuts using it become a dissolve)">Remove from library</button>' : ''}</div>` : ''}`;
 }
 function kfRow(c, lane) {
   const lt = S.t - c.start, on = c.kf?.find(f => Math.abs(f.t - lt) < 0.5 / P.fps), inside = lt >= 0 && lt <= tdur(c, lane);
@@ -1431,6 +1432,36 @@ function curvePts(e, pts, pos, r) { // a curve editor's points ([x, y] fractions
   const set = ev => { const [x, y] = pos(ev); pts[i] = [ends ? pts[i][0] : +clamp(x, lo, hi).toFixed(3), +(1 - y).toFixed(3)]; };
   set.i = i;
   return set;
+}
+// ---------- shared effect / transition files (.cutroom-fx): the server checks them (fx_check), fxpack.js compiles them ----------
+async function loadFx() { // the library's imported ones next to the built-ins
+  for (const k of [...FXSHARED.keys()]) fxUnregister(k);
+  for (const d of await api('/api/fx').catch(() => [])) { try { fxRegister(d); } catch (e) { console.warn(`effect file "${d.name}":`, e.message); } }
+}
+async function importFxText(text) {
+  const d = await api('/api/fx', { text });
+  try { fxRegister(d); } catch (e) { await api(`/api/fx/${d.id}/trash`, {}); throw new Error(`"${d.name}" could not be compiled: ${e.message}`); }
+  if (S) { renderEffects(); renderTransitions(); }
+  toast(`${d.kind === 'effect' ? 'Effect' : 'Transition'} "${d.name}" imported${d.author ? ` (by ${d.author})` : ''}`);
+  return d;
+}
+async function importFxFile(f) {
+  if (f.size > 65536) throw new Error('that file is too big for an effect file (64 KB at most)');
+  return importFxText(await f.text());
+}
+function fxSave(kind, key) {
+  const a = document.createElement('a'), name = (FXSHARED.get(key)?.name || (kind === 'effect' ? FX[key] : TRX[key])?.n || 'effect').replace(/[^\w -]+/g, '').trim() || 'effect';
+  a.href = URL.createObjectURL(new Blob([fxFile(kind, key)], { type: 'application/json' }));
+  a.download = `${name}.cutroom-fx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1e4);
+}
+async function fxRemove(key) {
+  if (!FXSHARED.has(key)) throw new Error('only imported effects can be removed');
+  await api(`/api/fx/${key.slice(2)}/trash`, {});
+  fxUnregister(key);
+  S.sel = null; renderAll(); renderEffects(); renderTransitions();
+  toast('Removed from the library');
 }
 async function importLutFile(f) { // a .cube from this Mac into Movies/Cutroom/luts (checked here first)
   const text = await f.text();
@@ -2460,7 +2491,7 @@ async function maskSeq(c, m) { // keyframed mask: one PNG per frame where it cha
 }
 
 // ---------- video effects (the Effects track; the FX table is in draw.js) ----------
-const FX_CATS = [['all', 'All'], ['camera', 'Camera'], ['light', 'Light'], ['retro', 'Retro'], ['distort', 'Distort'], ['party', 'Party'], ['frame', 'Frame']];
+const FX_CATS = [['all', 'All'], ['camera', 'Camera'], ['light', 'Light'], ['retro', 'Retro'], ['distort', 'Distort'], ['party', 'Party'], ['frame', 'Frame'], ['shared', 'Imported']];
 function beatTimes() { const out = []; for (const a of P.audio) for (const b of a.beats || []) if (b >= a.in && b <= a.out) out.push(a.start + (b - a.in) / a.speed); return out.sort((x, y) => x - y); }
 function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect beats), else 120 BPM from the effect's start
   const t = f.start + lt, b = f.gallery ? [] : beatTimes().filter(x => x <= t + 1e-6 && x >= f.start - 0.6);
@@ -2574,7 +2605,8 @@ function fxPanel(c) {
   return `<h3>${esc(d.n)}</h3><p class="muted">Effects track · ${mss(c.dur)} · changes everything under it (text stays on top)</p>
     ${slider('c.amt', 'Strength', c.amt ?? 1, 0.1, 2, 0.01, '%')}${pick('c.fx', 'Effect', c.fx, Object.entries(FX).map(([k, v]) => [k, v.n]))}
     <p class="hint">Drag its edges on the timeline to change how long it lasts. More effects are in the library on the left.</p>
-    <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>`;
+    <div class="actions"><button data-act="split">Split</button><button data-act="dup">Duplicate</button><button data-act="delete">Delete</button></div>
+    ${EXF[c.fx] ? `<div class="actions"><button data-act="fxsave" title="A small .cutroom-fx file you can share">Save as file</button>${FXSHARED.has(c.fx) ? '<button data-act="fxrm" title="Take it out of the library (clips using it stop showing it)">Remove from library</button>' : ''}</div>` : ''}`;
 }
 function adjustPanel(c) { // an adjustment layer: the clip colour controls that bake into one table (no vignette, blur or keying)
   const a = c.adj || {};
@@ -2724,7 +2756,7 @@ function capTile(x, n, lt) {
   try { drawText(x, CAP_SAMPLE, 'captions', lt, TILE_W / 1920, false); } finally { P = P0; }
 }
 function renderEffects() {
-  $('#fxCats').innerHTML = FX_CATS.map(([k, n]) => `<button data-fxcat="${k}" class="${G.fxCat === k ? 'on' : ''}">${n}</button>`).join('');
+  $('#fxCats').innerHTML = FX_CATS.filter(([k]) => k !== 'shared' || Object.values(FX).some(d => d.cat === 'shared')).map(([k, n]) => `<button data-fxcat="${k}" class="${G.fxCat === k ? 'on' : ''}">${n}</button>`).join('');
   $('#fxGrid').innerHTML = Object.entries(FX).filter(([, d]) => G.fxCat === 'all' || d.cat === G.fxCat)
     .map(([k, d]) => `<button class="tile" data-fx="${k}" title="Add ${esc(d.n)} at the playhead">${tileCv()}<span>${esc(d.n)}</span></button>`).join('');
   drawTiles(true);
@@ -4659,7 +4691,8 @@ function importFiles(files) {
   for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
   for (const f of [...files].filter(x => /\.cutroom$/i.test(x.name))) openPackageFile(f).catch(e => toast(e.message));
   for (const f of [...files].filter(x => /\.cutroom-template$/i.test(x.name))) importTemplateFile(f).then(() => { if ($('.tplcard')) openTemplates(); }, e => toast(e.message));
-  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom|cutroom-template)$/i.test(x.name));
+  for (const f of [...files].filter(x => /\.cutroom-fx$/i.test(x.name))) importFxFile(f).catch(e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom|cutroom-template|cutroom-fx)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -5920,6 +5953,7 @@ function wire() {
   $('#zoom').addEventListener('input', e => setZoom(8 * 2 ** +e.target.value));
   $('#fileInput').addEventListener('click', () => window.webkit?.messageHandlers?.pick?.postMessage('library')); // the app clones picked media by path
   $('#fileInput').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
+  $('#fxFileIn').addEventListener('change', e => { importFiles(e.target.files); e.target.value = ''; });
   const photosApp = window.webkit?.messageHandlers?.photos; // only the Mac app has the system Photos picker
   $('#btnPhotos').hidden = !photosApp;
   $('#btnPhotos').addEventListener('click', () => photosApp?.postMessage('pick'));
@@ -5939,6 +5973,7 @@ function wire() {
     if (d.fx) addEffect(d.fx);
     else if (b.id === 'btnAdjust') addEffect('adjust');
     else if (d.fxcat) { G.fxCat = d.fxcat; renderEffects(); }
+    else if ('fximport' in d) $('#fxFileIn').click();
     else if (d.trset) applyTransition(d.trset);
     else if (d.lookset) applyLook(d.lookset);
     else if (d.stcat) { G.stCat = d.stcat; renderStickers(); }
@@ -6341,6 +6376,8 @@ function wire() {
     else if (d.act === 'reset') change(() => { Object.assign(c, { speed: 1, volume: 1, fit: S.sel.lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, flip: false, denoise: false, rot: 0, ease: false }); delete c.kf; delete c.look; delete c.crop; delete c.key; delete c.mask; delete c.mkf; delete c.grade; delete c.lkf; delete c.blend; delete c.vkf; delete c.duck; delete c.anim; delete c.pitch; delete c.au; delete c.studio; });
     else if (d.act === 'clearcaps') change(() => { P.captions = []; S.sel = null; });
     else if (d.tr) change(() => { if (d.tr === 'none') delete c.tr; else c.tr = { type: d.tr, d: c.tr?.d ?? 0.5 }; });
+    else if (d.act === 'fxsave') fxSave(S.sel.lane === 'fx' ? 'effect' : 'transition', S.sel.lane === 'fx' ? c.fx : c.tr?.type);
+    else if (d.act === 'fxrm') fxRemove(S.sel.lane === 'fx' ? c.fx : c.tr?.type).catch(err => toast(err.message));
     else if (d.act === 'trall') change(() => { for (const x of P.main.slice(0, -1)) { if (c.tr) x.tr = { ...c.tr }; else delete x.tr; } });
     else if (d.look) change(() => { if (d.look === 'none') delete c.look; else c.look = { name: d.look, amount: c.look?.amount ?? 1 }; });
     else if (['kfadd', 'kfdel', 'kfclear'].includes(d.act)) kfOp(c, S.sel.lane, d.act.slice(2));
@@ -7265,6 +7302,7 @@ const REMOTE = {
   async hook_titles({ add }) { const { hooks } = await hookTitles(); return add ? { hooks, added: addHook(hooks[0]) } : { hooks }; },
   async import_subtitles({ srt, name }) { if (!srt) throw new Error('srt (the file\'s text, SRT or WebVTT) is required'); return { captions: importSubs(srt, name || 'subtitles'), first: P.captions.slice(0, 5).map(c => [r3(c.start), c.text]) }; },
   async relink_media({ missing, media }) { const to = mediaBy(media).id; if (!LANES.some(L => P[L.key].some(c => c.media === missing))) throw new Error(`no clip uses media ${missing}`); return { relinked: relink(missing, to) }; },
+  async import_fx({ text }) { if (!text) throw new Error('text (the .cutroom-fx file\'s contents) is required'); const d = await importFxText(text); return { id: `u_${d.id}`, name: d.name, kind: d.kind }; },
   async import_lut({ cube, name }) { if (!cube) throw new Error('cube (the .cube file\'s text) is required'); parseCube(cube); const L = await api('/api/luts', { name: name || 'LUT', text: cube }); G.luts = await api('/api/luts'); return L; },
   async multicam({ media }) { if (!Array.isArray(media)) throw new Error('media: 2 to 6 videos (ids or names), the first gives the sound'); return makeMulticam(media); },
   async multicam_cut({ angle, at }) { const c = mcCut(Math.round(angle) - 1, at ?? S.t); if (!c) throw new Error(remoteLog?.at(-1) || 'no cut made'); return brief(c, 'main'); },
@@ -7507,6 +7545,7 @@ Object.assign(REMOTE, {
   try {
     await loadMedia();
     G.luts = await api('/api/luts').catch(() => []);
+    await loadFx();
     await loadFonts();
     await loadBrand();
     api('/api/fonts/system').then(l => { G.sysFonts = l; }).catch(() => {});

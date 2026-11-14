@@ -10,7 +10,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, contextlib, gzip, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, gzip, hashlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from fractions import Fraction
 import xml.etree.ElementTree as ET
@@ -3557,7 +3557,7 @@ def scenes(mid, thr=0.3):
 # ---------- command bar (⌘K): plain language -> the MCP's own commands, planned by the local model ----------
 _MCP = []
 PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'list_templates', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
-             'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'relink_media', 'compound_clip',
+             'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'import_fx', 'relink_media', 'compound_clip',
              'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media', 'open_package'}  # need a box, a path or a picture to look at, or only read
 PILOT_ENUM = {('auto_captions', 'style'): 'captionPresets', ('add_text', 'preset'): 'textPresets', ('set_transition', 'type'): 'transitions', ('add_effect', 'type'): 'effects',
               ('add_sound_effect', 'name'): 'sounds', ('export', 'preset'): 'exportPresets', ('export', 'format'): 'formats', ('clip_tool', 'ramp'): 'speedRamps',
@@ -4126,6 +4126,93 @@ def xexpr(s):
     if depth:
         raise ValueError('unbalanced expression')
     return s
+
+
+# ---- shared effect / transition files (.cutroom-fx): untrusted JSON, so every expression is checked token by token against the
+# names the page's compiler (web/fxpack.js) knows; the export then checks the compiled geq again (xexpr). Nothing is ever evaluated here.
+FX_MATH = {'if', 'ifnot', 'lt', 'lte', 'gt', 'gte', 'eq', 'between', 'min', 'max', 'abs', 'floor', 'ceil', 'trunc', 'sqrt', 'exp', 'log', 'sin', 'cos', 'tan',
+           'atan', 'atan2', 'mod', 'pow', 'clip', 'hypot'}
+assert FX_MATH <= XNAMES
+FX_MACROS = {'sst', 'ss', 'mix', 'in01', 'hash', 'K'}  # fxpack.js: XMAC's functions and K(r, g, b)
+FX_KINDS = {  # kind -> (names that may be called, names that stand alone)
+    'transition': (FX_MATH | FX_MACROS | {'a', 'b', 'ar', 'ag', 'ab', 'br', 'bg', 'bb', 'la'}, {'X', 'Y', 'W', 'H', 'PI', 'p', 'u', 'v', 'asp', 'cx', 'cy', 'BG'}),
+    'effect': (FX_MATH | FX_MACROS | {'s', 'sr', 'sg', 'sb', 'ls'}, {'X', 'Y', 'W', 'H', 'PI', 'n', 'u', 'v', 'asp', 'cx', 'cy', 'amt'})}
+FX_MAX_FILE, FX_MAX_EXPR, FX_MAX_DEFS = 64 << 10, 4000, 40
+
+
+def fx_expr(s, kind, names, what):
+    """One source expression of a .cutroom-fx: only numbers, + - * / ( ) , and names that exist for this kind (or are the file's own)."""
+    if not isinstance(s, str) or not s.strip() or len(s) > FX_MAX_EXPR:
+        raise ValueError(f'{what}: expression missing or longer than {FX_MAX_EXPR} characters')
+    calls, stand = FX_KINDS[kind]
+    toks, pos, depth = [], 0, 0
+    for m in re.finditer(r'\s*(?:(\d+\.?\d*|\.\d+)|([A-Za-z_]\w*)|([-+*/(),]))|\s*(\S)', s, re.A):
+        if m[4]:
+            raise ValueError(f'{what}: character {m[4]!r} is not allowed (numbers, names, + - * / ( ) , only)')
+        toks.append(m[0].strip())
+    for i, t in enumerate(toks):
+        depth += (t == '(') - (t == ')')
+        if depth < 0:
+            raise ValueError(f'{what}: unbalanced parentheses')
+        if t[0].isalpha() or t[0] == '_':
+            if toks[i + 1:i + 2] == ['(']:
+                if t not in calls:
+                    raise ValueError(f'{what}: {t}() is not a function an effect file may use')
+            elif t not in stand and t not in names:
+                raise ValueError(f'{what}: unknown name {t!r}')
+    if depth:
+        raise ValueError(f'{what}: unbalanced parentheses')
+
+
+def fx_check(text):
+    """Text of a .cutroom-fx -> its canonical form (with 'id', a hash of what it computes), or ValueError with a plain reason."""
+    if len(text.encode('utf-8', 'replace')) > FX_MAX_FILE:
+        raise ValueError(f'the file is larger than {FX_MAX_FILE >> 10} KB')
+    try:
+        d = json.loads(text)
+    except ValueError:
+        raise ValueError('not a Cutroom effect file (not JSON)') from None
+    if not isinstance(d, dict) or d.get('cutroom_fx') != 1:
+        raise ValueError('not a Cutroom effect file, or a newer format than this Cutroom reads')
+    kind, ex = d.get('kind'), d.get('expressions')
+    if kind not in FX_KINDS or not isinstance(ex, dict) or not isinstance(ex.get('defs', {}), dict):
+        raise ValueError('the file needs a kind (effect or transition) and expressions {defs, e}')
+    name = re.sub(r'[\x00-\x1f\x7f]', '', str(d.get('name') or '')).strip()[:40]
+    if not name:
+        raise ValueError('the file has no name')
+    par = d.get('parameters') or {}
+    if not isinstance(par, dict) or len(par) > 16:
+        raise ValueError('parameters: at most 16 named numbers')
+    reserved = FX_MATH | FX_MACROS | FX_KINDS[kind][0] | FX_KINDS[kind][1]
+    for k, v in par.items():
+        if not re.fullmatch(r'[A-Za-z_]\w{0,23}', k, re.A) or k in reserved:
+            raise ValueError(f'parameter {k!r}: a plain name that is not already one of the built-in names')
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not abs(v) <= 1e6:
+            raise ValueError(f'parameter {k!r} must be a number')
+    defs = ex.get('defs') or {}
+    if len(defs) > FX_MAX_DEFS:
+        raise ValueError(f'at most {FX_MAX_DEFS} named parts in expressions.defs')
+    for k in defs:
+        if not re.fullmatch(r'[A-Za-z_]\w{0,23}', k, re.A) or k in reserved or k in par:
+            raise ValueError(f'expressions.defs: {k!r} is not a usable name (no brackets, not a built-in name, not a parameter)')
+    names = set(defs) | set(par)
+    for k, v in defs.items():
+        fx_expr(v, kind, names, f'expressions.defs.{k}')
+    fx_expr(ex.get('e'), kind, names, 'expressions.e')
+    out = {'cutroom_fx': 1, 'name': name, 'kind': kind, 'author': re.sub(r'[\x00-\x1f\x7f]', '', str(d.get('author') or ''))[:60],
+           'parameters': {k: float(v) for k, v in par.items()}, 'expressions': {'defs': dict(defs), 'e': ex['e']}}
+    out['id'] = hashlib.sha1(json.dumps([kind, out['parameters'], out['expressions']], sort_keys=True).encode()).hexdigest()[:12]
+    return out
+
+
+def fx_list():
+    out = []
+    for f in sorted((HOME / 'fx').glob('*.cutroom-fx')):
+        try:
+            out.append(fx_check(f.read_text()))
+        except (ValueError, OSError):
+            pass  # a file edited by hand into something unsafe is skipped, never served
+    return sorted(out, key=lambda x: (x['kind'], x['name'].lower()))
 
 
 MSL_HEAD = '''#include <metal_stdlib>
@@ -6469,6 +6556,10 @@ class App(BaseHTTPRequestHandler):
                 return self.file(hall_ir())
             if m := re.fullmatch(r'/sfx/([a-z]+)\.wav', path):
                 return self.file(sfx_file(m[1]))
+            if path == '/api/fx':  # shared effect / transition files imported into the library
+                return self.reply(fx_list())
+            if m := re.fullmatch(r'/api/fx/([a-f0-9]{12})\.cutroom-fx', path):
+                return self.file(HOME / 'fx' / f'{m[1]}.cutroom-fx')
             if path == '/api/luts':  # imported .cube LUTs
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'luts').glob('*.json')), key=lambda x: x.get('name', '').lower()))
             if m := re.fullmatch(r'/luts/([a-f0-9]{12})\.cube', path):
@@ -6581,6 +6672,17 @@ class App(BaseHTTPRequestHandler):
                 finally:
                     if p.get('layer_dir'):
                         shutil.rmtree(p['layer_dir'], ignore_errors=True)
+            if u.path == '/api/fx':  # import a .cutroom-fx (its text): validated, then kept in <library>/fx for every project
+                d = fx_check(str(body.get('text', '')))
+                (HOME / 'fx').mkdir(parents=True, exist_ok=True)
+                (HOME / 'fx' / f"{d['id']}.cutroom-fx").write_text(json.dumps({k: v for k, v in d.items() if k != 'id'}, indent=1))
+                return self.reply(d)
+            if m := re.fullmatch(r'/api/fx/([a-f0-9]{12})/trash', u.path):  # reversible: to trash/fx
+                (HOME / 'trash' / 'fx').mkdir(parents=True, exist_ok=True)
+                f = HOME / 'fx' / f'{m[1]}.cutroom-fx'
+                if f.exists():
+                    retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'fx' / f.name)))
+                return self.reply({'ok': True})
             if u.path == '/api/luts':  # import a .cube LUT (its text): kept in Movies/Cutroom/luts for every project
                 text, name = str(body.get('text', '')), str(body.get('name') or 'LUT')
                 if len(text) > 64 << 20 or not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):

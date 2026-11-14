@@ -67,6 +67,7 @@ function xlet(body, L, name) { // -> ['ld', i] for a body worth keeping (room pe
 }
 function xexpand(node, mac, L, env = {}, depth = 0) { // -> a tree of built-ins and lets (L.list)
   if (depth > 40) throw new Error('macros nest too deep');
+  if (++L.n > 50000) throw new Error('expression too complex'); // (an imported file's defs can double at every step)
   const k = node[0], rec = x => xexpand(x, mac, L, env, depth);
   if (k === 'n') return node;
   if (k === 'v') {
@@ -118,7 +119,7 @@ function xff(node, c, fetch, V) { // the ffmpeg expression for channel c; fetch(
   if (f === 'floor') return `floor(${A[0]}+0.0001)`;
   return `${f}(${A.join(',')})`;
 }
-const xtree = (src, defs) => { const L = { own: new Set(Object.keys(defs).filter(k => !k.includes('('))), idx: new Map(), list: [] }, e = xexpand(xparse(src), xmacros(defs), L); return { e, lets: L.list }; };
+const xtree = (src, defs) => { const L = { own: new Set(Object.keys(defs).filter(k => !k.includes('('))), idx: new Map(), list: [], n: 0 }, e = xexpand(xparse(src), xmacros(defs), L); return { e, lets: L.list }; };
 const xffc = (T, c, fetch, V) => (T.lets.length ? `(${T.lets.map((b, i) => `st(${i},${xff(b, c, fetch, V)})`).join(';')};${xff(T.e, c, fetch, V)})` : xff(T.e, c, fetch, V)); // one channel for ffmpeg, lets first
 const RGB3 = 'rgb', chOf = (f, c) => RGB3[f.length > 1 ? RGB3.indexOf(f[1]) : c]; // a fetch's channel: its own letter, else this channel
 
@@ -295,3 +296,32 @@ const LOOK_LUT = { // name -> { n: label, f: rgb -> rgb }: each a short chain of
 const LOOK_NAMES = () => [...Object.keys(LOOKS), ...Object.keys(LOOK_LUT)];
 const lookLabel = n => (n === 'none' ? 'None' : LOOK_LUT[n]?.n || n[0].toUpperCase() + n.slice(1));
 const lookLutOf = c => { const L = LOOK_LUT[c?.look?.name]; return L ? [L.f, clamp(c.look.amount ?? 1, 0, 1)] : null; }; // gradeFn's first step
+
+// ---------- shared files (.cutroom-fx): an effect or transition as one small JSON file; the server checks every name (fx_check) and the
+// compile below is the second check. Registered ones live in EXF / TRX / FX beside the built-ins under the key 'u_<id>' ----------
+const FXSHARED = new Map(); // key -> the file's checked document
+function fxRegister(d) {
+  const key = `u_${d.id}`, defs = { ...Object.fromEntries(Object.entries(d.parameters || {}).map(([k, v]) => [k, xnum(v)])), ...d.expressions.defs }, e = d.expressions.e;
+  if (d.kind === 'effect') {
+    EXF[key] = { defs, e };
+    try { fxGeq(key, 1); xout(exTree(key, 1)); } catch (err) { delete EXF[key]; throw err; }
+    FX[key] = { n: d.name, cat: 'shared', d: 3, px: (W, H, u, lt, f) => [xop(key, f, lt)] };
+  } else {
+    TRX[key] = { n: d.name, defs, e };
+    try { trxFF(key, '#000000'); xout(trxTree(key, '#000000')); } catch (err) { delete TRX[key]; throw err; }
+    if (!TRANSITIONS.some(t => t[0] === key)) TRANSITIONS.push([key, d.name]);
+  }
+  FXSHARED.set(key, d);
+  return key;
+}
+function fxUnregister(key) {
+  FXSHARED.delete(key); delete EXF[key]; delete FX[key]; delete TRX[key];
+  const i = TRANSITIONS.findIndex(t => t[0] === key);
+  if (i >= 0) TRANSITIONS.splice(i, 1);
+}
+function fxFile(kind, key) { // the JSON text of a built-in or imported effect / transition
+  const d = FXSHARED.get(key);
+  if (d) return JSON.stringify({ cutroom_fx: 1, name: d.name, kind: d.kind, author: d.author || '', parameters: d.parameters || {}, expressions: d.expressions }, null, 1);
+  const x = kind === 'effect' ? EXF[key] : TRX[key];
+  return JSON.stringify({ cutroom_fx: 1, name: (kind === 'effect' ? FX[key] : TRX[key]).n, kind, author: '', parameters: {}, expressions: { defs: x.defs || {}, e: x.e } }, null, 1);
+}

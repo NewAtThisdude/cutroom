@@ -49,7 +49,7 @@ const ev = (f, a) => page.evaluate(f, a);
 await ev(() => loadMedia());
 await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), [TALK.id, PIC.id], { timeout: 90000 });
 const CMD = { add_sound_effect: 'add_sound', generate_image: 'ai_image' }, remoteNames = await ev(() => Object.keys(REMOTE));
-const VIA_PATH = ['import_media', 'import_subtitles', 'import_lut']; // the MCP server reads the file and passes its contents
+const VIA_PATH = ['import_media', 'import_subtitles', 'import_lut', 'import_fx']; // the MCP server reads the file and passes its contents
 const unmapped = tools.filter(t => t.name !== 'import_media' && !remoteNames.includes(CMD[t.name] || t.name)).map(t => t.name);
 check(`all ${tools.length} MCP tools map onto an editor command`, !unmapped.length, unmapped.join(', '));
 const sigs = await ev(() => Object.fromEntries(Object.entries(REMOTE).map(([k, f]) => [k, String(f).slice(0, String(f).indexOf(')') + 1)])));
