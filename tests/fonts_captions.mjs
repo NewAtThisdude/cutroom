@@ -71,7 +71,7 @@ try {
 
     // 2. the picker, and importing through it
     pids.add(await titled('Montserrat'));
-    const pk = await ev(() => { S.sel = { lane: 'text', id: P.text[0].id }; renderInspector(); const s = $('#inspector select[data-k="c.style.font"]'); return Object.fromEntries([...s.querySelectorAll('optgroup')].map(g => [g.label, [...g.querySelectorAll('option')].map(o => o.value)])); });
+    const pk = await ev(async () => { S.sel = { lane: 'text', id: P.text[0].id }; renderInspector(); await new Promise(r => setTimeout(r)); /* off the Mac, platWatch renames the groups in a MutationObserver */ const s = $('#inspector select[data-k="c.style.font"]'); return Object.fromEntries([...s.querySelectorAll('optgroup')].map(g => [g.label, [...g.querySelectorAll('option')].map(o => o.value)])); });
     check(`${rm}: font picker lists Cutroom, imported and this computer's fonts (${SYSGROUP})`, pk.Cutroom?.includes('Montserrat') && pk.Imported?.includes(FACE) && pk[SYSGROUP]?.length > 50 && pk[SYSGROUP].includes(MAC), `${Object.entries(pk).map(([k, v]) => `${k} ${v.length}`).join(', ')}`);
     await page.setInputFiles('#inspector input[data-fontin]', { name: `${UIFACE}.ttf`, mimeType: 'font/ttf', buffer: fs.readFileSync(`${web}BebasNeue.ttf`) });
     await page.waitForFunction(f => P.text[0].style.font === f, UIFACE, { timeout: 10000 }).catch(() => {});
