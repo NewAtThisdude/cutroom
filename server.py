@@ -4872,9 +4872,11 @@ def graph(p, td):
         Ew, Eh = (math.hypot(mw, mh),) * 2 if rotation(c) else (mw, mh)
         if kf:
             S = lambda v_: f"(({pw(kf, 'w', v_)})/{mw:.4f})"
+            # round(): overlay casts x/y to int (toward zero), which put every clip left of / above the frame's edge (a bounce
+            # or snap clip animation, a negative keyframe) up to a pixel right/down of the preview's subpixel position
             return (f",format=rgba,scale=w='2*trunc(iw*{S('t')}/2)':h=-2:eval=frame",
-                    f"'({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2'",
-                    f"'({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2':eval=frame")
+                    f"'round(({pw(kf, 'x', var)})+({pw(kf, 'w', var)})/2-{Ew:.3f}*{S(var)}/2)'",
+                    f"'round(({pw(kf, 'y', var)})+({pw(kf, 'w', var)})*{mh / mw:.6f}/2-{Eh:.3f}*{S(var)}/2)':eval=frame")
         sw, sh = max(2, even(Ew * g['w'] / mw)), max(2, even(Eh * g['w'] / mw))
         return f',scale={sw}:{sh}{exact(c)}', even(g['x'] + g['w'] / 2 - sw / 2), even(g['y'] + g['h'] / 2 - sh / 2)
 
