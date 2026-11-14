@@ -4857,15 +4857,21 @@ def graph(p, td):
         op = kf[0]['op'] if kf else c['opacity']
         return f',format=rgba,colorchannelmixer=aa={op:.4f}' if op < 1 else ''
 
-    def mask_input(c, tag, dur, fmt='gray', lead=0):  # the mask's frames as a new input -> '[N:v]...' (lead: frames before its first, which nothing reads)
+    def mask_input(c, tag, dur, fmt='gray', lead=0):  # the mask's frames as a new input -> '[N:v]...' (lead: frames before its first, which nothing reads; < 0: it began that many frames before 0, a still's cut plan)
         if c.get('mask_seq'):  # keyframed: the browser's frames as runs, played by the concat demuxer, one per output frame
             ms, lines = c['mask_seq'], ['ffconcat version 1.0']
             for q, png in enumerate(ms['pngs']):
                 (Path(td) / f'mask_{tag}_{q}.png').write_bytes(png)
             rate = RATES.get(round(F, 3), f'{F:g}')  # the project's frame rate as the time base, as the text layer's: with the default 25 fps a run's edge was rounded off its frame
-            for sp in ([{'i': ms['spans'][0]['i'], 'n': lead}] if lead else []) + ms['spans']:
+            runs, skip = [dict(sp) for sp in ms['spans']], max(0, -lead)
+            while skip and runs:  # its first -lead frames are before frame 0: dropped, so the rest stay on their frames
+                k = min(skip, runs[0]['n']); runs[0]['n'] -= k; skip -= k
+                if not runs[0]['n']:
+                    runs.pop(0)
+            runs = runs or [{**ms['spans'][-1], 'n': 1}]  # (all before 0: its last frame holds)
+            for sp in ([{'i': runs[0]['i'], 'n': lead}] if lead > 0 else []) + runs:
                 lines += [f"file 'mask_{tag}_{sp['i']}.png'", f'option framerate {rate}', f"duration {sp['n'] / F:.6f}"]
-            lines += [f"file 'mask_{tag}_{ms['spans'][-1]['i']}.png'", f'option framerate {rate}']
+            lines += [f"file 'mask_{tag}_{runs[-1]['i']}.png'", f'option framerate {rate}']
             lf = Path(td) / f'mask_{tag}.ffconcat'
             lf.write_text('\n'.join(lines) + '\n')
             ins.append(['-f', 'concat', '-safe', '0', '-i', str(lf)])
@@ -7797,6 +7803,16 @@ def selftest():
     m5, m12, m12r, m17, m17r = at(5, 60), at(12, 60), at(12, 200), at(17, 60), at(17, 200)
     assert m5[0] > 200 and m12[2] > 200 and m12r[0] > 200 and m17[2] > 200 and m17r[2] > 200 and m17r[0] < 50, ('masked adjustment layer: swapped where its mask frames are white, from its first frame', m5, m12, m12r, m17, m17r)
     print('masked adjustment layer ok: the table only inside its mask, the mask frames lined up with the layer')
+    for fr, want in ((70, (True, True)), (90, (True, False))):  # a still in the 2nd clip: still_cut starts the plan there, the layer (and its mask runs) 60 frames before it
+        mrun = {'pngs': mseq['pngs'], 'spans': [{'i': 0, 'n': 80}, {'i': 1, 'n': 40}]}
+        JOBS['t'] = {'state': 'running'}
+        export('t', clean_plan({**tplan, 'name': f'still-mask {fr}', 'duration': 4, 'format': 'png', 'still': fr / F, 'main': [{**still_clip(SP), 'frames': 60}, {**still_clip(SP), 'frames': 60}],
+                                'fx': [{'op': 'lut', 'lut': swap, 'a': 0, 'b': 120, 'maskSeq': mrun}]}))
+        assert JOBS['t']['state'] == 'done', ('still of a masked layer that began before its clip', fr, JOBS['t'])
+        sl, sr = (pixel(EXPORTS / JOBS['t']['file'], 0, x, 240) for x in (60, 200))
+        got = (sl[2] > 200 and sl[0] < 50, sr[0] > 200 and sr[2] < 50)
+        assert got == want, ('still: the keyframed mask on its own frame after still_cut', fr, sl, sr)
+    print('masked adjustment layer in a still ok: still_cut keeps its keyframed mask on its frames')
     for op in ({'op': 'blur', 'sigma': 4}, {'op': 'hblur', 'sigma': 8}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
         out = render({**tplan, 'name': f"fx-{op['op']}", 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{**op, 'a': 0, 'b': 30}]}, 30)
         if op['op'] == 'mirror':
