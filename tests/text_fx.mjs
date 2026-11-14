@@ -204,7 +204,8 @@ try {
         S.layerForce = mode === 'page' ? 'page' : undefined;
         const plan = await buildPlan(960, 540, 'fast', `text-fx-${mode}`, false, 'prores'), layerMode = S.layerMode;
         if (mode === 'preview') { // Full-frame pictures directly from preview drawing, bypassing layerScan/crop/worker batching.
-          const cv = new OffscreenCanvas(960, 540), x = cv.getContext('2d'), pngs = [], frames = [];
+          // the export's own canvas kind (like layer_parity): WebKit's GPU and CPU canvases rasterise the same text a few levels apart
+          const cv = new OffscreenCanvas(960, 540), x = cv.getContext('2d', { willReadFrequently: true }), pngs = [], frames = [];
           for (let f = 0; f < Math.round(plan.duration * P.fps); f++) {
             x.clearRect(0, 0, 960, 540); drawTexts(x, f / P.fps, 960 / P.w, true);
             pngs.push(await blobURL(await cv.convertToBlob({ type: 'image/png' }))); frames.push({ i: f, start: f / P.fps, end: (f + 1) / P.fps });
@@ -245,7 +246,9 @@ try {
     for (const { f, png } of clipExport.previews) {
       const previewFile = fileURLToPath(new URL(`${rm}-clip-${f}.png`, OUT)); fs.writeFileSync(previewFile, Buffer.from(png.split(',')[1], 'base64'));
       const pixels = (file, filter) => execFileSync('ffmpeg', ['-v', 'error', '-i', file, '-vf', `${filter}scale=160:90:flags=area`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 20 });
-      const a = pixels(previewFile, ''), e = pixels(path.join(HOME, 'exports', clipExport.file), `select=eq(n\\,${f}),`);
+      // the drawMedia picture through the export's own ProRes 4:2:2 chroma: the striped test card otherwise differs at every
+      // colour edge (mean 4.5-6.2, worst block 30-35 compared raw; 1.9-2.7 / 15-22 through the same chroma)
+      const a = pixels(previewFile, 'format=yuv422p10le,'), e = pixels(path.join(HOME, 'exports', clipExport.file), `select=eq(n\\,${f}),`);
       let sum = 0, worst = 0;
       for (let by = 0; by < 90; by += 10) for (let bx = 0; bx < 160; bx += 10) {
         let block = 0;
