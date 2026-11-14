@@ -25,7 +25,10 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
 export const browser = {
   async launch(opts = {}) {
     requireHome();
-    const b = await type.launch({ ...opts, ...(channel ? { channel } : {}) });
+    // CUTROOM_BROWSER_ARGS: extra switches, e.g. --use-angle=vulkan on a Windows PC driven over ssh: there (a service session) ANGLE's
+    // D3D11 can't make a swap chain (DXGI_ERROR_NOT_CURRENTLY_AVAILABLE), the GPU process exits and Edge composites in software
+    const extra = (process.env.CUTROOM_BROWSER_ARGS || '').split(' ').filter(Boolean);
+    const b = await type.launch({ ...opts, ...(extra.length && { args: [...(opts.args || []), ...extra] }), ...(channel ? { channel } : {}) });
     launched.add(b);
     b.once('disconnected', () => launched.delete(b));
     if (fake) { // every context the test makes gets the fake platform
