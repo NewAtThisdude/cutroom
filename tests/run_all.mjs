@@ -13,7 +13,7 @@ const DEFAULT_TESTS = [
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
   'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync',
-  'source_viewer', 'polish_e2e', 'adjust_panes', 'fonts_captions', 'motion_blur', 'layer_race', 'photos_button',
+  'source_viewer', 'polish_e2e', 'adjust_panes', 'fonts_captions', 'motion_blur', 'layer_race', 'photos_button', 'fuzz_ui',
 ];
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -97,7 +97,7 @@ if (process.platform === 'darwin' && !process.env.CUTROOM_GPU_LOCK_HELD) {
   const shared = '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/gpu.lock';
   const lock = process.env.CUTROOM_GPU_LOCK || (fs.existsSync(path.dirname(shared)) ? shared : path.join(os.tmpdir(), 'cutroom-gpu.lock'));
   // Two lanes (Marat, 2026-11-14): two runs may share this Mac at once; each takes whichever lock is free.
-  const lanes = [lock, lock.replace(/(\.lock)?$/, '-2.lock')];
+  const lanes = [lock, lock]; // one lane: two at once overheated the Mac (2026-11-14)
   console.log(`Waiting for a shared GPU lane: ${lanes.join(' or ')}`);
   let locked = null;
   process.on('SIGINT', () => locked?.kill('SIGINT'));
