@@ -1655,6 +1655,42 @@ def relight_preview(mid, t, light):
         return {'png': base64.b64encode(f.read_bytes()).decode()}
 
 
+ZOOM_DIRS = ('in', 'out', 'left', 'right', 'orbit')
+
+
+def zoom3d(st, mid, direction, amount, dur, fps):
+    """3D zoom: a still photo -> a video copy in the library (dur seconds, silent) where the camera pushes in / out, slides or orbits and the
+    near things move more than the far ones (depth from Depth Anything, once; ai/enhance.py zoom3d). Rendered once, so the clip plays a
+    file and the preview is the export."""
+    m = meta(mid)
+    if m['kind'] != 'image' or m.get('alpha') or m.get('trans'):
+        raise ValueError('3D zoom works on a photo without transparency')
+    if not AI_PY.exists() or not (HUB / 'models--depth-anything--Depth-Anything-V2-Small-hf').exists():
+        raise RuntimeError('3D zoom needs the on-device AI tools (run ai/setup.sh)')
+    d = fnum(dur, 0.5, 30)
+    fps = fnum(fps, 10, 60)
+    scale = min(1.0, 2560 / max(m['w'], m['h']))
+    w, h = even(m['w'] * scale), even(m['h'] * scale)
+    with ai_slot('zoom3d', st, d * fps / 30 * w * h / (1920 * 1080)) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
+        out, jf = Path(td) / 'zoom.mp4', Path(td) / 'job.json'
+        jf.write_text(json.dumps({'op': 'zoom3d', 'src': str(MEDIA / m['file']), 'out': str(out), 'dur': d, 'fps': fps, 'w': w, 'h': h, 'silent': True,
+                                  'dir': direction, 'amount': amount, 'tags': ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'],
+                                  **size['knobs'], 'venc': venc(68, size=(w, h)), 'venc_big': venc(68, codec='hevc')}))
+        proc = subprocess.Popen([*AI_RUN, str(AI_DIR / 'enhance.py'), str(jf)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors='replace', env={**AI_ENV, 'HF_HUB_OFFLINE': '1'})
+        said = []
+        for line in proc.stdout:
+            if line.startswith('progress '):
+                st['progress'] = 0.97 * float(line.split()[1])
+            elif line.strip():
+                said = (said + [line.strip()])[-5:]
+        if proc.wait() or not out.exists():
+            raise RuntimeError('3D zoom failed: ' + (said[-1][-300:] if said else 'no output'))
+        with open(out, 'rb') as fh:
+            new = import_file(f"{Path(m['name']).stem} (3D zoom {direction}).mp4", fh, out.stat().st_size, background=False)
+    return {'media': new['id']}
+
+
 def deflicker(st, mid, t0, t1):
     """A copy of the range with its frame-to-frame brightness pumping evened out (timelapses, lights on mains power, auto
     exposure hunting): ffmpeg deflicker, each frame's brightness pulled to the power mean of 9 around it (luma only)."""
@@ -1822,6 +1858,7 @@ AI_BUDGET = {
                                                             (('cuda', 8, 16), 'Real-ESRGAN x4v3 fp16, 480 px tiles (CUDA)', 3.0, 4, {'tile': 480}),
                                                             (('cuda', 4, 8), 'Real-ESRGAN x4v3 fp16, 256 px tiles (CUDA)', 2.0, 8, {'tile': 256})]),
     'relight': ('Relight (depth)', 's of 1080p', [(0, 'Depth Anything V2 Small fp16 (MPS)', 2.0, 5, {}), (('cuda', 4, 8), 'Depth Anything V2 Small fp16 (CUDA)', 2.0, 2, {})]),
+    'zoom3d': ('3D zoom (depth)', 's of 1080p video', [(0, 'Depth Anything V2 Small fp16 + parallax render (MPS)', 2.5, 3, {}), (('cuda', 4, 8), 'Depth Anything V2 Small fp16 + parallax render (CUDA)', 2.5, 1.5, {})]),
     'music': ('AI music', 's of music', [(0, 'MusicGen small, fp16 copy loaded straight to the GPU', 2.5, 1.0, {}),
                                         (('cuda', 6, 16), 'MusicGen small, fp16 on the GPU (CUDA)', 2.5, 0.5, {})]),
     'llm': ('Shorts, translate, hooks, dubbing lines, command bar, smart combine', 'answer',
@@ -6686,7 +6723,7 @@ class App(BaseHTTPRequestHandler):
                             j = json.loads(t)
                         except ValueError:
                             continue
-                        if any(m[1] in (c.get('media'), (c.get('ramp') or {}).get('src'), (c.get('rt') or {}).get('src')) for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):  # a ramped clip can go back to its source
+                        if any(m[1] in (c.get('media'), (c.get('ramp') or {}).get('src'), (c.get('rt') or {}).get('src'), (c.get('z3') or {}).get('src')) for k in ('main', 'overlay', 'audio') for c in j.get(k, [])):  # a ramped clip can go back to its source
                             out.append({'id': f.stem, 'name': j.get('name', 'Untitled')})
                 return self.reply(out)
             if m := re.fullmatch(r'/api/jobs/([a-f0-9]{12})', path):
@@ -7075,6 +7112,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(enhance, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), 'upscale', {'scale': 4 if body.get('scale') == 4 else 2})})
             if u.path == '/api/relight':
                 return self.reply({'job': run_job(enhance, body['media'], fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6), 'relight', {'light': light_opts(body.get('light'))})})
+            if u.path == '/api/zoom3d':
+                if body.get('direction', 'in') not in ZOOM_DIRS:
+                    raise ValueError(f"direction must be one of {', '.join(ZOOM_DIRS)}")
+                return self.reply({'job': run_job(zoom3d, body['media'], body.get('direction', 'in'), fnum(body.get('amount', 0.6), 0.05, 1), body.get('dur', 3), body.get('fps', 30))})
             if u.path == '/api/relight_preview':
                 return self.reply(relight_preview(body['media'], body.get('t', 0), light_opts(body.get('light'))))
             if m := re.fullmatch(r'/api/(projects|templates)/([a-f0-9]{12})/trash', u.path):  # reversible: moved, not deleted
