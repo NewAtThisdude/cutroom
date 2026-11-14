@@ -1837,7 +1837,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
   packMain();
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')], ['jl', jlParts()]]) for (const c of list) {
     const m = M.get(c.media), d = tdur(c, lane);
-    if (!m?.hasAudio || !(c.volume > 0) || c.start >= t1 || c.start + d <= S.t) continue;
+    if (!m?.hasAudio || !(c.volume > 0) || c.cell?.off || c.start >= t1 || c.start + d <= S.t) continue; // (a layout's parked clip: not drawn, not heard, as in the export)
     seen.add(c.id);
     let v = voices.get(c.id);
     if (!v) { v = { n: soundChain(null, actx, actx.createGain()), srcs: new Map() }; v.n.out.gain.value = clipGain(c, lane, Math.max(S.t, c.start)); voices.set(c.id, v); }
@@ -1881,7 +1881,7 @@ function audioWarm() { // paused: the chunks at the playhead, so play starts wit
   for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
     const m = M.get(c.media);
     // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
-    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
+    if (m?.hasAudio && c.volume > 0 && !c.cell?.off && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
   }
 }
 // ---------- loudness meter: EBU R128 / ITU-R BS.1770 of the preview's master output ----------
@@ -5739,7 +5739,7 @@ function scrubSound() { // 70 ms of what is under the playhead, at most every 40
   if (now - (S.scrubAt || 0) < 0.04) return;
   S.scrubAt = now;
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
-    if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
+    if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || c.cell?.off || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
     const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, sndFx(c)), g0 = clipGain(c, lane, S.t);
     if (!p.buf || !g0) continue; // loading: the next move has it
     const n = actx.createBufferSource(), g = actx.createGain();
