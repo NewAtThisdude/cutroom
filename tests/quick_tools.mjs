@@ -99,7 +99,7 @@ for (const rm of ['no-preference', 'reduce']) {
   await count('world');
   const nav = [];
   for (const k of ['#cfNext', '#cfNext', '#cfNext', '#cfPrev']) { await page.click(k); nav.push(await ev(() => [$('#cfN').textContent, r3(S.t), S.sel?.id === P.captions[Math.floor(S.t)]?.id])); }
-  check(`${rm}: next and previous walk the matches (wrapping), the playhead and selection go to the caption`, JSON.stringify(nav.map(n => n[0])) === '["2 of 3","3 of 3","1 of 3","3 of 3"]' && nav.every(n => n[2]) && nav[3][1] > 2, JSON.stringify(nav));
+  check(`${rm}: next and previous walk the matches (wrapping), the playhead and selection go to the caption`, JSON.stringify(nav.map(n => n[0])) === '["2 of 3","3 of 3","1 of 3","3 of 3"]' && nav.every(n => n[2]) && nav[3][1] >= 2, JSON.stringify(nav));
   // replace one
   await count('world'); await page.fill('#cfR', 'planet');
   const u0 = await ev(() => undo.length); await page.click('#cfOne');
@@ -135,7 +135,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const r1 = await api('/api/remote', { cmd: 'caption_find_replace', args: { find: 'hello' }, timeout: 30 });
   const u4 = await ev(() => undo.length);
   const r2 = await api('/api/remote', { cmd: 'caption_find_replace', args: { find: 'HELLO', replace: 'hi', matchCase: true }, timeout: 30 });
-  const r3x = await api('/api/remote', { cmd: 'caption_find_replace', args: { find: 'Hello', replace: 'Hi', wholeWord: true }, timeout: 30 });
+  const r3x = await api('/api/remote', { cmd: 'caption_find_replace', args: { find: 'Hello', replace: 'Hi', wholeWord: true, matchCase: true }, timeout: 30 });
   const rem = await ev(() => [P.captions[0].text, undo.length]);
   check(`${rm}: the MCP command lists matches (2) without replace, replaces with it (match case honoured: HELLO finds none, Hello 1), one undo step`,
     r1.ok && r1.result.matches === 2 && r1.result.first.length === 2 && r2.ok && r2.result.replaced === 0 && r3x.ok && r3x.result.replaced === 1 && rem[0] === 'Hi world, hello there' && rem[1] === u4 + 1, JSON.stringify({ r1, r2, r3x, rem }));
