@@ -8,6 +8,7 @@
 //   ui      the new buttons in both reduced-motion modes; the panel still fits
 import { browser } from './browser.mjs';
 import { requireHome } from './runtime.mjs';
+import { aiFootage } from './fixtures.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,15 +22,17 @@ const get = async p => (await fetch(B + p)).json();
 const before = { p: new Set((await get('/api/projects')).map(x => x.id)), m: new Set((await get('/api/media')).map(x => x.id)), e: new Set(fs.readdirSync(EXP)) };
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-track-`);
 const env = { ...process.env }; delete env.PYTHONPATH;
-const truth = (...a) => JSON.parse(execFileSync(`${ROOT}/ai/.venv/bin/python`, ['-I', `${ROOT}/tests/track_truth.py`, ...a], { env, maxBuffer: 1 << 26 }).toString());
+const truth = (...a) => JSON.parse(execFileSync(`${ROOT}/ai/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, ['-I', `${ROOT}/tests/track_truth.py`, ...a], { env, maxBuffer: 1 << 26 }).toString());
 const gen = (name, args) => { const f = `${tmp}/${name}`; execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, f]); return f; };
 const imp = async f => (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json());
 const run = name => !only || name.includes(only);
 const syn = truth('synth', `${tmp}/synth.mp4`);
 fs.writeFileSync(`${tmp}/synth.json`, JSON.stringify(syn));
 const SYN = await imp(`${tmp}/synth.mp4`), RED = await imp(gen('trk-red.png', ['-f', 'lavfi', '-i', 'color=c=red:s=320x320:d=1', '-frames:v', '1']));
+const FX = run('reframe') ? await aiFootage(['fox']) : {}; // the fox stand-in and its clean plate (fixtures.mjs), found by name
 const lib = await get('/api/media'), byName = n => lib.find(m => m.name === n);
-const MEDIA = { SYN, RED, BMX: byName('bmx-trees.mp4'), FOX: lib.find(m => m.id === '87cf24520932'), TALK: byName('talk-with-music.mp4') };
+const MEDIA = { SYN, RED, BMX: byName('bmx-trees.mp4'), FOX: FX.fox, TALK: byName('talk-with-music.mp4') };
+const macOnly = async kind => { const r = (await get('/api/ai/caps')).jobs.find(j => j.kind === kind)?.refused; return /needs Apple Silicon/.test(r || '') && r; }; // by design (server.py NOT_YET)
 
 const b = await browser.launch();
 const errs = [];
@@ -126,7 +129,10 @@ if (run('blur')) {
 }
 
 // ---------- blur all faces ----------
-if (run('faces') && MEDIA.TALK) {
+const facesOff = run('faces') && await macOnly('faces');
+if (facesOff) console.log(`SKIP faces: ${facesOff}`);
+else if (run('faces') && !MEDIA.TALK) console.log('SKIP faces: no talk-with-music.mp4 (real footage of faces) in this library');
+else if (run('faces')) {
   await fresh('Faces');
   await ev(() => { addMedia(MD.TALK.id, 'main'); Object.assign(P.main[0], { in: 0, out: 4 }); renderAll(); });
   const r = await ev(() => REMOTE.blur_faces({ id: P.main[0].id }).then(x => x, e => ({ err: e.message })));
@@ -167,8 +173,8 @@ if (run('reframe')) {
     nums.reframeBmx.reversals = turns;
     check('...on a smooth camera path (second difference < 5 % of the width per look, at most 2 turnarounds)', Math.max(...jerk) < 0.05 && turns <= 2, `max ${Math.max(...jerk).toFixed(4)}, ${turns} turnarounds over ${kf.length} looks`);
   }
-  if (MEDIA.FOX && lib.some(m => m.id === 'd83ef70ebbad')) {
-    const tr = truth('fox', LIB).centres;
+  if (MEDIA.FOX && FX.plate) {
+    const tr = truth('fox', `${LIB}/media/${MEDIA.FOX.file}`, `${LIB}/media/${FX.plate.file}`).centres;
     await fresh('Reframe fox');
     const id = await ev(() => { addMedia(MD.FOX.id, 'main'); renderAll(); return P.main[0].id; });
     const f0 = tr.findIndex(Boolean), q = tr[f0], box = { x: q[0] - 0.06, y: q[1] - 0.09, w: 0.12, h: 0.18 }; // the fox (a face is in this shot too: auto would pick it)

@@ -1,22 +1,27 @@
 // The long-lived AI worker and what it feeds (committee item 38), on a SCRATCH library that holds the test media
-// (fox-walk + its clean plate talk-with-music, the night-drive project "Midnight Highway Journey"):
+// (fixtures.mjs aiFootage, found by name: fox-walk + its clean plate, the night-drive project "Midnight Highway Journey" and its
+// three long takes, "Cutroom demo (fixture)"):
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node tests/ai_worker.mjs [api] [remove] [voice] [ui] [captions] [pauses]
 // api: outline clicks after the first on a frame < 300 ms; the 2 %-margin fox box covers >= 95 % of the true fox and its legs.
 // remove: Best removal seeded with that outline, every one of the 120 frames' worst 8 px block < 20 levels off the clean plate.
 // ui (both motion modes): an older outline answer arriving late is dropped; a low-confidence box says so; a refine click's time.
 // voice: Kokoro voiceovers through the worker. captions: the night-drive project transcribes only its used spans (+1 s), not
-// the 431 s of source. pauses: warm click < 0.3 s. Fixtures: tests/fox_truth.py (AI venv) scores outlines and fills.
+// the whole takes. pauses: warm click < 0.3 s. Fixtures: tests/fox_truth.py (AI venv) scores outlines and fills.
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { aiFootage } from './fixtures.mjs';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME;
 if (!HOME || /4610$/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port>');
-const PY = path.join(import.meta.dirname, '..', 'ai', '.venv', 'bin', 'python'), TRUTH = path.join(import.meta.dirname, 'fox_truth.py');
-const FOX = '87cf24520932', DRIVE = 'ab4bbf27d216', BOX = { x: 0.21, y: 0.62, w: 0.16, h: 0.26 }; // the fox at 1 s, ~2 % margin
+const PY = path.join(import.meta.dirname, '..', 'ai', '.venv', ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'])), TRUTH = path.join(import.meta.dirname, 'fox_truth.py');
+const BOX = { x: 0.21, y: 0.62, w: 0.16, h: 0.26 }; // the fox at 1 s, ~2 % margin
 const LOOSE = { x: 0.18, y: 0.596, w: 0.2258, h: 0.3167 }; // 5 % margin round it: SAM 2's box-only candidates hold no fox
 const want = process.argv.slice(2), run = n => !want.length || want.includes(n);
+const F = await aiFootage([...(run('api') || run('remove') ? ['fox'] : []), ...(run('ui') || run('captions') || run('pauses') ? ['drive'] : [])]);
+if (F.drive && !F.driveProject) { console.log('SKIP ai_worker: no speech service on this computer for the night-drive footage'); process.exit(0); }
+const FOX = F.fox?.id, foxFile = m => path.join(HOME, 'media', m.file), DRIVE = F.driveProject, dji0 = F.drive?.[0].id;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cutroom-ai38-'));
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
@@ -36,16 +41,16 @@ if (run('api') || run('remove')) {
   check('outline clicks after the first on a frame < 300 ms', Math.max(warm1, warm2, click) < 300,
     `first ${cold.toFixed(0)} ms, again ${warm1.toFixed(0)} / ${warm2.toFixed(0)} ms, + a click ${click.toFixed(0)} ms (${r3.masks.length} candidates)`);
   fs.writeFileSync(path.join(tmp, 'pick.png'), Buffer.from(r0.mask, 'base64'));
-  const t = truth('mask', HOME, '1', path.join(tmp, 'pick.png'));
+  const t = truth('mask', foxFile(F.fox), foxFile(F.plate), '1', path.join(tmp, 'pick.png'));
   check('the 2 %-margin fox box covers 95 %+ of the true fox and its legs', t.fox >= 0.95 && t.legs >= 0.95,
     `fox ${(t.fox * 100).toFixed(1)} %, legs ${(t.legs * 100).toFixed(1)} %, ${t.extra_px} px of background; pick ${r0.pick} of ${r0.areas.length}, scores ${r0.scores}, unsure ${r0.unsure}`);
   const [cut] = await ask({ mode: 'cutout' });
   fs.writeFileSync(path.join(tmp, 'cut.png'), Buffer.from(cut.mask, 'base64'));
-  const tc = truth('mask', HOME, '1', path.join(tmp, 'cut.png'));
+  const tc = truth('mask', foxFile(F.fox), foxFile(F.plate), '1', path.join(tmp, 'cut.png'));
   check('a cutout keeps to one outline (no union of candidates)', cut.areas.length <= r0.areas.length && tc.fox > 0.9, `fox ${(tc.fox * 100).toFixed(1)} %, ${tc.extra_px} px extra`);
   const [loose] = await ask({ box: LOOSE });
   fs.writeFileSync(path.join(tmp, 'loose.png'), Buffer.from(loose.mask, 'base64'));
-  const tl = truth('mask', HOME, '1', path.join(tmp, 'loose.png'));
+  const tl = truth('mask', foxFile(F.fox), foxFile(F.plate), '1', path.join(tmp, 'loose.png'));
   check('a 5 %-margin box: the centre point still finds the fox, and it is flagged unsure', tl.fox >= 0.95 && loose.unsure,
     `covers ${(tl.fox * 100).toFixed(1)} % of the fox (+${tl.extra_px} px), unsure ${loose.unsure}, scores ${loose.scores}`);
 }
@@ -55,7 +60,7 @@ if (run('remove')) {
   for (;;) { await new Promise(z => setTimeout(z, 1000)); j = await api(`/api/jobs/${job}`); if (j.state !== 'running') break; }
   if (j.state !== 'done') check('Best removal ran', false, j.error);
   else {
-    const m = (await api('/api/media')).find(x => x.id === j.media), f = truth('fill', HOME, path.join(HOME, 'media', m.file));
+    const m = (await api('/api/media')).find(x => x.id === j.media), f = truth('fill', foxFile(F.plate), path.join(HOME, 'media', m.file));
     check('Best removal: every frame\'s worst 8 px block < 20 levels off the clean plate', f.frames === 120 && f.over20 === 0,
       `${f.frames} frames, ${f.over20} over 20, ${f.over40} over 40, worst ${Math.max(...f.worst)}; ${j.engine}, ${((performance.now() - a) / 1000).toFixed(0)} s, media ${j.media}`);
   }
@@ -109,7 +114,7 @@ if (run('ui') || run('captions') || run('pauses')) {
       check(`${rm}: a sure outline asks to remove the pink part`, /Remove the pink part/.test(ui.sure), ui.sure);
       check(`${rm}: a refine click on the frame redraws the outline < 300 ms`, ui.changed && ui.ms < 300, `${ui.ms.toFixed(0)} ms`);
       check(`${rm}: a box SAM 2 is unsure of says so`, ui.unsure.flag && /Not sure what you boxed/.test(ui.unsure.text), JSON.stringify(ui.unsure));
-      const demo = (await inPage(() => api('/api/projects'))).find(p => /Cutroom demo/.test(p.name)).id; // edit by script: words of the used spans
+      const demo = (await inPage(() => api('/api/projects'))).find(p => p.id === F.demoProject).id; // edit by script: words of the used spans
       await inPage(id => openProject(id), demo); await page.waitForTimeout(1500);
       let asks = 0; const count = r => { if (r.url().endsWith('/api/transcribe')) asks++; }; page.on('request', count);
       const sc = await inPage(async () => { await renderScript(); const n = SC.words?.length || 0; await renderScript(); return { n, text: SC.words.map(w => w.w).join(' ').slice(0, 80) }; });
@@ -120,7 +125,7 @@ if (run('ui') || run('captions') || run('pauses')) {
       const used = JSON.parse(fs.readFileSync(path.join(HOME, 'projects', `${DRIVE}.json`))), heard = () => Object.fromEntries(
         [...new Set([...used.main, ...used.audio].map(c => c.media))].map(id => { const f = path.join(HOME, 'cache', `${id}.auto.words.json`); const d = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : null;
           return [id, d ? (Array.isArray(d) ? Infinity : d.have.reduce((s, [a, z]) => s + z - a, 0)) : 0]; }));
-      const dji = ['979a851bf114', '1640ec308499', '6d11bd2694f2'], wf = id => path.join(HOME, 'cache', `${id}.auto.words.json`);
+      const dji = F.drive.map(m => m.id), wf = id => path.join(HOME, 'cache', `${id}.auto.words.json`);
       // a whole-file cache from before spans would answer without listening (heard = Infinity): park it for this check, put it back after
       const parked = dji.filter(id => fs.existsSync(wf(id)) && Array.isArray(JSON.parse(fs.readFileSync(wf(id)))));
       for (const id of parked) fs.renameSync(wf(id), wf(id) + '.parked');
@@ -134,10 +139,10 @@ if (run('ui') || run('captions') || run('pauses')) {
       for (const id of parked) fs.renameSync(wf(id) + '.parked', wf(id));
       const newly = dji.reduce((s, id) => s + after[id] - before[id], 0);
       check('captions on the night-drive project listen to the used spans only', dji.every(id => Number.isFinite(after[id])) && newly < 80,
-        `DJI: ${newly.toFixed(1)} s heard (${dji.map(id => `${id.slice(0, 4)} ${before[id].toFixed(0)}->${after[id].toFixed(0)}`).join(', ')}), used ${src.toFixed(1)} s incl. the music track, source 431 s, ${(ms / 1000).toFixed(1)} s; status ${[...new Set(pct.filter(Boolean))].slice(-3).join(' / ')}`);
+        `DJI: ${newly.toFixed(1)} s heard (${dji.map(id => `${id.slice(0, 4)} ${before[id].toFixed(0)}->${after[id].toFixed(0)}`).join(', ')}), used ${src.toFixed(1)} s incl. the music track, source ${F.drive.reduce((a, m) => a + m.duration, 0).toFixed(0)} s, ${(ms / 1000).toFixed(1)} s; status ${[...new Set(pct.filter(Boolean))].slice(-3).join(' / ')}`);
     }
-    if (run('pauses')) { // Remove pauses on a 4 GB 4K original: first click reads its PCM copy, later ones the cache
-      await inPage(id => { setProject(newProject('16:9')); P.name = 'pauses test (scratch)'; addMedia(id, 'main'); renderAll(); }, '979a851bf114');
+    if (run('pauses')) { // Remove pauses on a long take: the first click reads its PCM copy, later ones the cache
+      await inPage(id => { setProject(newProject('16:9')); P.name = 'pauses test (scratch)'; addMedia(id, 'main'); renderAll(); }, dji0);
       let asked = 0; page.on('request', r => { if (r.url().endsWith('/api/silences')) asked++; });
       const click = () => inPage(async () => { // each click on the same clip: the cut (if any) is undone before the next
         const n = undo.length, a = performance.now(); await removePauses(0.7).catch(() => {}); const ms = performance.now() - a;
