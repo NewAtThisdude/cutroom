@@ -15,6 +15,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Compound clips, multicam, adjustment layers
 - Fade handles on clips: drag a top corner to fade in or out
 - Paste attributes (Cmd/Ctrl+Alt+V, or right-click): copy one clip, select one or many, and tick what to paste (colour, effects, masks, transform, speed and ramps, sound, animations, transition, keyframes scaled to each clip or kept at their times); remembers the list, one undo step, skips with a note what a clip cannot take
+- Split-screen layouts (side by side, stacked, one big and two small, grid of four, reaction, picture in picture) for any project shape: drop clips into the cells, pan and zoom inside a cell, gap colour and rounded corners; the cells stay ordinary clips you can trim and animate, and they re-flow when you change the layout or the canvas shape
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
 - Library source viewer with hover skim, In and Out points and Replace clip
@@ -50,6 +51,7 @@ Windows PC. It is licensed GPL v3 or later.
 - A loudness meter (momentary, short-term and integrated LUFS) and loudness targets for exports
 - A built-in library of CC0 sound effects and music
 - Voiceover recording that lands where you spoke
+- Audio visualizer (bars, mirrored bars, line, circle) in your brand colours, following one clip or the whole mix, with smoothing and sensitivity; worked out from the sound frame by frame, so the export matches the preview exactly
 
 ### Captions and text
 

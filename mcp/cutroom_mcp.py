@@ -146,6 +146,22 @@ TOOLS = [
      S({'id': txt, 'start': num, 'index': {'type': 'integer'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay']}}, ['id']), 'move_clip'),
     ('add_text', 'Add a text clip. Presets: Title, Subtitle, Label, Outline, Headline, Typewriter, Sticker. style takes the text style keys listed in update_clip.',
      S({'text': txt, 'preset': txt, 'start': num, 'duration': num, 'x': num, 'y': num, 'style': obj}, ['text']), 'add_text'),
+    ('layout', 'Split-screen layout on the overlay track. Without id/clip: makes one (one undo step) from media (library ids or names, '
+               'new clips) and/or clips (existing video/picture clip ids, moved in), type 2h (side by side) | 2v (stacked) | 3 (one big, two small) | 4 (grid) | '
+               'react (reaction: 60/40) | pip (picture in picture), start (default: playhead), duration, gap (share of the short side, 0-0.15), color ("#rrggbb" '
+               'gap colour, null: the gaps show what is under), corners (rounding, share of the short side, 0-0.2), corner (pip: tl|tr|bl|br). With id (or clip = '
+               'any of its clips): changes type/gap/color/corners/corner (the cells re-flow, clips without a cell are kept aside), put = media into cell `cell`, '
+               'media = a list into cells from `cell` on, zoom (1-6) / pan [x, y] (-1..1) inside cell `cell`, leave = a clip id taken out as a plain overlay. '
+               'Returns the cells (rects in canvas pixels, clip ids). The cells are ordinary overlay clips: trim, fade, animate them with update_clip.',
+     S({'id': txt, 'clip': txt, 'type': {'type': 'string', 'enum': ['2h', '2v', '3', '4', 'react', 'pip']}, 'media': {'type': 'array', 'items': txt}, 'clips': {'type': 'array', 'items': txt},
+        'start': num, 'duration': num, 'gap': num, 'color': {'type': ['string', 'null']}, 'corners': num, 'corner': {'type': 'string', 'enum': ['tl', 'tr', 'bl', 'br']},
+        'cell': {'type': 'integer'}, 'put': txt, 'zoom': num, 'pan': {'type': 'array', 'items': num}, 'leave': txt}), 'layout'),
+    ('visualizer', 'Audio visualizer on the text track (one undo step): style bars | mirror | line | circle, source "mix" (default: every audible clip) or a clip id, '
+                   'start, duration, bars (4-64), smoothing (0-0.95), sensitivity (0.25-4), colors (one or two "#rrggbb"; default: the brand colours), '
+                   'x, y (centre, 0-1), w, h (box, shares of the canvas width / height). With id: changes those of an existing one. Levels are computed from '
+                   'the audio per frame, so the export draws exactly what the preview shows.',
+     S({'id': txt, 'style': {'type': 'string', 'enum': ['bars', 'mirror', 'line', 'circle']}, 'source': txt, 'start': num, 'duration': num, 'bars': num, 'smoothing': num,
+        'sensitivity': num, 'colors': {'type': 'array', 'items': txt}, 'x': num, 'y': num, 'w': num, 'h': num}), 'visualizer'),
     ('set_transition', 'Transition at the cut after main-track clip `after` (or every cut with all=true). type none removes it.',
      S({'after': txt, 'type': txt, 'duration': num, 'all': boo}, ['type']), 'set_transition'),
     ('add_effect', 'Add a video effect on the effects track at `start` (default: playhead) for `duration` seconds; it changes everything under it, text stays on top. '

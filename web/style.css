@@ -650,3 +650,9 @@ body.fs #scope, body.fs #meter { display: none !important; }
 .cmpov .cmpgrab i { position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
 .cmpov .cmpgrab i::after { content: ""; position: absolute; left: -9px; top: 50%; width: 20px; height: 20px; margin-top: -10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .55); }
 .cmpov .cmpgrab[hidden] { display: none; }
+
+/* split-screen layouts (layouts.js): each tile is the layout drawn at the project's shape */
+.presets.layouts button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px 8px; font-size: 12px; }
+.layic { position: relative; display: block; background: #070708; border-radius: 3px; }
+.layic i { position: absolute; background: var(--faint); border-radius: 1.5px; }
+.presets.layouts button.on .layic i { background: var(--accent); }

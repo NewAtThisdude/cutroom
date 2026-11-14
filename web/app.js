@@ -481,7 +481,7 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
   }
   if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
-function touched() { brandFit(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+function touched() { brandFit(); window.layoutFit?.(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) { if (from.length) jump(undo.length + (from === undo ? -1 : 1)); }
 function jump(k) { // to the state just after step k (0 = the oldest kept): the steps in between move across, one render at the end
@@ -1111,12 +1111,12 @@ function renderInspector() {
   const c = selClip();
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
-  if (c && S.sel.lane !== 'tr') $('#inspector h3')?.insertAdjacentHTML('afterend', labelRow(c));
+  if (c && S.sel.lane !== 'tr') $('#inspector h3')?.insertAdjacentHTML('afterend', labelRow(c) + (c.cell || c.layBg ? layoutRows(c) : ''));
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   if (c?.media) drawRamp(c);
   kgRO.disconnect(); if ($('#kfGraph')) kgRO.observe($('#kfGraph'));
   syncToolbar();
-  if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
+  if (G.tab === 'transitions' || G.tab === 'filters' || G.tab === 'layouts') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
   else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) { renderCapList(); renderCapTiles(false); }
   if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p><div class="actions"><button data-act="compound">Make compound clip</button></div>`);
@@ -1551,6 +1551,7 @@ async function importFont(f) {
   return j;
 }
 function textPanel(c, lane) {
+  if (c.viz) return vizPanel(c); // an audio visualizer (viz.js)
   const cap = lane === 'captions', st = textStyle(c, lane), r = 'c.style', pr = cap ? null : propsAt(c, S.t - c.start), ws = WEIGHTS[st.font] || [400, 700];
   const style = `<textarea data-k="c.text" rows="3" spellcheck="false">${esc(c.text)}</textarea>`
     + (cap ? `<p class="hint">Presets restyle every caption; the settings below restyle this one.</p><div class="presets small">${Object.keys(CAP_PRESETS).map(n => `<button data-cappreset="${n}">${n}</button>`).join('')}</div>`
@@ -1582,7 +1583,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (el.dataset.k.startsWith('rt.')) { const c = selClip(); if (c) rtSet(c, el.dataset.k.slice(3), el.type === 'range' ? +el.value : el.value); return; } // a retouch draft, not the project
   if (el.dataset.k === 'lk.here') { const c = selClip(); if (c) strengthPoint(c, +el.value); return; }
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
-  let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : P;
+  let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : root === 'lay' ? layOf(selClip()) : P;
   if (!o) return;
   let v = el.type === 'checkbox' ? el.checked : el.type === 'range' || 'num' in el.dataset ? +el.value : el.value;
   if ('log' in el.dataset) { v = 10 ** v; v = Math.abs(v - 1) < 0.02 ? 1 : +v.toFixed(2); } // speed: log slider, 1x has a detent
@@ -1594,6 +1595,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
   for (const q of path) o = o[q] ??= {};
   o[last] = v;
+  if (root === 'lay' || (root === 'c' && path[0] === 'cell')) layoutFit(); // a layout's gap, corners, a cell's zoom / pan: re-flowed as the slider moves
   if (last === 'font' && WEIGHTS[v]) { const w = o.weight ?? textStyle(selClip() || {}, S.sel?.lane).weight, ws = WEIGHTS[v]; if (!ws.includes(w)) o.weight = ws.reduce((x, y) => (Math.abs(y - w) < Math.abs(x - w) ? y : x)); }
   if (el.dataset.k === 'c.text') retext(selClip());
 }
@@ -1831,7 +1833,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
   packMain();
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')], ['jl', jlParts()]]) for (const c of list) {
     const m = M.get(c.media), d = tdur(c, lane);
-    if (!m?.hasAudio || !(c.volume > 0) || c.start >= t1 || c.start + d <= S.t) continue;
+    if (!m?.hasAudio || !(c.volume > 0) || c.cell?.off || c.start >= t1 || c.start + d <= S.t) continue; // (a layout's parked clip: not drawn, not heard, as in the export)
     seen.add(c.id);
     let v = voices.get(c.id);
     if (!v) { v = { n: soundChain(null, actx, actx.createGain()), srcs: new Map() }; v.n.out.gain.value = clipGain(c, lane, Math.max(S.t, c.start)); voices.set(c.id, v); }
@@ -1875,7 +1877,7 @@ function audioWarm() { // paused: the chunks at the playhead, so play starts wit
   for (const [lane, list] of [['main', P.main], ['overlay', P.overlay], ['audio', P.audio]]) for (const c of list) {
     const m = M.get(c.media);
     // normal-pitch sound only: a kept-pitch speed's copy is made when it plays, not for every value a slider passes through
-    if (m?.hasAudio && c.volume > 0 && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
+    if (m?.hasAudio && c.volume > 0 && !c.cell?.off && (c.pitch || Math.abs(c.speed - 1) < 1e-6) && S.t >= c.start && S.t < c.start + tdur(c, lane)) pcmChunk(c.media, 1, Math.floor((c.in + (S.t - c.start) * c.speed) / PCM_S), undefined, sndFx(c));
   }
 }
 // ---------- loudness meter: EBU R128 / ITU-R BS.1770 of the preview's master output ----------
@@ -2083,7 +2085,7 @@ function paint() {
   // an element per file and side: two alternate (the next cut pre-seeked, transitions show both), and a jump back to a
   // file already loaded finds it ready (keyed by side alone, every jump to another file reloaded it: 16-116 ms of black)
   const layers = act.map(i => ['main', P.main[i], `m${i % 2}${P.main[i].media}`, i]);
-  for (const c of shown('overlay')) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
+  for (const c of shown('overlay')) if (!c.cell?.off && t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]); // (a layout's parked clips: kept, not drawn)
   if (!S.playing) { // paused on a picture still loading: the last frame stays up until it's there ('loadeddata' / 'seeked' repaint)
     const need = layers.filter(([, c]) => M.get(c.media) && M.get(c.media).kind !== 'image')
       .map(([lane, c, key, i]) => {
@@ -2522,7 +2524,7 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
   x.translate(W * (0.5 + mk.x), H * (0.5 + mk.y)); x.rotate((mk.rot * Math.PI) / 180);
   x.beginPath();
   if (mk.type === 'circle') x.ellipse(0, 0, Math.max(1, rw), Math.max(1, rh), 0, 0, Math.PI * 2);
-  else if (mk.type === 'rect') x.rect(-rw, -rh, rw * 2, rh * 2);
+  else if (mk.type === 'rect') { if (mk.rr > 0) x.roundRect(-rw, -rh, rw * 2, rh * 2, mk.rr * 2 * Math.min(rw, rh)); else x.rect(-rw, -rh, rw * 2, rh * 2); } // rr: rounded corners (a layout cell's)
   else if (mk.type === 'linear') x.rect(-big, 0, big * 2, big); // keep everything below the line
   else if (mk.type === 'mirror') x.rect(-big, -rh, big * 2, rh * 2); // mirror: a band through the centre
   else if (mk.type === 'ai') { // the subject's outline on this source frame: cropped like the clip, mirrored with it, scaled by w / h
@@ -2826,6 +2828,7 @@ function renderPane() { // the open gallery, refreshed (cheap: called on tab cha
   else if (t === 'stickers') renderStickers();
   else if (t === 'audio') renderAudio();
   else if (t === 'text') renderTextTiles();
+  else if (t === 'layouts') renderLayouts();
   else if (t === 'script') renderScript();
   else if (t === 'captions') { renderCapList(); renderCapTiles(); }
 }
@@ -3293,6 +3296,7 @@ function drawSel(ctx, h, handles) {
   ctx.restore();
 }
 function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: rotate (snaps to straight; ⌥ for free)
+  if (selClip()?.cell) return cellZoomDrag(e, h, selClip(), cv); // a layout cell: zoom inside it
   const c = selClip(), before = JSON.stringify(P), b = selBox(h), pr0 = propsAt(c, S.t - c.start), r = cv.getBoundingClientRect(), px = cv.width / r.width;
   const pt = ev => [(ev.clientX - r.left) * px, (ev.clientY - r.top) * px], [x0, y0] = pt(e);
   const d0 = Math.max(1, Math.hypot(x0 - b.cx, y0 - b.cy)), a0 = Math.atan2(y0 - b.cy, x0 - b.cx);
@@ -5200,7 +5204,7 @@ async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n,
 async function textLayer(w, h, k, fr, fonts) {
   const t0 = performance.now(), n = Math.min(clamp((navigator.hardwareConcurrency || 4) - 1, 1, 7), fr.length - 1);
   // the project as it plays, taken now: a compound clip borrows P only while its plan is built
-  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text'), captions: shown('captions'), fx: shown('fx'),
+  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text').map(it => (it.viz ? { ...it, lv: vizLevels(it) } : it)), captions: shown('captions'), fx: shown('fx'),
     emoji: Object.fromEntries([...new Set(shown('captions').map(c => c.emoji).filter(Boolean))].map(e => [e, emojiPic(e).getContext('2d').getImageData(0, 0, 256, 256)])) }; // the page's emoji pixels
   let why = S.layerForce === 'page' ? 'forced' : '', pool = null;
   S.layerStats = {};
@@ -5267,7 +5271,8 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       if (it.words) for (const wd of it.words) cuts.add(it.start + wd.s);
       const spans = [st.anim && st.anim !== 'none' ? [it.start, it.start + animLen(st, false)] : null, l !== 'captions' && it.kf?.length > 1 ? [it.start + it.kf[0].t, it.start + it.kf.at(-1).t] : null,
         st.out && st.out !== 'none' ? [end - animLen(st, true), end] : null, st.loop && st.loop !== 'none' ? [it.start, end] : null, l === 'captions' && it.words?.length && capLive(st) ? [it.start, end] : null,
-        l === 'captions' && st.emoji && it.emoji ? [it.start, it.start + 0.25] : null]; // the emoji's pop-in (drawText: 0.25 s), with or without word timing
+        l === 'captions' && st.emoji && it.emoji ? [it.start, it.start + 0.25] : null, // the emoji's pop-in (drawText: 0.25 s), with or without word timing
+        it.viz ? [it.start, end] : null]; // an audio visualizer moves every frame
       for (const [a, b] of spans.filter(Boolean)) for (let t = a; t < Math.min(b, end); t += 1 / P.fps) cuts.add(t); // animated: one PNG per frame
     }
     for (const f of layerFx) { // effect overlays change every frame, n times a second, near their ends only, or never
@@ -5284,10 +5289,11 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if (items.some(([l, it]) => l === 'captions' && it.emoji && textStyle(it, l).emoji)) fonts.push('64px "Apple Color Emoji", "Noto Color Emoji", sans-serif');
     for (const [l, it] of items) { const s = textStyle(it, l); if (l === 'captions' && ((s.bi && it.tr) || (s.spk && it.spk != null))) fonts.push(`${s.italic ? 'italic ' : ''}${Math.min(s.weight, 700)} 64px "${s.biFont || s.font}", system-ui, sans-serif`, `700 64px "${s.font}", system-ui, sans-serif`); } // the second line and speaker names
     await Promise.all(fonts.map(f => document.fonts.load(f)));
+    if (items.some(([, it]) => it.viz)) await vizReady(); // its numbers worked out before a frame is drawn
     text = await textLayer(w, h, k, fr, [...new Set(fonts)]);
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: await fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
-    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
+    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').filter(c => !c.cell?.off).map(c => clip(c, 'overlay'))),
     audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }
 // ---------- export for every platform: the plan re-laid for another canvas, and the one export queue ----------
@@ -5311,7 +5317,9 @@ function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main
       } else if (f === c || f.scale != null) f.scale = (f.scale ?? 1) * ((a * W * k) / (a2 * W2));
     }
   }
-  return Object.assign(p, { w: W2, h: H2 });
+  Object.assign(p, { w: W2, h: H2 });
+  window.layoutFit?.(p); // a layout's cells re-flow on the new canvas
+  return p;
 }
 // buildPlan reads the global P, so a plan for another project (a compound clip's, another shape's, a template preview's) borrows it:
 // P is that project until the plan is built. One borrow at a time; act() (saving or using a template, every REMOTE command) waits
@@ -6110,7 +6118,7 @@ function scrubSound() { // 70 ms of what is under the playhead, at most every 40
   if (now - (S.scrubAt || 0) < 0.04) return;
   S.scrubAt = now;
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')]]) for (const c of list) {
-    if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
+    if (!M.get(c.media)?.hasAudio || !(c.volume > 0) || c.cell?.off || !(c.pitch || Math.abs(c.speed - 1) < 1e-6) || S.t < c.start || S.t >= c.start + tdur(c, lane)) continue;
     const s = c.in + (S.t - c.start) * c.speed, k = Math.floor(s / PCM_S), p = pcmChunk(c.media, 1, k, undefined, sndFx(c)), g0 = clipGain(c, lane, S.t);
     if (!p.buf || !g0) continue; // loading: the next move has it
     const n = actx.createBufferSource(), g = actx.createGain();
@@ -6651,6 +6659,7 @@ function wire() {
     if (S.sel?.id !== hit.id) { S.sel = { lane: hit.lane, id: hit.id }; renderAll(); S.dirty = true; }
     const c = selClip();
     if (!c) return;
+    if (c.cell || c.layBg) return cellDrag(e, c, cv); // a layout cell: the picture pans inside it
     const before = JSON.stringify(P), k = cv.width / P.w, x0 = e.clientX, y0 = e.clientY;
     const o = hit.lane === 'captions' ? { y: P.capStyle.y } : propsAt(c, S.t - c.start);
     // text snaps (6 px, ⌘ to move freely) its box centre to the frame centre and other text, its edges to the safe margin
@@ -7446,7 +7455,7 @@ const REMOTE = {
   async options() {
     return { ratios: Object.keys(RATIOS), transitions: TRANSITIONS.map(x => x[0]).filter(x => x !== 'none'), looks: LOOK_NAMES(), blends: BLENDS.map(x => x[0]), clipIn: CLIP_ANIMS.map(x => x[0]), clipOut: CLIP_ANIMS.map(x => x[0]),
       comboMotion: LOOP_ANIMS.map(x => x[0]), masks: MASKS.map(x => x[0]), textPresets: Object.keys(TEXT_PRESETS), captionPresets: Object.keys(CAP_PRESETS), textIn: ANIMS.map(x => x[0]), textOut: OUTS.map(x => x[0]),
-      textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), exportPresets: Object.keys(EX_PRESETS), exportFps: EXPORT_FPS, voices: [...$('#ttsVoice').options].map(o => o.value),
+      textLoop: LOOPS.map(x => x[0]), fonts: [...FONTS, ...(G.fonts || []).map(f => f.family)], macFonts: G.sysFonts || [], luts: (G.luts = await api('/api/luts').catch(() => G.luts || [])).map(L => ({ id: L.id, name: L.name })), hslBands: HSL_BANDS.map(x => x[0]), speedRamps: Object.keys(RAMPS), layouts: LAYOUTS.map(x => x[0]), visualizers: VIZ_STYLES.map(x => x[0]), exportFormats: FORMATS.map(x => x[0]), resolutions: exportSizes().map(x => x[0]), exportPresets: Object.keys(EX_PRESETS), exportFps: EXPORT_FPS, voices: [...$('#ttsVoice').options].map(o => o.value),
       effects: { ...Object.fromEntries(Object.entries(FX).map(([k, d]) => [k, `${d.n} (${d.cat})`])), adjust: `${ADJUST.n}: its adj, look and grade colour everything under it` }, sounds: (G.sfx.length ? G.sfx : (G.sfx = await api('/api/sfx'))).map(x => x.name) };
   },
   async timeline() {
