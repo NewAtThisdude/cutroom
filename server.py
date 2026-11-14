@@ -362,6 +362,15 @@ def import_file(name, stream, length, background=True, src=None, key=None):
     return m
 
 
+def rec_sweep():
+    for f in CACHE.glob('rec-*'):
+        try:
+            if time.time() - f.stat().st_mtime > 600:
+                f.unlink()
+        except OSError:  # gone meanwhile
+            pass
+
+
 REC_ABORTED = set()  # takes the page gave up on (ponytail: kept until the server restarts; a few ids a day)
 REC_CAP = 32 << 30  # recordings being made, all parts together (a screen take at 10 Mbit/s is about 4.5 GB an hour)
 
@@ -372,6 +381,9 @@ def record_part(rid, ext, stream, length, q):
     recorder's file has no duration (fragmented MP4, WebM without cues) and its first frame starts after the recorder's
     start (WebKit: 43 ms): remuxed (no re-encode) to start at 0, and 'lead' is the start it had, so the page can place it."""
     part = CACHE / f'rec-{rid}.{ext}'
+    CURSOR['seen'] = time.time()  # (the cursor poll stops by itself once no take is sending: a page closed mid-take)
+    if not part.exists():  # a new take: parts a closed page or a crash left (untouched 10 min: no take pauses that long) go now
+        rec_sweep()
     if q.get('abort') or rid in REC_ABORTED:  # the page gave up on it (failed, cancelled, closed); a part still on its way after that is dropped too
         REC_ABORTED.add(rid)
         part.unlink(missing_ok=True)
@@ -475,11 +487,12 @@ def cursor_poll(on, t0=0.0):
         return {'ok': False, 'why': 'the cursor is not followed on this system'}
     read, screens = rd
     run = {'stop': threading.Event(), 'pts': [], 'ev': [], 'screens': screens}
+    CURSOR['seen'] = time.time()
     base = float(t0) / 1000
 
     def go():
         last = None
-        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4:
+        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4 and time.time() - CURSOR.get('seen', time.time()) < 30:
             now = time.time()
             x, y, sc, sk = read()
             run['pts'].append([round(now - base, 4), round(x, 1), round(y, 1)])
@@ -8598,13 +8611,7 @@ def main():
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:  # gone meanwhile (another server's export finished with it)
             pass
-    for f in CACHE.glob('rec-*'):  # a recording's part left by a crash, a reload or a quit mid-take (record_part). Not one being
-        # written: a take appends every second, maybe through another server on this library
-        try:
-            if time.time() - f.stat().st_mtime > 600:
-                f.unlink()
-        except OSError:
-            pass
+    rec_sweep()  # recordings' parts a crash, a reload or a quit mid-take left (not one being written: a take appends every second)
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)

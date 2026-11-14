@@ -210,7 +210,7 @@ for (const rm of ['no-preference', 'reduce']) {
     return api(`/api/cursor/${m.id}`, {}).then(tr => {
       const rest = azKeyframes(c, m, tr, 2, 0.5).zooms, leave = azKeyframes(c, m, { ...tr, pts: tr.pts.map(([t, u, v]) => (t > 2.0 ? [t, Math.max(0.05, u - (t - 2.0) * 3), Math.max(0.05, v - (t - 2.0) * 3)] : [t, u, v])) }, 2, 0.5).zooms;
       const smooth0 = azKeyframes(c, m, tr, 2.5, 0).kf, big = smooth0.reduce((b, f) => Math.max(b, f.scale), 0);
-      return { rest, leave, big, first: smooth0.find(f => f.scale > 1.001)?.t };
+      return { rest, leave, big, first: smooth0[smooth0.findIndex(f => f.scale > 1.001) - 1]?.t }; // (first: where its ramp starts)
     });
   }, scr.id);
   check(`${rm}: Auto zoom: leaving the view zooms out at once (${far.leave[0]?.b.toFixed(2)} s, resting: ${far.rest[0]?.b.toFixed(2)} s); Zoom 2.5× and Smoothness 0 give 2.5× and a later, shorter ramp`,
@@ -292,21 +292,30 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.waitForFunction(() => !RC && $('#modal').hidden, null, { timeout: 30000 });
   const full = await ev(() => ({ n: [P.main.length, P.overlay.length, P.audio.length], toast: $('#toast').textContent, d: M.get(P.main.find(c => c.id === S.sel?.id)?.media)?.duration }));
   await page.unrouteAll({ behavior: 'ignoreErrors' }); // (then the two routes the rest needs, again)
-  check(`${rm}: a refused part stops the take by itself, says why, and keeps and places what was recorded`, /^Stopped: the disk is nearly full/.test(full.toast) && full.n.join() === nF.map(x => x + 1).join() && full.d > 0.5, JSON.stringify(full));
+  check(`${rm}: a refused part stops the take by itself, says why, and keeps and places what was recorded`, /^Stopped: the disk is nearly full/.test(full.toast) && full.n[0] === nF[0] + 1 && full.n[1] === nF[1] + 1 && full.d > 0.5, JSON.stringify(full));
 
-  // ---- closed mid-take: the server's half-written parts go at once ----
+  // ---- a page closed mid-take can't tell the server: its parts are swept once stale (at the next take, or the server's start) ----
   await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
   await page.route(u => u.pathname === '/api/cursor', q => q.fulfill({ contentType: 'application/json', body: '{"ok":true,"pts":[],"ev":[],"screens":[]}' }));
-  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.click('#rcGo');
-  await page.waitForFunction(() => RC?.phase === 'rec', null, { timeout: 10000 });
-  await page.waitForTimeout(2300);
-  const midway = fs.readdirSync(`${HOME}/cache`).filter(f => f.startsWith('rec-'));
+  const take = async ms => {
+    await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.click('#rcGo');
+    await page.waitForFunction(() => RC?.phase === 'rec', null, { timeout: 10000 });
+    await page.waitForTimeout(ms);
+  };
+  const recs = () => fs.readdirSync(`${HOME}/cache`).filter(f => f.startsWith('rec-'));
+  await take(2300);
+  const midway = recs();
   await page.reload({ waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P, null, { timeout: 20000 });
   await install();
   await new Promise(z => setTimeout(z, 1500));
-  const after2 = fs.readdirSync(`${HOME}/cache`).filter(f => f.startsWith('rec-'));
-  check(`${rm}: closing the page mid-take drops the server's half-written parts (${midway.length} while recording, ${after2.length} after)`, midway.length === 2 && after2.length === 0, JSON.stringify({ midway, after2 }));
+  const left = recs(), old = (Date.now() - 11 * 60000) / 1000;
+  for (const f of left) fs.utimesSync(`${HOME}/cache/${f}`, old, old); // (as if 11 minutes went by)
+  await take(2600);
+  const during = recs();
+  await page.click('[data-rc="stop"]'); await page.waitForFunction(() => !RC && $('#modal').hidden, null, { timeout: 30000 });
+  check(`${rm}: a page closed mid-take leaves its parts (${left.length}); the next take sweeps them once stale; a finished take leaves none (${recs().length})`,
+    midway.length === 2 && left.length === 2 && during.length === 2 && !during.some(f => left.includes(f)) && recs().length === 0, JSON.stringify({ midway, left, during, end: recs() }));
 
   // ---- in a browser (not the Mac app): a whole-screen take with the teleprompter on warns before the countdown ----
   await ev(() => { delete window.webkit; });
@@ -341,16 +350,21 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.keyboard.press('Escape');
   check(`${rm}: the picked camera and mic are remembered; an unplugged one falls back to the system default`, devKept.join() === 'cam-b,mic-b' && devGone.join() === ',mic-b', JSON.stringify({ devKept, devGone }));
   check(`${rm}: in a browser (not the Mac app) a whole-screen recording warns the teleprompter would show; a window doesn't; the script and options are remembered`, warn && warn2 && kept[0] === 40 && kept[1] === (rm === 'reduce'), JSON.stringify({ warn, warn2, kept }));
-  if (rm === 'no-preference') { // ---- a long recording (5.5 min, the cursor busy throughout): its keyframes thin to well under the export's 2000, the motion unchanged, and it exports ----
+  if (rm === 'no-preference') { // ---- a long recording (5.5 min, busy): its keyframes thin to well under the export's 2000, the motion unchanged, and it exports ----
     const L = `${tmp}/rec-long.mp4`;
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=10:d=330', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', L]);
     const LV = await (await fetch(`${B}/api/import?name=rec-long.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(L) })).json();
     made.m.push(LV.id);
     const pts = [], evs = [];
-    for (let i = 0; i <= 330 * 30; i++) { // wandering the whole time, a click or a key every 4 s
-      const t = i / 30, u = 0.5 + 0.35 * Math.sin(t * 0.7) * Math.cos(t * 0.13), v = 0.5 + 0.3 * Math.sin(t * 0.53 + 1);
+    let seed = 7, from = [0.5, 0.5], to = from, t0 = 0;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    for (let i = 0; i <= 330 * 30; i++) { // working: every 4 s the cursor goes somewhere new, clicks, types, and wobbles a little in between
+      const t = i / 30;
+      if (t >= t0 + 4) { from = to; to = [0.08 + 0.84 * rnd(), 0.08 + 0.84 * rnd()]; t0 = t; }
+      const q = Math.min(1, (t - t0) / 0.5), e = q * q * (3 - 2 * q), u = from[0] + (to[0] - from[0]) * e + 0.01 * Math.sin(t * 3), v = from[1] + (to[1] - from[1]) * e + 0.01 * Math.cos(t * 2.3);
       pts.push([t, +u.toFixed(5), +v.toFixed(5)]);
-      if (i % 120 === 60) evs.push([t, i % 240 === 60 ? 'c' : 'k', +u.toFixed(5), +v.toFixed(5)]);
+      if (i % 120 === 24) evs.push([t, 'c', +u.toFixed(5), +v.toFixed(5)]);
+      if (i % 120 === 54) evs.push([t, 'k', +u.toFixed(5), +v.toFixed(5)]);
     }
     await api(`/api/cursor/${LV.id}`, { track: { pts, ev: evs } });
     await ev(() => loadMedia());
@@ -366,8 +380,8 @@ for (const rm of ['no-preference', 'reduce']) {
     made.p.push(lr.pid);
     const lx = await ev(() => REMOTE.export({ format: 'mp4', resolution: '720p', name: `recorder-long-${Date.now()}` }).catch(e => ({ error: e.message })));
     const lf = lx.file && `${HOME}/exports/${lx.file}`, ld = lf && fs.existsSync(lf) ? +execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', lf], { encoding: 'utf8' }) : 0;
-    check(`${rm}: a 5.5 min recording, cursor busy throughout: ${lr.zooms} zooms in ${lr.n} keyframes (from ${lr.dense} samples; the export takes 2000), within ${lr.worst.toFixed(2)} px of the full motion; it exports (${ld.toFixed(1)} s)`,
-      lr.n <= 1200 && lr.dense > 2000 && lr.worst <= 2 && Math.abs(ld - 330) < 1, JSON.stringify({ ...lr, lx }));
+    check(`${rm}: a 5.5 min recording, a click and typing every 4 s all over the screen: ${lr.zooms} zooms in ${lr.n} keyframes (from ${lr.dense} samples; the export takes 2000), within ${lr.worst.toFixed(2)} px of the full motion; it exports (${ld.toFixed(1)} s)`,
+      lr.n <= 1500 && lr.dense > 2000 && lr.worst <= 1 && Math.abs(ld - 330) < 1, JSON.stringify({ ...lr, lx }));
     if (lf && fs.existsSync(lf)) fs.unlinkSync(lf);
   }
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));

@@ -175,7 +175,7 @@ function rcRecorder(stream, bps, fail) { // a MediaRecorder sending its file to 
   return {
     mr,
     async finish(name) { if (mr.state !== 'inactive') mr.stop(); await stopped; const m = await send(new Blob([]), `?done=1&name=${encodeURIComponent(name)}`); this.done = true; return m; },
-    abort() { // given up (cancelled, failed, the page closing): the server drops the part now, not at its next start
+    abort() { // given up (cancelled, failed): the server drops the part now. A page closed mid-take can't say so: the server sweeps those (record_part)
       try { if (mr.state !== 'inactive') mr.stop(); } catch { /* stopped already */ }
       if (!this.done) fetch(`${url}?abort=1`, { method: 'POST', headers: { 'X-Cutroom': '1' }, keepalive: true }).catch(() => {});
       this.done = true;
@@ -382,9 +382,15 @@ function azKeyframes(c, m, tr, amount = 2, smooth = 0.5) { // the clip's cursor 
     if (z && T <= z.b + 2 * R) z.b = Math.max(z.b, end(T, u, v)); // close after the last one: stays in and pans
     else zooms.push({ a: T, u, v, b: end(T, u, v) });
   }
-  const sm = T => { // the cursor, smoothed both ways in time (no lag): what the view follows
-    let su = 0, sv = 0, sw = 0;
-    for (const p of pts) { const d = p[0] - T; if (d < -3 * SIG) continue; if (d > 3 * SIG) break; const w = Math.exp(-(d * d) / (2 * SIG * SIG)); su += w * p[1]; sv += w * p[2]; sw += w; }
+  while (zooms.length > AZ_MAX) { // a long, busy recording: the closest two zooms become one (it stays in and pans), so the keyframes fit the export
+    let at = 0;
+    for (let i = 1; i < zooms.length - 1; i++) if (zooms[i + 1].a - zooms[i].b < zooms[at + 1].a - zooms[at].b) at = i;
+    zooms[at].b = zooms[at + 1].b; zooms.splice(at + 1, 1);
+  }
+  const sm = T => { // the cursor, smoothed both ways in time (no lag)
+    let su = 0, sv = 0, sw = 0, lo = 0, hi = pts.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pts[mid][0] < T - 3 * SIG) lo = mid + 1; else hi = mid; } // (from the first sample in reach: an hour's track stays quick)
+    for (let i = lo; i < pts.length; i++) { const p = pts[i], d = p[0] - T; if (d > 3 * SIG) break; const w = Math.exp(-(d * d) / (2 * SIG * SIG)); su += w * p[1]; sv += w * p[2]; sw += w; }
     if (sw) return [su / sw, sv / sw];
     const p = pts.reduce((b, q) => (Math.abs(q[0] - T) < Math.abs(b[0] - T) ? q : b));
     return [p[1], p[2]];
@@ -395,34 +401,64 @@ function azKeyframes(c, m, tr, amount = 2, smooth = 0.5) { // the clip's cursor 
     const w = wb * k, h = hb * k, X = clamp(xb + wb / 2 - u * w, xb + wb - w, xb), Y = clamp(yb + hb / 2 - v * h, yb + hb - h, yb);
     return { t: +t.toFixed(4), scale: +(bs * k).toFixed(5), x: +((X - (W - w) / 2) / W).toFixed(5), y: +((Y - (H - h) / 2) / H).toFixed(5), opacity: c.opacity ?? 1, rot: c.rot ?? 0, ease: false };
   };
-  const kf = [props(0, 1, [0.5, 0.5])];
+  const zp = (t, k, at) => { // part way in or out: the straight blend of 1x and fully in (a zoom about one fixed point: keeps the frame covered, and eases exactly)
+    const a = props(t, 1, at), b = props(t, amount, at), q = (k - 1) / (amount - 1), f = x => +x.toFixed(5);
+    return { ...b, scale: f(a.scale + (b.scale - a.scale) * q), x: f(a.x + (b.x - a.x) * q), y: f(a.y + (b.y - a.y) * q) };
+  };
+  // Each zoom: in (one eased keyframe pair: the picture point stays put, so x and y ease exactly with the zoom), held while the view
+  // follows the cursor (it stays put while the cursor is in its middle half, then is pushed along: calm, few keyframes), out (eased, the view held).
+  const kf = [props(0, 1, [0.5, 0.5])], dense = [kf[0]], half = 0.5 / amount;
   for (const z of zooms) {
-    const a0 = Math.max(0, z.a - R), b1 = Math.min(D, z.b + R), at = T => (T <= z.a ? [z.u, z.v] : T < z.a + R ? (([u, v], k) => [z.u + (u - z.u) * k, z.v + (v - z.v) * k])(sm(T), ss((T - z.a) / R)) : sm(T));
+    const a0 = Math.max(0, z.a - R), b1 = Math.min(D, z.b + R), cam = [];
+    for (let T = z.a, cu = z.u, cv = z.v; T < z.b + 1 / 15; T += 1 / 15) {
+      const [u, v] = sm(Math.min(T, z.b)), push = (c0, x) => c0 + Math.max(0, Math.abs(x - c0) - half / 2) * Math.sign(x - c0);
+      cu = push(cu, u); cv = push(cv, v);
+      cam.push([cu, cv]);
+    }
+    const cs = cam.map((_, i) => { // the pushes, smoothed (±0.4 s); it still starts on the click
+      if (!i) return cam[0];
+      let su = 0, sv = 0, sw = 0;
+      for (let j = Math.max(0, i - 6); j <= Math.min(cam.length - 1, i + 6); j++) { const w = Math.exp(-((j - i) ** 2) / 18); su += w * cam[j][0]; sv += w * cam[j][1]; sw += w; }
+      return [su / sw, sv / sw];
+    });
+    const at = T => { // the view's centre (picture point) at clip time T
+      if (T <= z.a) return [z.u, z.v];
+      const f = (Math.min(T, z.b) - z.a) * 15, i = Math.min(cs.length - 2, Math.floor(f)), q = clamp(f - i, 0, 1);
+      return cs.length < 2 ? cs[0] : [cs[i][0] + (cs[i + 1][0] - cs[i][0]) * q, cs[i][1] + (cs[i + 1][1] - cs[i][1]) * q];
+    };
     const k = T => 1 + (amount - 1) * (T < z.a ? (z.a > a0 ? ss((T - a0) / (z.a - a0)) : 1) : T <= z.b ? 1 : ss(1 - (T - z.b) / R));
-    const edges = [a0, z.a, Math.min(z.b, D), b1], ts = new Set(edges); // (the edges stay through the thinning: in by the click exactly)
-    for (let T = a0; T < b1; T += 1 / 15) ts.add(T);
-    for (const T of [...ts].sort((x, y) => x - y)) if (T > kf.at(-1).t + 1e-4) kf.push(Object.assign(props(T, k(T), at(T)), edges.includes(T) && { pin: 1 }));
+    const add = (T, ease, pin) => { // (at the time of the last one, e.g. a zoom from the clip's start: that one eases instead)
+      const l = kf.at(-1);
+      if (T > l.t + 1e-4) kf.push({ ...zp(T, k(T), at(T)), ease, ...(pin && { pin: 1 }) });
+      else if (ease) Object.assign(l, { ease, pin: 1 });
+    };
+    add(a0, true, 1); add(z.a, false, 1);
+    for (let T = z.a + 1 / 15; T < z.b - 1e-4; T += 1 / 15) add(T, false);
+    add(Math.min(z.b, D), true, 1); add(b1, false, 1);
+    for (let T = a0; T < b1; T += 1 / 30) dense.push(zp(T, k(T), at(T))); // (the motion as meant, for tests)
   }
   if (kf.at(-1).t < D - 1e-4) kf.push(props(D, 1, [0.5, 0.5]));
-  return { kf: azThin(kf, W, H), dense: kf.map(({ pin, ...f }) => f), zooms };
+  return { kf: azThin(kf, W, H), dense, zooms };
 }
-function azThin(kf, W, H, cap = 1200) { // the 15-a-second samples -> the few that draw the same motion (within half a pixel and 0.2 % zoom):
-  // holds and straight stretches collapse (Douglas-Peucker). Long, busy recordings loosen it until they fit well under the export's 2000
+const AZ_MAX = 200; // separate zooms in one clip: 4 keyframes each, well under the export's 2000 with room for following the cursor
+function azThin(kf, W, H, cap = 1500) { // the held stretches' 15-a-second samples -> the few that draw the same motion (within a pixel and 0.2 %
+  // zoom; Douglas-Peucker). The zooms' edges always stay (their eased segments have nothing between them). A recording busy throughout loosens
+  // it until it fits under the export's 2000 keyframes.
   for (let tol = 1; ; tol *= 1.5) {
     const keep = new Uint8Array(kf.length), err = (a, b, i) => { // how far keyframe i is off the line a..b, in tolerances
       const u = (kf[i].t - kf[a].t) / (kf[b].t - kf[a].t || 1), d = k => Math.abs(kf[i][k] - (kf[a][k] + (kf[b][k] - kf[a][k]) * u));
-      return Math.max(d('scale') / (0.002 * tol), (d('x') * W) / (0.5 * tol), (d('y') * H) / (0.5 * tol));
+      return Math.max(d('scale') / (0.002 * tol), (d('x') * W) / tol, (d('y') * H) / tol);
     };
-    kf.forEach((f, i) => { if (f.pin && tol < 8) keep[i] = 1; }); // (hundreds of separate zooms: the edges loosen too, so it always fits)
+    kf.forEach((f, i) => { if (f.pin) keep[i] = 1; });
     keep[0] = keep[kf.length - 1] = 1;
     for (const st = [[0, kf.length - 1]]; st.length;) {
       const [a, b] = st.pop();
       let w = 0, at = -1;
-      for (let i = a + 1; i < b; i++) { const e = keep[i] ? 2 : err(a, b, i); if (e > w) { w = e; at = i; } } // (a pinned one splits here)
+      for (let i = a + 1; i < b; i++) { const e = keep[i] ? Infinity : err(a, b, i); if (e > w) { w = e; at = i; } } // (a pinned one splits first)
       if (w > 1) { keep[at] = 1; st.push([a, at], [at, b]); }
     }
     const out = kf.filter((_, i) => keep[i]).map(({ pin, ...f }) => f);
-    if (out.length <= cap) return out;
+    if (out.length <= cap || tol > 1e6) return out;
   }
 }
 async function autoZoom(c, { amount, smooth } = {}) {
@@ -458,5 +494,4 @@ addEventListener('keydown', e => { // while recording: Space pauses the teleprom
   } else return;
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
-addEventListener('pagehide', () => { if (RC) rcEnd(RC); }); // closed or reloaded mid-take: devices off, the server's parts dropped
 $('#btnRecord')?.addEventListener('click', openRecorder);
