@@ -1102,10 +1102,7 @@ def beats(mid):
     f = CACHE / f'{mid}.pcm'
     src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
     # numpy in the AI venv (ai/beats.py, the same grid) starts first: Python and numpy load while ffmpeg decodes, then ~8 ms
-    # Up to 5 minutes the stdlib loops below cost less than starting Python + numpy (a 2:50 song end to end: stdlib 0.145 s vs
-    # numpy 0.147 s on an M4 Max, 0.167 vs 0.225 s on Windows, where the venv's Python + numpy import alone takes 0.21 s).
-    # ponytail: a fixed 300 s crossover from those two machines; time both on long songs if it matters
-    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not AI_PY.exists() or fnum(m.get('duration', 0), 0, 1e7) < 300 else subprocess.Popen(
+    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not AI_PY.exists() else subprocess.Popen(
         [*AI_RUN, str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
     raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
     if fast:
