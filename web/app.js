@@ -1047,8 +1047,8 @@ function fdRender() {
     <button id="fdNew" class="ghostline" title="Make a folder${FD.folders[cur] ? ` inside ${esc(FD.folders[cur].name)}` : ''}">New folder</button>
     ${FD.sel.size ? `<div class="fdsel"><span>${FD.sel.size} selected</span><select id="fdMoveTo" aria-label="Move the selected media to a folder"><option value="">Move to…</option><option value="__none">No folder (all media)</option>${Object.keys(FD.folders).sort((a, b) => fdPath(a).join('/').localeCompare(fdPath(b).join('/'))).map(k => `<option value="${k}">${esc(fdPath(k).join(' / '))}</option>`).join('')}</select><button data-fdclear>Clear</button></div>` : ''}`;
   const kids = smart ? [] : fdKids(cur);
-  list.innerHTML = `<div class="smart" aria-label="Smart folders">${SMART.map(([k, n, f]) => `<button data-smart="${k}"${cur === `smart:${k}` ? ' class="on"' : ''} title="Fills itself">${n}<small>${fdMedia().filter(m => f(m, used)).length}</small></button>`).join('')}</div>
-    ${kids.length ? `<div class="folds">${kids.map(k => `<div class="fold" draggable="true" data-fold="${k}" data-go="${k}" tabindex="0" title="Open · drop media here"><b>${esc(FD.folders[k].name)}</b><small>${fdCount(k)}</small><span class="fbtns"><button data-frn="${k}" title="Rename" aria-label="Rename ${esc(FD.folders[k].name)}">Rename</button><button data-fdel="${k}" title="Delete the folder, keep its media" aria-label="Delete folder ${esc(FD.folders[k].name)}">×</button></span></div>`).join('')}</div>` : ''}`;
+  $('#smartBar').innerHTML = SMART.map(([k, n, f]) => `<button data-smart="${k}"${cur === `smart:${k}` ? ' class="on"' : ''} title="Fills itself">${n}<small>${fdMedia().filter(m => f(m, used)).length}</small></button>`).join('');
+  list.innerHTML = `${kids.length ? `<div class="folds">${kids.map(k => `<div class="fold" draggable="true" data-fold="${k}" data-go="${k}" tabindex="0" title="Open · drop media here"><b>${esc(FD.folders[k].name)}</b><small>${fdCount(k)}</small><span class="fbtns"><button data-frn="${k}" title="Rename" aria-label="Rename ${esc(FD.folders[k].name)}">Rename</button><button data-fdel="${k}" title="Delete the folder, keep its media" aria-label="Delete folder ${esc(FD.folders[k].name)}">×</button></span></div>`).join('')}</div>` : ''}`;
 }
 const fdAncestors = id => { const out = []; for (let k = id, n = 0; k && FD.folders[k] && n < 99; k = FD.folders[k].parent, n++) out.unshift(k); return out; };
 function fdWire() {
@@ -1062,7 +1062,7 @@ function fdWire() {
     if (sm) { FD.cur = FD.cur === `smart:${sm.dataset.smart}` ? null : `smart:${sm.dataset.smart}`; FD.sel.clear(); renderMediaList(); return fdLoad().catch(() => {}); }
     if (go) { FD.cur = go.dataset.go || null; FD.sel.clear(); renderMediaList(); }
   };
-  bar.addEventListener('click', click); list.addEventListener('click', click);
+  bar.addEventListener('click', click); list.addEventListener('click', click); $('#smartBar').addEventListener('click', click);
   list.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('.fold')) { FD.cur = e.target.dataset.go; FD.sel.clear(); renderMediaList(); } });
   bar.addEventListener('change', e => { if (e.target.id === 'fdMoveTo' && e.target.value) fdMove([...FD.sel], e.target.value === '__none' ? null : e.target.value).catch(err => toast(err.message)); });
   for (const el of [bar, list]) {
