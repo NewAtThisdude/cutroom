@@ -481,7 +481,7 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
   }
   if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
-function touched() { brandFit(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+function touched() { brandFit(); window.layoutFit?.(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) { if (from.length) jump(undo.length + (from === undo ? -1 : 1)); }
 function jump(k) { // to the state just after step k (0 = the oldest kept): the steps in between move across, one render at the end
@@ -1108,12 +1108,12 @@ function renderInspector() {
   const c = selClip();
   pending = null;
   $('#inspector').innerHTML = !c ? projectPanel() : S.sel.lane === 'tr' ? trPanel(c) : S.sel.lane === 'fx' ? fxPanel(c) : c.media ? mediaPanel(c, S.sel.lane) : textPanel(c, S.sel.lane);
-  if (c && S.sel.lane !== 'tr') $('#inspector h3')?.insertAdjacentHTML('afterend', labelRow(c));
+  if (c && S.sel.lane !== 'tr') $('#inspector h3')?.insertAdjacentHTML('afterend', labelRow(c) + (c.cell || c.layBg ? layoutRows(c) : ''));
   if ((c?.media || c?.fx === 'adjust') && $('#curveSvg')) { drawWheels(c); drawCurve(c); }
   if (c?.media) drawRamp(c);
   kgRO.disconnect(); if ($('#kfGraph')) kgRO.observe($('#kfGraph'));
   syncToolbar();
-  if (G.tab === 'transitions' || G.tab === 'filters') renderPane(); // they act on the selection
+  if (G.tab === 'transitions' || G.tab === 'filters' || G.tab === 'layouts') renderPane(); // they act on the selection
   else if (G.tab === 'script' && !SC.busy) renderScript(false); // the words follow edits of the main track
   else if (G.tab === 'captions' && !document.activeElement?.matches('#capList input')) { renderCapList(); renderCapTiles(false); }
   if (selection().length > 1) $('#inspector').insertAdjacentHTML('afterbegin', `<p class="multi">${selection().length} clips selected · ⌫ deletes them, ⌘C copies, drag moves them together</p><div class="actions"><button data-act="compound">Make compound clip</button></div>`);
@@ -1587,7 +1587,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (el.dataset.k.startsWith('rt.')) { const c = selClip(); if (c) rtSet(c, el.dataset.k.slice(3), el.type === 'range' ? +el.value : el.value); return; } // a retouch draft, not the project
   if (el.dataset.k === 'lk.here') { const c = selClip(); if (c) strengthPoint(c, +el.value); return; }
   const [root, ...path] = el.dataset.k.split('.'), last = path.pop();
-  let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : P;
+  let o = root === 'c' ? selClip() : root === 'cap' ? P.capStyle : root === 'lay' ? layOf(selClip()) : P;
   if (!o) return;
   let v = el.type === 'checkbox' ? el.checked : el.type === 'range' || 'num' in el.dataset ? +el.value : el.value;
   if ('log' in el.dataset) { v = 10 ** v; v = Math.abs(v - 1) < 0.02 ? 1 : +v.toFixed(2); } // speed: log slider, 1x has a detent
@@ -1599,6 +1599,7 @@ function apply(el) { // data-k="c.adj.b" -> selected clip .adj.b ; "cap.size" ->
   if (root === 'c' && path.length === 1 && path[0] === 'mask' && o.mkf?.length && MKF.includes(last)) { maskPoint(o)[last] = v; return; }
   for (const q of path) o = o[q] ??= {};
   o[last] = v;
+  if (root === 'lay' || (root === 'c' && path[0] === 'cell')) layoutFit(); // a layout's gap, corners, a cell's zoom / pan: re-flowed as the slider moves
   if (last === 'font' && WEIGHTS[v]) { const w = o.weight ?? textStyle(selClip() || {}, S.sel?.lane).weight, ws = WEIGHTS[v]; if (!ws.includes(w)) o.weight = ws.reduce((x, y) => (Math.abs(y - w) < Math.abs(x - w) ? y : x)); }
   if (el.dataset.k === 'c.text') retext(selClip());
 }
@@ -2087,7 +2088,7 @@ function paint() {
   // an element per file and side: two alternate (the next cut pre-seeked, transitions show both), and a jump back to a
   // file already loaded finds it ready (keyed by side alone, every jump to another file reloaded it: 16-116 ms of black)
   const layers = act.map(i => ['main', P.main[i], `m${i % 2}${P.main[i].media}`, i]);
-  for (const c of shown('overlay')) if (t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]);
+  for (const c of shown('overlay')) if (!c.cell?.off && t >= c.start && t < c.start + len(c)) layers.push(['overlay', c, `o${c.id}`]); // (a layout's parked clips: kept, not drawn)
   if (!S.playing) { // paused on a picture still loading: the last frame stays up until it's there ('loadeddata' / 'seeked' repaint)
     const need = layers.filter(([, c]) => M.get(c.media) && M.get(c.media).kind !== 'image')
       .map(([lane, c, key, i]) => {
@@ -2513,7 +2514,7 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
   x.translate(W * (0.5 + mk.x), H * (0.5 + mk.y)); x.rotate((mk.rot * Math.PI) / 180);
   x.beginPath();
   if (mk.type === 'circle') x.ellipse(0, 0, Math.max(1, rw), Math.max(1, rh), 0, 0, Math.PI * 2);
-  else if (mk.type === 'rect') x.rect(-rw, -rh, rw * 2, rh * 2);
+  else if (mk.type === 'rect') { if (mk.rr > 0) x.roundRect(-rw, -rh, rw * 2, rh * 2, mk.rr * 2 * Math.min(rw, rh)); else x.rect(-rw, -rh, rw * 2, rh * 2); } // rr: rounded corners (a layout cell's)
   else if (mk.type === 'linear') x.rect(-big, 0, big * 2, big); // keep everything below the line
   else if (mk.type === 'mirror') x.rect(-big, -rh, big * 2, rh * 2); // mirror: a band through the centre
   else if (mk.type === 'ai') { // the subject's outline on this source frame: cropped like the clip, mirrored with it, scaled by w / h
@@ -2795,6 +2796,7 @@ function renderPane() { // the open gallery, refreshed (cheap: called on tab cha
   else if (t === 'stickers') renderStickers();
   else if (t === 'audio') renderAudio();
   else if (t === 'text') renderTextTiles();
+  else if (t === 'layouts') renderLayouts();
   else if (t === 'script') renderScript();
   else if (t === 'captions') { renderCapList(); renderCapTiles(); }
 }
@@ -3147,6 +3149,7 @@ function drawSel(ctx, h, handles) {
   ctx.restore();
 }
 function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: rotate (snaps to straight; ⌥ for free)
+  if (selClip()?.cell) return cellZoomDrag(e, h, selClip(), cv); // a layout cell: zoom inside it
   const c = selClip(), before = JSON.stringify(P), b = selBox(h), pr0 = propsAt(c, S.t - c.start), r = cv.getBoundingClientRect(), px = cv.width / r.width;
   const pt = ev => [(ev.clientX - r.left) * px, (ev.clientY - r.top) * px], [x0, y0] = pt(e);
   const d0 = Math.max(1, Math.hypot(x0 - b.cx, y0 - b.cy)), a0 = Math.atan2(y0 - b.cy, x0 - b.cx);
@@ -4955,7 +4958,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     text = await textLayer(w, h, k, fr, [...new Set(fonts)]);
   }
   return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
-    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
+    main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').filter(c => !c.cell?.off).map(c => clip(c, 'overlay'))),
     audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }
 // ---------- export for every platform: the plan re-laid for another canvas, and the one export queue ----------
@@ -4979,7 +4982,9 @@ function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main
       } else if (f === c || f.scale != null) f.scale = (f.scale ?? 1) * ((a * W * k) / (a2 * W2));
     }
   }
-  return Object.assign(p, { w: W2, h: H2 });
+  Object.assign(p, { w: W2, h: H2 });
+  window.layoutFit?.(p); // a layout's cells re-flow on the new canvas
+  return p;
 }
 // buildPlan reads the global P, so a plan for another project (a compound clip's, another shape's, a template preview's) borrows it:
 // P is that project until the plan is built. One borrow at a time; act() (saving or using a template, every REMOTE command) waits
@@ -6266,6 +6271,7 @@ function wire() {
     if (S.sel?.id !== hit.id) { S.sel = { lane: hit.lane, id: hit.id }; renderAll(); S.dirty = true; }
     const c = selClip();
     if (!c) return;
+    if (c.cell || c.layBg) return cellDrag(e, c, cv); // a layout cell: the picture pans inside it
     const before = JSON.stringify(P), k = cv.width / P.w, x0 = e.clientX, y0 = e.clientY;
     const o = hit.lane === 'captions' ? { y: P.capStyle.y } : propsAt(c, S.t - c.start);
     // text snaps (6 px, ⌘ to move freely) its box centre to the frame centre and other text, its edges to the safe margin
