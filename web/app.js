@@ -868,6 +868,7 @@ const KEYMAP0 = [
   ['undo', 'Undo', ['Mod+KeyZ'], () => restore(undo, redo)], ['redo', 'Redo', ['Mod+Shift+KeyZ'], () => restore(redo, undo)],
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
   ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
+  ['fullscreen', 'Full screen preview (Esc leaves)', ['Shift+KeyF'], () => toggleFullscreen()],
   ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
   ['history', 'History: every edit step, go back to any', ['KeyH'], () => openHistory()],
   ...[1, 2, 3, 4, 5, 6].map(i => [`cam${i}`, `Multicam: cut to angle ${i}`, [`Digit${i}`], () => { if (!P.main.some(c => c.mc)) return false; mcCut(i - 1); }]),
@@ -878,6 +879,7 @@ const KEYMAP0 = [
     else if (S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
     else if (S.pick) { S.pick = null; toast('Cancelled'); }
     else if (menuEl) closeMenu();
+    else if (fsEl()) toggleFullscreen(false);
     else if (document.body.classList.contains('theater')) toggleTheater(false);
     else if (S.sel || S.multi.size) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
     else return false;
@@ -888,7 +890,7 @@ const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = 
 let KEYOWN = (() => { try { const o = JSON.parse(store.get('cutroom.keys')) || {}; return Object.fromEntries(Object.entries(o).filter(([id, v]) => KEYDEF[id] && Array.isArray(v) && v.every(k => typeof k === 'string'))); } catch { return {}; } })(); // this Mac's changes
 let KEYBY = new Map();
 const keysOf = id => KEYOWN[id] || KEYDEF[id][2];
-const KEY_TITLES = { btnStart: 'start', btnBack: 'frameL', btnPlay: 'play', btnFwd: 'frameR', btnEnd: 'end', btnTheater: 'theater', btnUndo: 'undo', btnRedo: 'redo', btnSplit: 'split', btnDelete: 'del', btnDup: 'dup' };
+const KEY_TITLES = { btnStart: 'start', btnBack: 'frameL', btnPlay: 'play', btnFwd: 'frameR', btnEnd: 'end', btnTheater: 'theater', btnFullscreen: 'fullscreen', btnUndo: 'undo', btnRedo: 'redo', btnSplit: 'split', btnDelete: 'del', btnDup: 'dup' };
 function applyKeys(save) {
   KEYBY = new Map(KEYMAP0.flatMap(([id]) => keysOf(id).map(k => [k, id])));
   if (save) store.set('cutroom.keys', JSON.stringify(KEYOWN));
@@ -1647,7 +1649,7 @@ function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); s
 // playing once frames are being missed (back to full on pause). The CSS size never changes: the browser scales it up.
 const PQ = { full: 1, half: 0.5, quarter: 0.25 };
 const pqMode = () => (PQ[store.get('cutroom.pq')] || store.get('cutroom.pq') === 'auto' ? store.get('cutroom.pq') : 'auto');
-const pqScale = () => PQ[pqMode()] ?? (S.pqLow ? 0.5 : 1);
+const pqScale = () => S.fs ? 1 : PQ[pqMode()] ?? (S.pqLow ? 0.5 : 1); // full screen always plays at full quality
 const cpx = () => { const cv = $('#cv'); return cv.width / (cv.clientWidth || cv.width) || 1; }; // canvas pixels per CSS pixel (selection handles keep their size)
 function setPQ(v) { store.set('cutroom.pq', v); S.pqLow = false; $('#pqSel').value = pqMode(); fitStage(); }
 function fitStage() {
@@ -2158,13 +2160,13 @@ function paint() {
     ctx.save(); ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = 2 * d; ctx.setLineDash([5 * d, 4 * d]);
     ctx.strokeRect(R.x * k, R.y * k, R.w * k, R.h * k); ctx.restore();
   }
-  const sel = selection(), byId = new Map(hits.map(q => [q.id, q]));
+  const sel = S.fs ? [] : selection(), byId = new Map(hits.map(q => [q.id, q])); // full screen shows the picture alone: no selection box or snap lines
   for (const [x, lane] of sel) { // the selection: a box that turns with the clip, with handles when one clip is selected
     const h = byId.get(x.id);
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
     if (h && sel.length === 1 && x.mask?.type === 'pen' && !S.playing) drawPen(ctx, x, h); // its points, to drag
   }
-  if (S.guides) { // dragged text is snapped: the line it snapped to
+  if (S.guides && !S.fs) { // dragged text is snapped: the line it snapped to
     const d = cpx(), { x: gx, y: gy } = S.guides;
     ctx.save(); ctx.strokeStyle = '#ff3d9a'; ctx.lineWidth = 1 * d; ctx.beginPath();
     if (gx != null) { ctx.moveTo(gx * P.w * k, 0); ctx.lineTo(gx * P.w * k, cv.height); }
@@ -3176,6 +3178,20 @@ function toggleTheater(on = !document.body.classList.contains('theater')) { // t
   $('#btnTheater').innerHTML = on ? ICON.shrink : ICON.expand;
   $('#btnTheater').title = on ? 'Back to the editor (F or Esc)' : 'Theater view (F)';
   requestAnimationFrame(() => { fitStage(); renderTimeline(); });
+}
+
+// Full screen (Shift+F, the button by Theater): the stage itself goes full screen (the picture and nothing else), at full preview quality; Esc leaves.
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+async function toggleFullscreen(on = !fsEl()) {
+  const st = $('#stage'), req = st.requestFullscreen || st.webkitRequestFullscreen, ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (on === !!fsEl()) return;
+  if (!(on ? req : ex)) return toast('Full screen is not available in this window');
+  try { await (on ? req.call(st) : ex.call(document)); } catch (e) { toast(`Full screen was refused: ${e.message || e}`); }
+}
+function fsChanged() { // entered or left (also by Esc, which the browser takes itself)
+  S.fs = !!fsEl(); S.pqLow = false;
+  const b = $('#btnFullscreen'); b.classList.toggle('on', S.fs); b.setAttribute('aria-pressed', S.fs);
+  fitStage(); requestAnimationFrame(() => { fitStage(); S.dirty = true; });
 }
 
 // ---------- edit by script: the main track's words; delete words or pauses to cut the video ----------
@@ -6318,6 +6334,8 @@ function wire() {
   $('#confirmBar').addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled) endPreview(['ok', 'again', 'smaller', 'bigger'].find(k => k in b.dataset) || null); });
   $('#btnTheater').innerHTML = ICON.expand;
   $('#btnTheater').addEventListener('click', () => toggleTheater());
+  $('#btnFullscreen').addEventListener('click', () => toggleFullscreen());
+  for (const n of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(n, fsChanged);
   $('#scriptBody').addEventListener('pointerdown', e => { // click a word: jump there; drag or ⇧-click: select words
     const w = e.target.closest('[data-i]'), g = e.target.closest('[data-g]');
     if (g) { SC.sel = { gap: +g.dataset.g }; const p = SC.words[+g.dataset.g - 1]; if (p) seekTo(p.t1); markScript(); return; }

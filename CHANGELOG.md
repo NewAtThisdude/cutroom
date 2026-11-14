@@ -24,6 +24,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Remappable keyboard shortcuts
 - Crash recovery: edits made since the last save come back after a crash, a damaged project opens from its newest
   version, and an export cut short by a crash is listed with a Retry button
+- Full screen preview (Shift+F or the button beside Theater): the picture alone at full quality, Esc leaves, playback keys keep working
 
 ### Effects, colour and transitions
 
