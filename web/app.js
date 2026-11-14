@@ -869,6 +869,7 @@ const KEYMAP0 = [
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
   ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
   ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
+  ['cmp', 'Before / after: the colour work off on one side of a line', ['Backslash'], (e, field) => { if (field) return false; cmpToggle(); }],
   ['history', 'History: every edit step, go back to any', ['KeyH'], () => openHistory()],
   ...[1, 2, 3, 4, 5, 6].map(i => [`cam${i}`, `Multicam: cut to angle ${i}`, [`Digit${i}`], () => { if (!P.main.some(c => c.mc)) return false; mcCut(i - 1); }]),
   ...LABELS.map(([, n], i) => [`lab${i + 1}`, `Label the selected clips ${n.toLowerCase()} (again: none)`, [`Mod+Digit${i + 1}`], () => labelKey(i)]),
@@ -1658,6 +1659,7 @@ function fitStage() {
   cv.style.height = `${Math.round(P.h * s)}px`;
   cv.width = Math.max(2, Math.round(P.w * s * dpr));
   cv.height = Math.max(2, Math.round(P.h * s * dpr));
+  cmpLayout();
   S.dirty = true;
 }
 const POOL_MAX = 8; // video elements kept loaded (720p copies): jumping back to a clip finds its file still there
@@ -2108,28 +2110,7 @@ function paint() {
   hits = []; S.lead = null;
   ctx.fillStyle = backdrop(ctx);
   ctx.fillRect(0, 0, cv.width, cv.height);
-  for (const [lane, c, key, i] of layers) {
-    const m = M.get(c.media);
-    if (!m) continue;
-    let el;
-    if (m.kind === 'image') el = imgFor(m);
-    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
-    const rp = S.rtPv; // a retouch draft: the paused frame as ai/retouch.py renders it, in place of the clip's own picture
-    if (rp?.id === c.id && !S.playing && S.rtDraft?.id === c.id) { if (Math.abs(t - rp.T) < 0.5 / P.fps && rp.img.naturalWidth) el = rp.img; else rtPreviewSoon(); }
-    if (lane === 'overlay' && P.mute.overlay) continue;
-    if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
-      (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
-      if (i !== act[1]) continue;
-      const cap = (TR_GPU[tr.type] || TRX[tr.type] || blurTrGPU(tr.type)) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
-      if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
-      for (const j of [0, 1]) {
-        const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
-        lx.fillStyle = backdrop(lx); lx.fillRect(0, 0, L.width, L.height);
-        if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
-      }
-      transition(ctx, layer(0), layer(1), tr.type, tr.p);
-    } else if (!(layers.length === 1 && (fxDone = fxCap(ctx, lane, c, m, el, t, k)))) drawMedia(ctx, lane, c, m, el, t - c.start, k);
-  }
+  fxDone = drawLayers(ctx, layers, act, mi, tr, t, k, live, null);
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
     const v = vidFor(`m${(mi + 1) % 2}${nx.media}`, nm), lead = nx.start - t, PRE = 0.3;
@@ -2151,6 +2132,7 @@ function paint() {
   if (!fxDone) fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
   if (SCOPE.on && (!S.playing || performance.now() - SCOPE.at >= 60)) drawScope(); // the finished frame, before the selection box; ~15 Hz while playing
+  if (CMP.on) cmpPaint(ctx, layers, act, mi, tr, t, k); // before / after: the same frame without its colour work, over one side (a preview aid: the export never sees it)
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
@@ -2176,6 +2158,32 @@ function paint() {
   $('#tc').textContent = `${tc(S.t)} / ${tc(S.playing ? S.end : end)}`;
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
+}
+function drawLayers(ctx, layers, act, mi, tr, t, k, live, cmp) { // the clips of the frame in order, onto ctx; true = effects already ran on the picture (fxCap). cmp: before / after's ungraded pass (cmpStrip on the clips it names)
+  let fxDone = false;
+  for (const [lane, c0, key, i] of layers) {
+    const c = cmp && (cmp === 'all' || isSel(lane, c0.id)) ? cmpStrip(c0) : c0, m = M.get(c.media);
+    if (!m) continue;
+    let el;
+    if (m.kind === 'image') el = imgFor(m);
+    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi && !cmp) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
+    const rp = S.rtPv; // a retouch draft: the paused frame as ai/retouch.py renders it, in place of the clip's own picture
+    if (rp?.id === c.id && !S.playing && S.rtDraft?.id === c.id) { if (Math.abs(t - rp.T) < 0.5 / P.fps && rp.img.naturalWidth) el = rp.img; else rtPreviewSoon(); }
+    if (lane === 'overlay' && P.mute.overlay) continue;
+    if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
+      (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
+      if (i !== act[1]) continue;
+      const cap = (TR_GPU[tr.type] || TRX[tr.type] || blurTrGPU(tr.type)) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
+      if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
+      for (const j of [0, 1]) {
+        const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
+        lx.fillStyle = backdrop(lx); lx.fillRect(0, 0, L.width, L.height);
+        if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
+      }
+      transition(ctx, layer(0), layer(1), tr.type, tr.p);
+    } else if (!(layers.length === 1 && (fxDone = fxCap(ctx, lane, c, m, el, t, k)))) drawMedia(ctx, lane, c, m, el, t - c.start, k);
+  }
+  return fxDone;
 }
 function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   if (el.tagName === 'VIDEO' ? el.readyState < 2 : !(el.complete && el.naturalWidth)) return;
@@ -2559,7 +2567,7 @@ function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect 
 }
 function fxOps(W, H, t) { // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
   const u = Math.min(W, H) / 1080;
-  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
+  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust') && !(cmpSkipFx && (cmpSkipFx === 'all' || f.fx === 'adjust'))).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
 }
 function fxPixels(ctx, t) { runOps(ctx, ctx.canvas.width, ctx.canvas.height, fxOps(ctx.canvas.width, ctx.canvas.height, t)); } // effect steps on what is on the canvas so far (video and overlays)
 function fxCap(ctx, lane, c, m, el, t, k) { // one plain picture under GPU-only effects: composed and processed straight from its <video> on the GPU
@@ -3275,6 +3283,69 @@ function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: r
   const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+// ---------- before / after: the picture with its colour work off, on one side of a line you drag (a preview aid; exports never see it) ----------
+// The before side is the same frame drawn again by the same code (drawLayers + effects + text) with the colour work taken off the clips
+// (cmpStrip), so the GPU pass and the JavaScript fallback agree by construction. Colour work = adjust, filter, grade, curves, HSL, LUT,
+// filter-strength points (masks stay, so a masked grade shows only where the mask is) and the adjustment layers; "Effects" adds blur,
+// mosaic, sharpen, vignette, beauty, glow and every effect on the Effects track.
+const CMP = { on: false, mode: 'split', x: 0.5, scope: 'clip', fx: false };
+let cmpSkipFx = null;
+const cmpCv = [];
+const CMP_FX = ['vig', 'blur', 'pix', 'sharp'];
+function cmpStrip(c) {
+  const o = { ...c }, keep = CMP.fx ? [] : CMP_FX.filter(k => c.adj?.[k] !== undefined);
+  delete o.look; delete o.grade; delete o.lkf;
+  o.adj = { b: 1, c: 1, s: 1, ...Object.fromEntries(keep.map(k => [k, c.adj[k]])) };
+  if (CMP.fx) { delete o.beauty; delete o.glow; }
+  return o;
+}
+function cmpCanvas(n, W, H) { const c = cmpCv[n] ??= document.createElement('canvas'); if (c.width !== W || c.height !== H) { c.width = W; c.height = H; } return c; }
+function cmpPaint(ctx, layers, act, mi, tr, t, k) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, all = CMP.scope === 'frame' || !layers.some(([lane, c]) => isSel(lane, c.id)), B = cmpCanvas(0, W, H), bx = B.getContext('2d'), h0 = hits;
+  hits = []; cmpSkipFx = CMP.fx ? 'all' : all ? 'adjust' : null;
+  try {
+    bx.setTransform(1, 0, 0, 1, 0, 0); bx.globalAlpha = 1; bx.globalCompositeOperation = 'source-over'; bx.filter = 'none';
+    bx.fillStyle = backdrop(bx); bx.fillRect(0, 0, W, H);
+    if (!drawLayers(bx, layers, act, mi, tr && { type: tr.type, p: tr.p }, t, k, new Set(), all ? 'all' : 'sel')) fxPixels(bx, t);
+    drawTexts(bx, t, k, true);
+  } finally { cmpSkipFx = null; hits = h0; }
+  if (CMP.mode === 'side') { // both whole frames, half size each, one beside the other
+    const A = cmpCanvas(1, W, H);
+    A.getContext('2d').drawImage(ctx.canvas, 0, 0);
+    ctx.save(); ctx.fillStyle = backdrop(ctx); ctx.fillRect(0, 0, W, H); ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(B, 0, H / 4, W / 2, H / 2); ctx.drawImage(A, W / 2, H / 4, W / 2, H / 2); ctx.restore();
+    hits = [];
+  } else { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, Math.round(CMP.x * W), H); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore(); }
+}
+function cmpLayout() { // the line, labels and options sit over the picture
+  const ov = $('#cmpOv'), cv = $('#cv');
+  if (!ov) return;
+  ov.hidden = !CMP.on;
+  if (!CMP.on) return;
+  Object.assign(ov.style, { left: `${cv.offsetLeft}px`, top: `${cv.offsetTop}px`, width: `${cv.clientWidth}px`, height: `${cv.clientHeight}px` });
+  ov.dataset.mode = CMP.mode;
+  const g = $('#cmpGrab'); g.style.left = `${CMP.x * 100}%`; g.setAttribute('aria-valuenow', Math.round(CMP.x * 100)); g.hidden = CMP.mode === 'side';
+  for (const b of $$('#cmpBar [data-cmpmode]')) b.classList.toggle('on', b.dataset.cmpmode === CMP.mode);
+  for (const b of $$('#cmpBar [data-cmpscope]')) b.classList.toggle('on', b.dataset.cmpscope === CMP.scope);
+  $('#cmpFx').checked = CMP.fx;
+}
+function cmpSet(o = {}, keep = true) {
+  if (o.mode && ['split', 'side'].includes(o.mode)) CMP.mode = o.mode;
+  if (o.scope && ['clip', 'frame'].includes(o.scope)) CMP.scope = o.scope;
+  if (o.fx !== undefined) CMP.fx = !!o.fx;
+  if (o.x !== undefined) CMP.x = clamp(+o.x || 0, 0, 1);
+  if (o.on !== undefined) CMP.on = !!o.on;
+  const b = $('#btnCmp'); b.classList.toggle('on', CMP.on); b.setAttribute('aria-pressed', CMP.on);
+  if (keep) store.set('cutroom.cmp', JSON.stringify({ mode: CMP.mode, scope: CMP.scope, fx: CMP.fx, x: CMP.x }));
+  cmpLayout(); S.dirty = true;
+}
+const cmpToggle = () => { cmpSet({ on: !CMP.on }); if (CMP.on) toast(CMP.scope === 'clip' && selection().length ? 'Before / after: the selected clip, ungraded on the left. \\ turns it off' : 'Before / after: the whole frame, ungraded on the left. \\ turns it off'); };
+function cmpDrag(e) { // the line follows the pointer; a pure preview change, no undo step
+  e.preventDefault();
+  const move = ev => { const r = $('#cv').getBoundingClientRect(); cmpSet({ x: (ev.clientX - r.left) / r.width }, false); };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); cmpSet({}); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
 }
 function setScope({ on = SCOPE.on, kind = SCOPE.kind }, keep = true) { // the scopes panel (G): open or not, which scope; kept per Mac
   SCOPE.on = !!on; if ($(`[data-scope="${kind}"]`)) SCOPE.kind = kind;
@@ -6222,8 +6293,14 @@ function wire() {
   $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => setScope({ on: !SCOPE.on }));
+  $('#btnCmp').addEventListener('click', cmpToggle);
+  $('#cmpGrab').addEventListener('pointerdown', cmpDrag);
+  $('#cmpGrab').addEventListener('keydown', e => { const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key]; if (d) { e.preventDefault(); cmpSet({ x: CMP.x + d * (e.shiftKey ? 0.1 : 0.01) }); } });
+  $('#cmpBar').addEventListener('click', e => { const b = e.target.closest('[data-cmpmode], [data-cmpscope]'); if (b) cmpSet(b.dataset.cmpmode ? { mode: b.dataset.cmpmode } : { scope: b.dataset.cmpscope }); });
+  $('#cmpFx').addEventListener('change', e => cmpSet({ fx: e.target.checked }));
   $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) setScope({ kind: b.dataset.scope }); });
   try { setScope(JSON.parse(store.get('cutroom.scope')) || {}, false); } catch { /* none kept */ }
+  try { cmpSet(JSON.parse(store.get('cutroom.cmp')) || {}, false); } catch { /* none kept */ }
   $('#btnMeter').addEventListener('click', () => { meterSet(!MTR.on); if (MTR.on) audioOn(); });
   $('#mtTarget').addEventListener('click', () => meterTarget({ '-14': -16, '-16': -23 }[MTR.target] ?? -14));
   $('#mtReset').addEventListener('click', meterReset);
@@ -7306,6 +7383,10 @@ const REMOTE = {
     if (bad.length) throw new Error(`categories: ${all.join(', ')} (or "all"); not: ${bad.join(', ')}`);
     if (!['scale', 'abs'].includes(keyframes)) throw new Error('keyframes: scale (to each clip\'s length) or abs (keep the same times)');
     return pasteAttrs(src, tg, cats, keyframes);
+  },
+  async compare({ on, mode, scope, effects, x } = {}) { // before / after on the preview: on, mode (split|side), scope (clip|frame), effects, x (0-1, where the line is)
+    cmpSet({ on, mode, scope, fx: effects, x });
+    return { on: CMP.on, mode: CMP.mode, scope: CMP.scope, effects: CMP.fx, x: CMP.x };
   },
   async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
   async split_clip({ id, at }) {
