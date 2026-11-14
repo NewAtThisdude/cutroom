@@ -92,7 +92,7 @@ for (const dir of ['in', 'out', 'left', 'right', 'orbit']) {
   const moving = [10, 20, 30, 40, 50].every(i => mad(fr[i], fr[i - 8]) > 0.3);
   check(`${dir}: no frozen frames (no 3 identical in a row; every 8 frames the picture changes)`, worst <= 2 && moving, `longest run ${worst}`);
   const from = fr[hold === 0 ? 0 : 0], to = fr[rest], gA = gray(from), gB = gray(to), b0 = ball(from), b1 = ball(to);
-  const near = Math.hypot(b1.cx - b0.cx, b1.cy - b0.cy), wall = shift(gA, gB, 860, 340); // the wall patch at the ball's mirror place
+  const near = Math.hypot(b1.cx - b0.cx, b1.cy - b0.cy), wall = dir === 'in' || dir === 'out' ? shift(gA, gB, 860, 340) : shift(gA, gB, 400, 20); // a wall patch at the ball's mirror place (zoom), or as far from the middle sideways as the ball and above it (slides)
   check(`${dir}: the ball moves more than the wall behind it (${near.toFixed(1)} px vs ${wall.d.toFixed(1)} px)`, near > wall.d + 8, `ball (${b0.cx.toFixed(0)},${b0.cy.toFixed(0)}) -> (${b1.cx.toFixed(0)},${b1.cy.toFixed(0)}); wall ${wall.dx},${wall.dy}`);
   const tail = Math.max(...[rest, Math.floor(rest / 2)].map(i => ball(fr[i]).tail / b0.n));
   check(`${dir}: no red smear off the ball's edge (red beyond 1.15 radii under 1.5 % of the ball)`, tail < 0.015, `${(tail * 100).toFixed(2)} %; at the start ${(b0.tail / b0.n * 100).toFixed(2)} %`);
@@ -114,7 +114,7 @@ const b = await browser.launch();
 const pids = new Set();
 for (const rm of ['no-preference', 'reduce']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage();
-  const errs = []; page.on('pageerror', e => errs.push(e.message));
+  const errs = []; page.on('pageerror', e => { if (!/\/poster/.test(e.message)) errs.push(e.message); }); // (leaving a page sends its poster with keepalive: the reload)
   const ev = (f, a) => page.evaluate(f, a);
   const open = async () => { await page.goto(`${B}/`, { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0 && typeof SET === 'object', null, { timeout: 30000 }); await page.waitForTimeout(300); if (await page.$('#tour')) await page.keyboard.press('Escape'); };
   await open();
@@ -146,11 +146,11 @@ for (const rm of ['no-preference', 'reduce']) {
   const moved = await ev(async () => { const g = async t => { const r = await REMOTE.snapshot({ t, max: 320, preview: true }); return r.image; }; return (await g(0.05)) !== (await g(1.9)); });
   check(`[${rm}] the preview differs between the start and the end`, moved);
   // undo / redo / reload
-  await ev(() => undo.length && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true })));
+  await ev(() => restore(undo, redo));
   await page.waitForTimeout(300);
   let u = await ev(() => ({ media: P.main[0].media, z3: !!P.main[0].z3 }));
   check(`[${rm}] undo is one step back to the photo`, u.media === ph.id && !u.z3, JSON.stringify(u));
-  await ev(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, shiftKey: true })));
+  await ev(() => restore(redo, undo));
   await page.waitForTimeout(300);
   u = await ev(() => ({ media: P.main[0].media, z3: P.main[0].z3?.dir }));
   check(`[${rm}] redo brings the 3D zoom back`, u.media !== ph.id && u.z3 === 'left', JSON.stringify(u));
