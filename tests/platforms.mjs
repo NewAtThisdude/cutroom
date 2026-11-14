@@ -95,7 +95,7 @@ for (const rm of ['no-preference', 'reduce']) {
     check('REMOTE.export: also lists the extra files', r.also?.length === 2 && r.also[0].shape === '1:1' && r.also[0].size === '720x720' && r.also[1].size === '1280x720', JSON.stringify(r.also));
     rows = await ev(n => S.q.slice(n).map(q => ({ shape: q.row.querySelector('small').textContent.split(' · ')[0], ...q.st, say: q.say.textContent, reveal: !q.reveal.hidden })), n0);
   }
-  check(`${rm}: three exports, all saved, Show in Finder on each`, rows.length === 3 && rows.every(x => x.state === 'done' && x.say === 'Saved' && x.reveal), rows.map(x => `${x.shape} ${x.state} ${x.say}`).join(' | '));
+  check(`${rm}: three exports, all saved, Show in Finder on each`, rows.length === 3 && rows.every(x => x.state === 'done' && /^Saved( · |$)/.test(x.say) && x.reveal), rows.map(x => `${x.shape} ${x.state} ${x.say}`).join(' | '));
   const order = rows.map((x, i) => i && x.started - rows[i - 1].ended).slice(1);
   check(`${rm}: one after another (each starts after the one before ends)`, rows.every(x => x.started && x.ended) && order.every(g => g >= -0.01), order.map(g => `${g.toFixed(2)} s`).join(', '));
   const want = { '9:16': [720, 1280, 'crop=ih*9/16:ih', 'crop=ih*9/16:ih:(iw-ow)/2+iw*0.05'], '1:1': [720, 720, 'crop=ih:ih', 'crop=ih:ih:(iw-ow)/2+iw*0.05'], '16:9': [1280, 720, '', 'crop=iw*0.9:ih*0.9'] }; // the right crop, and one 5 % off
