@@ -54,10 +54,10 @@ for (const rm of ['no-preference', 'reduce']) {
   // ---- create, nest, breadcrumb ----
   await mk('Interviews');
   check(`${rm}: New folder makes Interviews at the top`, (await foldNames()).join() === 'Interviews' && (await crumbs()) === 'All media');
-  await page.click('.fold[data-fold]'); await page.waitForTimeout(100);
+  await page.click('.fold b'); await page.waitForTimeout(100);
   await mk('B-roll');
   check(`${rm}: opening Interviews then New folder nests B-roll inside it; breadcrumb reads All media > Interviews`, (await crumbs()) === 'All media > Interviews' && (await foldNames()).join() === 'B-roll');
-  await page.click('.fold[data-go]'); await page.waitForTimeout(100);
+  await page.click('.fold b'); await page.waitForTimeout(100);
   check(`${rm}: B-roll opens: breadcrumb All media > Interviews > B-roll, empty folder says so`, (await crumbs()) === 'All media > Interviews > B-roll' && (await cards()).length === 0 && /empty/i.test(await ev(() => $('#mediaList .hint')?.textContent || '')));
   await page.click('#folderBar .crumbs button:has-text("Interviews")'); await page.waitForTimeout(100);
   check(`${rm}: the breadcrumb goes back up`, (await crumbs()) === 'All media > Interviews');
@@ -77,7 +77,7 @@ for (const rm of ['no-preference', 'reduce']) {
   await drag(card('beta'), '.fold[data-go]'); await page.waitForTimeout(400);
   st = await api('/api/folders');
   check(`${rm}: dragging one of the selected cards moves all selected`, st.of[id.beta] === inter && st.of[id.gamma] === inter && !st.of[id.delta], JSON.stringify(st.of));
-  await page.click('#folderList .fold[data-go]'); await page.waitForTimeout(150);
+  await page.click('#folderList .fold b'); await page.waitForTimeout(150);
   check(`${rm}: inside Interviews: its three items`, (await cards()).sort().join() === 'fold-alpha.mp4,fold-beta.mp4,fold-gamma.wav', (await cards()).join());
 
   // ---- the Move to menu: back out to a subfolder and to no folder ----
@@ -105,12 +105,12 @@ for (const rm of ['no-preference', 'reduce']) {
 
   // ---- rename and delete in the UI ----
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
-  await page.hover('.fold[data-go]'); await page.click('.fold [data-frn]'); await page.fill('#fdName', 'Talks'); await page.keyboard.press('Enter'); await page.waitForSelector('#fdForm', { state: 'detached' });
+  await page.hover('.fold b'); await page.click('.fold [data-frn]'); await page.fill('#fdName', 'Talks'); await page.keyboard.press('Enter'); await page.waitForSelector('#fdForm', { state: 'detached' });
   check(`${rm}: Rename on a folder tile renames it`, (await foldNames()).includes('Talks') && !(await foldNames()).includes('Interviews'), (await foldNames()).join());
   const before = (await api('/api/media')).length;
   await cmd({ action: 'create', path: 'Talks/Old' }); await cmd({ action: 'move', media: ['fold-beta.mp4'], to: 'Talks/Old' });
-  await page.click('.fold[data-go]'); await page.waitForTimeout(150);
-  await page.hover('.fold[data-go]'); await page.click('.fold [data-fdel]'); await page.waitForTimeout(500);
+  await page.click('.fold b'); await page.waitForTimeout(150);
+  await page.hover('.fold b'); await page.click('.fold [data-fdel]'); await page.waitForTimeout(500);
   st = await api('/api/folders'); const oldId = Object.keys(st.folders).find(k => st.folders[k].name === 'Old');
   check(`${rm}: deleting the folder Old inside Talks keeps its media (moved up into Talks), nothing else lost`, !oldId && st.of[id.beta] === Object.keys(st.folders).find(k => st.folders[k].name === 'Talks') && (await api('/api/media')).length === before, JSON.stringify(st.of));
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
@@ -134,12 +134,12 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.screenshot({ path: `${OUT}${rm}.png` });
 
   // ---- search inside a folder and across all ----
-  await page.click('#folderList .fold[data-go]'); await page.waitForTimeout(150); // Talks
+  await page.click('#folderList .fold b'); await page.waitForTimeout(150); // Talks
   await page.fill('#mediaSearch', 'beta');
   const inFolder = await cards(); await page.fill('#mediaSearch', 'alpha'); const none = await cards();
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
   const across = await cards(); await page.fill('#mediaSearch', '');
-  await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold[data-go]'); await page.waitForTimeout(100);
+  await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold b'); await page.waitForTimeout(100);
   const filt = await cards(); await page.click('#mediaFilter [data-mfilter="all"]');
   check(`${rm}: search inside Talks finds beta, not alpha (it is in no folder); across all media it finds alpha; the Audio chip works inside a folder`,
     inFolder.join() === 'fold-beta.mp4' && none.length === 0 && across.includes('fold-alpha.mp4') && filt.every(x => /\.(wav|mp3|m4a)$/.test(x)), `${inFolder} | ${none} | ${across} | ${filt}`);
