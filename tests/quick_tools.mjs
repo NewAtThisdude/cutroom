@@ -24,9 +24,14 @@ const CLIP = 'quick-tools.mp4', PIC = 'quick-tools-pic.png';
 if (!fs.existsSync(OUT + CLIP)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
   '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-shortest', OUT + CLIP]);
 if (!fs.existsSync(OUT + PIC)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x2255aa:s=800x800', '-frames:v', '1', OUT + PIC]);
+for (const [k, trc] of [['hlg', 'arib-std-b67'], ['pq', 'smpte2084']]) { // real HDR sources (10-bit HEVC tagged BT.2020 HLG / PQ)
+  if (!fs.existsSync(`${OUT}hdr-${k}.mp4`)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-vf', `format=p010le,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${trc}:range=tv`, '-c:v', 'hevc_videotoolbox', '-profile:v', 'main10', '-tag:v', 'hvc1', '-c:a', 'aac', '-shortest', `${OUT}hdr-${k}.mp4`]);
+  if (!(await api('/api/media')).some(m => m.name === `hdr-${k}.mp4`)) await fetch(`${B}/api/import?name=hdr-${k}.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${OUT}hdr-${k}.mp4`) });
+}
 for (const n of [CLIP, PIC]) if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${n}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
 for (let i = 0; i < 120 && (await api('/api/media')).some(m => !m.ready); i++) await sleep(500);
-const media = await api('/api/media'), clipId = media.find(m => m.name === CLIP).id, picId = media.find(m => m.name === PIC).id;
+const media = await api('/api/media'), hdrIds = Object.fromEntries(['hlg', 'pq'].map(k => [k, media.find(m => m.name === `hdr-${k}.mp4`).id])), clipId = media.find(m => m.name === CLIP).id, picId = media.find(m => m.name === PIC).id;
 
 const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
@@ -200,13 +205,16 @@ for (const rm of ['no-preference', 'reduce']) {
     same1.f === `${nm}-same.mp4` && same2.f === `${nm}-same (2).mov` && md5(`${EXD}/${nm}-same.jpg`) === h1 && fs.existsSync(`${EXD}/${nm}-same (2).jpg`) && md5(`${EXD}/${nm}-same (2).jpg`) !== h1, JSON.stringify({ one: same1.f, two: same2.f }));
   // the cover remux (-c copy) keeps the HDR tags
   const tags = f => JSON.stringify(JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,codec_tag_string,pix_fmt,color_space,color_transfer,color_primaries,color_range:stream_side_data_list', '-of', 'json', f]).toString()).streams);
-  const hdrRes = [];
+  const hdrRes = [], pid0 = await ev(() => P.id);
   for (const k of ['hlg', 'pq']) {
+    await ev(async id => { await REMOTE.new_project({ ratio: '16:9', name: 'qhdr' }); addMedia(id, 'main'); }, hdrIds[k]);
+    const isHdr = await ev(id => !!M.get(id).hdr, hdrIds[k]);
     await doExport('hevc', { name: `${nm}-${k}-plain`, cover: false, hdr: k }); await doExport('hevc', { name: `${nm}-${k}-cover`, title: k, hdr: k });
-    hdrRes.push([k, tags(`${EXD}/${nm}-${k}-plain.mp4`), tags(`${EXD}/${nm}-${k}-cover.mp4`)]);
+    hdrRes.push([k, isHdr, tags(`${EXD}/${nm}-${k}-plain.mp4`), tags(`${EXD}/${nm}-${k}-cover.mp4`), probe(`${EXD}/${nm}-${k}-cover.mp4`).some(x => x.disposition.attached_pic === 1)]);
   }
-  check(`${rm}: a cover keeps the HDR tags (HLG and PQ HEVC exports: codec, tag, pixel format, primaries, transfer, matrix, range, side data identical with and without a cover)`,
-    hdrRes.every(([k, a, b2]) => a === b2 && a.includes(k === 'hlg' ? 'arib-std-b67' : 'smpte2084') && a.includes('bt2020')), JSON.stringify(hdrRes));
+  await ev(id => openProject(id), pid0); await page.waitForTimeout(500);
+  check(`${rm}: a cover keeps the HDR tags (real HLG and PQ sources, HEVC Main 10: codec, tag, pixel format, primaries, transfer, matrix, range and side data identical with and without a cover; the cover is attached)`,
+    hdrRes.every(([k, isHdr, a, b2, att]) => isHdr && a === b2 && att && a.includes(k === 'hlg' ? 'arib-std-b67' : 'smpte2084') && a.includes('bt2020') && a.includes('yuv420p10le')), JSON.stringify(hdrRes));
   // remembered per project: saved with it, back after a reload
   await ev(id => { P.cover = { on: true, src: 'image', media: id, title: 'Remembered', preset: 'Title', fmt: 'png' }; scheduleSave(); }, picId);
   await page.waitForTimeout(1500); await open();
