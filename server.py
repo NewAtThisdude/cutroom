@@ -5592,6 +5592,48 @@ def open_package(st, path, drop=False):
             Path(path).unlink(missing_ok=True)
 
 
+# ---------- batch editing: saved recipes (one JSON each in <library>/recipes). The page runs the batch itself (its plans
+# are the preview's), so all the server keeps is the recipes. GET /api/batch/recipes; POST /api/batch/recipes {name, ...};
+# POST /api/batch/recipes/<id>/delete ----------
+RECIPES = HOME / 'recipes'
+RECIPE_STEPS = ('template', 'pauses', 'captions', 'loudness', 'brand')
+
+
+def batch_recipes():
+    return sorted((json.loads(f.read_text()) for f in RECIPES.glob('*.json')), key=lambda r: r.get('name', '').lower()) if RECIPES.is_dir() else []
+
+
+def batch_recipe_save(body):
+    """A recipe as the page sends it, checked: a name, known steps in order, shapes, an export preset or resolution."""
+    if not isinstance(body, dict):
+        raise ValueError('expected an object')
+    name = str(body.get('name') or '').strip()[:80]
+    if not name:
+        raise ValueError('a recipe needs a name')
+    steps = body.get('steps') or []
+    if not isinstance(steps, list) or any(not isinstance(x, dict) or x.get('step') not in RECIPE_STEPS for x in steps):
+        raise ValueError(f"steps: a list of {{step: {'|'.join(RECIPE_STEPS)}, ...}}")
+    shapes = body.get('shapes') or []
+    if not isinstance(shapes, list) or any(x not in ('9:16', '16:9', '1:1', '4:5') for x in shapes):
+        raise ValueError('shapes: a list of 9:16, 16:9, 1:1, 4:5')
+    rid = body.get('id') if re.fullmatch(r'[a-f0-9]{12}', str(body.get('id') or '')) else next((r['id'] for r in batch_recipes() if r.get('name') == name), uuid.uuid4().hex[:12])
+    r = {**{k: v for k, v in body.items() if k in ('fit', 'preset', 'res', 'fmt')}, 'id': rid, 'name': name, 'steps': steps, 'shapes': shapes, 'saved': time.time()}
+    RECIPES.mkdir(exist_ok=True)
+    tmp = RECIPES / f'.{rid}.tmp'
+    tmp.write_text(json.dumps(r))
+    tmp.replace(RECIPES / f'{rid}.json')
+    return r
+
+
+def batch_route(path, body=None):  # -> the answer, or None when the path isn't one of these
+    if path == '/api/batch/recipes':
+        return batch_recipes() if body is None else batch_recipe_save(body)
+    if body is not None and (m := re.fullmatch(r'/api/batch/recipes/([a-f0-9]{12})/delete', path)):
+        (RECIPES / f'{m[1]}.json').unlink(missing_ok=True)
+        return {'ok': True}
+    return None
+
+
 # ---------- HTTP ----------
 
 class App(BaseHTTPRequestHandler):
@@ -5769,6 +5811,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(system_fonts())
             if m := re.fullmatch(r'/fonts/([a-f0-9]{12}\.(?:ttf|otf|woff2))', path):
                 return self.file(HOME / 'fonts' / m[1])
+            if path.startswith('/api/batch/') and (r := batch_route(path)) is not None:  # batch editing (its block above)
+                return self.reply(r)
             if path == '/api/templates':
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
@@ -5995,6 +6039,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
                 return self.reply({'times': scenes(body['media'], fnum(body.get('thr', 0.3), 0.05, 0.9))})
+            if u.path.startswith('/api/batch/') and (r := batch_route(u.path, body)) is not None:  # batch editing (its block above)
+                return self.reply(r)
             if u.path == '/api/silences':
                 return self.reply({'silences': silences(body['media'], fnum(body.get('noise', -35), -90, 0), fnum(body.get('min', 0.5), 0.05, 30))})
             if u.path == '/api/speech':
