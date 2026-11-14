@@ -11,7 +11,7 @@
 # nomic-embed-text:v1.5 (pulled by tag; a warning below when it is not the tested build).
 set -eu
 cd "$(dirname "$0")"
-env -u PYTHONPATH uv venv --python 3.12 .venv
+[ -x .venv/bin/python ] || env -u PYTHONPATH uv venv --python 3.12 .venv  # a re-run (update, retry) keeps it
 env -u PYTHONPATH uv pip install --python .venv/bin/python --require-hashes -r mac.lock
 # Hugging Face models at pinned revisions, the weight file checked; refs/main is set to that revision so the code that asks for
 # "main" (mlx-audio's Kokoro, Demucs, MusicGen) finds this copy offline (the server runs the AI with HF_HUB_OFFLINE=1)
