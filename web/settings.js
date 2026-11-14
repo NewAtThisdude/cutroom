@@ -12,7 +12,7 @@ const SET = (() => {
   const secsOf = a => a.map(x => [x, x === 1 ? '1 second' : `${x} seconds`]);
   // AI features: AI_BUDGET kind, name, what it hides (also the inspector's buttons, drawn later), the remote commands it refuses
   const AIF = [
-    ['captions', 'Auto captions, edit by script', '[data-aitool="captions"], #btnCaptions, [data-tab="script"]', ['auto_captions', 'transcript', 'main_transcript']],
+    ['captions', 'Auto captions, edit by script', '[data-aitool="captions"], #btnCaptions, [data-tab="script"], #btnFillers, #btnScriptFill', ['auto_captions', 'transcript', 'main_transcript', 'remove_fillers']],
     ['voice', 'AI voiceover', '#btnAiVoice', ['ai_voiceover']],
     ['clone', 'Voice clone and dubbing', '#btnClone, #btnDub', ['clone_voice', 'dub_video']],
     ['music', 'AI music', '#btnMusic', ['generate_music']],
@@ -23,8 +23,8 @@ const SET = (() => {
     ['isolate', 'Isolate voice, stems', '[data-aitool="isovoice"], [data-aitool="novoice"], [data-act="isovoice"], [data-act="novoice"], [data-act="stems"]', ['clip_tool:isolate_voice', 'clip_tool:remove_voice', 'clip_tool:split_stems']],
     ['upscale', 'AI upscale', '[data-act="upscale"]', ['clip_tool:ai_upscale']],
     ['relight', 'Relight', '[data-act="relight"]', ['clip_tool:relight']],
-    ['llm', 'Local language model: shorts, hooks, translation, caption keywords and emoji, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk, label:has(#capKw), label:has(#capEmoji), label:has(#trBi)',
-      ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'caption_extras:?keywords|emoji|bilingual']],
+    ['llm', 'Local language model: shorts, hooks, translation, caption keywords and emoji, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk, #btnCombine, #btnIndex, label:has(#capKw), label:has(#capEmoji), label:has(#trBi)',
+      ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'smart_combine', 'search_media:?index', 'caption_extras:?keywords|emoji|bilingual']],
   ];
   // k key, s section, l label, c control (check / select / text / checks / folder), d default, o options, h help;
   // where: pref = PREFS (the setup answers), lib = this library, st = an older localStorage key, else this computer's LKEY
@@ -110,6 +110,7 @@ const SET = (() => {
     if (!st) { st = document.createElement('style'); st.id = 'setAiOff'; document.head.append(st); }
     const off = AIF.filter(([kind]) => !get(`ai.${kind}`)).map(f => f[2]);
     st.textContent = off.length ? `${off.join(', ')} { display: none !important; }` : '';
+    api('/api/settings/ai-off', { kinds: AIF.filter(([kind]) => !get(`ai.${kind}`)).map(f => f[0]) }).catch(() => {}); // the server refuses them too, by whatever path
   }
   const GATE = {}; // remote command -> [feature, its name, the clip_tool action (or none: the whole command)]
   for (const [kind, name, , cmds] of AIF) for (const c of cmds) { const [cmd, action] = c.split(':'); (GATE[cmd] ||= []).push([kind, name, action]); }

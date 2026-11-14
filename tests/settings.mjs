@@ -5,6 +5,8 @@
 // refuses; clear preview cache removes only regenerable files and the editor makes them again; About); the MCP settings command;
 // everything survives a reload; Reset this section and Reset all bring the defaults back; no page errors.
 //   B=<server on a scratch library> node settings.mjs   (never 4610; it imports two 3 s test clips, best on an empty library)
+import path from 'node:path';
+import os from 'node:os';
 import { webkit } from 'playwright';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -143,6 +145,17 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.click('#set-ai-captions'); await page.keyboard.press('Escape');
   const mt = await api('/api/remote', { cmd: 'main_transcript', args: {} }), scHidden = await ev(() => getComputedStyle($('[data-tab="script"]')).display === 'none');
   const missing = await ev(() => SET.missing);
+  // and the server itself: a path the page doesn't gate (a direct /api/fillers call) is refused in the job queue, before whisper
+  let vid = await ev(() => [...M.values()].find(m => m.kind === 'video' && m.hasAudio)?.id);
+  if (!vid) { // an empty library: one short clip with sound to aim at
+    const f = path.join(os.tmpdir(), `settings-tone-${process.pid}.mp4`);
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=2', '-f', 'lavfi', '-i', 'sine=f=440:d=2', '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', f]);
+    vid = (await api('/api/import_path', { path: f })).id;
+  }
+  const fil = vid ? await api('/api/fillers', { media: vid, lang: 'auto', ranges: [[0, 1]] }) : { error: 'no video with sound' };
+  const sc = await api('/api/remote', { cmd: 'smart_combine', args: { media: ['x'] } }), rf = await api('/api/remote', { cmd: 'remove_fillers', args: {} });
+  check(`${rm}: AI: switched off in the server too: a direct /api/fillers call is refused before whisper runs; smart_combine and remove_fillers refuse`,
+    /turned off in Settings/.test(JSON.stringify(fil)) && !sc.ok && /turned off in Settings/.test(sc.result) && !rf.ok && /turned off in Settings/.test(rf.result), JSON.stringify({ fil, sc, rf }));
   check(`${rm}: AI: auto captions off refuses main_transcript and hides the Script tab; every AI switch names a real command`,
     !mt.ok && /turned off in Settings/.test(mt.result) && scHidden && !missing.length, JSON.stringify({ mt, scHidden, missing }));
 

@@ -1610,6 +1610,9 @@ def tier(kind):
     return {'kind': kind, 'what': what, 'unit': unit, 'refused': f'{what} needs a Mac with {rows[-1][0]} GB of memory (this one has {RAM_GB:.0f} GB)'}
 
 
+AI_OFF = set()  # AI_BUDGET kinds turned off in the editor's Settings (the page sends them: POST /api/settings/ai-off)
+
+
 @contextlib.contextmanager
 def ai_slot(kind, st=None, units=None):
     """A heavy job's turn in the ONE queue: GPU / Neural Engine work (every AI model, MPS/MLX, Metal whisper, big exports) runs
@@ -1620,6 +1623,8 @@ def ai_slot(kind, st=None, units=None):
     t = tier(kind)
     if 'refused' in t:
         raise RuntimeError(t['refused'])
+    if kind in AI_OFF:  # Settings › AI: a feature turned off is refused here too, whatever path reached it (fillers, smart combine, indexing...)
+        raise RuntimeError(f"{t['what']} is turned off in Settings (AI and this computer)")
     if st is not None and units:
         st['eta'] = max(1, round(units * t['rate']))
     if kind in LIGHT or getattr(AI_HELD, 'n', 0):
@@ -7188,6 +7193,10 @@ def settings_api(path, body=None):
         if path == '/api/settings/reveal':
             reveal_path({'log': HOME / 'server.log', 'exports': EXPORTS}.get(body.get('what'), HOME))
             return {'ok': True}
+        if path == '/api/settings/ai-off':  # the page's AI switches (per computer): every heavy job of an off kind refuses in ai_slot
+            AI_OFF.clear()
+            AI_OFF.update(k for k in (body.get('kinds') or [])[:64] if k in AI_BUDGET)
+            return {'off': sorted(AI_OFF)}
         if path == '/api/settings/pick-folder':  # the Mac's own folder chooser (elsewhere the page asks for a path)
             r = sh(['osascript', '-e', 'POSIX path of (choose folder with prompt "Exports go to")'])
             return {'path': r.stdout.strip().rstrip('/') or None}
