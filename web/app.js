@@ -4678,7 +4678,7 @@ async function adjSubject(f, rect, T = S.t) { // the layer grades only the subje
   toast(`This layer now grades only the subject (${ai.n} frames, SAM 2)`);
   return f.mask;
 }
-async function adjFollow(f, rect, T0 = S.t) { // the layer's mask follows what rect boxes on the video under it (tracked both ways through the layer)
+async function adjFollow(f, rect, T0 = S.t, shape) { // the layer's mask follows what rect boxes on the video under it (tracked both ways through the layer)
   const [c, lane] = underAdj(f, T0);
   if (!c) throw new Error('Move the playhead to where a video clip plays under the adjustment layer');
   const pid = P.id, m = M.get(c.media), cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0);
@@ -4688,7 +4688,7 @@ async function adjFollow(f, rect, T0 = S.t) { // the layer's mask follows what r
     const G = geom(m, c, P.w, P.h, propsAt(c, p.T - c.start)); let u = (p.cx - (cr.l || 0)) / fx; if (c.flip) u = 1 - u;
     return { t: r5(p.T - f.start), x: r5((G.x + u * G.w) / P.w - 0.5), y: r5((G.y + ((p.cy - (cr.t || 0)) / fy) * G.h) / P.h - 0.5), w: r5((1.25 * box.w * p.s * G.w) / fx / P.w), h: r5((1.25 * box.h * p.s * G.h) / fy / P.h), rot: r5(c.flip ? -p.r : p.r), feather: f.mask?.feather ?? 0.04 };
   };
-  change(() => { f.mask = { type: 'circle', invert: false, ...f.mask, ...key(pts[0]) }; if (f.mask.type === 'ai') { f.mask.type = 'circle'; for (const q of ['src', 'n', 'fps', 't0', 'in0', 'sp', 'cr', 'fl']) delete f.mask[q]; } f.mkf = thin(pts).map(key); });
+  change(() => { f.mask = { type: 'circle', invert: false, ...f.mask, ...(shape ? { type: shape } : {}), ...key(pts[0]) }; if (f.mask.type === 'ai') { f.mask.type = 'circle'; for (const q of ['src', 'n', 'fps', 't0', 'in0', 'sp', 'cr', 'fl']) delete f.mask[q]; } f.mkf = thin(pts).map(key); });
   toast(`The mask follows it over ${pts.length} frames${lost ? ' (lost it part of the way: check the ends)' : ''}`);
   return { frames: pts.length, lost: !!lost };
 }
@@ -7368,13 +7368,14 @@ const REMOTE = {
       const b = srcBox(c, rect, S.t), [u0, v0] = srcToClip(c, b.x, b.y), [u1, v1] = srcToClip(c, b.x + b.w, b.y + b.h);
       return { x: (u0 + u1) / 2 - 0.5, y: (v0 + v1) / 2 - 0.5, w: Math.abs(u1 - u0), h: Math.abs(v1 - v0) };
     };
-    if (shape && !follow) change(() => { c0.mask = { rot: 0, feather: 0.04, invert: false, ...at(c0), type: shape, ...(shape === 'pen' ? { pts: PEN0.map(q => [...q]) } : {}) }; delete c0.mkf; });
-    else if (follow) { if (shape) change(() => { c0.mask = { rot: 0, feather: 0.04, invert: false, x: 0, y: 0, w: 0.6, h: 0.6, type: shape }; }); await adjFollow(c0, rect, S.t); }
+    const set = { ...(fx ? {} : { grade: true }), ...(invert !== undefined ? { invert: !!invert } : {}), ...(feather !== undefined ? { feather: clamp(+feather || 0, 0, 0.3) } : {}) };
+    if (shape && !follow) change(() => { c0.mask = { rot: 0, feather: 0.04, invert: false, ...at(c0), type: shape, ...(shape === 'pen' ? { pts: PEN0.map(q => [...q]) } : {}), ...set }; delete c0.mkf; });
+    else if (follow) await adjFollow(c0, rect, S.t, shape);
     else if (fx) await adjSubject(c0, rect, S.t);
     else if (rect) await removeObject(c0, L, rect, S.t, 'best', 'mask');
     const c = live(c0, pid);
     if (!c.mask) throw new Error('the clip has no mask: pass box (canvas fractions at t) for an AI subject mask, or shape (and box) for a shape');
-    change(() => { if (!fx) c.mask.grade = true; if (invert !== undefined) c.mask.invert = !!invert; if (feather !== undefined) c.mask.feather = clamp(+feather || 0, 0, 0.3); });
+    if (Object.entries(set).some(([k, v]) => c.mask[k] !== v)) change(() => Object.assign(c.mask, set)); // (one more step only when something changes)
     return { ...brief(c, L), mask: c.mask.type, grades: c.mask.invert ? 'outside the mask' : 'inside the mask', maskKeyframes: c.mkf?.length || 0 };
   },
   async blur_faces({ id, style = 'blur', amount = 1 }) { const [c, L] = cfind(id); return blurFaces(c, L, { style: style === 'mosaic' ? 'mosaic' : 'blur', amount: clamp(+amount || 1, 0.05, 1) }); },
