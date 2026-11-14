@@ -22,9 +22,9 @@ function layoutCells(L, W, H) { // the cells as [x, y, w, h] canvas pixels; the 
     react: wide ? [[0, 0, 0.6, 1], [0.6, 0, 1, 1]] : [[0, 0, 1, 0.6], [0, 0.6, 1, 1]] }[L.type] || [];
   return U.map(([u0, v0, u1, v1]) => { const x0 = g + u0 * (W - g), y0 = g + v0 * (H - g); return [x0, y0, u1 * (W - g) - x0, v1 * (H - g) - y0]; });
 }
-function cellBake(c, m, [x, y, w, h], L, p) { // the clip fills its cell: cropped to the cell's shape (zoomed, panned), scaled and placed there
+function cellBake(c, m, [x, y, w, h], L, p) { // the clip fills its cell: cropped to the cell's shape (zoomed, panned), scaled and placed there; with Mirror on, pan means what you see
   const z = Math.max(1, c.cell.z || 1), ac = w / h, as = m.w / m.h, fw = Math.min(1, ac / as) / z, fh = Math.min(1, as / ac) / z, r6 = v => +v.toFixed(6);
-  const l = ((1 - fw) * (1 + clamp(c.cell.px || 0, -1, 1))) / 2, t = ((1 - fh) * (1 + clamp(c.cell.py || 0, -1, 1))) / 2;
+  const l = ((1 - fw) * (1 + (c.flip ? -1 : 1) * clamp(c.cell.px || 0, -1, 1))) / 2, t = ((1 - fh) * (1 + clamp(c.cell.py || 0, -1, 1))) / 2;
   c.crop = { l: r6(l), r: r6(1 - fw - l), t: r6(t), b: r6(1 - fh - t) };
   const mw = m.w * fw, mh = m.h * fh, sc = w / (mw * Math.min(p.w / mw, p.h / mh)), nx = (x + w / 2) / p.w - 0.5, ny = (y + h / 2) / p.h - 0.5;
   if (c.kf?.length) { const dx = nx - (c.x ?? 0), dy = ny - (c.y ?? 0), q = sc / (c.scale || 1); for (const f of c.kf) { f.x = (f.x ?? 0) + dx; f.y = (f.y ?? 0) + dy; f.scale = (f.scale ?? 1) * q; } } // its own animation moves with the cell
