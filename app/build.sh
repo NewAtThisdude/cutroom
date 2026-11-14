@@ -31,7 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Cutroom records voiceovers from your microphone.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Cutroom records voiceovers and your voice with screen recordings from your microphone.</string>
+  <key>NSCameraUsageDescription</key><string>Cutroom records your camera alongside screen recordings.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
   <key>CFBundleDocumentTypes</key>
   <array><dict>

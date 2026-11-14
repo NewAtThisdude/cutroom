@@ -360,6 +360,33 @@ def import_file(name, stream, length, background=True, src=None, key=None):
     return m
 
 
+def record_part(rid, ext, stream, length, q):
+    """A screen or camera take from the recorder (web/record.js), sent a second at a time while it records: an hour of
+    screen never sits in the page's memory, and a crash keeps what was sent. The last call (done=1) imports it. The
+    recorder's file has no duration (fragmented MP4, WebM without cues) and its first frame starts after the recorder's
+    start (WebKit: 43 ms): remuxed (no re-encode) to start at 0, and 'lead' is the start it had, so the page can place it."""
+    part = CACHE / f'rec-{rid}.{ext}'
+    with open(part, 'ab') as f:
+        while length > 0:
+            b = stream.read(min(length, 1 << 20))
+            if not b:
+                break
+            f.write(b)
+            length -= len(b)
+    if not q.get('done'):
+        return {'size': part.stat().st_size}
+    fixed = CACHE / f'rec-{rid}.fixed.{ext}'
+    try:
+        lead = float(sh(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time', '-of', 'csv=p=0', str(part)]).stdout.strip() or 0)
+        if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(part), '-map', '0', '-c', 'copy', '-avoid_negative_ts', 'make_zero', str(fixed)]).returncode or not fixed.exists():
+            raise ValueError('the recording could not be read (nothing was recorded?)')
+        name = re.sub(r'[\\/:*?"<>|]', '-', q.get('name', ['Recording'])[0])[:150] or 'Recording'
+        return {**import_file(f'{name}.{ext}', None, 0, src=fixed), 'lead': max(0.0, lead)}
+    finally:
+        part.unlink(missing_ok=True)
+        fixed.unlink(missing_ok=True)
+
+
 def photo_copy(m, size):
     """A photo at most `size` px on its long edge, for the library card (320) and the preview (2560): sixty full-size
     camera photos as card backgrounds took 742-867 MB in WebKit and scrolled at 117 ms a step. The export reads the original."""
@@ -6770,6 +6797,8 @@ class App(BaseHTTPRequestHandler):
             if u.path == '/api/import':
                 name = parse_qs(u.query).get('name', ['file'])[0]
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
+            if m := re.fullmatch(r'/api/record/([0-9a-f]{12})\.(mp4|webm)', u.path):  # the recorder's screen / camera take, a part at a time
+                return self.reply(record_part(m[1], m[2], self.rfile, int(self.headers.get('Content-Length') or 0), parse_qs(u.query)))
             if u.path == '/api/fonts':  # the font file's bytes
                 n = int(self.headers.get('Content-Length') or 0)
                 if n > 32 << 20:
