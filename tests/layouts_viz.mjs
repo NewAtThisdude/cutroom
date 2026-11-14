@@ -29,16 +29,17 @@ const RED = [255, 0, 0], GREEN = [0, 200, 0], BLUE = [0, 0, 255], YEL = [255, 25
 // ---- fixtures ----
 mkdirSync(SCR, { recursive: true });
 const FX = mkdtempSync(`${SCR}/layouts-viz-`), tok = FX.slice(-6);
-const vid = (n, c, s) => ff('-f', 'lavfi', '-i', `color=c=${c}:s=${s}:r=30:d=3`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', `${FX}/${n}-${tok}.mp4`);
-vid('red', '0xff0000', '640x360'); vid('green', '0x00c800', '360x640'); vid('yellow', '0xffff00', '640x360');
+const vid = (n, c, s, hz) => ff('-f', 'lavfi', '-i', `color=c=${c}:s=${s}:r=30:d=3`, ...(hz ? ['-f', 'lavfi', '-i', `sine=f=${hz}:d=3:sample_rate=48000`, '-c:a', 'aac', '-shortest'] : []), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', `${FX}/${n}-${tok}.mp4`);
+vid('red', '0xff0000', '640x360'); vid('green', '0x00c800', '360x640', 600); vid('yellow', '0xffff00', '640x360', 700); // green and yellow have sound
 ff('-f', 'lavfi', '-i', 'color=c=0x0000ff:s=400x400', '-frames:v', '1', `${FX}/blue-${tok}.png`);
 ff('-f', 'lavfi', '-i', 'color=c=0xff0000:s=400x400', '-f', 'lavfi', '-i', 'color=c=0x0000ff:s=400x400', '-filter_complex', '[0][1]hstack', '-frames:v', '1', `${FX}/split-${tok}.png`); // left red, right blue
 const TONES = [[1000, 0.5, 1.0], [4000, 2.0, 2.5], [200, 3.0, 3.5]];
 ff('-f', 'lavfi', '-i', `aevalsrc=${TONES.map(([f, a, b]) => `0.5*sin(2*PI*${f}*t)*between(t\\,${a}\\,${b})`).join('+')}:s=48000:d=4`, '-ac', '2', `${FX}/beeps-${tok}.wav`);
 ff('-f', 'lavfi', '-i', 'sine=f=500:d=4:sample_rate=48000', '-ac', '2', `${FX}/tone-${tok}.wav`);
+ff('-f', 'lavfi', '-i', 'aevalsrc=0.5*sin(2*PI*3000*t)*between(t\\,55\\,56):s=48000:d=70', '-ac', '2', `${FX}/long-${tok}.wav`); // 70 s: a 3 kHz tone at 55-56 s, past the server's 8 MiB (~44 s) per range answer
 const imp = n => api('/api/import_path', { path: `${FX}/${n}` });
 const MD = {};
-for (const [k, n] of [['red', 'red.mp4'], ['green', 'green.mp4'], ['yellow', 'yellow.mp4'], ['blue', 'blue.png'], ['split', 'split.png'], ['beeps', 'beeps.wav'], ['tone', 'tone.wav']]) MD[k] = (await imp(n.replace('.', `-${tok}.`))).id;
+for (const [k, n] of [['red', 'red.mp4'], ['green', 'green.mp4'], ['yellow', 'yellow.mp4'], ['blue', 'blue.png'], ['split', 'split.png'], ['beeps', 'beeps.wav'], ['tone', 'tone.wav'], ['long', 'long.wav']]) MD[k] = (await imp(n.replace('.', `-${tok}.`))).id;
 for (let i = 0; i < 120; i++) { const m = await api('/api/media'); if (Object.values(MD).every(x => m.find(y => y.id === x)?.ready)) break; await sleep(500); }
 const brand0 = await api('/api/brand');
 
@@ -110,9 +111,20 @@ const flow = async (type, cols, label) => {
   return r;
 };
 const r2 = await flow('2h', [RED, GREEN], 'side by side');
+// a parked clip is not heard: the preview's scheduler plays the shown cell's sound and not the parked one's; the export leaves it out
+const hear = async () => { // play 1.2 s from 0.5 s: which clips got a voice in the audio scheduler
+  await pa.evaluate(() => { pause(); voices.clear(); seekTo(0.5); });
+  await pa.keyboard.press('Space'); await pa.waitForTimeout(1200);
+  return pa.evaluate(() => { pause(); return [...voices.keys()]; });
+};
+const ids = await pa.evaluate(id => Object.fromEntries(P.overlay.filter(c => c.cell?.L === id).map(c => [c.cell.i, c.id])), info.id);
+const h2 = await hear(), plan2 = await pa.evaluate(() => buildPlan(320, 180, 'fast', 'parked', false, 'png').then(p => p.overlay.map(o => o.media)));
+check('side by side: the shown cell is heard, the parked one is silent in the preview and left out of the export', h2.includes(ids[1]) && !h2.includes(ids[3]) && !plan2.includes(MD.yellow) && plan2.includes(MD.green), JSON.stringify({ h2, ids }));
 check('side by side: the left half is the first clip, the right the second', r2.cells[0].rect[0] < 40 && r2.cells[1].rect[0] > 960);
 await flow('3', [RED, GREEN, BLUE], 'one big, two small');
 await flow('4', COLS, 'back to the grid');
+const h4 = await hear();
+check('back to the grid: that clip is heard again', h4.includes(ids[1]) && h4.includes(ids[3]), JSON.stringify(h4));
 
 // the canvas shape: 9:16 re-flows the cells
 await R(pa, 'set_project', { set: { ratio: '9:16' } });
@@ -267,6 +279,17 @@ for (const style of ['mirror', 'line', 'circle']) {
   check(`${style}: drawn, and preview == export`, ink > 200 && diff(pv, ex) < 4, `${ink} px lit, diff ${diff(pv, ex).toFixed(2)}`);
 }
 await R(pa, 'visualizer', { id: vz.id, style: 'bars' });
+// a source longer than one range answer (70 s, the tone at 55-56 s): read in pieces, lit on the right frames, preview == export
+await R(pa, 'new_project', { ratio: '16:9', name: 'Visualizer long test', branded: false });
+await R(pa, 'add_clip', { media: MD.long, lane: 'audio', start: 0 });
+const vl = await R(pa, 'visualizer', { style: 'bars', bars: 16, smoothing: 0, start: 0, duration: 70, x: 0.5, y: 0.5, w: 0.8, h: 0.5 });
+const ll = await pa.evaluate(id => { const L = vizLevels(P.text.find(x => x.id === id)); return [50, 54.9, 55.5, 55.9, 57].map(t => [...L.lv.slice((Math.round(t * 30) - L.f0) * L.n, (Math.round(t * 30) - L.f0 + 1) * L.n)]); }, vl.id);
+const b3 = barOf(3000);
+check(`70 s source: the 3 kHz tone lights bar ${b3} at 55.5 and 55.9 s; 50, 54.9 and 57 s are flat`, peak(ll[2]) === b3 && ll[2][b3] > 0.8 && ll[3][b3] > 0.8 && [0, 1, 4].every(i => ll[i].every(x => x === 0)), JSON.stringify(ll.map(r => Math.max(...r).toFixed(2))));
+[pv, ex] = await both(pa, 55.5);
+check('70 s source at 55.5 s: the bar is drawn in the preview and the export', lit(pv, b3, 0.45) && lit(ex, b3, 0.45) && !lit(ex, (b3 + 8) % N, 0.45) && diff(pv, ex) < 4, diff(pv, ex).toFixed(2));
+await R(pa, 'open_project', { project: P2 });
+await pa.evaluate(() => vizReady());
 const levSaved = await pa.evaluate(id => [...vizLevels(P.text.find(x => x.id === id)).lv], vz.id);
 // undo / redo
 const nT = await pa.evaluate(() => P.text.length);

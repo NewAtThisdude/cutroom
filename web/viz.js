@@ -30,28 +30,42 @@ function vzFFT(re, im) { // in place, radix 2
     }
   }
 }
-// ponytail: a clip's source seconds are read in one request (192 KB a second: 35 MB for 3 minutes); chunk it if hour-long sources matter
+// The source seconds [a, b] are read in pieces (the server answers a range with at most 8 MiB, ~44 s) and FFT'd as they
+// arrive: only the piece in hand and the window's overlap stay in memory, whatever the length.
+// ponytail: the spectrum itself is kept whole (Float32, 92 MB per hour of source); quantise it if hour-long sources matter
 const vzSpec = new Map(); // `${media}|${a}|${b}` -> promise; .v = {a, hops, data: Float32Array(hops x 64)} (amplitude: a full-scale sine ~1) once read
 function vzSpecGet(mid, a, b) {
   const key = `${mid}|${a}|${b}`;
   let p = vzSpec.get(key);
   if (p) return p;
   p = (async () => {
-    const r = await fetch(`/media/${mid}?pcm=1`, { headers: { Range: `bytes=${a * VZ_SR * 4}-${b * VZ_SR * 4 - 1}` } });
-    const buf = r.ok ? await r.arrayBuffer() : new ArrayBuffer(0), skip = r.status === 200 ? a * VZ_SR : 0, n = Math.max(0, (buf.byteLength >> 2) - skip), x = new Int16Array(buf, skip * 4, n * 2);
-    const mono = new Float32Array(n), hops = Math.round((b - a) / VZ_HOP) + 1, data = new Float32Array(hops * VZ_BANDS), re = new Float64Array(VZ_N), im = new Float64Array(VZ_N), step = VZ_SR * VZ_HOP;
-    for (let i = 0; i < n; i++) mono[i] = (x[2 * i] + x[2 * i + 1]) / 65536;
-    for (let j = 0; j < hops; j++) { // a window centred on each hop
-      const c0 = Math.round(j * step) - VZ_N / 2;
-      for (let i = 0; i < VZ_N; i++) { const q = c0 + i; re[i] = q >= 0 && q < n ? mono[q] * VZ.win[i] : 0; im[i] = 0; }
-      vzFFT(re, im);
-      for (let k = 0; k < VZ_BANDS; k++) {
-        const [k0, k1] = VZ.bands[k];
-        let m = 0;
-        for (let q = k0; q < k1; q++) m = Math.max(m, re[q] * re[q] + im[q] * im[q]);
-        data[j * VZ_BANDS + k] = (4 * Math.sqrt(m)) / VZ_N;
+    const need = (b - a) * VZ_SR, hops = Math.round((b - a) / VZ_HOP) + 1, data = new Float32Array(hops * VZ_BANDS), re = new Float64Array(VZ_N), im = new Float64Array(VZ_N), step = VZ_SR * VZ_HOP;
+    let mono = new Float32Array(0), base = 0, got = 0, done = false, j = 0; // mono = samples [base, base + length) of the source from a
+    while (j < hops) {
+      if (!done) { // the next piece: whatever the server sends of what's left
+        const r = await fetch(`/media/${mid}?pcm=1`, { headers: { Range: `bytes=${(a * VZ_SR + got) * 4}-${b * VZ_SR * 4 - 1}` } });
+        let buf = r.ok ? await r.arrayBuffer() : new ArrayBuffer(0), skip = 0;
+        if (r.status === 200) { skip = a * VZ_SR + got; done = true; } // the whole file, not a range
+        const n = Math.max(0, Math.min((buf.byteLength >> 2) - skip, need - got)), x = new Int16Array(buf, skip * 4, n * 2), m2 = new Float32Array(mono.length + n);
+        m2.set(mono);
+        for (let i = 0; i < n; i++) m2[mono.length + i] = (x[2 * i] + x[2 * i + 1]) / 65536;
+        mono = m2; buf = null; got += n;
+        if (!n || got >= need) done = true;
       }
-      if (j % 200 === 199) await new Promise(z => setTimeout(z)); // the editor keeps drawing
+      for (; j < hops && (done || Math.round(j * step) + VZ_N / 2 <= got); j++) { // a window centred on each hop, once its samples are here
+        const c0 = Math.round(j * step) - VZ_N / 2 - base;
+        for (let i = 0; i < VZ_N; i++) { const q = c0 + i; re[i] = q >= 0 && q < mono.length ? mono[q] * VZ.win[i] : 0; im[i] = 0; }
+        vzFFT(re, im);
+        for (let k = 0; k < VZ_BANDS; k++) {
+          const [k0, k1] = VZ.bands[k];
+          let m = 0;
+          for (let q = k0; q < k1; q++) m = Math.max(m, re[q] * re[q] + im[q] * im[q]);
+          data[j * VZ_BANDS + k] = (4 * Math.sqrt(m)) / VZ_N;
+        }
+        if (j % 200 === 199) await new Promise(z => setTimeout(z)); // the editor keeps drawing
+      }
+      const keep = Math.max(base, Math.round(j * step) - VZ_N / 2); // what the next windows still need
+      mono = mono.slice(keep - base); base = keep;
     }
     return { a, hops, data };
   })().catch(() => ({ a, hops: 0, data: new Float32Array(0) })) // no sound to read: flat
