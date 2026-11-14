@@ -8,12 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME, H = { 'X-Cutroom': '1' };
-if (!HOME || B.endsWith(':4610')) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port>');
+const B = process.env.B, HOME = process.env.CUTROOM_HOME, H = { 'X-Cutroom': '1' };
+if (!HOME || !B || /:4610\b/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port>');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const web = fileURLToPath(new URL('../web/fonts/', import.meta.url)), tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-fonts-`);
-const FACE = 'Cutroom Test Face', UIFACE = 'Cutroom UI Face', MAC = 'Chalkduster', NONE = 'No Such Face 9';
+const FACE = 'Cutroom Test Face', UIFACE = 'Cutroom UI Face', NONE = 'No Such Face 9';
+// a font every computer of that kind has, and the picker's group for them (off the Mac the page says 'This computer')
+const [MAC, SYSGROUP] = process.platform === 'darwin' ? ['Chalkduster', 'This Mac'] : ['Comic Sans MS', 'This computer'];
 const font = await (await fetch(`${B}/api/fonts?name=${encodeURIComponent(FACE)}.ttf`, { method: 'POST', headers: H, body: fs.readFileSync(`${web}Anton.ttf`) })).json(); // Anton's bytes under a name no Mac has
 check('a .ttf imports into the library under its file name', font.family === FACE && fs.existsSync(`${HOME}/fonts/${font.file}`), JSON.stringify(font));
 const bad = await fetch(`${B}/api/fonts?name=x.ttf`, { method: 'POST', headers: H, body: 'not a font' });
@@ -65,12 +67,12 @@ try {
     }
     pids.add(await titled(MAC)); const mac = await cmp(1);
     pids.add(await titled(NONE)); const macNone = await cmp(1, mac.ex);
-    check(`${rm}: a Mac font (${MAC}) preview == export, and it is not the fallback`, ok(mac) && macNone.mean > 2, `mean ${mac.mean}, worst ${mac.worst}; vs fallback ${macNone.mean}`);
+    check(`${rm}: a system font (${MAC}) preview == export, and it is not the fallback`, ok(mac) && macNone.mean > 2, `mean ${mac.mean}, worst ${mac.worst}; vs fallback ${macNone.mean}`);
 
     // 2. the picker, and importing through it
     pids.add(await titled('Montserrat'));
     const pk = await ev(() => { S.sel = { lane: 'text', id: P.text[0].id }; renderInspector(); const s = $('#inspector select[data-k="c.style.font"]'); return Object.fromEntries([...s.querySelectorAll('optgroup')].map(g => [g.label, [...g.querySelectorAll('option')].map(o => o.value)])); });
-    check(`${rm}: font picker lists Cutroom, imported and this Mac's fonts`, pk.Cutroom?.includes('Montserrat') && pk.Imported?.includes(FACE) && pk['This Mac']?.length > 50 && pk['This Mac'].includes(MAC), `${Object.entries(pk).map(([k, v]) => `${k} ${v.length}`).join(', ')}`);
+    check(`${rm}: font picker lists Cutroom, imported and this computer's fonts (${SYSGROUP})`, pk.Cutroom?.includes('Montserrat') && pk.Imported?.includes(FACE) && pk[SYSGROUP]?.length > 50 && pk[SYSGROUP].includes(MAC), `${Object.entries(pk).map(([k, v]) => `${k} ${v.length}`).join(', ')}`);
     await page.setInputFiles('#inspector input[data-fontin]', { name: `${UIFACE}.ttf`, mimeType: 'font/ttf', buffer: fs.readFileSync(`${web}BebasNeue.ttf`) });
     await page.waitForFunction(f => P.text[0].style.font === f, UIFACE, { timeout: 10000 }).catch(() => {});
     const ui = await ev(f => ({ font: P.text[0].style.font, listed: G.fonts.some(x => x.family === f), face: [...document.fonts].find(x => x.family.replace(/"/g, '') === f)?.status }), UIFACE);
@@ -121,6 +123,7 @@ try {
       if (meter.error || meter.status !== 0) throw meter.error || new Error(meter.stderr);
       const m = meter.stderr.split(/\r?\n/).filter(line => /^ +(I|Peak):/.test(line)).slice(-2).join(' ').replace(/\s+/g, ' ').trim();
       console.log(`     loudness-on export meter: ${m}`);
+      fs.mkdirSync(`${HOME}/trash`, { recursive: true }); // (a fresh library has none yet)
       for (const f of Object.values(out)) fs.renameSync(f, `${HOME}/trash/${f.split('/').pop()}`);
     }
     await page.context().close();

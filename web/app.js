@@ -33,7 +33,7 @@ const plat = s => (IS_MAC || !/[⌃⌥⇧⌘⌫⌦↩]|Mac|Finder|Movies/.test(s
   .replace(/\b(this|This|a|another|idle|GB|smaller|the) Mac\b(?!s)/g, '$1 computer'));
 function platWatch() { // ponytail: rewrites every label off the Mac, a file named "this Mac" too (the transcript and captions are skipped); plat() per string if that bites
   if (IS_MAC) return;
-  const ATTRS = ['title', 'aria-label', 'placeholder'], mine = n => !n?.closest?.('#scriptBody, #capList');
+  const ATTRS = ['title', 'aria-label', 'placeholder', 'label'], mine = n => !n?.closest?.('#scriptBody, #capList'); // label: <optgroup label="This Mac"> in the font pickers
   const fix = n => {
     if (n.nodeType === 3) { const t = mine(n.parentElement) && plat(n.data); if (t && t !== n.data) n.data = t; return; }
     if (n.nodeType !== 1 || !mine(n)) return;
