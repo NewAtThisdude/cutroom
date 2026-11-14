@@ -1,0 +1,16 @@
+{
+ "cutroom_fx": 1,
+ "name": "Iris wipe",
+ "kind": "transition",
+ "author": "Cutroom",
+ "parameters": {
+  "soft": 0.03
+ },
+ "expressions": {
+  "defs": {
+   "r": "1.2*p",
+   "d": "hypot(cx,cy)"
+  },
+  "e": "mix(a(X,Y),b(X,Y),ss(r+soft,r-soft,d))"
+ }
+}

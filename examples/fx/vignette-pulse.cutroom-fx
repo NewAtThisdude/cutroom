@@ -1,0 +1,16 @@
+{
+ "cutroom_fx": 1,
+ "name": "Vignette pulse",
+ "kind": "effect",
+ "author": "Cutroom",
+ "parameters": {
+  "depth": 0.55
+ },
+ "expressions": {
+  "defs": {
+   "r2": "cx*cx+cy*cy",
+   "k": "1-depth*min(amt,1.5)*ss(0.05,0.6,r2)*(0.7+0.3*sin(n*0.2))"
+  },
+  "e": "s(X,Y)*k"
+ }
+}

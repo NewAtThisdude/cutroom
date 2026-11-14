@@ -1,0 +1,15 @@
+{
+ "cutroom_fx": 1,
+ "name": "Duotone",
+ "kind": "effect",
+ "author": "Cutroom",
+ "parameters": {
+  "mixamt": 1
+ },
+ "expressions": {
+  "defs": {
+   "t": "ls(X,Y)/255"
+  },
+  "e": "mix(s(X,Y),255*K(0.1+0.9*t,0.15+0.5*t,0.4+0.1*t),min(amt,1)*mixamt)"
+ }
+}

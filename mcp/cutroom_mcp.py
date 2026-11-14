@@ -267,6 +267,7 @@ TOOLS = [
     ('hook_titles', 'Three hook-title suggestions for the edit from its transcript (local model); add=true puts the first one at the start.', S({'add': boo}), 'hook_titles'),
     ('import_subtitles', 'Put an SRT or WebVTT subtitle file from this Mac on the captions track (replaces the captions there).', S({'path': txt}, ['path']), 'import_subtitles'),
     ('import_lut', 'Import a .cube colour LUT from this Mac (3D or 1D); then use it on a clip with update_clip grade.lut {id, amount}.', S({'path': txt}, ['path']), 'import_lut'),
+    ('import_fx', 'Import a shared effect or transition file (.cutroom-fx) from this Mac; it then appears in options() effects / transitions as u_<id> (add_effect / set_transition). Files are checked, never run.', S({'path': txt}, ['path']), 'import_fx'),
     ('relink_media', 'Point every clip that uses a missing media id (it left the library) at another library item (id or name).', S({'missing': txt, 'media': txt}, ['missing', 'media']), 'relink_media'),
     ('multicam', 'Multicam: 2-6 recordings of the same moment (ids or names), lined up by their sound, as one main clip plus one continuous audio clip (the first one\'s sound). Then multicam_cut switches angles.',
      S({'media': {'type': 'array', 'items': txt}}, ['media']), 'multicam'),
@@ -376,6 +377,9 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'cube': f.read(), 'name': os.path.basename(path)}
+    if name == 'import_fx':
+        with open(os.path.expanduser(args['path']), encoding='utf-8-sig', errors='replace') as f:
+            args = {'text': f.read(1 << 17)}
     if name == 'import_subtitles':
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
