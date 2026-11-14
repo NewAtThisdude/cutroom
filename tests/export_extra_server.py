@@ -117,10 +117,10 @@ def main():
             assert [v['width'], v['height']] == [640, 360] and not any('Resolution lowered' in n for n in st['notes']), st
             print(f"PASS fit {fmt}: {st['bytes']} / 1000000 bytes, {v['width']}x{v['height']}, {st['fit']}", flush=True)
 
-        f, st, info = run(targetBytes=250000)
+        f, st, info = run(targetBytes=120000)  # (250 KB now fits at full size: the sound steps down first)
         v = next(x for x in info['streams'] if x['codec_type'] == 'video')
-        assert st['bytes'] <= 250000 and v['height'] < 360 and any('Resolution lowered' in n for n in st['notes']), st
-        print(f"PASS lowered: {st['bytes']} / 250000 bytes, {v['width']}x{v['height']}, {st['notes']}", flush=True)
+        assert st['bytes'] <= 120000 and v['height'] < 360 and any('Resolution lowered' in n for n in st['notes']), st
+        print(f"PASS lowered: {st['bytes']} / 120000 bytes, {v['width']}x{v['height']}, {st['notes']}", flush=True)
         try:
             s.clean_plan({**base, 'duration': 7200, 'targetBytes': 10000000, 'main': []})
             raise AssertionError('impossible fit accepted')
