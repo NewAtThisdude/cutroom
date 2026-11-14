@@ -6662,6 +6662,8 @@ class App(BaseHTTPRequestHandler):
             if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
                 return self.reply(sorted(({**m, 'prep': PREP_PCT[m['id']]} if m['id'] in PREP_PCT and not m.get('ready') else m
                                           for m in (json.loads(retry(f.read_text)) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file() and not m.get('slate')), key=lambda m: -m.get('added', 0)))  # (slate: a template preview's placeholder)
+            if path == '/api/folders':  # media folders (their block, near the Settings block)
+                return self.reply(folders_state('uses=1' in (urlparse(self.path).query or '')))
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':
@@ -6803,6 +6805,8 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError('the upload was cut off')
                 return self.reply({'job': run_job(open_package, f, True)})
             body = self.body()
+            if u.path == '/api/folders':
+                return self.reply(folders_op(body))
             if u.path == '/api/brand':  # the brand kit, whole (brand_clean keeps the known fields)
                 return self.reply(brand_set(body))
             if u.path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
@@ -8229,6 +8233,108 @@ def resume_prepare():
             with PREP:  # the zoomable filmstrip and waveform, once, for items from before them
                 if timeline_assets(m):
                     save_meta(m)
+
+
+# ---------- media folders (bins): library metadata in <library>/folders.json, shared by every project. Every change is one
+# read-modify-write under a lock, so two editors changing folders at once keep both changes.
+FOLD_FILE, FOLD_LOCK = HOME / 'folders.json', threading.Lock()
+
+
+def folders_read():
+    try:
+        j = json.loads(retry(FOLD_FILE.read_text))
+    except (OSError, ValueError):
+        j = {}
+    return {'folders': j.get('folders') if isinstance(j.get('folders'), dict) else {}, 'of': j.get('of') if isinstance(j.get('of'), dict) else {}}
+
+
+def folders_write(st):
+    tmp = HOME / f'.folders.{uuid.uuid4().hex[:6]}.tmp'  # whole or not there, like save_meta
+    tmp.write_text(json.dumps(st))
+    retry(tmp.replace, FOLD_FILE)
+
+
+def folders_state(uses=False):
+    """The folders, which folder each media item is in, and (uses) which saved projects use each item."""
+    st = folders_read()
+    ids = {f.stem for f in MEDIA.glob('*.json')}
+    st['of'] = {k: v for k, v in st['of'].items() if k in ids and v in st['folders']}  # (a trashed or deleted item's entry is dropped when listing)
+    if uses:
+        used = {}
+        for f in PROJ.glob('*.json'):
+            try:
+                j = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            for k in ('main', 'overlay', 'audio'):
+                for c in j.get(k, []):
+                    for mid in (c.get('media'), (c.get('ramp') or {}).get('src'), (c.get('rt') or {}).get('src')):
+                        if mid:
+                            used.setdefault(mid, set()).add(f.stem)
+        st['usedBy'] = {k: sorted(v) for k, v in used.items()}
+    return st
+
+
+def folders_op(b):
+    """op: create {name, parent}, rename {id, name}, delete {id} (its media and folders go to its parent: nothing is deleted),
+    move {media: [ids], folder: id or null}, nest {id, parent}."""
+    op = b.get('op')
+    with FOLD_LOCK:
+        st = folders_read()
+        F, of = st['folders'], st['of']
+        name = ' '.join(str(b.get('name', '')).split())[:60]
+        if op in ('create', 'rename') and not name:
+            raise ValueError('a folder needs a name')
+        if op in ('create', 'nest') and (b.get('parent') or None) not in (None, *F):
+            raise ValueError('no such folder to put it in')
+        if op in ('rename', 'delete', 'nest') and b.get('id') not in F:
+            raise ValueError('no such folder')
+        sib = lambda parent, me=None: {v['name'].lower() for k, v in F.items() if v.get('parent') == parent and k != me}
+        if op == 'create':
+            parent = b.get('parent') or None
+            if name.lower() in sib(parent):
+                raise ValueError(f'there is already a folder called {name} here')
+            fid = uuid.uuid4().hex[:12]
+            F[fid] = {'name': name, 'parent': parent}
+        elif op == 'rename':
+            if name.lower() in sib(F[b['id']].get('parent'), b['id']):
+                raise ValueError(f'there is already a folder called {name} here')
+            F[b['id']]['name'] = name
+        elif op == 'nest':  # a folder into another (or the top, parent null): never into itself or what is inside it
+            parent, up = b.get('parent') or None, b.get('parent') or None
+            while up:
+                if up == b['id']:
+                    raise ValueError('a folder cannot go inside itself')
+                up = F[up].get('parent')
+            if F[b['id']]['name'].lower() in sib(parent, b['id']):
+                raise ValueError(f'there is already a folder called {F[b["id"]]["name"]} there')
+            F[b['id']]['parent'] = parent
+        elif op == 'delete':
+            up = F[b['id']].get('parent')
+            for v in F.values():
+                if v.get('parent') == b['id']:
+                    v['parent'] = up
+            for k in [k for k, v in of.items() if v == b['id']]:
+                if up:
+                    of[k] = up
+                else:
+                    del of[k]
+            del F[b['id']]
+        elif op == 'move':
+            to = b.get('folder') or None
+            if to not in (None, *F):
+                raise ValueError('no such folder')
+            for mid in b.get('media') or []:
+                if not ID.fullmatch(str(mid)) or not (MEDIA / f'{mid}.json').exists():
+                    continue
+                if to:
+                    of[mid] = to
+                else:
+                    of.pop(mid, None)
+        else:
+            raise ValueError('unknown folder action')
+        folders_write(st)
+    return folders_state()
 
 
 # ---------- settings that live with the library: <library>/settings.json (the page's Settings window; the rest are per
