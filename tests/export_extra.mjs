@@ -79,7 +79,8 @@ try {
       await page.selectOption('#exPreset', ''); await page.selectOption('#exFmt', format);
       await page.selectOption('#exRes', String(await ev(r => exportSizes().findIndex(x => x[0] === r), res)));
       if (await page.isEnabled('#exQ')) await page.selectOption('#exQ', quality);
-      await page.selectOption('#exFit', fit);
+      if (await page.isEnabled('#exFit')) await page.selectOption('#exFit', fit);
+      else if (fit !== 'off') throw new Error('Fit in unexpectedly disabled');
       if (fit === 'custom') { await page.fill('#exFitMB', String(mb)); await page.locator('#exFitMB').blur(); }
       await page.selectOption('#exSubs', subtitles);
       await page.fill('#exName', `${motion} ${name}`);
@@ -103,6 +104,20 @@ try {
     check(`${motion}: low budget lowers resolution and explains it`, small.result.bytes <= 500000 && sv.height < 1080 && /Resolution lowered/.test(small.status), `${small.result.bytes} bytes, ${sv.width}x${sv.height}`);
     const refusal = await api('/api/export', { w: 1920, h: 1080, fps: 24, duration: 7200, format: 'mp4', targetBytes: 10000000, bg: '#000000', main: [] }).then(() => '', e => e.message);
     check(`${motion}: impossible target refused in words`, /cannot fit/.test(refusal) && /larger size|shorten/.test(refusal), refusal);
+    let uploaded = 0;
+    const countLayer = request => { if (new URL(request.url()).pathname.startsWith('/api/layer/')) uploaded++; };
+    page.on('request', countLayer);
+    const early = await ev(async () => {
+      const caps = P.captions;
+      try {
+        P.captions = [...caps, { id: hex12(), start: 7199, dur: 1, text: 'End' }];
+        await buildPlan(1280, 720, 'best', 'impossible', false, 'mp4', { subtitles: 'off', targetBytes: 10000000 });
+        return '';
+      } catch (e) { return e.message; }
+      finally { P.captions = caps; }
+    });
+    page.off('request', countLayer);
+    check(`${motion}: preflight refuses before any caption upload`, /cannot fit/.test(early) && uploaded === 0, early);
 
     await page.keyboard.press('Escape'); await fresh(ids.plain);
     await ev(() => REMOTE.add_text({ text: 'Title stays', start: 0, duration: 6, y: 0.18 }));

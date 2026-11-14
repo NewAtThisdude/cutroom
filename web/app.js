@@ -4753,11 +4753,13 @@ const toSRT = (kind = 'srt') => subtitleText(subtitleCues(), kind);
 const SUB_LANGS = [['en', 'eng', 'English'], ['es', 'spa', 'Spanish'], ['fr', 'fra', 'French'], ['de', 'deu', 'German'], ['it', 'ita', 'Italian'], ['pt', 'por', 'Portuguese'],
   ['ru', 'rus', 'Russian'], ['hy', 'hye', 'Armenian'], ['uk', 'ukr', 'Ukrainian'], ['tr', 'tur', 'Turkish'], ['ar', 'ara', 'Arabic'], ['fa', 'fas', 'Persian'],
   ['hi', 'hin', 'Hindi'], ['ja', 'jpn', 'Japanese'], ['ko', 'kor', 'Korean'], ['zh', 'zho', 'Chinese'], ['nl', 'nld', 'Dutch'], ['pl', 'pol', 'Polish']];
+const SUB_ISO = Object.fromEntries('af:afr am:amh as:asm az:aze ba:bak be:bel bg:bul bn:ben bo:bod br:bre bs:bos ca:cat cs:ces cy:cym da:dan el:ell et:est eu:eus fi:fin fo:fao gl:glg gu:guj ha:hau he:heb hr:hrv ht:hat hu:hun id:ind is:isl jv:jav ka:kat kk:kaz km:khm kn:kan la:lat lb:ltz ln:lin lo:lao lt:lit lv:lav mg:mlg mi:mri mk:mkd ml:mal mn:mon mr:mar ms:msa mt:mlt my:mya ne:nep nn:nno no:nor oc:oci pa:pan ps:pus ro:ron sa:san sd:snd si:sin sk:slk sl:slv sn:sna so:som sq:sqi sr:srp su:sun sv:swe sw:swa ta:tam te:tel tg:tgk th:tha tk:tuk tl:tgl tt:tat ur:urd uz:uzb vi:vie yi:yid yo:yor'.split(' ').map(s => s.split(':')));
 function subtitleLanguage(value) {
   const v = String(value || 'und').toLowerCase();
   if (v === 'auto') return 'und';
   const known = SUB_LANGS.find(row => row.some(x => x.toLowerCase() === v));
   if (known) return known[1];
+  if (SUB_ISO[v]) return SUB_ISO[v];
   if (/^[a-z]{3}$/.test(v)) return v;
   throw new Error('Use a three-letter ISO 639-2 language code, such as eng or spa, or und for unknown');
 }
@@ -4923,6 +4925,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4', options = {}
   const burn = !['file', 'off'].includes(options.subtitles), soft = ['file', 'both'].includes(options.subtitles);
   if (soft && !SOFT_FMT.includes(format)) throw new Error('This format cannot store subtitle tracks; choose MP4, MOV, WebM or MKV');
   const subtitles = soft ? subtitleTracks(options) : [];
+  if (options.targetBytes) await api('/api/export_budget', { w, h, fps: P.fps, efps: options.efps || 0, duration: total(), format, targetBytes: options.targetBytes, subtitles, alpha: !!P.alpha });
   await lutsReady([...P.main, ...P.overlay, ...P.fx]); // imported LUTs in the grades are loaded
   await duckReady();
   const k = w / P.w, D = total();
@@ -5087,7 +5090,7 @@ function exportResultNote(j) {
   return `${j.bytes != null ? ` · ${(j.bytes / 1e6).toFixed(2)} MB (${j.bytes.toLocaleString()} bytes)` : ''}${j.notes?.length ? ` · ${j.notes.join('. ')}` : ''}`;
 }
 function exportTarget(options = {}) {
-  const mb = options.fit && options.fit !== 'off' ? FIT_PRESETS[options.fit]?.[1] ?? (options.fit === 'custom' ? +options.fitMB : NaN) : +options.fitMB || 0;
+  const mb = options.fit === 'off' ? 0 : options.fit ? FIT_PRESETS[options.fit]?.[1] ?? (options.fit === 'custom' ? +options.fitMB : NaN) : +options.fitMB || 0;
   if (!Number.isFinite(mb) || mb < 0 || mb > 20000 || ((options.fit && options.fit !== 'off') && mb === 0)) throw new Error('Fit in needs a size greater than 0 and at most 20000 MB');
   return Math.floor(mb * 1e6);
 }
@@ -5222,6 +5225,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       return;
     }
     const extra = exportExtraFields(), targetBytes = exportTarget(extra);
+    Object.assign(extra, { targetBytes, efps: +$('#exFps').value });
     const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt, extra));
     plan.targetBytes = targetBytes;
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
@@ -7530,7 +7534,8 @@ const REMOTE = {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
     const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
     const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [], watermark = false } = a;
-    const extra = { subtitles: 'burned', ...P.exportExtra, ...a }, targetBytes = exportTarget(extra);
+    const extra = { subtitles: 'burned', ...a }, targetBytes = exportTarget(extra);
+    Object.assign(extra, { targetBytes, efps: +fps || 0 });
     if (!['burned', 'file', 'both', 'off'].includes(extra.subtitles)) throw new Error('subtitles must be burned, file, both or off');
     if (targetBytes && !FIT_FMT.includes(format)) throw new Error('Fit in needs a compressed video, GIF, MP3 or AAC format');
     if (!Array.isArray(also) || also.some(r => !SHAPES.includes(r))) throw new Error(`also must be a list of shapes: ${SHAPES.join(', ')}`);

@@ -1,11 +1,11 @@
 """Direct export checks; no browser or HTTP server. All artifacts stay under tests/out/."""
-import ast
 import base64
 import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,12 +30,14 @@ def main():
         spec.loader.exec_module(s)
         for d in (s.MEDIA, s.PROJ, s.EXPORTS, s.CACHE):
             d.mkdir(parents=True, exist_ok=True)
+        presets = '--presets' in sys.argv
+        W, H, D = (1280, 720, 12) if presets else (640, 360, 6)
         src = Path(scratch) / 'source.mp4'
-        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=24:d=6,noise=alls=70:allf=t:all_seed=17',
-           '-f', 'lavfi', '-i', 'sine=f=440:d=6', '-c:v', 'libx264', '-threads', '2', '-preset', 'ultrafast', '-crf', '12', '-c:a', 'aac', '-shortest', str(src))
+        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', f'testsrc2=s={W}x{H}:r=24:d={D},noise=alls={100 if presets else 70}:allf=t:all_seed=17',
+           '-f', 'lavfi', '-i', f'sine=f=440:d={D}', '-c:v', 'libx264', '-threads', '2', '-preset', 'ultrafast', '-crf', '8' if presets else '12', '-c:a', 'aac', '-shortest', str(src))
         m = s.import_file(src.name, None, 0, background=False, src=src)
-        base = {'w': 640, 'h': 360, 'fps': 24, 'duration': 6, 'bg': '#000000', 'quality': 'best', 'format': 'mp4', 'name': 'extra',
-                'main': [{'media': m['id'], 'in': 0, 'out': 6, 'frames': 144, 'geom': {'x': 0, 'y': 0, 'w': 640, 'h': 360}}]}
+        base = {'w': W, 'h': H, 'fps': 24, 'duration': D, 'bg': '#000000', 'quality': 'best', 'format': 'mp4', 'name': 'extra',
+                'main': [{'media': m['id'], 'in': 0, 'out': D, 'frames': D * 24, 'geom': {'x': 0, 'y': 0, 'w': W, 'h': H}}]}
         tracks = [{'language': lang, 'cues': [{'start': 500, 'end': 2250, 'text': text}, {'start': 3000, 'end': 5125, 'text': 'Second line'}]}
                   for lang, text in [('eng', 'Hello from Cutroom'), ('spa', 'Hola desde Cutroom')]]
 
@@ -48,6 +50,15 @@ def main():
             file = s.EXPORTS / st['file']
             assert st['bytes'] == file.stat().st_size
             return file, st, probe(file)
+
+        if presets:
+            for mb in (10, 50, 25, 100):
+                f, st, info = run(targetBytes=mb * 1000000, subtitles=tracks)
+                v = next(x for x in info['streams'] if x['codec_type'] == 'video')
+                assert mb * 900000 <= st['bytes'] <= mb * 1000000, st
+                assert [v['width'], v['height']] == [W, H] and not st['notes'], st
+                print(f"PASS preset {mb} MB: {st['bytes']} bytes ({st['bytes'] / mb / 10000:.2f}%), {W}x{H}, {st['encodeBytes']}", flush=True)
+            return
 
         for fmt, codec in [('mp4', 'mov_text'), ('prores', 'mov_text'), ('webm', 'webvtt'), ('mkv', 'subrip')]:
             f, st, info = run(format=fmt, subtitles=tracks)
@@ -81,6 +92,52 @@ def main():
             f, st, info = run(format=fmt, targetBytes=300000)
             assert st['bytes'] <= 300000, st
             print(f"PASS fit {fmt}: {st['bytes']} / 300000 bytes, {st.get('notes')}", flush=True)
+        f, st, info = run(format='webm', alpha=True, targetBytes=1000000, main=[{**base['main'][0], 'opacity': 0.5}], subtitles=tracks)
+        alpha = subprocess.check_output(['ffmpeg', '-v', 'error', '-c:v', 'libvpx-vp9', '-i', str(f), '-frames:v', '1', '-vf', 'alphaextract', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+        assert min(alpha) < 250 and st['bytes'] <= 1000000, st
+        print(f"PASS alpha VP9 + soft subs: {st['bytes']} bytes, decoded alpha range {min(alpha)}–{max(alpha)}", flush=True)
+
+        # The same burned layer with/without embedded tracks has exactly the same decoded video.
+        png = Path(scratch) / 'layer.png'
+        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=640x360', '-frames:v', '1', str(png))
+        text = {'pngs': [base64.b64encode(png.read_bytes()).decode()], 'frames': [{'i': 0, 'start': 0.5, 'end': 2.25}]}
+        burned, _, _ = run(text=text)
+        both, _, _ = run(text=text, subtitles=tracks)
+        md5 = lambda f: ff('ffmpeg', '-v', 'error', '-i', str(f), '-map', '0:v:0', '-f', 'framemd5', '-')
+        assert md5(burned) == md5(both)
+        print('PASS burned + soft: all 144 decoded frames identical to burned-only export', flush=True)
+
+        # Long-timeline chunking and the existing loudness measurement still feed the size-controlled final pass.
+        keep_chunk, s.CHUNK = s.CHUNK, 1
+        try:
+            clips = [{**base['main'][0], 'in': a, 'out': a + 3, 'frames': 72} for a in (0, 3)]
+            f, st, _ = run(main=clips, targetBytes=1000000, loud=True, lufs=-16, subtitles=tracks)
+            assert 900000 <= st['bytes'] <= 1000000, st
+            print(f"PASS chunked + measured loudness + subs: {st['bytes']} bytes", flush=True)
+        finally:
+            s.CHUNK = keep_chunk
+
+        hdr = Path(scratch) / 'hdr.mp4'
+        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=24:d=1', '-pix_fmt', 'yuv420p10le', '-c:v', 'libx265',
+           '-preset', 'ultrafast', '-x265-params', 'pools=2:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc', '-color_primaries', 'bt2020', '-colorspace', 'bt2020nc', '-color_trc', 'arib-std-b67', '-tag:v', 'hvc1', str(hdr))
+        hm = s.import_file(hdr.name, None, 0, background=False, src=hdr)
+        f, st, info = run(duration=1, hdr='hlg', main=[{**base['main'][0], 'media': hm['id'], 'out': 1, 'frames': 24}], targetBytes=300000,
+                          subtitles=[{'language': 'eng', 'cues': [{'start': 100, 'end': 900, 'text': 'HDR caption'}]}])
+        v = next(x for x in info['streams'] if x['codec_type'] == 'video')
+        assert v['pix_fmt'] == 'yuv420p10le' and v['color_transfer'] == 'arib-std-b67' and v['color_primaries'] == 'bt2020' and st['bytes'] <= 300000, (st, v)
+        print(f"PASS HDR fit + soft subs: {st['bytes']} bytes, {v['pix_fmt']} {v['color_transfer']} {v['color_primaries']}", flush=True)
+
+        keep_enc, keep_vt = s.ENC.copy(), s.VT
+        try:
+            for family in ('videotoolbox', 'nvenc', 'qsv', 'amf'):
+                s.ENC['h264'], s.VT = 'h264_' + family, family == 'videotoolbox'
+                p = s.clean_plan({**base, 'quality': 'fast', 'targetBytes': 1000000})
+                budget = s.fit_budget(p)
+                cmd = s.ffmpeg_cmd({**p, 'fit_bps': budget['video_bps'], 'fit_audio_bps': budget['audio_bps'], 'fit_size': budget['size']}, scratch, Path(scratch) / 'args.mp4')
+                assert cmd[cmd.index('-c:v') + 1] == 'h264_' + family and '-b:v' in cmd and '-q:v' not in cmd and '-pass' not in cmd
+                print(f'PASS argument check only: {family} bitrate mode (hardware unavailable in sandbox)', flush=True)
+        finally:
+            s.ENC, s.VT = keep_enc, keep_vt
         print('PASS export_extra_server', flush=True)
 
 

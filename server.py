@@ -4649,7 +4649,7 @@ def yuv_ok(p):
     """Nothing in the plan needs RGB: plain cuts, dissolves and fades on the main track only, into a 4:2:0 file. Those stay
     in yuv420p from decode to encode, no base-frame overlay (1 min of 1080p60 from 4K: 245 -> 170 CPU-s, 46 dB vs the RGB path).
     An HDR export takes this path only (10-bit, any format). A transparent plan (and its 'mp4' chunks) needs RGBA. p['rgb'] (selftest only) forces the RGB path."""
-    return bool(p['main']) and not (p.get('rgb') or p.get('alpha') or p['overlay'] or p['frames'] or p.get('fx')) and (p.get('format', 'mp4') in ('mp4', 'hevc', 'av1', 'av1webm', 'webm') or p.get('hdr')) and not any(map(rgb_need, p['main']))
+    return bool(p['main']) and not (p.get('rgb') or p.get('alpha') or p['overlay'] or p['frames'] or p.get('fx')) and (p.get('format', 'mp4') in ('mp4', 'hevc', 'av1', 'av1webm', 'webm', 'mkv') or p.get('hdr')) and not any(map(rgb_need, p['main']))
 
 
 def hdr_why(p):
@@ -5222,7 +5222,7 @@ def fit_budget(p):
         # MP3 uses discrete bitrates, AAC can use a continuous rate.
         audio = min(256000, bps) if fmt == 'm4a' else max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= bps)
         return {'audio_bps': audio, 'overhead': overhead}
-    video = bps - fit_audio_bps(fmt)
+    video = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, bps - fit_audio_bps(fmt))
     if video < 80000:
         raise ValueError('This duration cannot fit even with the minimum picture and audio quality. Use a larger size or shorten the video')
     return {'video_bps': video, 'audio_bps': fit_audio_bps(fmt), 'overhead': overhead, 'size': fit_dimensions(p, video)}
@@ -5350,6 +5350,13 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
                 enc += ['-x265-params', f'pass={pn}', '-x265-stats', log]
             else:
                 enc += ['-pass', str(pn), '-passlogfile', log]
+    if hdr and '-c:v' in enc and enc[enc.index('-c:v') + 1] == 'libx265':
+        # x265 needs VUI labels in its own parameters too (ffmpeg's output colour options alone can omit them).
+        vui = f'colorprim=bt2020:transfer={HDR_TRC[hdr]}:colormatrix=bt2020nc'
+        if '-x265-params' in enc:
+            enc[enc.index('-x265-params') + 1] += ':' + vui
+        else:
+            enc += ['-x265-params', vui]
     if p.get('audio_file') and amap == ['-map', '[aout]']:  # render(): the mix, made before the picture
         amap, fg = ['-map', f"{ins.count('-i')}:a"], fg + ';[aout]anullsink'
         ins = ins + ['-i', p['audio_file']]
@@ -5890,7 +5897,7 @@ def render_fitted(p, td, out, report, job):
             gw = max(16, round(min(p['w'], 96 + 544 * q ** 0.5) / 2) * 2)
             gf, gc = min(p['fps'], 5 + round(10 * min(1, q * 2))), max(16, round(16 + 240 * min(1, q * 3)))
             st['note'] = f'Fitting GIF: {gw} px wide, {gf:g} fps, {gc} colours'
-            render({**p, 'gif_fit': (gw, gf, gc)}, td, out, lambda x: report((n + x) / 10), job=job)
+            render({**p, 'gif_fit': (gw, gf, gc)}, td, out, lambda x: report(0.7 * (n + x) / 10), job=job)
             size = out.stat().st_size
             if size <= target:
                 if not best.exists() or size > best.stat().st_size:
@@ -5903,6 +5910,26 @@ def render_fitted(p, td, out, report, job):
                 raise ValueError('This GIF cannot fit even at 96 pixels, 5 fps and 16 colours. Use a larger size or shorten it')
             else:
                 hi = q
+        # Palette thresholds can jump past the cap while dimensions are still affordable. Refine colours separately.
+        if n and best.stat().st_size < target * 0.95 and chosen[2] < 256:
+            low, high = chosen[2], 256
+            gw, gf = chosen[:2]
+            for k in range(8):
+                if low >= high:
+                    break
+                gc = (low + high + 1) // 2
+                st['note'] = f'Fitting GIF palette: {gc} colours'
+                render({**p, 'gif_fit': (gw, gf, gc)}, td, out, lambda x: report(0.7 + 0.3 * (k + x) / 8), job=job)
+                size = out.stat().st_size
+                if size <= target:
+                    low = gc
+                    if size > best.stat().st_size:
+                        shutil.copyfile(out, best)
+                        chosen = (gw, gf, gc)
+                    if size >= target * 0.95:
+                        break
+                else:
+                    high = gc - 1
         retry(best.replace, out)
         notes.append(f'GIF fitted at {chosen[0]} px wide, {chosen[1]:g} fps, {chosen[2]} colours')
         st['fit'] = {'targetBytes': target, 'gif': list(chosen)}
@@ -5912,15 +5939,19 @@ def render_fitted(p, td, out, report, job):
         original_bps, original_size = p['fit_bps'], [p['w'], p['h']]
         best = Path(td) / ('fit-best' + out.suffix)
         best_plan = None
-        for attempt in range(2):
+        cmd = ffmpeg_cmd(p, td, out)
+        codec = cmd[cmd.index('-c:v') + 1] if '-c:v' in cmd else ''
+        software = ('libx264', 'libx265', 'libvpx-vp9', 'libvpx')
+        attempts, measurements = (3 if codec in software else 2), []  # hardware: exactly one possible corrected retry
+        for attempt in range(attempts):
             if p.get('fit_size'):
                 p['fit_size'] = fit_dimensions(p, p['fit_bps'])
             cmd = ffmpeg_cmd(p, td, out)
             codec = cmd[cmd.index('-c:v') + 1] if '-c:v' in cmd else ''
-            passes = (1, 2) if codec in ('libx264', 'libx265', 'libvpx-vp9', 'libvpx') else (0,)
+            passes = (1, 2) if codec in software else (0,)
             for i, pn in enumerate(passes):
                 st['note'] = f'Fitting file size: encode {attempt + 1}' + (f', pass {pn} of 2' if pn else '')
-                render({**p, 'fit_pass': pn}, td, out, lambda x, i=i: report((attempt + (i + x) / len(passes)) / 2), job=job)
+                render({**p, 'fit_pass': pn}, td, out, lambda x, i=i: report((attempt + (i + x) / len(passes)) / attempts), job=job)
             mux_subtitles(p, td, out, job)
             size = out.stat().st_size
             st.setdefault('encodeBytes', []).append(size)
@@ -5930,7 +5961,7 @@ def render_fitted(p, td, out, report, job):
                     best_plan = dict(p)
                 if size >= target * 0.95 or fmt in SOUND:
                     break
-            if attempt == 0:
+            if attempt + 1 < attempts:
                 # Keep the actual audio/header bytes out of the video correction. Probe packet sizes, not nominal rates.
                 packets = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0' if fmt not in SOUND else 'a:0',
                                          '-show_entries', 'packet=size', '-of', 'json', str(out)]).stdout)['packets']
@@ -5942,7 +5973,15 @@ def render_fitted(p, td, out, report, job):
                     if fmt == 'mp3':
                         p['fit_audio_bps'] = max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= p['fit_audio_bps'])
                 else:
-                    p['fit_bps'] = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, int(p['fit_bps'] * ratio))
+                    corrected = p['fit_bps'] * ratio
+                    if measurements and size < target * 0.95:
+                        old_bps, old_bytes, old_size = measurements[-1]
+                        if old_size == p['fit_size'] and p['fit_bps'] > old_bps and size > old_bytes:
+                            # Software ABR can undershoot nonlinearly at high quality; use its measured slope once.
+                            slope = (size - old_bytes) / (p['fit_bps'] - old_bps)
+                            corrected = min(p['fit_bps'] * 1.5, p['fit_bps'] + (target * 0.965 - size) / slope)
+                    measurements.append((p['fit_bps'], size, p['fit_size']))
+                    p['fit_bps'] = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, int(corrected))
                     if p['fit_bps'] < 80000:
                         break
         if not best.exists():
@@ -5951,9 +5990,9 @@ def render_fitted(p, td, out, report, job):
         size = best_plan.get('fit_size')
         if size and size != original_size:
             notes.append(f'Resolution lowered from {original_size[0]}×{original_size[1]} to {size[0]}×{size[1]} to keep picture quality within the size limit')
-        st['fit'] = {**budget, 'targetBytes': target, 'size': size, 'video_bps': best_plan['fit_bps'], 'initial_video_bps': original_bps, 'encodes': attempt + 1, 'encoder': codec}
+        st['fit'] = {**budget, 'targetBytes': target, 'size': size, 'audio_bps': best_plan['fit_audio_bps'], 'video_bps': best_plan['fit_bps'], 'initial_video_bps': original_bps, 'encodes': attempt + 1, 'encoder': codec}
     if out.stat().st_size < target * 0.95:
-        notes.append('This content needs fewer bits at the available quality; the file is smaller than the requested size')
+        notes.append('The file is below 95% of the limit; the encoder used fewer bits than requested at the available quality')
     st['notes'] = notes
 
 
@@ -7207,6 +7246,9 @@ class App(BaseHTTPRequestHandler):
                     with HEAVY['cv']:  # one still waiting in the heavy-job queue leaves it
                         HEAVY['cv'].notify_all()
                 return self.reply({'ok': True})
+            if u.path == '/api/export_budget':  # refuse impossible targets before the browser rasterizes its caption layer
+                p = clean_plan({**{k: body[k] for k in ('w', 'h', 'fps', 'efps', 'duration', 'format', 'targetBytes', 'subtitles', 'alpha') if k in body}, 'bg': '#000000'})
+                return self.reply(fit_budget(p) if p['targetBytes'] and p['format'] != 'gif' else {})
             if u.path == '/api/export':
                 return self.reply({'job': start_export(body)})
             if m := re.fullmatch(r'/api/interrupted/([a-f0-9]{12})/(retry|dismiss)', u.path):
