@@ -5536,6 +5536,50 @@ def loud_gain(p, td, job):
     return 0.0 if not (math.isfinite(i) and math.isfinite(tp)) or i < -70 else round(min(p.get('lufs', -14) - i, -1.5 - tp), 3)  # silence: as it is
 
 
+# ---------- exports that were running when the server died: <library>/jobs/<job>.json = {"pid", "t", "plan"} while one runs; each stays until retried or dismissed ----------
+JOBDIR = HOME / 'jobs'
+
+
+def start_export(p):
+    job = uuid.uuid4().hex[:12]
+    JOBS[job] = {'state': 'running', 'progress': 0.0}
+    try:
+        JOBDIR.mkdir(exist_ok=True)
+        (JOBDIR / f'.{job}.tmp').write_text(json.dumps({'pid': os.getpid(), 't': time.time(), 'plan': p}, default=str))
+        retry((JOBDIR / f'.{job}.tmp').replace, JOBDIR / f'{job}.json')
+    except OSError as e:  # a bonus: the export runs anyway
+        print(f'export {job} not recorded: {e}', file=sys.stderr, flush=True)
+
+    def go():
+        try:
+            export(job, p)
+        finally:  # done, failed or cancelled: not interrupted
+            (JOBDIR / f'{job}.json').unlink(missing_ok=True)
+    threading.Thread(target=go, daemon=True).start()
+    return job
+
+
+def interrupted_list():
+    """Records whose server is gone (another server on this library may still be running its own: its pid is alive)."""
+    out = []
+    for f in sorted(JOBDIR.glob('*.json')) if JOBDIR.is_dir() else []:
+        try:
+            rec = json.loads(f.read_text())
+            if rec['pid'] == os.getpid():
+                continue
+            try:
+                os.kill(rec['pid'], 0)
+                continue
+            except ProcessLookupError:
+                pass
+            except OSError:  # (alive, not ours)
+                continue
+            out.append({'job': f.stem, 'name': rec['plan'].get('name', 'Export'), 'format': rec['plan'].get('format'), 't': rec['t']})
+        except (OSError, ValueError, KeyError, AttributeError):
+            f.unlink(missing_ok=True)
+    return out
+
+
 def export(job, p):
     st = JOBS[job]
     try:
@@ -5604,12 +5648,40 @@ def proj_stats(j):  # a project's length and clip count, for its card and its ve
     return {'dur': round(dur, 2), 'clips': sum(len(j.get(k, [])) for k in ('main', 'overlay', 'audio', 'text', 'captions'))}
 
 
+def load_project(pid, heal=True):
+    """The saved project. One that no longer parses (a disk that lost the tail of the write) is set aside as <id>.json.bad and the newest
+    version that does parse takes its place: (project, None) or (project, 'what happened'). Nothing to fall back on: ValueError."""
+    f = PROJ / f'{pid}.json'
+    try:
+        j = json.loads(f.read_text(encoding='utf-8'))
+        if isinstance(j, dict):
+            return j, None
+    except ValueError:  # (UnicodeDecodeError is one)
+        pass
+    with VERSION_LOCK:
+        for v in list_versions(pid):  # newest first, unreadable ones already left out
+            try:
+                j = read_version(pid, v['id'])['p']
+            except (OSError, ValueError, KeyError):
+                continue
+            if isinstance(j, dict) and not heal:  # (the projects list: its card shows the version; opening the project is what repairs and tells)
+                return j, None
+            if isinstance(j, dict):
+                retry(f.replace, f.with_name(f'{pid}.json.bad'))
+                tmp = PROJ / f'.{pid}.tmp'
+                tmp.write_text(json.dumps(j))
+                retry(tmp.replace, f)
+                when = time.strftime('%b %d %H:%M', time.localtime(v['t']))
+                return j, f"This project's file was damaged. Restored the version from {when}; the damaged file is kept as {pid}.json.bad"
+    raise ValueError('this project file is damaged and has no earlier version')
+
+
 def list_projects():
     out = []
     for f in PROJ.glob('*.json'):
         try:
-            j = json.loads(f.read_text())
-        except ValueError:
+            j, _ = load_project(f.stem, heal=False)
+        except (ValueError, OSError):
             continue
         out.append({'id': f.stem, 'name': j.get('name', 'Untitled'), 'w': j.get('w'), 'h': j.get('h'), 'updated': f.stat().st_mtime, **proj_stats(j),
                     'pic': (CACHE / f'poster_{f.stem}.jpg').exists() or any(has_file(c.get('media')) for c in j.get('main', []) + j.get('overlay', []))})  # it can have a poster (else the card asks and gets a 404)
@@ -6414,7 +6486,10 @@ class App(BaseHTTPRequestHandler):
             if path == '/api/voices':
                 return self.reply(voices())
             if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})', path):
-                return self.file(PROJ / f'{m[1]}.json')
+                j, note = load_project(m[1])  # (a missing file: FileNotFoundError, a 404 below)
+                return self.reply({**j, '_recovered': note} if note else j)
+            if path == '/api/interrupted':
+                return self.reply(interrupted_list())
             if m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions', path):
                 return self.reply(list_versions(m[1]))
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/poster\.jpg', path)) and (PROJ / f'{m[1]}.json').exists():
@@ -6730,10 +6805,12 @@ class App(BaseHTTPRequestHandler):
                         HEAVY['cv'].notify_all()
                 return self.reply({'ok': True})
             if u.path == '/api/export':
-                p, job = clean_plan(body), uuid.uuid4().hex[:12]
-                JOBS[job] = {'state': 'running', 'progress': 0.0}
-                threading.Thread(target=export, args=(job, p), daemon=True).start()
-                return self.reply({'job': job})
+                return self.reply({'job': start_export(clean_plan(body))})
+            if m := re.fullmatch(r'/api/interrupted/([a-f0-9]{12})/(retry|dismiss)', u.path):
+                f = JOBDIR / f'{m[1]}.json'
+                rec = json.loads(f.read_text())  # (gone: FileNotFoundError, a 404)
+                f.unlink()
+                return self.reply({'ok': True} if m[2] == 'dismiss' else {'job': start_export(rec['plan'])})
             if u.path == '/api/matte':
                 return self.reply({'job': run_job(matte, body['media'], *([fnum(body['t0'], 0, 1e6), fnum(body['t1'], 0, 1e6)] if body.get('t1') else []))})
             if u.path == '/api/denoise':
