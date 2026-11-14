@@ -7789,6 +7789,13 @@ def selftest():
     out = render({**tplan, 'name': 'fx-lut', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'lut', 'lut': swap, 'a': 10, 'b': 20}]}, 30)
     l5, l15, l25 = at(5, 60), at(15, 60), at(15, 200)
     assert l5[0] > 200 and l15[2] > 200 and l15[0] < 50 and l25[0] > 200 and l25[2] < 50, ('adjustment layer table on frames 10-19 only: red and blue swapped', l5, l15, l25)
+    gen('-f', 'lavfi', '-i', f'color=c=white:s={W}x{H}', '-frames:v', '1', str(HOME / 'mall.png'))
+    gen('-f', 'lavfi', '-i', f'color=c=black:s={W}x{H}', '-vf', "format=gray,geq=lum='if(lt(X,100),255,0)'", '-frames:v', '1', str(HOME / 'mleft.png'))
+    mseq = {'pngs': [base64.b64encode((HOME / f).read_bytes()).decode() for f in ('mall.png', 'mleft.png')], 'spans': [{'i': 0, 'n': 5}, {'i': 1, 'n': 5}]}
+    out = render({**tplan, 'name': 'fx-lut-mask', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'lut', 'lut': swap, 'a': 10, 'b': 20, 'maskSeq': mseq}]}, 30)
+    m5, m12, m12r, m17, m17r = at(5, 60), at(12, 60), at(12, 200), at(17, 60), at(17, 200)
+    assert m5[0] > 200 and m12[2] > 200 and m12r[0] > 200 and m17[2] > 200 and m17r[2] > 200 and m17r[0] < 50, ('masked adjustment layer: swapped where its mask frames are white, from its first frame', m5, m12, m12r, m17, m17r)
+    print('masked adjustment layer ok: the table only inside its mask, the mask frames lined up with the layer')
     for op in ({'op': 'blur', 'sigma': 4}, {'op': 'hblur', 'sigma': 8}, {'op': 'pixelize', 'size': 16}, {'op': 'noise', 's': 20}, {'op': 'mirror'}, {'op': 'grid'}, {'op': 'glow', 'sigma': 6, 'amt': 0.6}):
         out = render({**tplan, 'name': f"fx-{op['op']}", 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{**op, 'a': 0, 'b': 30}]}, 30)
         if op['op'] == 'mirror':
