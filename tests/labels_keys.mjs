@@ -167,7 +167,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const ro = await ev(() => $('#modal .keysheet').textContent);
   check(`${rm}, Windows: the ? sheet says Ctrl+, no ⌘ ⌥ ⇧`, /Ctrl\+Shift\+Z/.test(ro) && !/[⌘⌥⇧]/.test(ro), ro.slice(0, 160));
   await page.click('#modal [data-settings]'); await page.waitForSelector('#setKeys [data-keyfor]'); // keys are changed (and labelled per key) in Settings > Shortcuts
-  const lab = await ev(() => [$('#btnUndo').title, $('#btnRedo').title, $('[data-keyfor="redo"]').textContent, $('[data-keyfor="pasteLook"]').textContent, $('[data-keyfor="del"]').textContent, $('#btnAsk kbd').textContent]);
+  const lab = await ev(() => [$('#btnUndo').title, $('#btnRedo').title, $('[data-keyfor="redo"]').textContent, $('[data-keyfor="pasteAttrs"]').textContent, $('[data-keyfor="del"]').textContent, $('#btnAsk kbd').textContent]);
   check(`${rm}, Windows: buttons and the shortcut sheet say Ctrl+ / Alt+ / Shift+`, lab.join('|') === 'Undo (Ctrl+Z)|Redo (Ctrl+Shift+Z)|Ctrl+Shift+Z|Ctrl+Alt+V|Backspace Del|Ctrl+K', lab.join('|'));
   await page.keyboard.press('Escape');
   const left = await ev(() => { // every word the page has (hidden panels too), its tooltips and labels

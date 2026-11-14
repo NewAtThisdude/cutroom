@@ -863,13 +863,14 @@ const KEYMAP0 = [
   ['zoomOut', 'Zoom the timeline out', ['Mod+-'], zoomBy(0.8)],
   ['fit', 'Fit the timeline', ['Shift+KeyZ'], () => fitTimeline()],
   ['copy', 'Copy', ['Mod+KeyC'], () => copySel()], ['cut', 'Cut', ['Mod+KeyX'], () => copySel(true)],
-  ['paste', 'Paste', ['Mod+KeyV'], () => paste()], ['pasteLook', 'Paste the look', ['Mod+Alt+KeyV'], () => pasteLook()],
+  ['paste', 'Paste', ['Mod+KeyV'], () => paste()], ['pasteLook', 'Paste the look', ['Mod+Alt+Shift+KeyV'], () => pasteLook()], ['pasteAttrs', 'Paste attributes: pick what to paste', ['Mod+Alt+KeyV'], () => pasteAttrsDialog()],
   ['dup', 'Duplicate', ['Mod+KeyD'], () => dup()], ['selAll', 'Select all', ['Mod+KeyA'], () => selectAll()],
   ['undo', 'Undo', ['Mod+KeyZ'], () => restore(undo, redo)], ['redo', 'Redo', ['Mod+Shift+KeyZ'], () => restore(redo, undo)],
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
   ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
   ['fullscreen', 'Full screen preview (Esc leaves)', ['Shift+KeyF'], () => toggleFullscreen()],
   ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
+  ['cmp', 'Before / after: the colour work off on one side of a line', ['\\'], (e, field) => { if (field) return false; cmpToggle(); }],
   ['history', 'History: every edit step, go back to any', ['KeyH'], () => openHistory()],
   ...[1, 2, 3, 4, 5, 6].map(i => [`cam${i}`, `Multicam: cut to angle ${i}`, [`Digit${i}`], () => { if (!P.main.some(c => c.mc)) return false; mcCut(i - 1); }]),
   ...LABELS.map(([, n], i) => [`lab${i + 1}`, `Label the selected clips ${n.toLowerCase()} (again: none)`, [`Mod+Digit${i + 1}`], () => labelKey(i)]),
@@ -1660,6 +1661,7 @@ function fitStage() {
   cv.style.height = `${Math.round(P.h * s)}px`;
   cv.width = Math.max(2, Math.round(P.w * s * dpr));
   cv.height = Math.max(2, Math.round(P.h * s * dpr));
+  cmpLayout();
   S.dirty = true;
 }
 const POOL_MAX = 8; // video elements kept loaded (720p copies): jumping back to a clip finds its file still there
@@ -2110,28 +2112,7 @@ function paint() {
   hits = []; S.lead = null;
   ctx.fillStyle = backdrop(ctx);
   ctx.fillRect(0, 0, cv.width, cv.height);
-  for (const [lane, c, key, i] of layers) {
-    const m = M.get(c.media);
-    if (!m) continue;
-    let el;
-    if (m.kind === 'image') el = imgFor(m);
-    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
-    const rp = S.rtPv; // a retouch draft: the paused frame as ai/retouch.py renders it, in place of the clip's own picture
-    if (rp?.id === c.id && !S.playing && S.rtDraft?.id === c.id) { if (Math.abs(t - rp.T) < 0.5 / P.fps && rp.img.naturalWidth) el = rp.img; else rtPreviewSoon(); }
-    if (lane === 'overlay' && P.mute.overlay) continue;
-    if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
-      (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
-      if (i !== act[1]) continue;
-      const cap = (TR_GPU[tr.type] || TRX[tr.type] || blurTrGPU(tr.type)) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
-      if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
-      for (const j of [0, 1]) {
-        const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
-        lx.fillStyle = backdrop(lx); lx.fillRect(0, 0, L.width, L.height);
-        if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
-      }
-      transition(ctx, layer(0), layer(1), tr.type, tr.p);
-    } else if (!(layers.length === 1 && (fxDone = fxCap(ctx, lane, c, m, el, t, k)))) drawMedia(ctx, lane, c, m, el, t - c.start, k);
-  }
+  fxDone = drawLayers(ctx, layers, act, mi, tr, t, k, live, null);
   const nx = mi >= 0 && P.main[mi + 1], nm = nx && M.get(nx.media);
   if (nm && nm.kind !== 'image' && nx.start - t < 1.5) {
     const v = vidFor(`m${(mi + 1) % 2}${nx.media}`, nm), lead = nx.start - t, PRE = 0.3;
@@ -2153,6 +2134,7 @@ function paint() {
   if (!fxDone) fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
   if (SCOPE.on && (!S.playing || performance.now() - SCOPE.at >= 60)) drawScope(); // the finished frame, before the selection box; ~15 Hz while playing
+  if (CMP.on && !S.noCmp) cmpPaint(ctx, layers, act, mi, tr, t, k); // before / after: the same frame without its colour work, over one side (a preview aid: the export never sees it)
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
@@ -2178,6 +2160,32 @@ function paint() {
   $('#tc').textContent = `${tc(S.t)} / ${tc(S.playing ? S.end : end)}`;
   const vh = !S.playing && $('#vkHere'), vc = vh && selClip(); // the volume-point slider follows the playhead
   if (vc && document.activeElement !== vh) { const x = +dB(envAt(vc, clamp(t - vc.start, 0, len(vc)))).toFixed(1); if (+vh.value !== x) { vh.value = x; fill(vh); vh.nextElementSibling.textContent = fmt(x, 'dB'); } }
+}
+function drawLayers(ctx, layers, act, mi, tr, t, k, live, cmp) { // the clips of the frame in order, onto ctx; true = effects already ran on the picture (fxCap). cmp: before / after's ungraded pass (cmpStrip on the clips it names)
+  let fxDone = false;
+  for (const [lane, c0, key, i] of layers) {
+    const c = cmp && (cmp === 'all' || cmpSel(lane, c0.id)) ? cmpStrip(c0) : c0, m = M.get(c.media);
+    if (!m) continue;
+    let el;
+    if (m.kind === 'image') el = imgFor(m);
+    else { el = vidFor(key, m); live.add(el); if (lane === 'main' && i === mi && !cmp) { S.lead = el; S.leadClip = c; } sync(el, c.in + (t - c.start) * c.speed, c.speed); }
+    const rp = S.rtPv; // a retouch draft: the paused frame as ai/retouch.py renders it, in place of the clip's own picture
+    if (rp?.id === c.id && !S.playing && S.rtDraft?.id === c.id) { if (Math.abs(t - rp.T) < 0.5 / P.fps && rp.img.naturalWidth) el = rp.img; else rtPreviewSoon(); }
+    if (lane === 'overlay' && P.mute.overlay) continue;
+    if (tr && lane === 'main') { // each side renders its full frame into a layer, then the transition composites them
+      (tr.sides ??= [])[i === act[0] ? 0 : 1] = [c, m, el];
+      if (i !== act[1]) continue;
+      const cap = (TR_GPU[tr.type] || TRX[tr.type] || blurTrGPU(tr.type)) && !P.alpha && [{}, {}]; // two plain pictures: straight to the GPU, no layer canvases (it fills the background colour)
+      if (cap && tr.sides[0] && tr.sides.every(([c, m, el], j) => drawMedia(null, lane, c, m, el, t - c.start, k, cap[j])) && trGPU(ctx, cap, tr.type, clamp(1 - tr.p, 0, 1), P.bg)) { hits.push(...cap.map(x => x.hit)); continue; }
+      for (const j of [0, 1]) {
+        const L = layer(j), lx = L.getContext('2d'), s = tr.sides[j];
+        lx.fillStyle = backdrop(lx); lx.fillRect(0, 0, L.width, L.height);
+        if (s) drawMedia(lx, lane, s[0], s[1], s[2], t - s[0].start, k);
+      }
+      transition(ctx, layer(0), layer(1), tr.type, tr.p);
+    } else if (!(layers.length === 1 && (fxDone = fxCap(ctx, lane, c, m, el, t, k)))) drawMedia(ctx, lane, c, m, el, t - c.start, k);
+  }
+  return fxDone;
 }
 function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
   if (el.tagName === 'VIDEO' ? el.readyState < 2 : !(el.complete && el.naturalWidth)) return;
@@ -2561,7 +2569,7 @@ function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect 
 }
 function fxOps(W, H, t) { // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
   const u = Math.min(W, H) / 1080;
-  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
+  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust') && !(cmpSkipFx && (cmpSkipFx === 'all' || f.fx === 'adjust'))).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
 }
 function fxPixels(ctx, t) { runOps(ctx, ctx.canvas.width, ctx.canvas.height, fxOps(ctx.canvas.width, ctx.canvas.height, t)); } // effect steps on what is on the canvas so far (video and overlays)
 function fxCap(ctx, lane, c, m, el, t, k) { // one plain picture under GPU-only effects: composed and processed straight from its <video> on the GPU
@@ -2858,8 +2866,8 @@ function frameThumb(W, H, clips) { // the frame at the playhead as rendered (no 
   const C = scratch(W, H, 'thumb'), x = C.getContext('2d'), cv = $('#cv');
   if (total() <= 0 || !cv.width) { x.drawImage(sampleScene(W, H, 0), 0, 0); return C; }
   const sel = S.sel, saved = clips.map(c => c.look);
-  S.sel = null; clips.forEach(c => delete c.look);
-  try { paint(); } finally { S.sel = sel; clips.forEach((c, i) => { if (saved[i]) c.look = saved[i]; }); S.dirty = true; }
+  S.sel = null; S.noCmp = true; clips.forEach(c => delete c.look); // tiles show the finished picture, never a before / after frame
+  try { paint(); } finally { S.noCmp = false; S.sel = sel; clips.forEach((c, i) => { if (saved[i]) c.look = saved[i]; }); S.dirty = true; }
   const s = Math.max(W / cv.width, H / cv.height);
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
   x.drawImage(cv, (W - cv.width * s) / 2, (H - cv.height * s) / 2, cv.width * s, cv.height * s);
@@ -3021,7 +3029,7 @@ function copySel(cut = false) {
   packMain();
   const order = ([c, lane]) => (lane === 'main' ? P.main.indexOf(c) : 1e6 + c.start); // pasted in timeline order, not click order
   clipboard = { items: [...many].sort((a, b) => order(a) - order(b)).map(([c, lane]) => ({ lane, c: structuredClone(c) })), t0: Math.min(...many.map(([c]) => c.start)) };
-  if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes the look`);
+  if (cut) del(); else toast(`Copied ${many.length} clip${many.length > 1 ? 's' : ''}: ⌘V pastes at the playhead, ⌥⌘V pastes attributes`);
 }
 function paste(at = S.t) { // main clips insert at the playhead's cut; the others keep their spacing, starting at the playhead
   if (!clipboard) return toast('Nothing to paste: copy a clip first (⌘C)');
@@ -3052,6 +3060,121 @@ function pasteLook() { // ⌥⌘V: the copied clip's filter, adjustments, animat
     }
   });
   toast(`Pasted the look onto ${targets.length} clip${targets.length > 1 ? 's' : ''}`);
+}
+// ---------- paste attributes (⌥⌘V): pick what of the copied clip goes onto the selected clips, in one undo step ----------
+// Per category: the clip fields it owns (top = on the clip, adj / grade = inside those objects). A category the copied clip can't have
+// (a colour on a sound) or a target can't show (a mask on a title) is skipped, and the note says so.
+const ATTR_CATS = [
+  ['adjust', 'Adjust', 'brightness, contrast, saturation, temperature, tint, exposure, highlights, shadows, fade', { adj: ['b', 'c', 's', 'temp', 'tint', 'ex', 'hi', 'sh', 'fade'] }],
+  ['look', 'Filter and LUT', 'the filter, its strength points and the imported LUT', { top: ['look', 'lkf'], grade: ['lut'] }],
+  ['grade', 'Colour wheels', 'shadows, midtones, highlights', { grade: ['lift', 'gamma', 'gain'] }],
+  ['curves', 'Curves', 'luma, red, green, blue', { grade: ['curves'] }],
+  ['hsl', 'HSL', 'hue, saturation, lightness by colour', { grade: ['hsl'] }],
+  ['effects', 'Effects', 'blur, mosaic, sharpen, vignette, beauty, glow, chroma key, motion blur', { adj: ['vig', 'blur', 'pix', 'sharp'], top: ['beauty', 'glow', 'key', 'mb'] }],
+  ['masks', 'Masks', 'the mask and its keyframes', { top: ['mask', 'mkf'] }],
+  ['transform', 'Transform', 'fit, position, scale, rotation, crop, mirror, opacity, blend', { top: ['fit', 'scale', 'x', 'y', 'rot', 'opacity', 'crop', 'flip', 'blend'] }],
+  ['speed', 'Speed', 'speed, pitch with speed, speed ramp', { top: ['speed', 'pitch'] }],
+  ['audio', 'Volume and sound', 'volume, noise reduction, studio voice, voice effect, equalizer, volume points', { top: ['volume', 'denoise', 'studio', 'au', 'vkf'] }],
+  ['anim', 'Animations', 'in, out and combo animations, fades', { top: ['anim', 'fadeIn', 'fadeOut'] }],
+  ['trans', 'Transition', 'the transition into the next clip (main track)', { top: ['tr'] }],
+  ['kf', 'Keyframes', 'position, scale, rotation and opacity keyframes', { top: ['kf', 'ease'] }],
+];
+const ATTR_COLOUR = ['adjust', 'look', 'grade', 'curves', 'hsl'], ATTR_DEF = Object.fromEntries(ATTR_CATS.map(([k]) => [k, true])), attrName = k => ATTR_CATS.find(a => a[0] === k)[1].toLowerCase();
+const attrFam = (c, lane) => { const m = M.get(c.media); return lane === 'text' ? 'text' : m?.kind === 'audio' || lane === 'audio' ? 'aud' : m && !c.fx && lane !== 'fx' && lane !== 'captions' ? 'vis' : ''; };
+function attrCan(cat, c, lane) { // can this clip carry this category?
+  const m = M.get(c.media), f = attrFam(c, lane);
+  if (cat === 'transform' || cat === 'anim' || cat === 'kf') return f === 'vis' || f === 'text';
+  if (cat === 'trans') return f === 'vis' && lane === 'main';
+  if (cat === 'speed') return !!m && m.kind !== 'image' && (f === 'vis' || f === 'aud');
+  if (cat === 'audio') return !!m?.hasAudio && (f === 'vis' || f === 'aud');
+  return f === 'vis'; // colour, effects, masks
+}
+const attrWhy = f => ({ vis: 'picture clips', aud: 'sound clips', text: 'titles' })[f] || 'effect and caption clips';
+function attrPrefs() { let p = {}; try { p = JSON.parse(store.get('cutroom.attrs') || '{}'); } catch { p = {}; } return { cats: { ...ATTR_DEF, ...p.cats }, kf: p.kf === 'abs' ? 'abs' : 'scale' }; }
+function attrRetime(arr, mode, f, dstLen) { // keyframe times: scaled with the clip's length (f), or kept (ones past a shorter clip's end are dropped)
+  if (!arr?.length) return undefined;
+  return structuredClone(mode === 'abs' ? arr.filter(k => k.t <= dstLen + 1e-6) : arr.map(k => ({ ...k, t: +(k.t * f).toFixed(4) })));
+}
+async function pasteAttrs(src, targets, cats, kfMode = 'scale') { // src: { c, lane } (a snapshot is fine); targets: [[clip, lane]]; cats: category ids
+  const sfam = attrFam(src.c, src.lane), want = ATTR_CATS.map(a => a[0]).filter(k => cats.includes(k)), skipped = new Map();
+  const skip = (why) => skipped.set(why, (skipped.get(why) || 0) + 1);
+  if (!want.length) { toast('Nothing ticked to paste'); return { pasted: [], clips: [], skipped: {} }; }
+  const plan = targets.filter(([c, lane]) => !locked(lane, c) || (skip('clips on a locked track'), false)).map(([c, lane]) => ({ c, lane, cats: want.filter(k => {
+    const ok = attrCan(k, src.c, src.lane) && attrCan(k, c, lane) && (!['transform', 'anim', 'kf'].includes(k) || attrFam(c, lane) === sfam);
+    if (!ok) skip(`${attrName(k)} on ${attrWhy(attrFam(c, lane))}`);
+    return ok;
+  }) }));
+  const ramp = src.c.ramp && M.get(src.c.ramp.src) && src.c.media === src.c.ramp.copy ? src.c.ramp : null, pid = P.id;
+  try {
+    if (ramp) for (const p of plan) { // a speed ramp is rendered once per target, over that clip's own picture, before the one undo step
+      if (!p.cats.includes('speed')) continue;
+      const m = M.get(p.c.media), no = m?.alpha || m?.trans ? 'transparent clips' : p.lane === 'audio' || m?.kind !== 'video' ? 'sound clips' : '';
+      if (no) { skip(`speed ramp on ${no}`); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
+      const pl = rampPlan(p.c, ramp.pts);
+      if (pl.b - pl.a < 0.25) { skip('speed ramp on clips under 0.25 s'); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
+      p.ramp = { pl, was: p.c.media, j: await job('/api/ramp', { media: pl.src, t0: pl.a, t1: pl.b, map: pl.tbl, fps: P.fps }, 'Rendering the ramp') };
+    }
+    if (plan.some(p => p.ramp)) { await loadMedia(); for (const p of plan) p.c = live(p.c, pid, p.ramp ? p.ramp.was : undefined); }
+  } catch (e) { setStatus(e.message); throw e; } // like applyRamp: the reason stays next to the clip
+  const done = plan.filter(p => p.cats.length), note = () => [...skipped].map(([k, n]) => `${k}${n > 1 ? ` (${n})` : ''}`).join(', ');
+  if (!done.length) { toast(`Nothing to paste: ${note() || 'no clips'}`); return { pasted: [], clips: [], skipped: Object.fromEntries(skipped) }; }
+  const s = src.c;
+  change(() => {
+    for (const { c, cats: ks, ramp: rp } of done) {
+      if (ks.includes('speed')) {
+        if (rp) { const d = M.get(rp.j.media)?.duration ?? Infinity; reclip(c, x => clamp(rp.pl.f(x), 0, d), 1); c.media = rp.j.media; c.ramp = { src: rp.pl.src, in: rp.pl.a, out: rp.pl.b, pts: ramp.pts.map(q => [...q]), copy: rp.j.media }; delete c.pitch; }
+        else {
+          if (c.ramp && c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c);
+          const v = s.speed || 1, o = c.speed;
+          if (v !== o) for (const k of ['kf', 'vkf', 'lkf', 'mkf']) c[k]?.forEach(x => { x.t *= o / v; }); // what stays on the clip keeps its frames
+          c.speed = v;
+          if (s.pitch !== undefined) c.pitch = s.pitch; else delete c.pitch;
+        }
+      }
+      const dstLen = len(c), fs = dstLen / Math.max(1e-6, len(s)); // keyframes follow the length the clip has now
+      for (const k of ks) {
+        const spec = ATTR_CATS.find(a => a[0] === k)[3];
+        for (const key of (k === 'speed' ? [] : spec.top || [])) {
+          let v = s[key];
+          if (['kf', 'mkf', 'vkf', 'lkf'].includes(key)) v = attrRetime(v, kfMode, fs, dstLen);
+          if (key === 'kf' && v && kfMode === 'abs' && s.kf.some(q => q.t > dstLen + 1e-6) && v.at(-1).t < dstLen - 1e-6) v.push({ t: +dstLen.toFixed(4), ...propsAt(s, dstLen) }); // the cut keeps where it was heading
+          if (v === undefined) delete c[key]; else c[key] = structuredClone(v);
+        }
+        for (const key of spec.adj || []) { c.adj ||= { b: 1, c: 1, s: 1 }; const v = s.adj?.[key] ?? (['b', 'c', 's'].includes(key) ? 1 : undefined); if (v === undefined) delete c.adj[key]; else c.adj[key] = v; }
+        for (const key of spec.grade || []) { c.grade ||= {}; const v = s.grade?.[key]; if (v === undefined) delete c.grade[key]; else c.grade[key] = structuredClone(v); }
+      }
+      if (c.grade && !Object.keys(c.grade).length) delete c.grade;
+      if (!c.kf?.length) delete c.kf;
+    }
+  }, `Pasted attributes onto ${done.length} clip${done.length > 1 ? 's' : ''}`);
+  const names = want.filter(k => done.some(p => p.cats.includes(k))).map(attrName);
+  toast(`Pasted ${names.join(', ')} onto ${done.length} clip${done.length > 1 ? 's' : ''}${skipped.size ? `. Skipped: ${note()}` : ''}`);
+  return { pasted: names, clips: done.map(p => p.c.id), skipped: Object.fromEntries(skipped) };
+}
+function pasteAttrsDialog() { // ⌥⌘V: the checklist
+  const it = clipboard?.items[0];
+  if (!it) return toast('Copy a clip first (⌘C), then select others and paste attributes (⌥⌘V)');
+  const tg = selection(), pf = attrPrefs();
+  if (!tg.length) return toast('Select the clips to paste onto first');
+  const row = ([k, n, hint]) => { const can = attrCan(k, it.c, it.lane); return `<label class="attr${can ? '' : ' off'}"><input type="checkbox" data-attr="${k}"${pf.cats[k] && can ? ' checked' : ''}${can ? '' : ' disabled'}><span>${esc(n)}<small>${can ? esc(hint) : `the copied clip has no ${esc(n.toLowerCase())}`}</small></span></label>`; };
+  const g = (t, ids) => `<h4>${t}</h4>${ATTR_CATS.filter(a => ids.includes(a[0])).map(row).join('')}`;
+  const name = M.get(it.c.media)?.name || it.c.text || 'the copied clip';
+  modal(`<h3>Paste attributes</h3><p class="hint">From ${esc(short(String(name), 40))} onto ${tg.length} clip${tg.length > 1 ? 's' : ''}. Ticked things replace the same things on each clip; the rest stay as they are. One undo step.</p>
+    <div class="attrs">${g('Colour', ATTR_COLOUR)}${g('Picture', ['effects', 'masks', 'transform', 'anim', 'trans'])}${g('Timing and sound', ['speed', 'audio', 'kf'])}</div>
+    <h4>Keyframes</h4><div class="seg wrap" id="attrKf"><button data-kfm="scale" class="${pf.kf === 'scale' ? 'on' : ''}" title="The keyframes stretch or shrink with each clip's length, so the move still starts and ends with the clip">Scale to the clip's length</button><button data-kfm="abs" class="${pf.kf === 'abs' ? 'on' : ''}" title="Each keyframe stays at the same time from the clip's start; ones past a shorter clip's end are dropped">Keep the same times</button></div>
+    <div class="actions"><button data-attrall>All</button><button data-attrnone>None</button><span class="grow"></span><button data-close>Cancel</button><button class="primary" data-attrgo>Paste</button></div>`, 'attrdlg');
+  const d = $('#modal .dialog'), ticks = () => $$('[data-attr]', d).filter(x => !x.disabled);
+  d.addEventListener('click', e => {
+    if (e.target.closest('[data-attrall]')) ticks().forEach(x => { x.checked = true; });
+    else if (e.target.closest('[data-attrnone]')) ticks().forEach(x => { x.checked = false; });
+    else if (e.target.closest('[data-kfm]')) $$('#attrKf button', d).forEach(b => b.classList.toggle('on', b === e.target.closest('[data-kfm]')));
+    else if (e.target.closest('[data-attrgo]')) {
+      const cats = { ...pf.cats }; for (const x of ticks()) cats[x.dataset.attr] = x.checked;
+      const kf = $('#attrKf .on', d)?.dataset.kfm || 'scale';
+      store.set('cutroom.attrs', JSON.stringify({ cats, kf }));
+      closeModal(); quiet(pasteAttrs(it, tg, Object.keys(cats).filter(k => cats[k] && attrCan(k, it.c, it.lane)), kf));
+    }
+  });
 }
 function trimTo(side) { // Q / W: delete what is left / right of the playhead in the clip (CapCut's trim left / right)
   packMain();
@@ -3088,7 +3211,7 @@ function openMenu(x, y, items) { // items: [label, fn, shortcut, disabled, swatc
 function clipMenu(c, lane) { // what a right-click on a clip offers
   const m = M.get(c.media), vid = m?.kind === 'video', vis = !!m && m.kind !== 'audio', many = selection().length > 1;
   const items = [['Split', split, kb('split')], ['Duplicate', dup, kb('dup')], ['Copy', () => copySel(), kb('copy')], ['Cut', () => copySel(true), kb('cut')], ['Paste', () => paste(), kb('paste'), !clipboard],
-    ['Paste look', pasteLook, kb('pasteLook'), !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), kb('trimL')], ['Trim end to playhead', () => trimTo('right'), kb('trimR')],
+    ['Paste look', pasteLook, kb('pasteLook'), !clipboard], ['Paste attributes…', pasteAttrsDialog, kb('pasteAttrs'), !clipboard], '-', ['Trim start to playhead', () => trimTo('left'), kb('trimL')], ['Trim end to playhead', () => trimTo('right'), kb('trimR')],
     '-', ['Label…', labelMenu]];
   if (c.label && LABEL_N[c.label]) items.push(['Select clips with this label', () => selectLabel(c.label)]);
   if (vid || vis) items.push('-');
@@ -3165,6 +3288,70 @@ function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: r
   const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (JSON.stringify(P) !== before) { step(before); touched(); } };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+// ---------- before / after: the picture with its colour work off, on one side of a line you drag (a preview aid; exports never see it) ----------
+// The before side is the same frame drawn again by the same code (drawLayers + effects + text) with the colour work taken off the clips
+// (cmpStrip), so the GPU pass and the JavaScript fallback agree by construction. Colour work = adjust, filter, grade, curves, HSL, LUT,
+// filter-strength points (masks stay, so a masked grade shows only where the mask is) and the adjustment layers; "Effects" adds blur,
+// mosaic, sharpen, vignette, beauty, glow and every effect on the Effects track.
+const CMP = { on: false, mode: 'split', x: 0.5, scope: 'clip', fx: false };
+let cmpSkipFx = null;
+const cmpCv = [];
+const cmpSel = (lane, id) => (S.cmpSel ? S.cmpSel.has(selKey(lane, id)) : isSel(lane, id)); // the clips whose colour comes off: the selection (a snapshot hides the selection box, not this)
+const CMP_FX = ['vig', 'blur', 'pix', 'sharp'];
+function cmpStrip(c) {
+  const o = { ...c }, keep = CMP.fx ? [] : CMP_FX.filter(k => c.adj?.[k] !== undefined);
+  delete o.look; delete o.grade; delete o.lkf;
+  o.adj = { b: 1, c: 1, s: 1, ...Object.fromEntries(keep.map(k => [k, c.adj[k]])) };
+  if (CMP.fx) { delete o.beauty; delete o.glow; }
+  return o;
+}
+function cmpCanvas(n, W, H) { const c = cmpCv[n] ??= document.createElement('canvas'); if (c.width !== W || c.height !== H) { c.width = W; c.height = H; } return c; }
+function cmpPaint(ctx, layers, act, mi, tr, t, k) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, all = CMP.scope === 'frame' || !layers.some(([lane, c]) => cmpSel(lane, c.id)), B = cmpCanvas(0, W, H), bx = B.getContext('2d'), h0 = hits;
+  hits = []; cmpSkipFx = CMP.fx ? 'all' : all ? 'adjust' : null;
+  try {
+    bx.setTransform(1, 0, 0, 1, 0, 0); bx.globalAlpha = 1; bx.globalCompositeOperation = 'source-over'; bx.filter = 'none';
+    bx.fillStyle = backdrop(bx); bx.fillRect(0, 0, W, H);
+    if (!drawLayers(bx, layers, act, mi, tr && { type: tr.type, p: tr.p }, t, k, new Set(), all ? 'all' : 'sel')) fxPixels(bx, t);
+    drawTexts(bx, t, k, true);
+  } finally { cmpSkipFx = null; hits = h0; }
+  if (CMP.mode === 'side') { // both whole frames, half size each, one beside the other
+    const A = cmpCanvas(1, W, H);
+    A.getContext('2d').drawImage(ctx.canvas, 0, 0);
+    ctx.save(); ctx.fillStyle = backdrop(ctx); ctx.fillRect(0, 0, W, H); ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(B, 0, H / 4, W / 2, H / 2); ctx.drawImage(A, W / 2, H / 4, W / 2, H / 2); ctx.restore();
+    hits = [];
+  } else { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, Math.round(CMP.x * W), H); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore(); }
+}
+function cmpLayout() { // the line, labels and options sit over the picture
+  const ov = $('#cmpOv'), cv = $('#cv');
+  if (!ov) return;
+  ov.hidden = !CMP.on;
+  if (!CMP.on) return;
+  Object.assign(ov.style, { left: `${cv.offsetLeft}px`, top: `${cv.offsetTop}px`, width: `${cv.clientWidth}px`, height: `${cv.clientHeight}px` });
+  ov.dataset.mode = CMP.mode;
+  const g = $('#cmpGrab'); g.style.left = `${CMP.x * 100}%`; g.setAttribute('aria-valuenow', Math.round(CMP.x * 100)); g.hidden = CMP.mode === 'side';
+  for (const b of $$('#cmpBar [data-cmpmode]')) b.classList.toggle('on', b.dataset.cmpmode === CMP.mode);
+  for (const b of $$('#cmpBar [data-cmpscope]')) b.classList.toggle('on', b.dataset.cmpscope === CMP.scope);
+  $('#cmpFx').checked = CMP.fx;
+}
+function cmpSet(o = {}, keep = true) {
+  if (o.mode && ['split', 'side'].includes(o.mode)) CMP.mode = o.mode;
+  if (o.scope && ['clip', 'frame'].includes(o.scope)) CMP.scope = o.scope;
+  if (o.fx !== undefined) CMP.fx = !!o.fx;
+  if (o.x !== undefined) CMP.x = clamp(+o.x || 0, 0, 1);
+  if (o.on !== undefined) CMP.on = !!o.on;
+  const b = $('#btnCmp'); b.classList.toggle('on', CMP.on); b.setAttribute('aria-pressed', CMP.on);
+  if (keep) store.set('cutroom.cmp', JSON.stringify({ mode: CMP.mode, scope: CMP.scope, fx: CMP.fx, x: CMP.x }));
+  cmpLayout(); S.dirty = true;
+}
+const cmpToggle = () => { cmpSet({ on: !CMP.on }); if (CMP.on) toast(CMP.scope === 'clip' && selection().length ? 'Before / after: the selected clip, ungraded on the left. \\ turns it off' : 'Before / after: the whole frame, ungraded on the left. \\ turns it off'); };
+function cmpDrag(e) { // the line follows the pointer; a pure preview change, no undo step
+  e.preventDefault();
+  const move = ev => { const r = $('#cv').getBoundingClientRect(); cmpSet({ x: (ev.clientX - r.left) / r.width }, false); };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); cmpSet({}); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
 }
 function setScope({ on = SCOPE.on, kind = SCOPE.kind }, keep = true) { // the scopes panel (G): open or not, which scope; kept per Mac
   SCOPE.on = !!on; if ($(`[data-scope="${kind}"]`)) SCOPE.kind = kind;
@@ -5689,7 +5876,8 @@ function sendPoster(leaving) { // the projects screen's card = the preview as yo
   if (!P || !LANES.some(L => P[L.key].length)) return;
   const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
   S.sel = null; S.multi.clear(); S.pickRect = null; // the frame as rendered: no selection box
-  try { paint(); } catch { return; } finally { S.sel = sel; for (const x of multi) S.multi.add(x); S.pickRect = pick; S.dirty = true; }
+  S.noCmp = true; // the card shows the finished picture, never a before / after frame
+  try { paint(); } catch { return; } finally { S.noCmp = false; S.sel = sel; for (const x of multi) S.multi.add(x); S.pickRect = pick; S.dirty = true; }
   const cv = $('#cv'), k = Math.min(1, 480 / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
   o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
   o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
@@ -6231,8 +6419,14 @@ function wire() {
   $('#btnLink').addEventListener('click', () => { if (P.unlinked) delete P.unlinked; else P.unlinked = true; scheduleSave(); renderAll(); toast(P.unlinked ? 'Unlinked: the other tracks stay put when the main track changes' : 'Linked: the other tracks follow the main track'); });
   $('#btnMulticam').addEventListener('click', openMulticam);
   $('#btnScope').addEventListener('click', () => setScope({ on: !SCOPE.on }));
+  $('#btnCmp').addEventListener('click', cmpToggle);
+  $('#cmpGrab').addEventListener('pointerdown', cmpDrag);
+  $('#cmpGrab').addEventListener('keydown', e => { const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key]; if (d) { e.preventDefault(); cmpSet({ x: CMP.x + d * (e.shiftKey ? 0.1 : 0.01) }); } });
+  $('#cmpBar').addEventListener('click', e => { const b = e.target.closest('[data-cmpmode], [data-cmpscope]'); if (b) cmpSet(b.dataset.cmpmode ? { mode: b.dataset.cmpmode } : { scope: b.dataset.cmpscope }); });
+  $('#cmpFx').addEventListener('change', e => cmpSet({ fx: e.target.checked }));
   $('#scope').addEventListener('click', e => { const b = e.target.closest('[data-scope]'); if (b) setScope({ kind: b.dataset.scope }); });
   try { setScope(JSON.parse(store.get('cutroom.scope')) || {}, false); } catch { /* none kept */ }
+  try { cmpSet(JSON.parse(store.get('cutroom.cmp')) || {}, false); } catch { /* none kept */ }
   $('#btnMeter').addEventListener('click', () => { meterSet(!MTR.on); if (MTR.on) audioOn(); });
   $('#mtTarget').addEventListener('click', () => meterTarget({ '-14': -16, '-16': -23 }[MTR.target] ?? -14));
   $('#mtReset').addEventListener('click', meterReset);
@@ -7316,6 +7510,21 @@ const REMOTE = {
     change(() => { const T = { ...(P.tracks[key] || {}) }; if (hidden !== undefined) T.off = !!hidden; if (lk !== undefined) T.lock = !!lk; if (T.off || T.lock) P.tracks[key] = T; else delete P.tracks[key]; });
     return { tracks: P.tracks };
   },
+  async paste_attributes({ from, to, categories, keyframes = 'scale' }) { // from: a clip id (default: the copied clip); to: clip ids (default: the selection); categories: ids of ATTR_CATS (default: all)
+    const src = from ? (([c, lane]) => ({ c: structuredClone(c), lane }))(cfind(from)) : clipboard?.items[0];
+    if (!src) throw new Error('from: a clip id, or copy a clip first');
+    const tg = to?.length ? to.map(cfind) : selection();
+    if (!tg.length) throw new Error('to: clip ids, or select clips first');
+    const all = ATTR_CATS.map(a => a[0]), cats = categories === 'all' || !categories ? all : categories;
+    const bad = cats.filter(k => !all.includes(k));
+    if (bad.length) throw new Error(`categories: ${all.join(', ')} (or "all"); not: ${bad.join(', ')}`);
+    if (!['scale', 'abs'].includes(keyframes)) throw new Error('keyframes: scale (to each clip\'s length) or abs (keep the same times)');
+    return pasteAttrs(src, tg, cats, keyframes);
+  },
+  async compare({ on, mode, scope, effects, x } = {}) { // before / after on the preview: on, mode (split|side), scope (clip|frame), effects, x (0-1, where the line is)
+    cmpSet({ on, mode, scope, fx: effects, x });
+    return { on: CMP.on, mode: CMP.mode, scope: CMP.scope, effects: CMP.fx, x: CMP.x };
+  },
   async delete_clip({ id }) { const [, L] = cfind(id); S.sel = { lane: L, id }; del(); return REMOTE.status(); },
   async split_clip({ id, at }) {
     const [c, L] = cfind(id);
@@ -7564,8 +7773,9 @@ const REMOTE = {
       return { t: r3(S.t), image: (await api('/api/still_frame', plan)).image };
     }
     const sel = S.sel, pick0 = S.pickRect;
+    S.cmpSel = new Set(selection().map(([c, L]) => selKey(L, c.id)));
     S.sel = null; S.pickRect = null; // the frame as rendered: no selection box or tracking marquee
-    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; }
+    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; S.cmpSel = null; }
     const cv = $('#cv'), k = Math.min(1, max / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
     o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
     o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
