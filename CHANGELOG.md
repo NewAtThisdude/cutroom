@@ -14,6 +14,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Speed ramps drawn as one curve, reverse, freeze frame, stabilize, detach audio, auto reframe
 - Compound clips, multicam, adjustment layers
 - Fade handles on clips: drag a top corner to fade in or out
+- Paste attributes (Cmd/Ctrl+Alt+V, or right-click): copy one clip, select one or many, and tick what to paste (colour, effects, masks, transform, speed and ramps, sound, animations, transition, keyframes scaled to each clip or kept at their times); remembers the list, one undo step, skips with a note what a clip cannot take
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
 - Library source viewer with hover skim, In and Out points and Replace clip
@@ -34,6 +35,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Masked grades: a clip's mask can limit its colour to one object or area (or keep it out), and adjustment layers take
   their own mask (a shape, a pen outline, the AI subject of the video under them, or a shape that follows something); stack
   several, and the export matches the preview
+- Before / after for colour (backslash, or the button under the preview): the clip or the whole frame without its colour work on one side of a line you drag, or side by side, effects optional; preview only, never in an export
 - Motion blur, glow, clip blur and noise reduction
 - Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it
 - Retouch: skin, eyes, teeth, makeup, face shape and body
