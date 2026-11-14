@@ -6093,6 +6093,10 @@ def render_fitted(p, td, out, report, job):
                 new = bps + (want - payload) * (bps - last[2]) / (payload - last[3])
             flat = same and abs(payload - last[3]) / last[3] < 0.5 * abs(bps - last[2]) / last[2]  # bytes stopped following the request
             if flat and size <= target:  # under the limit and it won't spend more: keep the best
+                if size < target * 0.9 and codec.split('_')[-1] in HW_FAMILIES and codec[:4] in ('h264', 'hevc'):
+                    # the media engine at its quality ceiling (VT at 500 KB: 0.87x after a resolution drop): two-pass software spends the room
+                    p['fit_soft'], p['fit_bps'], last = True, max(80000, int(want * 8 / p['duration'])), None
+                    continue
                 break
             stuck = flat and size > target
             last = (codec, p['fit_size'], bps, payload)
