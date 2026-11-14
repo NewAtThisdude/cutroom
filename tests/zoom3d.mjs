@@ -77,6 +77,10 @@ function shift(a, b, x0, y0, S = 40, K = 90) { // where the wall patch at (x0, y
 const mad = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 const photoFr = frames(PHOTO)[0];
 
+// How far the ball moved beyond the wall, in the direction the camera should push it: zoom = the ball's move minus the wall patch's (mirror places);
+// slides = x only (the ball and the wall patch share x, so the base zoom adds nothing sideways; its vertical part is not parallax): content moves
+// against the camera, so right and orbit (at its quarter) push the ball left (-), left pushes it right (+)
+const parallax = (dir, mv, wall) => dir === 'in' || dir === 'out' ? Math.hypot(...mv) - wall.d : ({ right: -1, left: 1, orbit: -1 })[dir] * (mv[0] - wall.dx);
 // ---- each direction ----
 const AMT = 0.8, DUR = 2, FPS = 30;
 const copies = {};
@@ -92,12 +96,49 @@ for (const dir of ['in', 'out', 'left', 'right', 'orbit']) {
   const moving = [10, 20, 30, 40, 50].every(i => mad(fr[i], fr[i - 8]) > 0.3);
   check(`${dir}: no frozen frames (no 3 identical in a row; every 8 frames the picture changes)`, worst <= 2 && moving, `longest run ${worst}`);
   const from = fr[hold === 0 ? 0 : 0], to = fr[rest], gA = gray(from), gB = gray(to), b0 = ball(from), b1 = ball(to);
-  const zoomy = dir === 'in' || dir === 'out', wall = zoomy ? shift(gA, gB, 860, 340) : shift(gA, gB, 400, 20); // a wall patch at the ball's mirror place (zoom), or as far from the middle sideways as the ball and above it (slides)
-  const mv = [b1.cx - b0.cx, b1.cy - b0.cy], rel = zoomy ? Math.hypot(...mv) - wall.d : Math.hypot(mv[0] - wall.dx, mv[1] - wall.dy); // slides: the ball against the wall (the base zoom moves both outward); zoom: the ball's move beyond the wall's
+  const zoomy = dir === 'in' || dir === 'out', wall = zoomy ? shift(gA, gB, 860, 340) : shift(gA, gB, 400, 20); // a wall patch at the ball's mirror place (zoom), or at the ball's x and above it (slides)
+  const mv = [b1.cx - b0.cx, b1.cy - b0.cy], rel = parallax(dir, mv, wall);
   check(`${dir}: the ball moves more than the wall behind it (by ${rel.toFixed(1)} px; ball ${mv.map(v => v.toFixed(0))}, wall ${wall.dx},${wall.dy})`, rel > (zoomy ? 8 : 12), `ball (${b0.cx.toFixed(0)},${b0.cy.toFixed(0)}) -> (${b1.cx.toFixed(0)},${b1.cy.toFixed(0)})`);
   const tail = Math.max(...[rest, Math.floor(rest / 2)].map(i => ball(fr[i]).tail / b0.n));
   check(`${dir}: no red smear off the ball's edge (red beyond 1.15 radii under 1.5 % of the ball)`, tail < 0.015, `${(tail * 100).toFixed(2)} %; at the start ${(b0.tail / b0.n * 100).toFixed(2)} %`);
   if (process.env.SAVE) execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', f, '-vf', `select='eq(n,0)+eq(n,${rest})',scale=640:-1,tile=2x1`, '-frames:v', '1', `${OUT}sheet_${dir}.png`]);
+}
+
+// ---- the control: one depth everywhere (no parallax) must FAIL the check, or the check proves nothing ----
+const AIPY = `${process.cwd()}/ai/.venv/bin/python`, cleanEnv = { ...process.env, HF_HUB_OFFLINE: '1' }; delete cleanEnv.PYTHONPATH;
+for (const dir of ['right', 'in']) {
+  const jf = `${OUT}flat_${dir}.json`, out = `${OUT}flat_${dir}.mp4`;
+  fs.writeFileSync(jf, JSON.stringify({ op: 'zoom3d', src: PHOTO, out, dur: 2, fps: 30, w: W, h: HH, silent: true, flat: true, dir, amount: AMT, t0: 0,
+    tags: ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'], venc: ['-c:v', 'libx264', '-crf', '14'] }));
+  execFileSync(AIPY, ['ai/enhance.py', jf], { env: cleanEnv, stdio: 'pipe' });
+  const fr = frames(out), n = fr.length, g0 = gray(fr[0]), g1 = gray(fr[n - 1]), b0 = ball(fr[0]), b1 = ball(fr[n - 1]), zoomy = dir === 'in';
+  const wall = zoomy ? shift(g0, g1, 860, 340) : shift(g0, g1, 400, 20), rel = parallax(dir, [b1.cx - b0.cx, b1.cy - b0.cy], wall);
+  check(`control: with one depth everywhere the "${dir}" check finds no parallax (${rel.toFixed(1)} px, needs ${zoomy ? 8 : 12} to pass)`, rel < (zoomy ? 8 : 12), `ball ${(b1.cx - b0.cx).toFixed(0)},${(b1.cy - b0.cy).toFixed(0)}; wall ${wall.dx},${wall.dy}`);
+}
+// the camera never samples outside the photo: every direction at amount 1, at the frame shapes 16:9, 1:1, 9:16 (nearest and farthest surface)
+const PYEDGE = `
+import sys, json, torch
+sys.path.insert(0, 'ai')
+import enhance as E
+out = {}
+for name, (w, h) in {'16:9': (160, 90), '1:1': (100, 100), '9:16': (90, 160)}.items():
+    x = torch.rand(1, 3, h, w, device=E.DEV)
+    for kind in ('in', 'out', 'left', 'right', 'orbit'):
+        P = E.Parallax(x, torch.rand(1, 1, h, w, device=E.DEV), kind, 1.0)
+        m = 0.0
+        for i in range(101):
+            cam = E.camera(kind, 1.0, i / 100)
+            for L in (0.0, 0.25, 0.5, 0.75, 1.0):
+                m = max(m, P.q(cam, L).abs().max().item())
+        out[kind + ' ' + name] = m
+print(json.dumps(out))`;
+const edge = JSON.parse(execFileSync(AIPY, ['-c', PYEDGE], { env: cleanEnv }).toString().trim().split('\n').pop());
+const over = Object.entries(edge).filter(([, m]) => m > 1 + 1e-5);
+check('the camera never reaches past the photo (no sampled place outside it: every direction, amount 1, 16:9 / 1:1 / 9:16)', !over.length, over.map(([k, m]) => `${k} ${m.toFixed(4)}`).join(', ') || `largest ${Math.max(...Object.values(edge)).toFixed(4)}`);
+// the copy covers the whole length: 2.5 s at 25 fps is 63 frames (62 was 2.48 s)
+{
+  const m = await job({ media: ph.id, direction: 'in', amount: 0.5, dur: 2.5, fps: 25 }), n = frames(`${HOME}/media/${m.file}`).length;
+  check('the copy is not shorter than the clip (2.5 s at 25 fps: 63 frames)', n === 63 && m.duration >= 2.5, `${n} frames, ${m.duration} s`);
 }
 
 // ---- refusals in words ----
@@ -173,6 +214,10 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.waitForTimeout(300);
   u = await ev(() => ({ media: P.main[0].media, z3: !!P.main[0].z3 }));
   check(`[${rm}] Remove 3D zoom puts the photo back`, u.media === ph.id && !u.z3, JSON.stringify(u));
+  // a photo clip at another speed: the copy plays at 1x and the clip keeps its timeline length
+  const sp = await ev(async id => { const c = P.main[0]; c.speed = 2; c.out = 3; renderAll(); const before = len(c); await REMOTE.clip_tool({ id, action: 'zoom_3d', direction: 'in' }); const k = P.main[0]; return { before, after: len(k), speed: k.speed, copy: k.z3?.copy }; }, cid);
+  if (sp.copy) made.add(sp.copy);
+  check(`[${rm}] a photo clip at 2x keeps its timeline length after the render (${sp.before} s) and the copy plays at 1x`, Math.abs(sp.before - sp.after) < 0.01 && sp.speed === 1, JSON.stringify(sp));
   check(`[${rm}] no page errors`, !errs.length, errs.slice(0, 3).join(' | '));
   await ctx.close();
 }
