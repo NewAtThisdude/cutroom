@@ -12,7 +12,7 @@ const DEFAULT_TESTS = [
   'ui_smoke', 'ui_audit', 'tour', 'platforms', 'history', 'curves', 'scopes', 'jlcuts', 'meter',
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
-  'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools',
+  'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools', 'mask_grade',
 ];
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

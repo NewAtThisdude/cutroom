@@ -33,6 +33,9 @@ Windows PC. It is licensed GPL v3 or later.
 - Effects-pack effects and transitions run on the GPU in exports
 - 12 blend modes that look the same in the preview and the export
 - Colour grading on the GPU, curves, and scopes: waveform, RGB parade, histogram and vectorscope with a skin line
+- Masked grades: a clip's mask can limit its colour to one object or area (or keep it out), and adjustment layers take
+  their own mask (a shape, a pen outline, the AI subject of the video under them, or a shape that follows something); stack
+  several, and the export matches the preview
 - Before / after for colour (backslash, or the button under the preview): the clip or the whole frame without its colour work on one side of a line you drag, or side by side, effects optional; preview only, never in an export
 - Motion blur, glow, clip blur and noise reduction
 - Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it

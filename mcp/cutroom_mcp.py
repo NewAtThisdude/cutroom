@@ -188,6 +188,12 @@ TOOLS = [
                     'it is tracked both ways through the clip and a blurred copy of the clip, masked to it, goes on the overlay track. '
                     'shape rect|circle, style blur|mosaic, amount 0.05-1.',
      S({'id': txt, 'box': obj, 't': num, 'shape': txt, 'style': txt, 'amount': num}, ['id', 'box']), 'blur_region'),
+    ('grade_mask', 'Grade only the subject or one area (masked colour). id = a video/picture clip: its mask then limits its own adjust, filter and colour '
+                   '(the picture stays whole); box = {x, y, w, h} canvas fractions at time t makes an AI subject mask (SAM 2) first, shape (circle|rect|linear|mirror|heart|star|polygon|pen) '
+                   'with box puts that shape there. id = an adjustment layer (add_effect type adjust): it gets a mask of its own: no box = the AI subject mask of the video under it '
+                   '(box = box the subject), shape = that area, follow true + box = the mask tracks what box holds. invert true = everything but the mask; feather 0-0.3; off true removes it. '
+                   'Stack several adjustment layers for several areas.',
+     S({'id': txt, 'box': obj, 't': num, 'shape': txt, 'follow': boo, 'invert': boo, 'feather': num, 'off': boo}, ['id']), 'grade_mask'),
     ('blur_faces', 'Blur (or mosaic) every face in a video clip (Apple Vision): each face gets its own tracked blur on the overlay track. style blur|mosaic, amount 0.05-1.',
      S({'id': txt, 'style': txt, 'amount': num}, ['id']), 'blur_faces'),
     ('auto_reframe', 'Auto reframe a video clip for another shape: keeps the largest face, or with none the main subject (Vision saliency), in frame with a smooth camera path. '
@@ -395,6 +401,7 @@ def call_tool(name, args):
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
     long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'auto_broll', 'batch')
+    long = long or name == 'grade_mask'  # SAM 2 / tracking
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

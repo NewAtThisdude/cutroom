@@ -60,7 +60,7 @@ const open = async (rm, vp = { width: 1517, height: 904 }, ctx) => {
   const pm = [...r.parity1, ...r.parity2];
   check('adjust: export = preview on all 32 frames (mean <= 4, worst block <= 28)', pm.every(([m, w]) => m <= 4 && w <= 28), `mean <= ${mx(pm.map(x => x[0]))}, worst block <= ${mx(pm.map(x => x[1]))}`);
   check('adjust: without WebGL2 (CPU lookup) export = preview too', r.cpu[0] <= 4 && r.cpu[1] <= 28, `mean ${r.cpu[0].toFixed(2)}, worst block ${r.cpu[1].toFixed(1)}`);
-  check('adjust: inspector shows the layer with Adjust / Color tabs', r.sel === 'Adjustment layer' && r.tabs.join() === 'Adjust,Color', `${r.sel} · ${r.tabs}`);
+  check('adjust: inspector shows the layer with Adjust / Color / Mask tabs', r.sel === 'Adjustment layer' && r.tabs.join() === 'Adjust,Color,Mask', `${r.sel} · ${r.tabs}`);
   // the UI path: the Effects tab button adds one
   await page.click('.rail button[data-tab="effects"]');
   const before = await ev(() => P.fx.length);
