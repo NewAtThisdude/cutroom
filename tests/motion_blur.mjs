@@ -5,6 +5,7 @@
 // video_parity.mjs ("motion blur", "transition whip", "transition zoomblur", "effect motionblur", "effect zoomblur").
 //   B=http://127.0.0.1:<scratch port> node motion_blur.mjs
 import { browser } from './browser.mjs';
+import { exitAfterFetch } from './runtime.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -82,4 +83,4 @@ await b.close();
 for (const pid of pids) await fetch(`${B}/api/projects/${pid}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
 await fetch(`${B}/api/media/${V.id}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);
-process.exit(res.includes(false) ? 1 : 0);
+await exitAfterFetch(res.includes(false) ? 1 : 0); // (process.exit right after a fetch aborts Node 24 on Windows: 0xC0000409)
