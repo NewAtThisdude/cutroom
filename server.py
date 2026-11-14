@@ -4010,6 +4010,16 @@ def clean_plan(p, claimed=False):  # claimed: a retried interrupted export, whos
            'format': p.get('format') if p.get('format') in FORMATS else 'mp4', 'hdr': p.get('hdr') if p.get('hdr') in ('hlg', 'pq') else None, 'library': bool(p.get('library')), 'light': bool(p.get('light')), 'queue': bool(p.get('queue')), 'still': fnum(p.get('still', 0), 0, 1e6), 'rate': fnum(p.get('rate', 1), 0.5, 4),
            'efps': p['efps'] if p.get('efps') in EXPORT_FPS else 0, 'mbps': fnum(p.get('mbps') or 0, 0, 400),  # 0 = the project's fps / bitrate from the preset
            'name': re.sub(r'[^\w\- ]', '', str(p.get('name', '')))[:80].strip() or 'Cutroom export'}
+    # Check these before claiming uploaded layers: a refused target must not strand them.
+    out['subtitles'] = clean_subtitles(p.get('subtitles'), out)
+    target = p.get('targetBytes') or 0
+    if not isinstance(target, (int, float)) or not math.isfinite(target) or target < 0 or target > 20e9:
+        raise ValueError('Fit in needs a file size between 0 and 20000 MB')
+    out['targetBytes'] = int(target)
+    if target and out['format'] not in FIT_FORMATS:
+        raise ValueError('Fit in needs a compressed video, GIF, MP3 or AAC format; choose one of those formats')
+    if target and out['format'] != 'gif':
+        fit_budget(out)  # refuse impossible audio/minimum-picture budgets before rendering
 
     def clip(c, timed):
         m = meta(c['media'])
@@ -5121,7 +5131,7 @@ def graph(p, td):
     return sum(ins, []), ';'.join(fg)
 
 
-FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'av1': '.mp4', 'av1webm': '.webm', 'webm': '.webm', 'prores': '.mov', 'prores4444': '.mov', 'gif': '.gif', 'pngseq': '.zip',
+FORMATS = {'mp4': '.mp4', 'hevc': '.mp4', 'av1': '.mp4', 'av1webm': '.webm', 'webm': '.webm', 'mkv': '.mkv', 'prores': '.mov', 'prores4444': '.mov', 'gif': '.gif', 'pngseq': '.zip',
            'mp3': '.mp3', 'wav': '.wav', 'm4a': '.m4a', 'png': '.png'}
 SOUND = ('mp3', 'wav', 'm4a')  # sound-only formats: graph() builds no picture
 EXPORT_FPS = (24, 25, 30, 50, 60, 120)  # an export frame rate apart from the project's (resampled at the end of the graph)
@@ -5129,6 +5139,93 @@ ALPHA_FORMATS = ('prores4444', 'webm', 'pngseq', 'gif', 'png')  # the ones that 
 OUT_PIX = {('prores4444', True): 'yuva444p10le', ('prores4444', False): 'yuv444p10le', ('webm', True): 'yuva420p'}  # (format, alpha) -> encoder input
 HDR_TRC = {'hlg': 'arib-std-b67', 'pq': 'smpte2084'}
 VT_Q = {'h264': 82, 'hevc': 80}  # Standard, VideoToolbox quality (whole steps): DJI 4K60 / 1080p60 at ~0.9-1.1x the old -b:v sizes, PSNR at or above them
+
+SUB_CODECS = {'mp4': 'mov_text', 'hevc': 'mov_text', 'av1': 'mov_text', 'prores': 'mov_text', 'prores4444': 'mov_text',
+              'webm': 'webvtt', 'av1webm': 'webvtt', 'mkv': 'srt'}
+FIT_FORMATS = ('mp4', 'hevc', 'av1', 'av1webm', 'webm', 'mkv', 'gif', 'mp3', 'm4a')
+
+
+def clean_subtitles(tracks, p):
+    """Plain timed cues from the editor's SRT/VTT serializer; paths and ffmpeg options never come from the page."""
+    if not tracks:
+        return []
+    if p['format'] not in SUB_CODECS:
+        raise ValueError('This format cannot store subtitle tracks; choose MP4, MOV, WebM or MKV')
+    if not isinstance(tracks, list) or len(tracks) > 32:
+        raise ValueError('Export supports up to 32 subtitle languages')
+    out = []
+    for track in tracks:
+        lang = str(track.get('language', 'und')).lower()
+        if not re.fullmatch('[a-z]{3}', lang):
+            raise ValueError('Subtitle language must be a three-letter ISO 639-2 code (or und for unknown)')
+        cues = track.get('cues')
+        if not isinstance(cues, list) or len(cues) > 50000:
+            raise ValueError('Too many subtitle cues')
+        clean = []
+        for c in cues:
+            a, b = int(fnum(c['start'], 0, 21600000)), int(fnum(c['end'], 0, 21600000))
+            txt = str(c['text']).replace('\r', '').replace('\x00', '').strip()
+            if b <= a or b > round(p['duration'] * 1000) + 1 or not txt or len(txt) > 10000:
+                raise ValueError('Subtitle cues need text and valid times within the export')
+            clean.append({'start': a, 'end': b, 'text': txt})
+        if clean:
+            out.append({'language': lang, 'cues': sorted(clean, key=lambda c: c['start'])})
+    return out
+
+
+def mux_subtitles(p, td, out, job=None):
+    if not p.get('subtitles'):
+        return
+    tm = lambda ms: f'{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}'
+    ins, maps = [], []
+    for i, track in enumerate(p['subtitles']):
+        f = Path(td) / f'subtitle-{i}.srt'
+        f.write_text('\n'.join(f"{n + 1}\n{tm(c['start'])} --> {tm(c['end'])}\n{c['text']}\n" for n, c in enumerate(track['cues'])), encoding='utf-8')
+        ins += ['-i', str(f)]
+        maps += ['-map', f'{i + 1}:s:0', f'-metadata:s:s:{i}', f"language={track['language']}",
+                 f'-metadata:s:s:{i}', f"title={track['language']}", f'-disposition:s:{i}', 'default' if i == 0 else '0']
+    dst = Path(td) / ('subtitled' + out.suffix)
+    run_ffmpeg(['ffmpeg', '-y', '-v', 'error', '-nostdin', '-progress', 'pipe:1', '-i', str(out), *ins,
+                '-map', '0:v?', '-map', '0:a?', *maps, '-c', 'copy', '-c:s', SUB_CODECS[p['format']],
+                *(['-movflags', '+faststart'] if out.suffix in ('.mp4', '.mov') else []), str(dst)], p['duration'], lambda x: None, 'Storing subtitles', job)
+    retry(dst.replace, out)
+
+
+def fit_audio_bps(fmt):
+    # graph() always emits a stereo mix (silence too); reserve exactly the rate ffmpeg_cmd requests.
+    return 160000 if fmt in ('webm', 'av1webm') else 256000 if fmt == 'm4a' else 192000
+
+
+def fit_floor(p, w, h):
+    factor = {'hevc': 0.7, 'webm': 0.7, 'av1': 0.6, 'av1webm': 0.6}.get(p['format'], 1)
+    return max(80000, round(w * h * max(30, p.get('efps') or p['fps']) * 0.035 * factor * (1.4 if p.get('alpha') else 1)))
+
+
+def fit_dimensions(p, bps):
+    w, h = p['w'], p['h']
+    for side in [min(w, h), *[s for s in (2160, 1440, 1080, 720, 540, 480, 360, 240, 144) if s < min(w, h)]]:
+        size = [max(16, round(v * side / min(w, h) / 2) * 2) for v in (w, h)]
+        if bps >= fit_floor(p, *size):
+            return size
+    raise ValueError('This duration cannot fit at the minimum picture quality. Use a larger size or shorten the video')
+
+
+def fit_budget(p):
+    target, D, fmt = p['targetBytes'], p['duration'], p['format']
+    # Decimal MB. Reserve 1.5% for muxing/indexes plus cue bytes and fixed headers; aim at 98.5% overall.
+    subs = sum(len(c['text'].encode('utf-8')) + 64 for t in p.get('subtitles', []) for c in t['cues'])
+    overhead = max(16384, math.ceil(target * 0.015)) + subs
+    bps = math.floor((target * 0.985 - overhead) * 8 / D)
+    if fmt in SOUND:
+        if bps < 48000:
+            raise ValueError('This duration cannot fit even at the minimum audio quality. Use a larger size or shorten the audio')
+        # MP3 uses discrete bitrates, AAC can use a continuous rate.
+        audio = min(256000, bps) if fmt == 'm4a' else max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= bps)
+        return {'audio_bps': audio, 'overhead': overhead}
+    video = bps - fit_audio_bps(fmt)
+    if video < 80000:
+        raise ValueError('This duration cannot fit even with the minimum picture and audio quality. Use a larger size or shorten the video')
+    return {'video_bps': video, 'audio_bps': fit_audio_bps(fmt), 'overhead': overhead, 'size': fit_dimensions(p, video)}
 
 
 def hlg_to_pq(r, g, b):
@@ -5181,12 +5278,18 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
         return ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
                 '-map', '[vout]', '-threads', FF_THREADS, '-fps_mode', 'passthrough', '-f', 'rawvideo', '-t', f"{p['duration']:.6f}", 'pipe:1']  # passthrough: every frame once (cfr re-timed microsecond-rounded stamps: a frame doubled, the next dropped)
     hdr, A = p.get('hdr'), p.get('alpha')
+    fitting = bool(p.get('targetBytes')) and not intermediate
+    if fitting and p.get('fit_size') and fmt not in (*SOUND, 'gif'):
+        W, H = p['fit_size']
+        if (W, H) != (p['w'], p['h']):
+            # Scale the completed composite: geometry, masks and uploaded text stay in project coordinates.
+            fg = fg.removesuffix('[vout]') + f'[vfull];[vfull]scale={W}:{H}:flags=lanczos[vout]'
     vmap, amap = ['-map', '[vout]'], ['-map', '[aout]']
     F = p['fps'] if intermediate or fmt in ('gif', 'png', *SOUND) or not p.get('efps') else p['efps']
     if F != p['fps']:  # the export's own frame rate: output frame k shows the project frame at or before k/F (round=up), so 60 -> 120 doubles each frame
         fg += f";[vout]fps=fps={F:g}:round=up[vfps]"
         vmap = ['-map', '[vfps]']
-    mb = p.get('mbps') or 0  # a custom bitrate (Mbps) replaces Standard / High / Very high
+    mb = p.get('fit_bps', 0) / 1e6 if fitting else p.get('mbps') or 0
     br = f'{round(mb * 1000)}k' if mb else f"{max(2000, round(W * H * F * 0.2 * p.get('rate', 1) / 1000))}k"
     kb = lambda k, lo: br if mb else f'{max(lo, round(int(br[:-1]) * k))}k'  # the codecs that need fewer bits for the same look
     # VideoToolbox: constant quality (High / Very high = +3 / +5); only a custom bitrate stays -b:v. Its rate control made the
@@ -5202,7 +5305,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     elif fmt == 'gif':  # one-graph palette: palettegen + paletteuse; 15 fps keeps files sane
         # at most 640 px across: a 1080p GIF of 30 s was ~60 MB and ffmpeg held 1.5 GB of frames for the palette.
         # Transparent: one palette entry is kept for clear pixels; alpha below half is clear (GIF has no partial alpha)
-        fg += (f";[vout]fps={min(F, 15):g},scale='min(640,iw)':-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff{':reserve_transparent=1' if A else ''}[gp];"
+        gw, gif_fps, gc = p.get('gif_fit', (640, min(F, 15), 256)) if fitting else (640, min(F, 15), 256)
+        fg += (f";[vout]fps={gif_fps:g},scale='min({gw},iw)':-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff:max_colors={gc}{':reserve_transparent=1' if A else ''}[gp];"
                f"[g2][gp]paletteuse=dither=bayer:bayer_scale=4{':alpha_threshold=128' if A else ''}[gout];[aout]anullsink")
         vmap, amap, enc = ['-map', '[gout]'], [], ['-loop', '0']
     elif fmt == 'pngseq':  # numbered PNGs (RGBA when transparent), zipped by export()
@@ -5234,6 +5338,18 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
                *(['-crf', '18'] if p['quality'] == 'best' and not mb else ['-b:v', br]), '-c:a', 'aac', '-b:a', '192k']
     else:
         enc = [*vt('h264'), '-profile:v', 'high', *(['-level', h264_level(W, H, F)] if VT else []), '-c:a', 'aac', '-b:a', '192k']
+    if fitting and fmt != 'gif':
+        if fmt == 'mp3':
+            enc = ['-c:a', 'libmp3lame', '-b:a', str(p['fit_audio_bps'])]
+        elif '-b:a' in enc:
+            enc[enc.index('-b:a') + 1] = str(p['fit_audio_bps'])
+        if fmt not in SOUND and p.get('fit_pass'):
+            codec, pn = enc[enc.index('-c:v') + 1], p['fit_pass']
+            log = str(Path(td) / 'fit-pass')
+            if codec == 'libx265':
+                enc += ['-x265-params', f'pass={pn}', '-x265-stats', log]
+            else:
+                enc += ['-pass', str(pn), '-passlogfile', log]
     if p.get('audio_file') and amap == ['-map', '[aout]']:  # render(): the mix, made before the picture
         amap, fg = ['-map', f"{ins.count('-i')}:a"], fg + ';[aout]anullsink'
         ins = ins + ['-i', p['audio_file']]
@@ -5243,7 +5359,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     gf.write_text(fg)
     return (['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-filter_complex_threads', FF_THREADS,
              *ins, '-/filter_complex', str(gf), *vmap, *amap, *enc, '-threads', FF_THREADS, *pix, *rate] + ([] if fmt == 'png' else ['-t', f"{p['duration']:.6f}"])
-            + (['-movflags', '+faststart'] if FORMATS[fmt] in ('.mp4', '.m4a') and not intermediate else []) + [str(out)])
+            + (['-movflags', '+faststart'] if FORMATS[fmt] in ('.mp4', '.m4a') and not intermediate else [])
+            + (['-f', 'null'] if fitting and p.get('fit_pass') == 1 and fmt not in SOUND else []) + [str(out)])
 
 
 def plain(what, err, code=0):
@@ -5761,13 +5878,92 @@ def interrupted_list():
     return out
 
 
+def render_fitted(p, td, out, report, job):
+    """Bounded measured encodes. Only a complete, measured file under the cap is ever published."""
+    st, target, fmt = JOBS[job], p['targetBytes'], p['format']
+    notes = []
+    if fmt == 'gif':
+        best, lo, hi = Path(td) / 'fit-best.gif', 0.0, 1.0
+        # Try the original first, then the minimum, then bisect the quality budget. Keep the largest valid result.
+        for n in range(10):
+            q = 1.0 if n == 0 else 0.0 if n == 1 else (lo + hi) / 2
+            gw = max(16, round(min(p['w'], 96 + 544 * q ** 0.5) / 2) * 2)
+            gf, gc = min(p['fps'], 5 + round(10 * min(1, q * 2))), max(16, round(16 + 240 * min(1, q * 3)))
+            st['note'] = f'Fitting GIF: {gw} px wide, {gf:g} fps, {gc} colours'
+            render({**p, 'gif_fit': (gw, gf, gc)}, td, out, lambda x: report((n + x) / 10), job=job)
+            size = out.stat().st_size
+            if size <= target:
+                if not best.exists() or size > best.stat().st_size:
+                    shutil.copyfile(out, best)
+                    chosen = (gw, gf, gc)
+                lo = q
+                if n == 0 or size >= target * 0.95:
+                    break
+            elif n == 1:
+                raise ValueError('This GIF cannot fit even at 96 pixels, 5 fps and 16 colours. Use a larger size or shorten it')
+            else:
+                hi = q
+        retry(best.replace, out)
+        notes.append(f'GIF fitted at {chosen[0]} px wide, {chosen[1]:g} fps, {chosen[2]} colours')
+        st['fit'] = {'targetBytes': target, 'gif': list(chosen)}
+    else:
+        budget = fit_budget(p)
+        p = {**p, 'fit_audio_bps': budget['audio_bps'], 'fit_bps': budget.get('video_bps', 0), 'fit_size': budget.get('size')}
+        original_bps, original_size = p['fit_bps'], [p['w'], p['h']]
+        best = Path(td) / ('fit-best' + out.suffix)
+        best_plan = None
+        for attempt in range(2):
+            if p.get('fit_size'):
+                p['fit_size'] = fit_dimensions(p, p['fit_bps'])
+            cmd = ffmpeg_cmd(p, td, out)
+            codec = cmd[cmd.index('-c:v') + 1] if '-c:v' in cmd else ''
+            passes = (1, 2) if codec in ('libx264', 'libx265', 'libvpx-vp9', 'libvpx') else (0,)
+            for i, pn in enumerate(passes):
+                st['note'] = f'Fitting file size: encode {attempt + 1}' + (f', pass {pn} of 2' if pn else '')
+                render({**p, 'fit_pass': pn}, td, out, lambda x, i=i: report((attempt + (i + x) / len(passes)) / 2), job=job)
+            mux_subtitles(p, td, out, job)
+            size = out.stat().st_size
+            st.setdefault('encodeBytes', []).append(size)
+            if size <= target:
+                if not best.exists() or size > best.stat().st_size:
+                    shutil.copyfile(out, best)
+                    best_plan = dict(p)
+                if size >= target * 0.95 or fmt in SOUND:
+                    break
+            if attempt == 0:
+                # Keep the actual audio/header bytes out of the video correction. Probe packet sizes, not nominal rates.
+                packets = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0' if fmt not in SOUND else 'a:0',
+                                         '-show_entries', 'packet=size', '-of', 'json', str(out)]).stdout)['packets']
+                payload = sum(int(x['size']) for x in packets)
+                fixed = size - payload
+                ratio = max(0, target * (0.955 if size < target else 0.97) - fixed) / max(1, payload)
+                if fmt in SOUND:
+                    p['fit_audio_bps'] = max(48000, int(p['fit_audio_bps'] * ratio))
+                    if fmt == 'mp3':
+                        p['fit_audio_bps'] = max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= p['fit_audio_bps'])
+                else:
+                    p['fit_bps'] = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, int(p['fit_bps'] * ratio))
+                    if p['fit_bps'] < 80000:
+                        break
+        if not best.exists():
+            raise ValueError('The encoder could not fit this size after a measured retry. Use a larger size or shorten the video; no oversized file was saved')
+        retry(best.replace, out)
+        size = best_plan.get('fit_size')
+        if size and size != original_size:
+            notes.append(f'Resolution lowered from {original_size[0]}×{original_size[1]} to {size[0]}×{size[1]} to keep picture quality within the size limit')
+        st['fit'] = {**budget, 'targetBytes': target, 'size': size, 'video_bps': best_plan['fit_bps'], 'initial_video_bps': original_bps, 'encodes': attempt + 1, 'encoder': codec}
+    if out.stat().st_size < target * 0.95:
+        notes.append('This content needs fewer bits at the available quality; the file is smaller than the requested size')
+    st['notes'] = notes
+
+
 def export(job, p):
     st = JOBS[job]
     try:
         if p.get('format') == 'png' and not p.get('library'):
             p = still_cut(p)
         px = p['w'] * p['h'] if p.get('format') not in (*SOUND, 'png') else 0  # above 1440p: a heavy job, one at a time with the AI ones
-        big = 'export8k' if px > 4096 * 2304 else 'export' if px > 2560 * 1440 or p.get('queue') else None  # queue: the Exports panel's, one render at a time
+        big = 'export8k' if px > 4096 * 2304 else 'export' if px > 2560 * 1440 or p.get('queue') or p.get('targetBytes') else None  # fitting can take multiple passes: share the heavy queue
         with ai_slot(big, st, p['duration']) if big else contextlib.nullcontext(), tempfile.TemporaryDirectory(prefix='cutroom-') as td:
             st['started'] = time.time()
             F, main = p['fps'], p['main']
@@ -5791,13 +5987,21 @@ def export(job, p):
             lib = p.get('library')  # a compound clip: rendered into the library, not the exports folder
             # rendered aside and moved in when complete: a failed or stopped export left an unplayable file under its name
             out = Path(td) / f"render{FORMATS[p.get('format', 'mp4')]}"
-            render(p, td, out, lambda x: st.update(progress=(steps - 1 + x) / steps), 'The export', job)
+            report = lambda x: st.update(progress=(steps - 1 + x) / steps)
+            if p.get('targetBytes'):
+                render_fitted(p, td, out, report, job)
+            else:
+                render(p, td, out, report, 'The export', job)
+                mux_subtitles(p, td, out, job)
             if p.get('format') == 'pngseq':  # the frames, stored (PNG is compressed already) in a folder named after the export
                 with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
                     for f in sorted((Path(td) / 'seq').glob('*.png')):
                         z.write(f, f"{p['name']}/{f.name}")
             if not out.exists() or not out.stat().st_size:
                 raise RuntimeError('ffmpeg finished without writing a file')
+            st['bytes'] = out.stat().st_size
+            if p.get('targetBytes') and st['bytes'] > p['targetBytes']:
+                raise RuntimeError('The result exceeds the requested size; no oversized file was saved')
             if lib:
                 stem = re.sub(r'[\\/:*?"<>|]', '', p['name'])[:80] or 'Compound'
                 m = import_file(stem + out.suffix, None, 0, background=False, src=out)
@@ -6749,7 +6953,7 @@ class App(BaseHTTPRequestHandler):
                 return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.aimask/\d{5}\.png)', path):  # AI mask frames
                 return self.file(CACHE / m[1])
-            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|gif|mp3|wav|m4a|png|srt|vtt|txt|fcpxml|edl))', path):
+            if m := re.fullmatch(r'/exports/([^/]+\.(?:mp4|mov|webm|mkv|gif|mp3|wav|m4a|png|srt|vtt|txt|fcpxml|edl))', path):
                 return self.file(EXPORTS / m[1])
             f = (WEB / (path.lstrip('/') or 'index.html')).resolve()
             if WEB in f.parents and f.is_file():
