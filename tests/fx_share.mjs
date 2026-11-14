@@ -25,7 +25,7 @@ const get = async (base, p) => (await fetch(base + p, { headers: { 'X-Cutroom': 
 
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-fxshare-`), lib2 = `${tmp}/lib2`;
 fs.mkdirSync(lib2);
-const srv = spawn('python3', ['-I', 'server.py'], { cwd: ROOT, env: { ...process.env, CUTROOM_HOME: lib2, CUTROOM_PORT: String(B2PORT) }, stdio: 'ignore' });
+const srv = spawn(process.platform === 'win32' ? 'python' : 'python3', ['-X', 'utf8', '-I', 'server.py'], { cwd: ROOT, env: { ...process.env, CUTROOM_HOME: lib2, CUTROOM_PORT: String(B2PORT) }, stdio: 'ignore' });
 let browserH;
 const done = code => { try { srv.kill(); } catch {} fs.rmSync(tmp, { recursive: true, force: true }); process.exit(code); };
 try {

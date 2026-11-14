@@ -10,7 +10,8 @@ import os from 'node:os';
 import { browser } from './browser.mjs';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-const B = process.env.B, OUT = new URL('./out/settings/', import.meta.url).pathname;
+import { fileURLToPath } from 'node:url';
+const B = process.env.B, OUT = fileURLToPath(new URL('./out/settings/', import.meta.url));
 if (!B || /:4610\b/.test(B)) { console.log('SKIP: set B to a scratch server (never 4610)'); process.exit(0); }
 fs.mkdirSync(`${OUT}exdir`, { recursive: true });
 const res = [];

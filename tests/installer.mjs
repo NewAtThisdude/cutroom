@@ -5,6 +5,7 @@
 // that the installed copy's ./cutroom check answers; and that the AI packs install only hash-locked packages. No Cutroom
 // server needed; PORT is the web server's (default 4853):
 //   [PORT=4853] node tests/installer.mjs
+if (process.platform !== 'darwin') { console.log('SKIP installer: this test drives install.sh on a Mac; install.ps1 is checked on the Windows PC by hand'); process.exit(0); }
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

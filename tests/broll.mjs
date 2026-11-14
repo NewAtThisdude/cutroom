@@ -6,7 +6,8 @@
 import { browser } from './browser.mjs';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-const B = process.env.B, HOME = process.env.CUTROOM_HOME, OUT = new URL('./out/broll/', import.meta.url).pathname;
+import { fileURLToPath } from 'node:url';
+const B = process.env.B, HOME = process.env.CUTROOM_HOME, OUT = fileURLToPath(new URL('./out/broll/', import.meta.url));
 if (!B || /:4610\b/.test(B) || !HOME) { console.log('SKIP: set B and CUTROOM_HOME to a scratch server (never 4610)'); process.exit(0); }
 fs.mkdirSync(OUT, { recursive: true });
 const res = [];

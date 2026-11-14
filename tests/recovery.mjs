@@ -7,8 +7,9 @@
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
 
-const here = new URL('.', import.meta.url).pathname, lib = `${here}out/recovery-lib`, prof = `${here}out/recovery-profile`;
+const here = fileURLToPath(new URL('.', import.meta.url)), lib = `${here}out/recovery-lib`, prof = `${here}out/recovery-profile`;
 const PORT = 4840, CDP = 4841, B = `http://127.0.0.1:${PORT}`, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
