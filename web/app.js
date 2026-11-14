@@ -5157,6 +5157,8 @@ function openBrand() {
     else if (x.dataset.brand === 'cdel') save({ colors: cols.slice(0, -1) });
     else if (x.dataset.brand === 'apply') { try { brandApply(); closeModal(); } catch (err) { say(err.message); } }
   });
+}
+
 // ---------- batch editing: one recipe over many library videos ----------
 // Each video gets its own project (named after it): the recipe's steps in order, then every shape's export into the one
 // queue above (the Exports panel; the server renders one at a time). A recipe: { name, steps: [{ step, ...its options }],
