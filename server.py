@@ -10,7 +10,7 @@ rendering; this process is the engine. ffmpeg decodes/composites/encodes, whispe
 transcribes on-device (CapCut sends audio to its cloud ASR), text arrives as a PNG timeline
 rasterized by the same canvas code as the preview, so export matches what you saw.
 """
-import base64, bisect, contextlib, gzip, hashlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
+import base64, bisect, contextlib, errno, gzip, hashlib, json, math, mimetypes, os, queue, re, shutil, signal, statistics, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile, zlib
 from array import array
 from fractions import Fraction
 import xml.etree.ElementTree as ET
@@ -8443,8 +8443,12 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = not WIN
     try:
         srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
-    except OSError as e:  # port taken (Errno 48 on a Mac, WinError 10048 on Windows): say what to do, not a traceback
-        sys.exit(f'Cutroom could not start: port {PORT} is already in use ({e.strerror or e}). Another Cutroom may be running: quit it, or set CUTROOM_PORT to a free port.')
+    except OSError as e:  # say what to do, not a traceback
+        if e.errno == errno.EADDRINUSE or getattr(e, 'winerror', None) == 10048:  # Errno 48 on a Mac, WinError 10048 on Windows
+            sys.exit(f'Cutroom could not start: port {PORT} is already in use. Another Cutroom may be running: quit it, or set CUTROOM_PORT to a free port.')
+        if e.errno == errno.EACCES or getattr(e, 'winerror', None) == 10013:  # Windows reserves port ranges (Hyper-V / WSL)
+            sys.exit(f'Cutroom could not start: port {PORT} is reserved or not allowed on this computer ({e.strerror or e}). Set CUTROOM_PORT to another port.')
+        sys.exit(f'Cutroom could not start on port {PORT}: {e}')
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
     print(f"This computer: {PROFILE['os']}, {CORES} cores, {RAM_GB:.0f} GB, GPU {PROFILE['gpu'].get('name') or 'none'}; AI on {'/'.join(PROFILE['backends'])}; "
           f"video {ENC['h264']} / {ENC['hevc']}, decode {HWACCEL or 'CPU'}" + (f"; simulated: {PROFILE['sim']}" if PROFILE['sim'] else '') + f" (probed in {REAL['probe_s']} s)", flush=True)
