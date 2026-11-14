@@ -4862,9 +4862,10 @@ def graph(p, td):
             ms, lines = c['mask_seq'], ['ffconcat version 1.0']
             for q, png in enumerate(ms['pngs']):
                 (Path(td) / f'mask_{tag}_{q}.png').write_bytes(png)
+            rate = RATES.get(round(F, 3), f'{F:g}')  # the project's frame rate as the time base, as the text layer's: with the default 25 fps a run's edge was rounded off its frame
             for sp in ([{'i': ms['spans'][0]['i'], 'n': lead}] if lead else []) + ms['spans']:
-                lines += [f"file 'mask_{tag}_{sp['i']}.png'", f"duration {sp['n'] / F:.6f}"]
-            lines.append(f"file 'mask_{tag}_{ms['spans'][-1]['i']}.png'")
+                lines += [f"file 'mask_{tag}_{sp['i']}.png'", f'option framerate {rate}', f"duration {sp['n'] / F:.6f}"]
+            lines += [f"file 'mask_{tag}_{ms['spans'][-1]['i']}.png'", f'option framerate {rate}']
             lf = Path(td) / f'mask_{tag}.ffconcat'
             lf.write_text('\n'.join(lines) + '\n')
             ins.append(['-f', 'concat', '-safe', '0', '-i', str(lf)])
@@ -7790,7 +7791,7 @@ def selftest():
     l5, l15, l25 = at(5, 60), at(15, 60), at(15, 200)
     assert l5[0] > 200 and l15[2] > 200 and l15[0] < 50 and l25[0] > 200 and l25[2] < 50, ('adjustment layer table on frames 10-19 only: red and blue swapped', l5, l15, l25)
     gen('-f', 'lavfi', '-i', f'color=c=white:s={W}x{H}', '-frames:v', '1', str(HOME / 'mall.png'))
-    gen('-f', 'lavfi', '-i', f'color=c=black:s={W}x{H}', '-vf', "format=gray,geq=lum='if(lt(X,100),255,0)'", '-frames:v', '1', str(HOME / 'mleft.png'))
+    gen('-f', 'lavfi', '-i', f'color=c=black:s={W}x{H}', '-vf', "format=rgb24,geq=r='if(lt(X,100),255,0)':g='if(lt(X,100),255,0)':b='if(lt(X,100),255,0)'", '-frames:v', '1', str(HOME / 'mleft.png'))  # (one pixel format for all, as the page's PNGs)
     mseq = {'pngs': [base64.b64encode((HOME / f).read_bytes()).decode() for f in ('mall.png', 'mleft.png')], 'spans': [{'i': 0, 'n': 5}, {'i': 1, 'n': 5}]}
     out = render({**tplan, 'name': 'fx-lut-mask', 'duration': 1, 'main': [{**still_clip(SP), 'frames': 30}], 'fx': [{'op': 'lut', 'lut': swap, 'a': 10, 'b': 20, 'maskSeq': mseq}]}, 30)
     m5, m12, m12r, m17, m17r = at(5, 60), at(12, 60), at(12, 200), at(17, 60), at(17, 200)
