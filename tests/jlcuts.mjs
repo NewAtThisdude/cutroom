@@ -70,7 +70,7 @@ for (const motion of ['no-preference', 'reduce']) {
       window.STARTS = [];
       const st = AudioBufferSourceNode.prototype.start;
       AudioBufferSourceNode.prototype.start = function (when, off = 0, dur = Infinity) { STARTS.push({ buf: this.buffer, when, off, dur, a0: S.aA0, t0: S.aT0, r: this.playbackRate.value }); return st.call(this, when, off, dur); };
-      S.t = 0.9; S.dirty = true;
+      S.t = 0.5; S.dirty = true; // half a second before the first beep: Chromium re-anchors the sound to the picture 30-100 ms after play (seen at 0.966-1.005 s from 0.9)
     });
     await page.waitForTimeout(800);
     await page.keyboard.press('Space');
