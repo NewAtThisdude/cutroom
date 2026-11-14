@@ -40,10 +40,13 @@ const b = await browser.launch({ headless: true });
 try {
   for (const motion of ['no-preference', 'reduce']) {
     const ctx = await b.newContext({ viewport: { width: 1517, height: 1100 }, reducedMotion: motion }), page = await ctx.newPage(), errors = [];
-    page.on('pageerror', e => errors.push(e.message));
+    let navigating = false; // WebKit reports a fetch cut off by our own page.goto as a page error ('... due to access control checks')
+    page.on('pageerror', e => { if (!(navigating && /access control checks/.test(e.message))) errors.push(e.message); });
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const open = async () => {
+      navigating = true;
       await page.goto(B + '/', { waitUntil: 'load' });
+      navigating = false;
       await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof SET === 'object', null, { timeout: 30000 });
       if (await page.$('#tour')) await page.keyboard.press('Escape');
       await ev(() => loadMedia());
