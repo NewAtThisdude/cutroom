@@ -1,0 +1,89 @@
+# Changelog
+
+## 0.1.0 (unreleased)
+
+The first public release. Cutroom is a free video editor that runs entirely on your own computer, on a Mac or a
+Windows PC. It is licensed GPL v3 or later.
+
+### Editing and timeline
+
+- Magnetic main track with overlay, audio, text, caption and effect tracks, and track toggles
+- Multi-select, right-click menus, copy and paste, on-canvas handles and snapping
+- Ripple, slip, slide and roll edits; J and L cuts; markers; clip colour labels
+- Keyframes with easing, a keyframe curve editor with bezier handles, and keyframed masks (shapes, pen and AI masks)
+- Speed ramps drawn as one curve, reverse, freeze frame, stabilize, detach audio, auto reframe
+- Compound clips, multicam, adjustment layers
+- Fade handles on clips: drag a top corner to fade in or out
+- An undo history panel where you can jump to any step
+- Project versions: automatic snapshots, named versions and restore in place
+- Library source viewer with hover skim, In and Out points and Replace clip
+- Command bar (Cmd-K / Ctrl-K) that plans edits with a local model, one undo step per command
+- Import from Photos (Mac app), Open With and drag to the Dock icon
+- Package project: one `.cutroom` file with the project and every file it uses
+- Timeline hand-off as FCPXML 1.10, CMX 3600 EDL and YouTube chapters
+- Remappable keyboard shortcuts
+
+### Effects, colour and transitions
+
+- 30 video effects, 31 transitions, and an effects pack with 23 more transitions, 31 film looks and 15 effects
+- Effects-pack effects and transitions run on the GPU in exports
+- 12 blend modes that look the same in the preview and the export
+- Colour grading on the GPU, curves, and scopes: waveform, RGB parade, histogram and vectorscope with a skin line
+- Motion blur, glow, clip blur and noise reduction
+- Tracking with scale and rotation; blur or pixelate a region or every face, and the blur follows it
+- Retouch: skin, eyes, teeth, makeup, face shape and body
+
+### Audio
+
+- Volume points, EQ, pan, pitch, voice effects and stem separation
+- Real noise removal and automatic ducking under speech
+- A loudness meter (momentary, short-term and integrated LUFS) and loudness targets for exports
+- A built-in library of CC0 sound effects and music
+- Voiceover recording that lands where you spoke
+
+### Captions and text
+
+- Automatic captions with 22 animated styles, a second-language line, keywords, emoji, lyrics and speaker labels
+- Caption translation and hook titles
+- Imported fonts and per-caption styling
+
+### AI features (all run on your computer)
+
+- Remove filler words and pauses
+- Remove objects from video, and cut out any subject
+- Voice isolation, voice clone, voiceover voices and AI dubbing
+- Make shorts from a long video, and smart combine: several clips cut into one edit on the beat
+- Smooth slow motion, upscaling, relighting, deflicker and sharpen
+- Smart media search by what is in the shot
+- Control from Claude Code through the built-in MCP server
+- Lip sync, talking photo and AI video need an NVIDIA GPU with 18-24 GB; on a Mac they run only on a GPU PC you opt in to
+
+### Export
+
+- H.264, HEVC, AV1, VP9, GIF and audio-only M4A, up to 8K, with frame rate and bitrate choices
+- HDR (HLG and PQ, 10-bit) and transparent video
+- Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
+- Captions as SRT, VTT or plain text
+- A Light export option for quick plain-cut exports
+
+### Templates, brand kit and batch
+
+- Templates you can make and share as `.cutroom-template` files, with a gallery and 4 starters
+- A brand kit per library: logo, colours, fonts, caption style, intro, outro and watermark
+- Batch edit: one recipe applied to many videos, with a project and exports for each
+
+### Settings and first start
+
+- Three setup questions on first start set the default shape, frame rate, export preset and caption language
+- A guided tour over the real editor
+- A Settings window with every default in one place, per computer or per library, including switches that turn
+  each AI feature off
+
+### Windows and hardware
+
+- Runs on Windows with a PowerShell installer and launcher
+- Cutroom checks the computer it runs on and picks the encoder (VideoToolbox, NVENC, Quick Sync, AMF or x264) and
+  the AI backend to match
+- Heavy footage stays light: GPU-made preview copies for HDR, 10-bit and 4:2:2 clips, and exports sized to the
+  computer's memory
+- The editor draws only when something changes, and sleeps when idle
