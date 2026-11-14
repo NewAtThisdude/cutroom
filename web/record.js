@@ -86,8 +86,22 @@ async function rcStart() {
   const r = (RC = { o, phase: 'open', speed: o.speed, y: 0, paused: false });
   $('#rcGo').disabled = true;
   try {
+    RC_APP()?.postMessage(true); // the Mac app's window leaves screen capture before the picker opens (teleprompter, countdown, preview)
     if (o.screen !== 'none') {
-      try { r.screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30, cursor: 'always', displaySurface: o.screen === 'window' ? 'window' : 'monitor' }, audio: false }); } catch (e) { throw new Error(rcWhy('screen', e)); }
+      if (!navigator.mediaDevices.getDisplayMedia) throw new Error(RC_APP() ? 'This version of macOS does not let Cutroom record the screen: update macOS, or record the camera alone (Screen: No screen)'
+        : 'This browser cannot record the screen: use Edge or Chrome, or the Cutroom app on a Mac. The camera alone still works (Screen: No screen)');
+      const pick = surface => navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30, cursor: 'always', displaySurface: surface }, audio: false }).catch(e => { throw new Error(rcWhy('screen', e)); });
+      r.screen = await pick(o.screen === 'window' ? 'window' : 'monitor');
+      // a browser can't keep its own window out of a whole-screen capture: with the teleprompter on, say so before the countdown
+      while (!RC_APP() && o.script.trim() && rcSurface(r.screen, o) === 'monitor') {
+        const k = await rcWarn(r);
+        if (k === 'go') break;
+        r.screen.getTracks().forEach(t => t.stop());
+        if (k === 'cancel') return rcEnd(r, 'Cancelled: nothing recorded');
+        r.screen = await pick('window');
+        o.screen = 'window';
+      }
+      r.phase = 'open';
     }
     if (o.cam || o.mic) {
       const what = o.cam && o.mic ? 'camera and microphone' : o.cam ? 'camera' : 'microphone';
@@ -102,6 +116,18 @@ async function rcStart() {
     rcEnd(r);
     if ($('#rcStatus')) { rcSay(e.message); $('#rcGo').disabled = false; } else { closeModal(); toast(e.message); }
   }
+}
+const rcSurface = (s, o) => s.getVideoTracks()[0]?.getSettings().displaySurface || (o.screen === 'window' ? 'window' : 'monitor'); // (WebKit doesn't say: what was asked for)
+function rcWarn(r) { // -> 'go' | 'window' | 'cancel'
+  return new Promise(done => {
+    r.phase = 'warn';
+    const d = $('#modal .dialog');
+    rcHtml(d, `<h2>The teleprompter will be in this recording</h2>
+      <p class="hint">You are recording the whole screen, and a browser can't keep its own window out of that: if this window is on the recorded screen, the script shows in the recording. Capture a window instead (the app you are showing), or move this window to another screen.</p>
+      <div class="actions"><button data-rcwarn="cancel">Cancel</button><button data-rcwarn="go">Record anyway</button><button data-rcwarn="window" class="primary">Capture a window instead</button></div>`);
+    d.addEventListener('click', e => { const k = e.target.dataset?.rcwarn; if (k) done(k); }, { once: false });
+    r.cancel = () => done('cancel');
+  });
 }
 function rcArea(r) { // drag over the live screen: the part to keep (a crop on the clip, so it can be widened later) -> {l,t,r,b} | {} (all) | null
   return new Promise(done => {
@@ -131,18 +157,30 @@ function rcArea(r) { // drag over the live screen: the part to keep (a crop on t
     r.cancel = () => end('cancel');
   });
 }
-function rcRecorder(stream, bps) { // a MediaRecorder sending its file to the server a second at a time (record_part in server.py)
-  const type = RC_TYPES.find(t => MediaRecorder.isTypeSupported(t)), ext = /mp4/.test(type) ? 'mp4' : 'webm', id = hex12();
+function rcRecorder(stream, bps, fail) { // a MediaRecorder sending its file to the server a second at a time (record_part in server.py)
+  const type = RC_TYPES.find(t => MediaRecorder.isTypeSupported(t)), ext = /mp4/.test(type) ? 'mp4' : 'webm', id = hex12(), url = `/api/record/${id}.${ext}`;
   const mr = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: bps });
   let chain = Promise.resolve();
-  const send = (b, q = '') => (chain = chain.then(async () => {
-    const x = await fetch(`/api/record/${id}.${ext}${q}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: b }), j = await x.json().catch(() => ({}));
-    if (!x.ok) throw new Error(j.error || 'saving the recording failed');
-    return j;
-  }));
-  mr.addEventListener('dataavailable', e => { if (e.data.size) send(e.data); });
+  const send = (b, q = '') => { // in order; a refused part (disk full, the size cap) leaves what came before it whole
+    const p = chain.then(async () => {
+      const x = await fetch(url + q, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: b }), j = await x.json().catch(() => ({}));
+      if (!x.ok) throw new Error(j.error || 'saving the recording failed');
+      return j;
+    });
+    chain = p.catch(() => {});
+    return p;
+  };
+  mr.addEventListener('dataavailable', e => { if (e.data.size) send(e.data).catch(fail); });
   const stopped = new Promise(z => mr.addEventListener('stop', z, { once: true }));
-  return { mr, async finish(name) { if (mr.state !== 'inactive') mr.stop(); await stopped; return send(new Blob([]), `?done=1&name=${encodeURIComponent(name)}`); } };
+  return {
+    mr,
+    async finish(name) { if (mr.state !== 'inactive') mr.stop(); await stopped; const m = await send(new Blob([]), `?done=1&name=${encodeURIComponent(name)}`); this.done = true; return m; },
+    abort() { // given up (cancelled, failed, the page closing): the server drops the part now, not at its next start
+      try { if (mr.state !== 'inactive') mr.stop(); } catch { /* stopped already */ }
+      if (!this.done) fetch(`${url}?abort=1`, { method: 'POST', headers: { 'X-Cutroom': '1' }, keepalive: true }).catch(() => {});
+      this.done = true;
+    },
+  };
 }
 const rcPx = r => r.speed * 0.18 * r.o.size; // teleprompter speed 1-10 -> pixels a second (3 at Medium: about a line every 2.5 s)
 async function rcRun(r) {
@@ -160,7 +198,6 @@ async function rcRun(r) {
   fill(sp);
   sp.addEventListener('input', () => { r.speed = +sp.value; fill(sp); });
   d.addEventListener('click', e => { const k = e.target.dataset?.rc; if (k === 'stop') rcStop(r); else if (k === 'pause') rcPause(r); });
-  RC_APP()?.postMessage(true);
   // the mic, from before the count-in: its blips measure the mic's delay
   audioOn();
   await actx.resume();
@@ -191,8 +228,9 @@ async function rcRun(r) {
   cnt.textContent = '';
   // the recorders, in one task: their files share a start
   r.recs = [];
-  if (r.screen) r.recs.push({ kind: 'screen', rec: rcRecorder(r.screen, 10e6) });
-  if (cam) r.recs.push({ kind: 'camera', rec: rcRecorder(cam, 4e6) });
+  const fail = e => { if (r.phase === 'rec' && !r.why) { r.why = e.message; rcStop(r); } }; // a part refused: stop, keep what was recorded, say why
+  if (r.screen) r.recs.push({ kind: 'screen', rec: rcRecorder(r.screen, 10e6, fail) });
+  if (cam) r.recs.push({ kind: 'camera', rec: rcRecorder(cam, 4e6, fail) });
   r.T0 = performance.now(); r.wall0 = Date.now();
   for (const x of r.recs) x.rec.mr.start(1000);
   if (r.screen && o.screen !== 'window') r.cur = api('/api/cursor', { on: true, t0: r.wall0 }).catch(() => null); // auto zoom's data (a window's place on the screen isn't known)
@@ -220,6 +258,7 @@ function rcEnd(r, msg) { // let go of every device; the Mac app shows its window
   for (const s of [r.screen, r.user]) s?.getTracks().forEach(t => t.stop());
   r.mic?.src.disconnect(); r.mic?.node.disconnect();
   clearInterval(r.timer);
+  for (const x of r.recs || []) x.rec.abort(); // (a finished one is kept)
   if (r.cur) { r.cur = null; api('/api/cursor', { on: false }).catch(() => {}); }
   RC_APP()?.postMessage(false);
   if (RC === r) RC = null;
@@ -248,7 +287,7 @@ async function rcStop(r) {
     rcEnd(r);
     closeModal();
     const scr = parts.some(p => p.kind === 'screen');
-    toast(`Recorded ${fmtDur(secs)}: ${[scr && 'screen on the main track', parts.some(p => p.kind === 'camera') && (scr ? 'camera as a picture-in-picture (drag it on the preview to move it)' : 'camera on the main track'), r.mic && 'sound on the audio track'].filter(Boolean).join(', ')}`);
+    toast(`${r.why ? `Stopped: ${r.why}. ` : ''}Recorded ${fmtDur(secs)}: ${[scr && 'screen on the main track', parts.some(p => p.kind === 'camera') && (scr ? 'camera as a picture-in-picture (drag it on the preview to move it)' : 'camera on the main track'), r.mic && 'sound on the audio track'].filter(Boolean).join(', ')}`);
   } catch (e) { rcEnd(r, `The recording could not be saved: ${e.message}`); }
 }
 async function rcMicTake(r, name) { // the mic's samples from the recorders' start, as a WAV, its delay corrected
@@ -360,12 +399,31 @@ function azKeyframes(c, m, tr, amount = 2, smooth = 0.5) { // the clip's cursor 
   for (const z of zooms) {
     const a0 = Math.max(0, z.a - R), b1 = Math.min(D, z.b + R), at = T => (T <= z.a ? [z.u, z.v] : T < z.a + R ? (([u, v], k) => [z.u + (u - z.u) * k, z.v + (v - z.v) * k])(sm(T), ss((T - z.a) / R)) : sm(T));
     const k = T => 1 + (amount - 1) * (T < z.a ? (z.a > a0 ? ss((T - a0) / (z.a - a0)) : 1) : T <= z.b ? 1 : ss(1 - (T - z.b) / R));
-    const ts = new Set([a0, z.a, Math.min(z.b, D), b1]);
+    const edges = [a0, z.a, Math.min(z.b, D), b1], ts = new Set(edges); // (the edges stay through the thinning: in by the click exactly)
     for (let T = a0; T < b1; T += 1 / 15) ts.add(T);
-    for (const T of [...ts].sort((x, y) => x - y)) if (T > kf.at(-1).t + 1e-4) kf.push(props(T, k(T), at(T)));
+    for (const T of [...ts].sort((x, y) => x - y)) if (T > kf.at(-1).t + 1e-4) kf.push(Object.assign(props(T, k(T), at(T)), edges.includes(T) && { pin: 1 }));
   }
   if (kf.at(-1).t < D - 1e-4) kf.push(props(D, 1, [0.5, 0.5]));
-  return { kf, zooms };
+  return { kf: azThin(kf, W, H), dense: kf.map(({ pin, ...f }) => f), zooms };
+}
+function azThin(kf, W, H, cap = 1200) { // the 15-a-second samples -> the few that draw the same motion (within half a pixel and 0.2 % zoom):
+  // holds and straight stretches collapse (Douglas-Peucker). Long, busy recordings loosen it until they fit well under the export's 2000
+  for (let tol = 1; ; tol *= 1.5) {
+    const keep = new Uint8Array(kf.length), err = (a, b, i) => { // how far keyframe i is off the line a..b, in tolerances
+      const u = (kf[i].t - kf[a].t) / (kf[b].t - kf[a].t || 1), d = k => Math.abs(kf[i][k] - (kf[a][k] + (kf[b][k] - kf[a][k]) * u));
+      return Math.max(d('scale') / (0.002 * tol), (d('x') * W) / (0.5 * tol), (d('y') * H) / (0.5 * tol));
+    };
+    kf.forEach((f, i) => { if (f.pin && tol < 8) keep[i] = 1; }); // (hundreds of separate zooms: the edges loosen too, so it always fits)
+    keep[0] = keep[kf.length - 1] = 1;
+    for (const st = [[0, kf.length - 1]]; st.length;) {
+      const [a, b] = st.pop();
+      let w = 0, at = -1;
+      for (let i = a + 1; i < b; i++) { const e = keep[i] ? 2 : err(a, b, i); if (e > w) { w = e; at = i; } } // (a pinned one splits here)
+      if (w > 1) { keep[at] = 1; st.push([a, at], [at, b]); }
+    }
+    const out = kf.filter((_, i) => keep[i]).map(({ pin, ...f }) => f);
+    if (out.length <= cap) return out;
+  }
 }
 async function autoZoom(c, { amount, smooth } = {}) {
   const m = M.get(c?.media), o = AZ();
@@ -392,7 +450,7 @@ document.addEventListener('click', e => {
 addEventListener('keydown', e => { // while recording: Space pauses the teleprompter, the arrows change its speed, Esc stops (before the editor's keys)
   const r = RC;
   if (!r || r.phase === 'open' || r.phase === 'saving') return;
-  if (e.key === 'Escape') { if (r.phase === 'area') r.cancel(); else rcStop(r); }
+  if (e.key === 'Escape') { if (r.phase === 'area' || r.phase === 'warn') r.cancel(); else rcStop(r); }
   else if (r.phase === 'rec' && e.code === 'Space') rcPause(r);
   else if (r.phase === 'rec' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     r.speed = clamp(r.speed + (e.key === 'ArrowUp' ? 1 : -1), 1, 10);
@@ -400,4 +458,5 @@ addEventListener('keydown', e => { // while recording: Space pauses the teleprom
   } else return;
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
+addEventListener('pagehide', () => { if (RC) rcEnd(RC); }); // closed or reloaded mid-take: devices off, the server's parts dropped
 $('#btnRecord')?.addEventListener('click', openRecorder);

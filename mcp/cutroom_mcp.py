@@ -186,10 +186,6 @@ TOOLS = [
                   'follows the cursor, zooms out when it rests or moves away. amount 1.25-3 (default 2), smooth 0-1 (default 0.5). '
                   'Writes keyframes (scale, x, y) on the clip, replacing its position and size keyframes; one undo step.',
      S({'id': txt, 'amount': num, 'smooth': num}, []), 'auto_zoom'),
-    ('auto_zoom', 'Auto zoom a screen recording made in Cutroom (id, else the selected clip): zooms in toward its recorded clicks and typing, '
-                  'follows the cursor, zooms out when it rests or moves away; written as ordinary scale / x / y keyframes on the clip (they replace its own). '
-                  'amount 1.25-3 (default 2), smooth 0-1 (default 0.5: longer ramps, calmer following).',
-     S({'id': txt, 'amount': num, 'smooth': num}, []), 'auto_zoom'),
     ('blur_region', 'Blur (or mosaic) a moving region of a video clip: a number plate, a face, a logo. box = {x, y, w, h} canvas fractions at time t; '
                     'it is tracked both ways through the clip and a blurred copy of the clip, masked to it, goes on the overlay track. '
                     'shape rect|circle, style blur|mosaic, amount 0.05-1.',

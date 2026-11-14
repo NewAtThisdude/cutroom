@@ -258,8 +258,6 @@ def save_meta(m):
         return
     if (MEDIA / f"{m['id']}.cursor").exists():  # a screen recording's cursor track (cursor_track): kept whoever saves (prepare() holds an older copy)
         m['cursor'] = True
-    if (MEDIA / f"{m['id']}.cursor").exists():  # a screen recording's cursor track (cursor_track): kept by writers holding an older copy (prepare)
-        m['cursor'] = True
     tmp = MEDIA / f".{m['id']}.{uuid.uuid4().hex[:6]}.tmp"  # whole or not there: a reader between write_text's truncate and its write saw an empty file (/api/media failed)
     tmp.write_text(json.dumps(m))
     retry(tmp.replace, MEDIA / f"{m['id']}.json")
@@ -364,12 +362,26 @@ def import_file(name, stream, length, background=True, src=None, key=None):
     return m
 
 
+REC_ABORTED = set()  # takes the page gave up on (ponytail: kept until the server restarts; a few ids a day)
+REC_CAP = 32 << 30  # recordings being made, all parts together (a screen take at 10 Mbit/s is about 4.5 GB an hour)
+
+
 def record_part(rid, ext, stream, length, q):
     """A screen or camera take from the recorder (web/record.js), sent a second at a time while it records: an hour of
     screen never sits in the page's memory, and a crash keeps what was sent. The last call (done=1) imports it. The
     recorder's file has no duration (fragmented MP4, WebM without cues) and its first frame starts after the recorder's
     start (WebKit: 43 ms): remuxed (no re-encode) to start at 0, and 'lead' is the start it had, so the page can place it."""
     part = CACHE / f'rec-{rid}.{ext}'
+    if q.get('abort') or rid in REC_ABORTED:  # the page gave up on it (failed, cancelled, closed); a part still on its way after that is dropped too
+        REC_ABORTED.add(rid)
+        part.unlink(missing_ok=True)
+        return {'ok': True}
+    if length and not q.get('done'):  # checked before the part is written: what was recorded stays a whole file
+        have = sum(f.stat().st_size for f in CACHE.glob('rec-*') if f.is_file())
+        if have + length > REC_CAP:
+            raise ValueError(f'the recording reached {REC_CAP >> 30} GB, the most Cutroom keeps at once: it stopped there, and what was recorded is kept')
+        if shutil.disk_usage(CACHE).free - length < 1 << 30:
+            raise ValueError('the disk is nearly full: the recording stopped there, and what was recorded is kept')
     with open(part, 'ab') as f:
         while length > 0:
             b = stream.read(min(length, 1 << 20))
@@ -486,7 +498,7 @@ def cursor_track(mid, track=None):
     """A screen recording's cursor track, kept next to its file (<id>.cursor): [t, u, v] in its own time and frame
     (0..1), and the clicks and keys [t, 'c'|'k', u, v]. With track: save it."""
     m = meta(mid)
-    f = MEDIA / f"{m['id']}.cursor"  # (not .json: the trash's restore looks for <id>*.json; it stays here while the file is in the trash)
+    f = MEDIA / f"{m['id']}.cursor"  # (not .json: the trash's restore looks for <id>*.json; it goes to the trash and back with its file)
     if track is None:
         if not f.exists():
             raise ValueError('this clip has no cursor track: auto zoom works on screen recordings made in Cutroom')
@@ -7188,7 +7200,8 @@ class App(BaseHTTPRequestHandler):
                 for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
                     if f.exists():
                         retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
-                (MEDIA / f'{m[1]}.cursor').unlink(missing_ok=True)  # a screen recording's cursor track (auto zoom) goes with it
+                if (MEDIA / f'{m[1]}.cursor').exists():  # a screen recording's cursor track (auto zoom) goes with it; emptying the trash purges it
+                    retry(shutil.move, str(MEDIA / f'{m[1]}.cursor'), str(HOME / 'trash' / 'media' / f'{m[1]}.cursor'))
                 for f in CACHE.glob(f'{m[1]}*.pcm'):  # the preview's sound is remade from the file if it's restored
                     f.unlink(missing_ok=True)
                 return self.reply({'ok': True})
@@ -7202,6 +7215,8 @@ class App(BaseHTTPRequestHandler):
                 if not src:
                     raise ValueError('its file is not in the trash')
                 retry(shutil.move, str(src), str(MEDIA / info['file']))
+                if (tr / f'{m[1]}.cursor').exists():  # its cursor track back too: the restored recording keeps auto zoom
+                    retry(shutil.move, str(tr / f'{m[1]}.cursor'), str(MEDIA / f'{m[1]}.cursor'))
                 retry(shutil.move, str(js[-1]), str(MEDIA / f'{m[1]}.json'))
                 return self.reply({'ok': True, 'id': m[1]})
             if u.path == '/api/ramp':  # the knot table is checked here: it goes into an ffmpeg expression
@@ -8582,6 +8597,13 @@ def main():
             if time.time() - d.stat().st_mtime > 86400:
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:  # gone meanwhile (another server's export finished with it)
+            pass
+    for f in CACHE.glob('rec-*'):  # a recording's part left by a crash, a reload or a quit mid-take (record_part). Not one being
+        # written: a take appends every second, maybe through another server on this library
+        try:
+            if time.time() - f.stat().st_mtime > 600:
+                f.unlink()
+        except OSError:
             pass
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)

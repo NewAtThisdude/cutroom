@@ -127,7 +127,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const asked = await ev(() => [DEV.userAsked.video?.deviceId, DEV.userAsked.audio?.deviceId]);
   check(`${rm}: camera and mic pickers list this computer's devices after the system default (picked first); the ones picked are the ones opened`,
     devs[0].join() === 'System default,FaceTime HD Camera,Desk camera' && devs[1].join() === 'System default,Built-in microphone,USB microphone' && devs[2] === '' && devs[3] === '' && asked.join() === 'cam-b,mic-b', JSON.stringify({ devs, asked }));
-  check(`${rm}: a 3-2-1 countdown; the app hides its window from screen capture before it starts`, cd.app.length === 1 && cd.app[0][0] === true && cd.app[0][1] === 'count', JSON.stringify(cd.app));
+  check(`${rm}: a 3-2-1 countdown; the app hid its window from screen capture before the screen picker opened`, cd.app.length === 1 && cd.app[0][0] === true && cd.app[0][1] === 'open', JSON.stringify(cd.app));
   check(`${rm}: the teleprompter shows ${rm === 'reduce' ? 'mirrored' : 'unmirrored'}`, cd.prompt && (rm === 'reduce' ? /matrix\(-1/.test(cd.mirror) : cd.mirror === 'none'), cd.mirror);
   const wall = await ev(() => { const n = performance.now(); FLASH.push(n + 900, n + 1800, n + 2700); for (const t of FLASH) DEV.beep(t); return FLASH.slice(); });
   const sc = () => ev(() => $('.rcprompt').scrollTop);
@@ -273,9 +273,60 @@ for (const rm of ['no-preference', 'reduce']) {
     return t;
   };
   const rs = await refused({ screen: 'NotAllowedError' }), rc = await refused({ user: 'NotAllowedError' }, { screen: 'none', noMic: true }), rn = await refused({ user: 'NotFoundError' }, { screen: 'none' });
-  check(`${rm}: refused permissions say where to allow them: screen, camera; a missing device says so`,
-    /Screen & System Audio Recording/.test(rs[0]) && /cancelled/.test(rs[0]) && /Privacy & Security > Camera\b/.test(rc[0]) && /^No camera( and microphone)? found/.test(rn[0]) && !rs[1] && rs[2] && !rc[1], `${rs[0]} | ${rc[0]} | ${rn[0]}`);
+  await ev(() => { Object.defineProperty(MediaDevices.prototype, 'getDisplayMedia', { configurable: true, value: undefined }); });
+  const rg = await refused({});
+  await install(); // (the fake screen back)
+  check(`${rm}: refused permissions say where to allow them: screen, camera; a missing device says so; no screen recording at all says what to do`,
+    /Screen & System Audio Recording/.test(rs[0]) && /cancelled/.test(rs[0]) && /Privacy & Security > Camera\b/.test(rc[0]) && /^No camera( and microphone)? found/.test(rn[0]) && !rs[1] && rs[2] && !rc[1]
+    && /update macOS, or record the camera alone/.test(rg[0]) && !/TypeError/.test(rg[0]), `${rs[0]} | ${rc[0]} | ${rn[0]} | ${rg[0]}`);
+
+  // ---- a part the server refuses (disk full, the size cap): the take stops there, what was recorded is kept and placed ----
+  let parts = 0;
+  await page.route(u => /^\/api\/record\/[0-9a-f]{12}\.(mp4|webm)$/.test(u.pathname), async q => {
+    const u = new URL(q.request().url());
+    if (u.searchParams.get('done') || u.searchParams.get('abort') || parts++ < 4) return q.continue();
+    q.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'the disk is nearly full: the recording stopped there, and what was recorded is kept' }) });
+  });
+  const nF = await ev(() => [P.main.length, P.overlay.length, P.audio.length]);
+  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.selectOption('#rcScreen', 'screen'); await page.click('#rcGo');
+  await page.waitForFunction(() => !RC && $('#modal').hidden, null, { timeout: 30000 });
+  const full = await ev(() => ({ n: [P.main.length, P.overlay.length, P.audio.length], toast: $('#toast').textContent, d: M.get(P.main.find(c => c.id === S.sel?.id)?.media)?.duration }));
+  await page.unrouteAll({ behavior: 'ignoreErrors' }); // (then the two routes the rest needs, again)
+  check(`${rm}: a refused part stops the take by itself, says why, and keeps and places what was recorded`, /^Stopped: the disk is nearly full/.test(full.toast) && full.n.join() === nF.map(x => x + 1).join() && full.d > 0.5, JSON.stringify(full));
+
+  // ---- closed mid-take: the server's half-written parts go at once ----
+  await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
+  await page.route(u => u.pathname === '/api/cursor', q => q.fulfill({ contentType: 'application/json', body: '{"ok":true,"pts":[],"ev":[],"screens":[]}' }));
+  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.click('#rcGo');
+  await page.waitForFunction(() => RC?.phase === 'rec', null, { timeout: 10000 });
+  await page.waitForTimeout(2300);
+  const midway = fs.readdirSync(`${HOME}/cache`).filter(f => f.startsWith('rec-'));
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => typeof P !== 'undefined' && P, null, { timeout: 20000 });
+  await install();
+  await new Promise(z => setTimeout(z, 1500));
+  const after2 = fs.readdirSync(`${HOME}/cache`).filter(f => f.startsWith('rec-'));
+  check(`${rm}: closing the page mid-take drops the server's half-written parts (${midway.length} while recording, ${after2.length} after)`, midway.length === 2 && after2.length === 0, JSON.stringify({ midway, after2 }));
+
+  // ---- in a browser (not the Mac app): a whole-screen take with the teleprompter on warns before the countdown ----
   await ev(() => { delete window.webkit; });
+  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.selectOption('#rcScreen', 'screen'); await page.click('#rcGo');
+  await page.waitForSelector('[data-rcwarn="window"]');
+  const wtext = await ev(() => [$('#modal h2').textContent, RC?.phase]);
+  await page.click('[data-rcwarn="window"]');
+  await page.waitForFunction(() => RC?.phase === 'count', null, { timeout: 10000 });
+  const asked2 = await ev(() => DEV.screenAsked.video.displaySurface);
+  await page.keyboard.press('Escape'); await page.waitForFunction(() => !RC, null, { timeout: 10000 });
+  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.selectOption('#rcScreen', 'screen'); await page.click('#rcGo');
+  await page.waitForSelector('[data-rcwarn="go"]'); await page.click('[data-rcwarn="go"]');
+  const anyway = await page.waitForFunction(() => RC?.phase === 'count', null, { timeout: 10000 }).then(() => true, () => false);
+  await page.keyboard.press('Escape'); await page.waitForFunction(() => !RC, null, { timeout: 10000 });
+  await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.selectOption('#rcScreen', 'screen'); await page.click('#rcGo');
+  await page.waitForSelector('[data-rcwarn="cancel"]'); await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !RC, null, { timeout: 10000 });
+  const cancelled = await ev(() => [$('#toast').textContent, DEV.screen.getTracks().every(t => t.readyState === 'ended')]);
+  check(`${rm}: in a browser, a whole-screen take with the teleprompter warns before the countdown ("${wtext[0]}"): capture a window instead (asks for a window), record anyway, or Esc cancels`,
+    wtext[1] === 'warn' && /teleprompter will be in this recording/.test(wtext[0]) && asked2 === 'window' && anyway && /nothing recorded/.test(cancelled[0]) && cancelled[1], JSON.stringify({ wtext, asked2, anyway, cancelled }));
   await page.click('#btnRecord'); await page.waitForSelector('#rcScreen'); await page.selectOption('#rcScreen', 'screen');
   const warn = await ev(() => !$('#rcHide').hidden && /teleprompter is in the recording/.test($('#rcHide').textContent));
   await page.selectOption('#rcScreen', 'window'); const warn2 = await ev(() => $('#rcHide').hidden);
@@ -290,15 +341,49 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.keyboard.press('Escape');
   check(`${rm}: the picked camera and mic are remembered; an unplugged one falls back to the system default`, devKept.join() === 'cam-b,mic-b' && devGone.join() === ',mic-b', JSON.stringify({ devKept, devGone }));
   check(`${rm}: in a browser (not the Mac app) a whole-screen recording warns the teleprompter would show; a window doesn't; the script and options are remembered`, warn && warn2 && kept[0] === 40 && kept[1] === (rm === 'reduce'), JSON.stringify({ warn, warn2, kept }));
+  if (rm === 'no-preference') { // ---- a long recording (5.5 min, the cursor busy throughout): its keyframes thin to well under the export's 2000, the motion unchanged, and it exports ----
+    const L = `${tmp}/rec-long.mp4`;
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=10:d=330', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', L]);
+    const LV = await (await fetch(`${B}/api/import?name=rec-long.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(L) })).json();
+    made.m.push(LV.id);
+    const pts = [], evs = [];
+    for (let i = 0; i <= 330 * 30; i++) { // wandering the whole time, a click or a key every 4 s
+      const t = i / 30, u = 0.5 + 0.35 * Math.sin(t * 0.7) * Math.cos(t * 0.13), v = 0.5 + 0.3 * Math.sin(t * 0.53 + 1);
+      pts.push([t, +u.toFixed(5), +v.toFixed(5)]);
+      if (i % 120 === 60) evs.push([t, i % 240 === 60 ? 'c' : 'k', +u.toFixed(5), +v.toFixed(5)]);
+    }
+    await api(`/api/cursor/${LV.id}`, { track: { pts, ev: evs } });
+    await ev(() => loadMedia());
+    await page.waitForFunction(id => M.get(id)?.ready && M.get(id).cursor, LV.id, { timeout: 120000 });
+    const lr = await ev(async id => {
+      setProject(newProject('16:9')); P.name = 'Recorder long test (scratch)'; P.fps = 24; renderAll(); addMedia(id, 'main', 0);
+      const c = P.main[0], m = M.get(id), r = await REMOTE.auto_zoom({ id: c.id, amount: 2, smooth: 0.5 });
+      const dense = azKeyframes(c, m, await api(`/api/cursor/${id}`, {}), 2, 0.5).dense;
+      let worst = 0;
+      for (const f of dense) { const a = geom(m, c, P.w, P.h, propsAt(c, f.t)), b = geom(m, c, P.w, P.h, f); worst = Math.max(worst, Math.abs(a.x - b.x), Math.abs(a.y - b.y), Math.abs(a.w - b.w)); }
+      return { pid: P.id, n: c.kf.length, dense: dense.length, zooms: r.zooms.length, worst, W: P.w };
+    }, LV.id);
+    made.p.push(lr.pid);
+    const lx = await ev(() => REMOTE.export({ format: 'mp4', resolution: '720p', name: `recorder-long-${Date.now()}` }).catch(e => ({ error: e.message })));
+    const lf = lx.file && `${HOME}/exports/${lx.file}`, ld = lf && fs.existsSync(lf) ? +execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', lf], { encoding: 'utf8' }) : 0;
+    check(`${rm}: a 5.5 min recording, cursor busy throughout: ${lr.zooms} zooms in ${lr.n} keyframes (from ${lr.dense} samples; the export takes 2000), within ${lr.worst.toFixed(2)} px of the full motion; it exports (${ld.toFixed(1)} s)`,
+      lr.n <= 1200 && lr.dense > 2000 && lr.worst <= 2 && Math.abs(ld - 330) < 1, JSON.stringify({ ...lr, lx }));
+    if (lf && fs.existsSync(lf)) fs.unlinkSync(lf);
+  }
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
   await ev(() => localStorage.removeItem('cutroom.rec'));
   await page.context().close();
 }
 await b.close();
-const side = `${HOME}/media/${made.m[1]}.cursor`, hadSide = fs.existsSync(side); // the first screen recording's cursor track
+// a recording's cursor track goes to the trash with it and comes back on restore (emptying the trash purges it)
+const sid = made.m[1], side = `${HOME}/media/${sid}.cursor`, hadSide = fs.existsSync(side);
+await fetch(`${B}/api/media/${sid}/trash`, { method: 'POST', headers: H, body: '{}' });
+const inTrash = !fs.existsSync(side) && fs.existsSync(`${HOME}/trash/media/${sid}.cursor`);
+await fetch(`${B}/api/media/${sid}/restore`, { method: 'POST', headers: H, body: '{}' });
+const back = fs.existsSync(side) && (await api('/api/media')).find(m => m.id === sid)?.cursor === true;
 for (const p of made.p) await fetch(`${B}/api/projects/${p}/trash`, { method: 'POST', headers: H, body: '{}' });
 for (const m of made.m) await fetch(`${B}/api/media/${m}/trash`, { method: 'POST', headers: H, body: '{}' });
 fs.rmSync(tmp, { recursive: true, force: true });
-check('a screen recording\'s cursor track goes when its media is trashed', hadSide && !fs.existsSync(side), side);
+check('a screen recording\'s cursor track goes to the trash with it and comes back on restore', hadSide && inTrash && back, JSON.stringify({ hadSide, inTrash, back }));
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);
 process.exit(res.every(Boolean) ? 0 : 1);
