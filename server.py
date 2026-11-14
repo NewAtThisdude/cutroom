@@ -8438,6 +8438,9 @@ def main():
         except OSError:  # gone meanwhile (another server's export finished with it)
             pass
     ThreadingHTTPServer.request_queue_size = 128  # a burst of connections was reset at the default backlog of 5
+    # On Windows SO_REUSEADDR (HTTPServer's default) lets a second server bind a port that is already listening, and the two
+    # then split the connections: there a second Cutroom on the same port must fail to start, as it does on the Mac
+    ThreadingHTTPServer.allow_reuse_address = not WIN
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
     print(f"This computer: {PROFILE['os']}, {CORES} cores, {RAM_GB:.0f} GB, GPU {PROFILE['gpu'].get('name') or 'none'}; AI on {'/'.join(PROFILE['backends'])}; "
