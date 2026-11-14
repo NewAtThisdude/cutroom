@@ -1,0 +1,19 @@
+#!/bin/sh
+# Refuse a commit that can't even load: a JavaScript or Python syntax error, or a leftover merge conflict marker.
+# A merge once dropped a closing brace in web/app.js and the commit went through anyway. Takes about a second.
+# Enable once per clone: git config core.hooksPath .githooks
+fail=0
+tmp=$(mktemp -d)
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  case "$f" in
+    *.js|*.mjs) c="$tmp/$(basename "$f")"; git show ":$f" > "$c"; node --check "$c" || { echo "  ^ in $f"; fail=1; } ;;
+    *.py) git show ":$f" | python3 -I -c "import sys, ast; ast.parse(sys.stdin.read(), sys.argv[1])" "$f" || fail=1 ;;
+  esac
+  case "$f" in
+    *.md|*.txt) ;;
+    *) if git show ":$f" | grep -qE '^(<<<<<<<|>>>>>>>) '; then echo "$f: merge conflict marker"; fail=1; fi ;;
+  esac
+done
+rm -rf "$tmp"
+[ $fail = 0 ] || echo "pre-commit: fix the above (git commit --no-verify only if you really mean it)"
+exit $fail
