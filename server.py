@@ -794,6 +794,8 @@ def transcribe(mid, lang='auto', ranges=None):
             if b - a > 0.3:
                 todo.append([a, b])
         if todo:
+            if 'captions' in AI_OFF and not getattr(AI_HELD, 'n', 0):  # switched off says so, not "install whisper" (ai_slot's check comes later)
+                raise RuntimeError(f"{tier('captions')['what']} is turned off in Settings (AI and this computer)")
             if not shutil.which(WHISPER) or not Path(MODEL).exists():
                 raise RuntimeError('captions need whisper.cpp and its model: run ./install.sh (or brew install whisper-cpp and set CUTROOM_MODEL to a ggml model)')
             if not (f := pcm(m)):

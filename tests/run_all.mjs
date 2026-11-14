@@ -12,6 +12,7 @@ const DEFAULT_TESTS = [
   'ui_smoke', 'ui_audit', 'tour', 'platforms', 'history', 'curves', 'scopes', 'jlcuts', 'meter',
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
+  'settings', 'templates', 'brand', 'batch',
 ];
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -21,7 +22,7 @@ const options = { ai: false, ports: process.env.CUTROOM_TEST_PORTS || '4810-4819
 function usage() {
   console.log(`Usage: node tests/run_all.mjs [--ports 4810-4819] [--tests ui_smoke,package] [--timeout 1200] [--ai] [--list]
 
-Runs the 22 release tests serially, with export_formats in quick mode.
+Runs the 26 release tests serially, with export_formats in quick mode.
 --ports     Inclusive scratch-server port range (at least two ports; never 4610).
 --tests     Comma-separated test names, optionally with .mjs; defaults to the release list.
 --timeout   Per-test timeout in seconds, excluding server startup and fixture seeding.
