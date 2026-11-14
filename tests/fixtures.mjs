@@ -188,3 +188,43 @@ export async function seedLibrary({ baseUrl = process.env.B, home = process.env.
 }
 
 export const seedFixtures = options => seedLibrary({ ...options, baseUrl: options?.baseUrl ?? options?.baseURL });
+
+// ---- speech clips and a rotated HLG source (audio_tools, audio_packs, export_hdr_alpha) ----
+// A "talk" clip: OS speech (makeSpeech) placed at `lead` s over an optional lavfi sound bed (music, noise), padded to `dur`
+// s, with a test-pattern picture unless `video: false`. Returns { file, speech: [[start, end], ...] }: where the voice is,
+// from the clean speech (silencedetect), the ground truth a VAD would be judged by; null when the OS has no speech service.
+export function speechClip(name, text, { lead = 0.5, dur, bed = '', video = true } = {}) {
+  const key = createHash('sha256').update(JSON.stringify([process.platform, text, lead, dur, bed, video])).digest('hex').slice(0, 12);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  const wav = path.join(fixtureDir, `speech-src-${key}.${process.pid}.wav`);
+  if (!makeSpeech(wav, text)) return null;
+  try {
+    const sil = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', wav, '-af', 'silencedetect=noise=-40dB:d=0.3', '-f', 'null', '-'], { encoding: 'utf8', timeout: 60000 }).stderr;
+    const len = +probe(wav).format.duration, speech = [];
+    const st = [...sil.matchAll(/silence_start: (-?[\d.]+)/g)].map(m => Math.max(0, +m[1])), en = [...sil.matchAll(/silence_end: ([\d.]+)/g)].map(m => +m[1]);
+    let t = 0;
+    st.forEach((a, i) => { if (a > t + 0.05) speech.push([t, a]); t = en[i] ?? len; });
+    if (len > t + 0.05) speech.push([t, len]);
+    const total = dur ?? Math.ceil(lead + len + 1), ms = Math.round(lead * 1000);
+    const graph = `[${video ? 1 : 0}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${ms}|${ms},apad[s]` + (bed ? `;[${video ? 2 : 1}:a]aformat=sample_rates=48000:channel_layouts=stereo[b];[s][b]amix=inputs=2:normalize=0:duration=first[a]` : ';[s]anull[a]');
+    const file = cachedMedia(`${path.basename(name, path.extname(name))}-${key}${path.extname(name)}`, [
+      ...(video ? ['-f', 'lavfi', '-i', `testsrc2=s=640x360:r=30:d=${total}`] : []), '-i', wav, ...(bed ? ['-f', 'lavfi', '-i', bed] : []),
+      '-filter_complex', graph, '-map', '[a]', ...(video ? ['-map', '0:v', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p'] : []),
+      ...(path.extname(name) === '.wav' ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '192k']), '-t', String(total), '-movflags', '+faststart']);
+    return { file, speech: speech.map(([a, b]) => [+(a + lead).toFixed(3), +(b + lead).toFixed(3)]).filter(([a]) => a < total) };
+  } finally { fs.rmSync(wav, { force: true }); }
+}
+
+// The synthetic HLG phone source (ensurePhoneFixture) as an iPhone holds it: portrait by a 90-degree display rotation,
+// stream-copied (no re-encode). null when this ffmpeg can't make the HEVC source.
+export function ensureRotatedPhoneFixture() {
+  const src = ensurePhoneFixture();
+  if (!src) return null;
+  try {
+    const file = cachedMedia(`phone-hlg-4k60-rot90-${path.basename(src, path.extname(src))}.mov`, ['-display_rotation:v:0', '90', '-i', src, '-c', 'copy', '-tag:v', 'hvc1', '-movflags', '+faststart']);
+    const v = probe(file).streams.find(s => s.codec_type === 'video');
+    if ((v.side_data_list || []).some(d => Math.abs(d.rotation) === 90)) return file;
+    console.log('SKIP rotated HLG source: this ffmpeg wrote no display rotation');
+  } catch (e) { console.log(`SKIP rotated HLG source: ${summary(e)}`); }
+  return null;
+}

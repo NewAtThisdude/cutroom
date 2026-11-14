@@ -4,13 +4,16 @@ import { requireHome } from './runtime.mjs';
 // Denoise: speech (say) + pink noise -> export WAV: the cleaned speech must sit where the clean speech is (lag), the noise
 // between words must drop >= 10 dB, and the preview must play the same denoised samples (&fx=dn). Duck: a night drive (road
 // noise, nobody talking) must leave the song alone; on talk + music, trimming 2 s off the talk moves every dip 2 s.
-import { makeSpeech } from './fixtures.mjs';
+// Everything it uses is made here (OS speech, ffmpeg). The night drive judges the Silero VAD itself, so it runs only where
+// speech detection is installed; elsewhere the talk clip gets its speech cache from the speech's own timing (no model).
+import { makeSpeech, speechClip, cachedMedia } from './fixtures.mjs';
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 const LIB = requireHome();
-const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, res = [];
+const B = process.env.B, SR = 48000, res = [];
+if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 // the left channel (-ac 1 sums equal channels at +3 dB)
@@ -60,7 +63,7 @@ const errs = []; page.on('pageerror', e => errs.push(e.message));
 const open = async () => { await page.goto(`${B}/`, { waitUntil: 'load' }); await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 30000 }); await page.evaluate(() => loadMedia()); };
 await open();
 const ev = (f, a) => page.evaluate(f, a);
-const made = [];
+const made = [], madeMedia = [];
 
 // ---- Reduce noise
 const IN = 0.5, AT = 0.25; // the clip starts 0.5 s into the file, 0.25 s into the timeline
@@ -114,8 +117,25 @@ check('playing a denoised clip fetches the denoised PCM', asked.length > 0, `${a
 }
 
 // ---- Auto duck
-const find = re => ev(re => [...M.values()].find(m => new RegExp(re).test(m.name))?.id, re);
-const night = await find('^DJI_0482_001'), song = await find('^beat-120bpm'), talk = await find('^talk\\.mp4$'), music = await find('^music\\.m4a$');
+const impFile = async (name, file) => { const m = await imp(name, fs.readFileSync(file)); madeMedia.push(m.id); return m.id; };
+const ready = async ids => { await ev(() => loadMedia()); await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), ids, { timeout: 120000 }); };
+// speech detection here? (a WAV with speech in it; the answer is cached either way)
+const vad = await (await fetch(`${B}/api/speech`, { method: 'POST', headers: H, body: JSON.stringify({ media: sm.id }) })).json();
+let night = null, song = null;
+if (vad.error) console.log(`SKIP night drive auto duck (judges the VAD itself): ${vad.error}`);
+else {
+  night = await impFile('DJI_0482_001.mp4', cachedMedia('night-drive-road-125s-v1.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=125,eq=brightness=-0.35',
+    '-f', 'lavfi', '-i', 'anoisesrc=c=brown:r=48000:d=125:seed=5:amplitude=0.5', '-f', 'lavfi', '-i', 'aevalsrc=0.06*sin(2*PI*(55+3*sin(2*PI*0.05*t))*t)*(1+0.3*sin(2*PI*0.7*t)):s=48000:d=125',
+    '-filter_complex', '[1:a]lowpass=f=400,volume=4[r];[r][2:a]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo[a]', '-map', '0:v', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest']));
+  song = await impFile('beat-120bpm.m4a', cachedMedia('beat-120bpm-64s-v1.m4a', ['-f', 'lavfi', '-i',
+    'aevalsrc=0.5*sin(2*PI*60*t)*exp(-12*mod(t\\,0.5))+0.12*(sin(2*PI*220*t)+sin(2*PI*330*t))*(0.6+0.4*sin(2*PI*0.25*t)):s=48000:d=64', '-ac', '2', '-c:a', 'aac']));
+}
+const TALK = speechClip('talk.mp4', 'We drove up the coast at sunset. [[slnc 1400]] Then we ate dinner at a little cafe. [[slnc 1400]] The mountain trail was steep. [[slnc 1400]] Back at the beach again.', { lead: 0.6, dur: 12 });
+const talk = TALK && await impFile('talk.mp4', TALK.file);
+const music = await impFile('music.m4a', cachedMedia('music-bed-20s-v1.m4a', ['-f', 'lavfi', '-i', 'aevalsrc=0.1*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.7+0.3*sin(2*PI*2*t)):s=48000:d=20', '-ac', '2', '-c:a', 'aac']));
+await ready([night, song, talk, music].filter(Boolean));
+if (talk && vad.error) fs.writeFileSync(`${LIB}/cache/${talk}.speech.json`, JSON.stringify(TALK.speech)); // what the VAD would cache: where the voice is
 const ducked = c => { let n = 0, d = 0; for (let t = 0; t < c.dur; t += 0.01) { d++; if (c.env(t) < 0.99) n++; } return n / d; };
 if (night && song) {
   for (const id of [night]) fs.rmSync(`${LIB}/cache/${id}.speech.json`, { force: true }); // cold: no cached speech
@@ -175,7 +195,7 @@ check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
 await b.close(); // before trashing: the page's save-on-leave would bring a trashed project back
 for (const id of made) await fetch(`${B}/api/projects/${id}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
 { const X = `${LIB}/exports/`; fs.mkdirSync(`${X}../trash/exports`, { recursive: true }); for (const f of fs.readdirSync(X).filter(f => f.startsWith('audio-tools-'))) fs.renameSync(X + f, `${X}../trash/exports/${f}`); }
-for (const m of [sm, tm]) await fetch(`${B}/api/media/${m.id}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
+for (const m of [sm, tm, ...madeMedia.map(id => ({ id }))]) await fetch(`${B}/api/media/${m.id}/trash`, { method: 'POST', headers: H, body: '{}' }).catch(() => {});
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${res.filter(Boolean).length}/${res.length} passed`);
 process.exit(res.every(Boolean) ? 0 : 1);
