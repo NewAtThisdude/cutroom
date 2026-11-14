@@ -46,6 +46,8 @@
       <div class="imports"><label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt,.txt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label><button id="btnPhotos" class="import" hidden title="Import from your Photos library"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.5"/><path d="M21 16l-5-5-8 8"/></svg>Photos</button></div>
       <button id="btnMulticam" class="wide ghostline" title="Several recordings of the same moment, lined up by their sound">Multicam…</button>
       <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button><button data-mfilter="proj" title="Only what this project uses">Used</button></div>
+      <div id="folderBar" class="fdbar"></div>
+      <div id="folderList" class="fdlist"></div>
       <div class="mtools"><input id="mediaSearch" type="search" placeholder="Search: name, or Enter for what's in it / said" title="Typing filters by name. Enter searches inside: what the picture shows (red car, night, two people) and what is said" aria-label="Search the library"><select id="mediaSort" aria-label="Sort the library"><option value="new">Newest</option><option value="name">Name</option><option value="dur">Longest</option></select></div>
       <div id="mediaHits" class="hits" hidden></div>
       <div id="mediaList" class="media-list"></div>

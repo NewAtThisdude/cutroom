@@ -968,18 +968,136 @@ function thumbStyle(m) {
   if (m.wave) return `background-image:url(/cache/${m.id}.wave.png);background-size:100% 100%`;
   return '';
 }
+// ---------- media folders (bins): library metadata the server keeps (<library>/folders.json), the same in every project.
+// FD.cur: null = all media, a folder id, or 'smart:<key>' (filled by a rule, never stored).
+const FD = { folders: {}, of: {}, usedBy: {}, cur: null, sel: new Set(), last: null };
+const fdUsedLive = () => (P ? new Set(LANES.flatMap(L => P[L.key].map(c => c.media))) : new Set());
+const SMART = [ // [key, label, test(media, usedLive)]
+  ['video', 'Videos', m => m.kind === 'video'], ['audio', 'Audio', m => m.kind === 'audio'], ['image', 'Photos', m => m.kind === 'image'],
+  ['proj', 'Used in this project', (m, u) => u.has(m.id)],
+  ['unused', 'Not used anywhere', (m, u) => !u.has(m.id) && !(FD.usedBy[m.id] || []).some(x => x !== P?.id)],
+  ['today', 'Added today', m => m.added >= new Date().setHours(0, 0, 0, 0) / 1000],
+  ['week', 'Added this week', m => m.added >= Date.now() / 1000 - 7 * 86400]];
+const fdKids = id => Object.keys(FD.folders).filter(k => (FD.folders[k].parent || null) === (id || null)).sort((a, b) => FD.folders[a].name.localeCompare(FD.folders[b].name, undefined, { numeric: true }));
+const fdDesc = id => { const out = new Set([id]); for (const k of out) for (const c of fdKids(k)) out.add(c); return out; };
+const fdPath = id => { const out = []; for (let k = id, n = 0; k && FD.folders[k] && n < 99; k = FD.folders[k].parent, n++) out.unshift(FD.folders[k].name); return out; };
+const fdFind = ref => { // a folder by id or by path ("Interviews/B-roll", any case); undefined if none
+  if (!ref) return undefined;
+  if (FD.folders[ref]) return ref;
+  const want = String(ref).split('/').map(x => x.trim().toLowerCase()).filter(Boolean);
+  return Object.keys(FD.folders).find(k => fdPath(k).join('/').toLowerCase() === want.join('/'));
+};
+const fdMedia = () => [...M.values()].filter(m => !m.slate);
+const fdCount = id => { const d = fdDesc(id); return fdMedia().filter(m => d.has(FD.of[m.id])).length; };
+function fdTest(m, q, used) { // is m in the folder being looked at (a search looks inside it and its subfolders)
+  const c = FD.cur;
+  if (!c) return true;
+  if (c.startsWith('smart:')) return SMART.find(x => x[0] === c.slice(6))[2](m, used);
+  return q ? fdDesc(c).has(FD.of[m.id]) : FD.of[m.id] === c;
+}
+async function fdLoad() { // the server's folders (and which saved projects use what: for "Not used anywhere")
+  const j = await api('/api/folders?uses=1');
+  Object.assign(FD, { folders: j.folders, of: j.of, usedBy: j.usedBy || {} });
+  renderMediaList();
+}
+async function fdOp(body) {
+  const j = await api('/api/folders', body);
+  Object.assign(FD, { folders: j.folders, of: j.of });
+  renderMediaList();
+  return j;
+}
+function fdAsk(title, value, label, go) {
+  modal(`<h3>${title}</h3><form id="fdForm"><input id="fdName" maxlength="60" value="${esc(value)}" aria-label="Folder name" autocomplete="off"><p id="fdErr" class="hint"></p><div class="actions"><button type="button" data-close>Cancel</button><button class="primary">${label}</button></div></form>`);
+  $('#fdName').select();
+  $('#fdForm').addEventListener('submit', async e => { e.preventDefault(); try { await go($('#fdName').value); closeModal(); } catch (err) { $('#fdErr').textContent = err.message; } });
+}
+const fdNew = () => fdAsk('New folder', '', 'Create', name => fdOp({ op: 'create', name, parent: FD.folders[FD.cur] ? FD.cur : null }));
+const fdRename = id => fdAsk('Rename folder', FD.folders[id].name, 'Rename', name => fdOp({ op: 'rename', id, name }));
+async function fdDelete(id) {
+  const f = FD.folders[id], n = fdMedia().filter(m => FD.of[m.id] === id).length, up = f.parent;
+  if (FD.cur && (FD.cur === id || fdDesc(id).has(FD.cur))) FD.cur = up || null;
+  await fdOp({ op: 'delete', id });
+  toast(`Folder ${f.name} deleted. ${n ? `Its ${n} item${n > 1 ? 's' : ''} stay${n > 1 ? '' : 's'} in ${up ? FD.folders[up].name : 'the library'}` : 'No media was touched'}`);
+}
+async function fdMove(ids, folder) {
+  ids = ids.filter(id => FD.of[id] !== (folder || undefined));
+  if (!ids.length) return;
+  await fdOp({ op: 'move', media: ids, folder: folder || null });
+  FD.sel.clear(); renderMediaList();
+  toast(`${ids.length} item${ids.length > 1 ? 's' : ''} moved to ${folder ? FD.folders[folder].name : 'no folder'}`);
+}
+function fdPick(e) { // cmd/ctrl-click toggles a card, shift-click selects the range; true = it was a selection click
+  const it = e.target.closest('.mitem[data-media]');
+  if (!it || !(e.metaKey || e.ctrlKey || e.shiftKey)) return false;
+  const id = it.dataset.media, ids = $$('#mediaList .mitem[data-media]').map(x => x.dataset.media);
+  if (e.shiftKey && FD.last && ids.includes(FD.last)) { const a = ids.indexOf(FD.last), b = ids.indexOf(id); for (const k of ids.slice(Math.min(a, b), Math.max(a, b) + 1)) FD.sel.add(k); }
+  else { FD.sel.has(id) ? FD.sel.delete(id) : FD.sel.add(id); FD.last = id; }
+  renderMediaList();
+  return true;
+}
+function fdRender() {
+  const bar = $('#folderBar'), list = $('#folderList');
+  if (!bar) return;
+  if (FD.cur && !FD.cur.startsWith('smart:') && !FD.folders[FD.cur]) FD.cur = null; // another window deleted it
+  for (const id of [...FD.sel]) if (!M.has(id)) FD.sel.delete(id);
+  const used = fdUsedLive(), cur = FD.cur, smart = cur?.startsWith('smart:') ? SMART.find(x => x[0] === cur.slice(6)) : null;
+  const crumbs = [['', 'All media'], ...(smart ? [] : fdPath(cur).map((n, i, a) => [fdAncestors(cur)[i], n]))];
+  bar.innerHTML = `<nav class="crumbs" aria-label="Folder path">${crumbs.map(([id, n], i) => `<button data-fold="${id}" data-go="${id}"${i === crumbs.length - 1 && !smart ? ' aria-current="true" class="on"' : ''}>${esc(n)}</button>`).join('<i>›</i>')}${smart ? `<i>›</i><button class="on" aria-current="true">${smart[1]}</button>` : ''}</nav>
+    <button id="fdNew" class="ghostline" title="Make a folder${FD.folders[cur] ? ` inside ${esc(FD.folders[cur].name)}` : ''}">New folder</button>
+    ${FD.sel.size ? `<div class="fdsel"><span>${FD.sel.size} selected</span><select id="fdMoveTo" aria-label="Move the selected media to a folder"><option value="">Move to…</option><option value="__none">No folder (all media)</option>${Object.keys(FD.folders).sort((a, b) => fdPath(a).join('/').localeCompare(fdPath(b).join('/'))).map(k => `<option value="${k}">${esc(fdPath(k).join(' / '))}</option>`).join('')}</select><button data-fdclear>Clear</button></div>` : ''}`;
+  const kids = smart ? [] : fdKids(cur);
+  list.innerHTML = `<div class="smart" aria-label="Smart folders">${SMART.map(([k, n, f]) => `<button data-smart="${k}"${cur === `smart:${k}` ? ' class="on"' : ''} title="Fills itself">${n}<small>${fdMedia().filter(m => f(m, used)).length}</small></button>`).join('')}</div>
+    ${kids.length ? `<div class="folds">${kids.map(k => `<div class="fold" draggable="true" data-fold="${k}" data-go="${k}" tabindex="0" title="Open · drop media here"><b>${esc(FD.folders[k].name)}</b><small>${fdCount(k)}</small><span class="fbtns"><button data-frn="${k}" title="Rename" aria-label="Rename ${esc(FD.folders[k].name)}">Rename</button><button data-fdel="${k}" title="Delete the folder, keep its media" aria-label="Delete folder ${esc(FD.folders[k].name)}">×</button></span></div>`).join('')}</div>` : ''}`;
+}
+const fdAncestors = id => { const out = []; for (let k = id, n = 0; k && FD.folders[k] && n < 99; k = FD.folders[k].parent, n++) out.unshift(k); return out; };
+function fdWire() {
+  const bar = $('#folderBar'), list = $('#folderList');
+  const click = e => {
+    const t = e.target, go = t.closest('[data-go]'), sm = t.closest('[data-smart]');
+    if (t.closest('#fdNew')) return fdNew();
+    if (t.closest('[data-fdclear]')) { FD.sel.clear(); return renderMediaList(); }
+    if (t.closest('[data-frn]')) return fdRename(t.closest('[data-frn]').dataset.frn);
+    if (t.closest('[data-fdel]')) return fdDelete(t.closest('[data-fdel]').dataset.fdel).catch(err => toast(err.message));
+    if (sm) { FD.cur = FD.cur === `smart:${sm.dataset.smart}` ? null : `smart:${sm.dataset.smart}`; FD.sel.clear(); renderMediaList(); return fdLoad().catch(() => {}); }
+    if (go) { FD.cur = go.dataset.go || null; FD.sel.clear(); renderMediaList(); }
+  };
+  bar.addEventListener('click', click); list.addEventListener('click', click);
+  list.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('.fold')) { FD.cur = e.target.dataset.go; FD.sel.clear(); renderMediaList(); } });
+  bar.addEventListener('change', e => { if (e.target.id === 'fdMoveTo' && e.target.value) fdMove([...FD.sel], e.target.value === '__none' ? null : e.target.value).catch(err => toast(err.message)); });
+  for (const el of [bar, list]) {
+    el.addEventListener('dragstart', e => { const f = e.target.closest?.('.fold'); if (f) { e.dataTransfer.setData('text/cutroom-folder', f.dataset.fold); e.dataTransfer.effectAllowed = 'move'; } });
+    el.addEventListener('dragover', e => {
+      const t = e.target.closest('[data-fold]'), ty = e.dataTransfer.types;
+      $$('[data-fold].drop').forEach(x => x !== t && x.classList.remove('drop'));
+      if (!t || !(ty.includes('text/cutroom-folder-media') || ty.includes('text/cutroom-folder'))) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move'; t.classList.add('drop');
+    });
+    el.addEventListener('dragleave', e => { if (!el.contains(e.relatedTarget)) $$('[data-fold].drop').forEach(x => x.classList.remove('drop')); });
+    el.addEventListener('drop', e => {
+      $$('[data-fold].drop').forEach(x => x.classList.remove('drop'));
+      const t = e.target.closest('[data-fold]'), media = e.dataTransfer.getData('text/cutroom-folder-media'), fold = e.dataTransfer.getData('text/cutroom-folder');
+      if (!t || (!media && !fold)) return;
+      e.preventDefault();
+      const to = t.dataset.fold || null;
+      if (media) fdMove(JSON.parse(media), to).catch(err => toast(err.message));
+      else if (fold !== to) fdOp({ op: 'nest', id: fold, parent: to }).catch(err => toast(err.message));
+    });
+  }
+}
 function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
   const q = $('#mediaSearch')?.value.trim().toLowerCase(), used = G.mfilter === 'proj' && P ? new Set(LANES.flatMap(L => P[L.key].map(c => c.media))) : null; // null, not false: false?.has is undefined, and calling it threw
   const by = { name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }), dur: (a, b) => (b.duration || 0) - (a.duration || 0) }[$('#mediaSort')?.value]; // 'new': the server's order
-  const list = [...M.values()].filter(m => !m.slate && (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
+  const fu = FD.cur?.startsWith('smart:') ? fdUsedLive() : null;
+  const list = [...M.values()].filter(m => !m.slate && (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)) && fdTest(m, q, fu));
   if (by) list.sort(by);
-  const items = list.map(m => { const r = srcRange(m.id); return `<div class="mitem${S.src?.id === m.id ? ' src' : ''}" draggable="true" data-media="${m.id}" title="${m.kind === 'video' ? 'Hover to skim · click to mark a range · drag onto a track' : 'Drag onto a track'}">
+  const items = list.map(m => { const r = srcRange(m.id); return `<div class="mitem${S.src?.id === m.id ? ' src' : ''}${FD.sel.has(m.id) ? ' sel' : ''}" draggable="true" data-media="${m.id}" title="${m.kind === 'video' ? 'Hover to skim · click to mark a range · drag onto a track' : 'Drag onto a track'}">
       <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span>${r ? `<i class="srng" style="left:${(r[0] / m.duration) * 100}%;width:${((r[1] - r[0]) / m.duration) * 100}%"></i>` : ''}</div>
       <div class="meta"><b>${esc(m.name)}</b><span>${m.kind === 'image' ? `${m.w}×${m.h}` : fmtDur(m.duration)}${m.ready ? '' : m.prep === -1 ? ' · waiting to prepare' : m.prep > 0 ? ` · preparing ${Math.round(m.prep * 100)} %` : ' · preparing'}</span></div>
       <span class="mbtns"><button class="add" data-add="${m.id}" title="Add to timeline" aria-label="Add ${esc(m.name)} to timeline">+</button><button class="add rm" data-rm="${m.id}" title="Remove from library" aria-label="Remove ${esc(m.name)} from library">×</button></span></div>`; }).join('');
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
-  if (!up && !items && M.size) $('#mediaList .hint').textContent = 'Nothing matches.';
+  if (!up && !items && M.size) $('#mediaList .hint').textContent = FD.folders[FD.cur] && !q ? 'This folder is empty. Drag media onto it, or select cards and use Move to.' : 'Nothing matches.';
+  fdRender();
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
   if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video' && !x.slate).map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
   if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name))}</option>`).join(''); if (mkeep) mu.value = mkeep; }
@@ -4723,6 +4841,7 @@ async function loadMedia() {
   M.clear();
   for (const m of [...list, ...slates]) M.set(m.id, m);
   renderMediaList();
+  if (!same) fdLoad().catch(() => {});
   if (!same) { // nothing redraws at rest: a 4K proxy can take minutes, and this polls every 1.5 s meanwhile
     renderTimeline();
     if (G.tab === 'audio') renderAudio();
@@ -5587,6 +5706,7 @@ function setProject(p) {
 async function openProject(id) {
   const p = await api(`/api/projects/${id}`), note = p._recovered; delete p._recovered; // (a damaged file: the server fell back to its newest good version)
   setProject(p);
+  fdLoad().catch(() => {}); // (what the other projects use changed)
   if (note) toast(note);
   offerJournal(id);
   const gone = LANES.reduce((n, L) => n + P[L.key].filter(c => c.media && !M.get(c.media)).length, 0);
@@ -6119,6 +6239,7 @@ function wire() {
 
   $('#mediaList').addEventListener('click', async e => {
     const b = e.target.closest('[data-add]'), rm = e.target.closest('[data-rm]');
+    if (!b && !rm && fdPick(e)) return;
     if (b) { const r = srcRange(b.dataset.add); return addMedia(b.dataset.add, undefined, r ? S.t : undefined, r); } // a marked range goes in at the playhead
     const it = !rm && e.target.closest('.mitem[data-media]');
     if (it) { const R = it.getBoundingClientRect(); return openSource(it.dataset.media, clamp((e.clientX - R.left) / R.width, 0, 1) * (M.get(it.dataset.media)?.duration || 0)); }
@@ -6132,7 +6253,7 @@ function wire() {
   });
   $('#mediaList').addEventListener('dragstart', e => {
     const it = e.target.closest('[data-media]');
-    if (it) { e.dataTransfer.setData('text/cutroom-media', it.dataset.media); e.dataTransfer.effectAllowed = 'copy'; }
+    if (it) { e.dataTransfer.setData('text/cutroom-media', it.dataset.media); e.dataTransfer.setData('text/cutroom-folder-media', JSON.stringify(FD.sel.has(it.dataset.media) ? [...FD.sel] : [it.dataset.media])); e.dataTransfer.effectAllowed = 'copyMove'; }
   });
   const lanes = $('#lanes');
   lanes.addEventListener('dragover', e => {
@@ -6154,6 +6275,7 @@ function wire() {
   $('#mediaList').addEventListener('pointermove', skimAt);
   $('#mediaList').addEventListener('pointerleave', skimEnd);
   $('#mediaSearch').addEventListener('input', renderMediaList);
+  fdWire();
   $('#sndSearch').addEventListener('input', () => { G.sndN = 60; renderAudio(); });
   $('#mediaSort').addEventListener('change', renderMediaList);
   $('#srcPos').addEventListener('input', e => { fill(e.target); srcSeek(+e.target.value); });
@@ -7057,7 +7179,26 @@ const REMOTE = {
     return { ...(await REMOTE.status()), markers: P.markers,
       tracks: Object.fromEntries(LANES.map(L => [L.key, L.key === 'captions' ? P.captions.map(c => ({ id: c.id, start: r3(c.start), dur: r3(c.dur), text: c.text })) : P[L.key].map(c => brief(c, L.key))])) };
   },
-  async media() { await loadMedia(); return [...M.values()].filter(m => !m.slate).map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
+  async media() { await loadMedia(); await fdLoad(); return [...M.values()].filter(m => !m.slate).map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio, folder: fdPath(FD.of[m.id]).join('/') || null })); },
+  async media_folders({ action = 'list', path, name, to, media }) { // list | create | rename | delete | move (a folder is its id or its path "A/B"); media sits in a folder only by move
+    await loadMedia(); await fdLoad();
+    const need = ref => { const id = fdFind(ref); if (!id) throw new Error(`no folder "${ref}" (media_folders list shows them)`); return id; };
+    const ids = (Array.isArray(media) ? media : media ? [media] : []).map(r => { const m = M.get(r) || fdMedia().find(x => x.name === r) || fdMedia().find(x => x.name.toLowerCase().includes(String(r).toLowerCase())); if (!m) throw new Error(`no media "${r}"`); return m.id; });
+    if (action === 'create') { // path "A/B/C" makes what is missing
+      let parent = null;
+      for (const seg of String(path || name || '').split('/').map(x => x.trim()).filter(Boolean)) { const id = fdKids(parent).find(k => FD.folders[k].name.toLowerCase() === seg.toLowerCase()); if (id) parent = id; else { const j = await fdOp({ op: 'create', name: seg, parent }); parent = Object.keys(j.folders).find(k => j.folders[k].name === seg && (j.folders[k].parent || null) === parent); } }
+      if (!parent) throw new Error('give the new folder a path or name');
+    } else if (action === 'rename') await fdOp({ op: 'rename', id: need(path), name });
+    else if (action === 'delete') await fdOp({ op: 'delete', id: need(path) });
+    else if (action === 'move') {
+      if (!ids.length) throw new Error('move needs media (ids or names)');
+      if (to && !fdFind(to)) await REMOTE.media_folders({ action: 'create', path: to });
+      await fdOp({ op: 'move', media: ids, folder: to ? need(to) : null });
+    } else if (action !== 'list') throw new Error('action: list, create, rename, delete or move');
+    const used = fdUsedLive();
+    return { folders: Object.keys(FD.folders).map(k => ({ id: k, path: fdPath(k).join('/'), items: fdMedia().filter(m => FD.of[m.id] === k).length, total: fdCount(k) })).sort((a, b) => a.path.localeCompare(b.path)),
+      smart: Object.fromEntries(SMART.map(([k, n, f]) => [n, fdMedia().filter(m => f(m, used)).map(m => m.name)])), unfiled: fdMedia().filter(m => !FD.of[m.id]).length };
+  },
   async projects() { return api('/api/projects'); },
   async open_project({ project }) {
     await openProject(await projectId(project));

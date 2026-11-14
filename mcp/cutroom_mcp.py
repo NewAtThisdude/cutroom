@@ -115,7 +115,11 @@ TOOLS = [
     ('status', 'Current project (name, size, fps, duration), playhead, selection and clip counts per track.', S(), 'status'),
     ('options', 'Valid values: canvas ratios, transitions, looks, blend modes, clip/text animations, presets, fonts, voices, export formats and resolutions.', S(), 'options'),
     ('timeline', 'Every clip on every track with its id, timing and non-default settings. Call this before editing to get clip ids.', S(), 'timeline'),
-    ('media', 'The media library (id, name, kind, duration, size).', S(), 'media'),
+    ('media', 'The media library (id, name, kind, duration, size, folder = its folder path or null).', S(), 'media'),
+    ('media_folders', 'Library folders (bins; the same in every project). action list (default): every folder with its path and item counts, the unfiled count and the smart folders '
+                      '(Videos, Audio, Photos, Used in this project, Not used anywhere, Added today, Added this week: they fill themselves). create path "A/B" (makes what is missing), rename path + name, '
+                      'delete path (its media stay, moved up one level; nothing is deleted), move media (ids or names) + to (a folder path, made if new; leave out or "" for no folder).',
+     S({'action': {'type': 'string', 'enum': ['list', 'create', 'rename', 'delete', 'move']}, 'path': txt, 'name': txt, 'to': txt, 'media': {'type': ['array', 'string'], 'items': txt}}), 'media_folders'),
     ('import_media', 'Import a file from this Mac into the library (copied). Optionally put it on a track right away.',
      S({'path': {**txt, 'description': 'absolute path or ~/...'}, 'add_to': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num}, ['path']), None),
     ('projects', 'List saved projects.', S(), 'projects'),
