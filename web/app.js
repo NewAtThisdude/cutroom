@@ -869,7 +869,7 @@ const KEYMAP0 = [
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
   ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
   ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
-  ['cmp', 'Before / after: the colour work off on one side of a line', ['Backslash'], (e, field) => { if (field) return false; cmpToggle(); }],
+  ['cmp', 'Before / after: the colour work off on one side of a line', ['\\'], (e, field) => { if (field) return false; cmpToggle(); }],
   ['history', 'History: every edit step, go back to any', ['KeyH'], () => openHistory()],
   ...[1, 2, 3, 4, 5, 6].map(i => [`cam${i}`, `Multicam: cut to angle ${i}`, [`Digit${i}`], () => { if (!P.main.some(c => c.mc)) return false; mcCut(i - 1); }]),
   ...LABELS.map(([, n], i) => [`lab${i + 1}`, `Label the selected clips ${n.toLowerCase()} (again: none)`, [`Mod+Digit${i + 1}`], () => labelKey(i)]),
@@ -2162,7 +2162,7 @@ function paint() {
 function drawLayers(ctx, layers, act, mi, tr, t, k, live, cmp) { // the clips of the frame in order, onto ctx; true = effects already ran on the picture (fxCap). cmp: before / after's ungraded pass (cmpStrip on the clips it names)
   let fxDone = false;
   for (const [lane, c0, key, i] of layers) {
-    const c = cmp && (cmp === 'all' || isSel(lane, c0.id)) ? cmpStrip(c0) : c0, m = M.get(c.media);
+    const c = cmp && (cmp === 'all' || cmpSel(lane, c0.id)) ? cmpStrip(c0) : c0, m = M.get(c.media);
     if (!m) continue;
     let el;
     if (m.kind === 'image') el = imgFor(m);
@@ -3292,6 +3292,7 @@ function handleDrag(e, h, kind, cv) { // corner: scale about the centre; knob: r
 const CMP = { on: false, mode: 'split', x: 0.5, scope: 'clip', fx: false };
 let cmpSkipFx = null;
 const cmpCv = [];
+const cmpSel = (lane, id) => (S.cmpSel ? S.cmpSel.has(selKey(lane, id)) : isSel(lane, id)); // the clips whose colour comes off: the selection (a snapshot hides the selection box, not this)
 const CMP_FX = ['vig', 'blur', 'pix', 'sharp'];
 function cmpStrip(c) {
   const o = { ...c }, keep = CMP.fx ? [] : CMP_FX.filter(k => c.adj?.[k] !== undefined);
@@ -3302,7 +3303,7 @@ function cmpStrip(c) {
 }
 function cmpCanvas(n, W, H) { const c = cmpCv[n] ??= document.createElement('canvas'); if (c.width !== W || c.height !== H) { c.width = W; c.height = H; } return c; }
 function cmpPaint(ctx, layers, act, mi, tr, t, k) {
-  const W = ctx.canvas.width, H = ctx.canvas.height, all = CMP.scope === 'frame' || !layers.some(([lane, c]) => isSel(lane, c.id)), B = cmpCanvas(0, W, H), bx = B.getContext('2d'), h0 = hits;
+  const W = ctx.canvas.width, H = ctx.canvas.height, all = CMP.scope === 'frame' || !layers.some(([lane, c]) => cmpSel(lane, c.id)), B = cmpCanvas(0, W, H), bx = B.getContext('2d'), h0 = hits;
   hits = []; cmpSkipFx = CMP.fx ? 'all' : all ? 'adjust' : null;
   try {
     bx.setTransform(1, 0, 0, 1, 0, 0); bx.globalAlpha = 1; bx.globalCompositeOperation = 'source-over'; bx.filter = 'none';
@@ -7629,8 +7630,9 @@ const REMOTE = {
       return { t: r3(S.t), image: (await api('/api/still_frame', plan)).image };
     }
     const sel = S.sel, pick0 = S.pickRect;
+    S.cmpSel = new Set(selection().map(([c, L]) => selKey(L, c.id)));
     S.sel = null; S.pickRect = null; // the frame as rendered: no selection box or tracking marquee
-    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; }
+    try { await waitFrame(); } finally { S.sel = sel; S.pickRect = pick0; S.cmpSel = null; }
     const cv = $('#cv'), k = Math.min(1, max / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
     o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
     o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
