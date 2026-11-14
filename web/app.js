@@ -13,6 +13,10 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: only "reopen last project" is lost */ } },
 };
+// the Settings window (settings.js, loaded after this file): opt(k) = this computer's or this library's choice, or its default
+const opt = (k, d) => (typeof SET === 'object' ? SET.get(k) : d);
+const reducedMotion = () => ({ reduce: true, full: false })[document.documentElement.dataset.motion] ?? matchMedia('(prefers-reduced-motion: reduce)').matches; // Settings can override the system
+const fillName = (pat, o = {}) => String(pat).replace(/\{(\w+)\}/g, (s, k) => ({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), ...o })[k] ?? s).trim();
 
 // Keys and words follow the computer: ⌘ ⌥ ⇧ and "this Mac" on a Mac (written that way in the code), Ctrl+ Alt+ Shift+ and
 // "this computer" on Windows and Linux. plat() rewrites one label; off the Mac platWatch() runs it over everything the page shows.
@@ -651,7 +655,7 @@ function drawStrips() {
     const g = cv.getContext('2d');
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, h);
     const wave = m.peaks && (lane === 'audio' || lane === 'main'), vh = m.kind === 'video' && lane !== 'audio' ? (wave ? Math.round(h * 0.68) : h) : 0;
-    if (vh && m.grid) {
+    if (vh && m.grid && opt('thumbs', true)) { // (Settings: timeline thumbnails off draws the clips' colour only)
       const G = m.grid, img = gridImg(m);
       if (img.complete && img.naturalWidth) {
         const dw = (vh * G.tw) / G.th;
@@ -850,7 +854,7 @@ const KEYMAP0 = [
   }],
   ['help', 'These shortcuts', ['?'], () => shortcuts()],
 ];
-const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = { 'Mod+KeyK': 'the command bar', Tab: 'moving between controls' };
+const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = { 'Mod+KeyK': 'the command bar', 'Mod+,': 'Settings', Tab: 'moving between controls' };
 let KEYOWN = (() => { try { const o = JSON.parse(store.get('cutroom.keys')) || {}; return Object.fromEntries(Object.entries(o).filter(([id, v]) => KEYDEF[id] && Array.isArray(v) && v.every(k => typeof k === 'string'))); } catch { return {}; } })(); // this Mac's changes
 let KEYBY = new Map();
 const keysOf = id => KEYOWN[id] || KEYDEF[id][2];
@@ -884,22 +888,28 @@ function keyCapture(e) { // the shortcut sheet is listening: the next key (with 
   else { setKeys(id, [k, ...keysOf(id).slice(1)]); applyKeys(true); KC.msg = `${name}: ${keyText(k)}`; }
   shortcuts(true, id);
 }
-function shortcuts(keep, focus) { // the sheet; click a key to change it (kept per Mac in localStorage 'cutroom.keys')
+function shortcuts(keep, focus) { // ? = a read-only quick view; Settings > Shortcuts (#setKeys) is where a key is changed (kept per Mac in localStorage 'cutroom.keys')
   if (!keep) Object.assign(KC, { for: null, conf: null, msg: '' });
-  const top = $('#modal .dialog.keysheet')?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
+  const host = $('#setKeys'), scroller = host ? host.closest('.setmain') : $('#modal .dialog.keysheet');
+  const top = scroller?.scrollTop || 0, cf = KC.conf, row = ([id, d]) => {
     const ks = keysOf(id), wait = KC.for === id;
+    if (!host) return `<tr><td>${ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</td><td>${esc(d)}</td></tr>`;
     return `<tr><td><button class="kb${wait ? ' on' : ''}" data-keyfor="${id}" title="Change the shortcut" aria-label="${esc(d)}: ${wait ? 'press the new key' : esc(ks.map(keyText).join(' or ') || 'no shortcut')}. Change">${wait ? 'Press a key…' : ks.length ? ks.map(k => `<kbd>${esc(keyText(k))}</kbd>`).join(' ') : '<span class="muted">None</span>'}</button></td><td>${esc(d)}</td><td>${KEYOWN[id] ? `<button class="ghost" data-keyreset="${id}">Reset</button>` : ''}</td></tr>`;
   };
-  modal(`<h3>Keyboard shortcuts</h3><p class="hint">Click a shortcut, then press the new key (Esc cancels).${IS_MAC ? ' Ctrl works wherever ⌘ is shown.' : ''}</p>`
+  const html = host ? `<p class="hint">Click a shortcut, then press the new key (Esc cancels).${IS_MAC ? ' Ctrl works wherever ⌘ is shown.' : ''}</p>`
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
-    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>`, 'keysheet');
-  const dlg = $('#modal .dialog');
-  dlg.scrollTop = top;
+    + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button></div>`
+    : `<h3>Keyboard shortcuts</h3><p class="hint">Ctrl works wherever ⌘ is shown. To change a shortcut, edit it in Settings.</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
+    + '<div class="actions"><button data-settings>Edit in Settings</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>';
+  if (host) host.replaceChildren(document.createRange().createContextualFragment(html)); else modal(html, 'keysheet'); // (every value in it went through esc)
+  const dlg = host || $('#modal .dialog');
+  (host ? scroller : dlg).scrollTop = top;
   (focus && dlg.querySelector(`[data-keyfor="${focus}"]`))?.focus();
-  dlg.addEventListener('click', e => {
+  dlg.onclick = e => { // (onclick: Settings keeps its #setKeys between redraws)
     const b = e.target.closest('button'), d = b?.dataset;
     if (!b) return;
+    if ('settings' in d) { SET.open('keys'); return; }
     if ('tour' in d) { closeModal(); tourShow(0); return; }
     if ('setup' in d) { closeModal(); setupAns = {}; setupShow(0); return; }
     if (d.keyfor) { KC.for = KC.for === d.keyfor ? null : d.keyfor; KC.conf = null; KC.msg = KC.for ? `Press the new key for ${KEYDEF[d.keyfor][1].toLowerCase()}` : ''; }
@@ -916,7 +926,7 @@ function shortcuts(keep, focus) { // the sheet; click a key to change it (kept p
     } else if ('keyall' in d) { KEYOWN = {}; applyKeys(true); KC.msg = 'Every shortcut is back to its default'; }
     else return;
     shortcuts(true, d.keyfor || d.keyreset);
-  });
+  };
 }
 const TOOL_SAY = { select: 'Select: drag clips to move and trim', slip: 'Slip: drag a clip to change its in and out (same place, same length)', slide: 'Slide: drag a main-track clip between its neighbours (they give and take)', roll: 'Roll: drag near a cut to move it (one clip gets longer, the other shorter)' };
 function setTool(t) { S.tool = TOOL_SAY[t] ? t : 'select'; $('#tlTool').value = S.tool; $('#tlInner').dataset.tool = S.tool; toast(TOOL_SAY[S.tool]); }
@@ -1060,7 +1070,7 @@ function pickAnim(k, v) { // an animation tile: set it, then play its span on th
   const kind = /\.(in|anim)$/.test(k) ? 'in' : /\.out$/.test(k) ? 'out' : 'loop', d = tdur(c, lane), A = c.anim || {}, st = c.media ? null : textStyle(c, lane);
   const n = kind === 'loop' ? Math.min(d, 3) : Math.min(d, c.media ? (kind === 'in' ? A.ind : A.outd) ?? 0.5 : animLen(st, kind === 'out'));
   const a = kind === 'out' ? c.start + d - n : c.start, b = Math.max(a, Math.min(kind === 'out' ? Infinity : a + n, c.start + d - 1 / P.fps)); // its end, on screen (a loop plays its first 3 s, not the whole clip)
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return seekTo(b);
+  if (reducedMotion()) return seekTo(b);
   seekTo(a); play(); S.end = b;
 }
 
@@ -3321,7 +3331,7 @@ function frame(now) {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
       if ((first || was || Math.abs(tl - S.t) > 0.06 * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
     }
-    if (S.t >= S.end) pause();
+    if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
     if (S.playing && S.shown !== undefined && f - S.shown > 1 && now - S.playAt > 500 && pqMode() === 'auto' && !S.pqLow) { // auto quality: frames missed (4 skips in 2 s) -> half resolution until pause
       S.miss = (S.miss || []).filter(x => now - x < 2000).concat(now);
@@ -3351,9 +3361,16 @@ function addMedia(id, lane, t, range) { // range: [in, out] marked in the source
   const m = M.get(id);
   if (!m) return;
   lane = m.kind === 'audio' ? 'audio' : lane === 'overlay' ? 'overlay' : 'main';
-  const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
+  const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? opt('imgDur', 3) : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
   change(() => {
-    if (lane === 'main') { packMain(); P.main.splice(t === undefined ? P.main.length - (P.main.at(-1)?.brand === 'outro') : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, 0, c); } // (before a brand outro)
+    if (lane === 'main') {
+      packMain(); const i = t === undefined ? P.main.length - (P.main.at(-1)?.brand === 'outro') : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, tr = opt('trType', 'none');
+      if (tr !== 'none') { // (Settings: a default transition on each new cut)
+        if (i > 0 && !P.main[i - 1].tr) P.main[i - 1].tr = { type: tr, d: opt('trDur', 0.5) };
+        if (i < P.main.length) c.tr = { type: tr, d: opt('trDur', 0.5) };
+      }
+      P.main.splice(i, 0, c); // (before a brand outro)
+    }
     else { c.start = Math.max(0, t ?? S.t); P[lane].push(c); }
     S.sel = { lane, id: c.id };
   });
@@ -3454,7 +3471,7 @@ function breakCompound(c) { // the clips it was made of, back where they were (e
 }
 function addText(name, props = {}, style = {}) { // one undo step, whatever it starts with
   change(() => {
-    const c = { id: hex12(), start: S.t, dur: 3, text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
+    const c = { id: hex12(), start: S.t, dur: opt('textDur', 3), text: { Title: 'Your title', Sticker: '🔥' }[name] || 'Your text', x: 0.5, y: 0.42, ...props, style: { ...TEXT_PRESETS[name], ...style } };
     P.text.push(c);
     S.sel = { lane: 'text', id: c.id };
   });
@@ -4893,7 +4910,7 @@ function qPoll() { // only while something is waiting or rendering
     const live = S.q.filter(q => q.st.state === 'running');
     await Promise.all(live.map(async q => {
       q.st = await api(`/api/jobs/${q.job}`).catch(() => q.st);
-      if (q.st.state === 'done') { S.exportsDir = q.st.dir || S.exportsDir; q.ok(q.st); }
+      if (q.st.state === 'done') { S.exportsDir = q.st.dir || S.exportsDir; q.ok(q.st); if (typeof SET === 'object') SET.exported(q.st); }
       else if (q.st.state !== 'running') q.no(new Error(q.st.state === 'cancelled' ? 'Export cancelled' : q.st.error || 'The export failed'));
     }));
     qTimer = 0; qDraw();
@@ -4977,7 +4994,7 @@ function openExport() {
     if (!k) return hint();
     const v = presetFields(k);
     $('#exRes').value = String(Math.max(0, exportSizes().findIndex(x => x[0] === v.res))); $('#exFmt').value = v.fmt; $('#exQ').value = v.q; $('#exFps').value = String(v.fps);
-    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? '-14' : 'off';
+    $('#exRate').value = v.mbps ? 'custom' : '1'; if (v.mbps) $('#exMbps').value = String(v.mbps); $('#exLoud').value = v.loud ? String(opt('loud', -14)) : 'off'; // (Settings: the loudness a preset aims at)
     hint();
   };
   $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
@@ -4985,6 +5002,7 @@ function openExport() {
   $('#exPreset').addEventListener('change', preset);
   if (PREFS.preset && EX_PRESETS[PREFS.preset]) { $('#exPreset').value = PREFS.preset; preset(); } // the first-start answers
   for (const x of $$('#exAlso input')) if ((PREFS.also || []).includes(x.value)) x.checked = true;
+  if (typeof SET === 'object') SET.exportOpened(); // file name pattern, Light, the folder (Settings > Export)
   hint();
   S.qHide = false; qDraw();
   if (S.exporting) exportUI(S.exporting.pct || 0, `Rendering… ${S.exporting.pct || 0}%`); // one is still running
@@ -5428,7 +5446,11 @@ function migrate(p) {
   return q;
 }
 const PREFS = (() => { try { return JSON.parse(store.get('cutroom.prefs')) || {}; } catch { return {}; } })(); // the first-start answers (tour.js): shape, frame rate, export preset, captions
-function newProject(ratio = PREFS.ratio || '9:16') { const [w, h] = RATIOS[ratio] || RATIOS['9:16']; return migrate({ id: hex12(), name: `Untitled ${new Date().toLocaleDateString()}`, w, h, ...(PREFS.fps ? { fps: PREFS.fps } : {}) }); }
+function newProject(ratio = PREFS.ratio || '9:16') {
+  const [w, h] = RATIOS[ratio] || RATIOS['9:16'], cs = opt('capStyle', 'Bold'); // (Settings: name pattern, ripple all, caption style)
+  return migrate({ id: hex12(), name: fillName(opt('newName', 'Untitled {date}')) || 'Untitled', w, h, ...(PREFS.fps ? { fps: PREFS.fps } : {}), ...(opt('ripple', false) ? { rippleAll: true } : {}),
+    ...(cs !== 'Bold' && CAP_PRESETS[cs] ? { capStyle: { y: 0.72, ...TEXT_BASE, ...CAP_PRESETS[cs] } } : {}) });
+}
 function sendPoster(leaving) { // the projects screen's card = the preview as you left it (its shape, its text), up to 480 px on the long side
   if (!P || !LANES.some(L => P[L.key].length)) return;
   const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
@@ -5459,7 +5481,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
   await sendPoster(); // (this one's card shows it as it is now)
   const list = await api('/api/projects').catch(() => []);
   const ratio = p => Object.entries(RATIOS).find(([, [w, h]]) => w * p.h === h * p.w)?.[0] || `${p.w}×${p.h}`;
-  modal(`<div class="phead"><h2>Projects</h2><div class="pnew"><label class="btn" title="A .cutroom made by Package project, on this Mac or another">Open package…<input type="file" id="pkgIn" hidden accept=".cutroom"></label><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === '9:16' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div></div>
+  modal(`<div class="phead"><h2>Projects</h2><div class="pnew"><label class="btn" title="A .cutroom made by Package project, on this Mac or another">Open package…<input type="file" id="pkgIn" hidden accept=".cutroom"></label><label class="pnew">New project <select id="newRatio" aria-label="Shape of the new project">${Object.keys(RATIOS).map(r => `<option${r === (PREFS.ratio || '9:16') ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="primary" data-newsel>Create</button></label></div></div>
     <div class="pgrid">${list.map(p => `<div class="pcard${p.id === P?.id ? ' on' : ''}"><button class="pitem" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pthumb">${p.pic ? `<img src="/api/projects/${p.id}/poster.jpg?v=${Math.round(p.updated)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<i>${fmtDur(p.dur || 0)}</i></span><b>${esc(p.name)}</b><span class="pmeta">${ratio(p)} · ${p.clips} clip${p.clips === 1 ? '' : 's'} · ${ago(p.updated)}</span></button>`
       + `<span class="pacts"><button class="pdel" data-versions="${p.id}" title="Versions" aria-label="Versions of ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></svg></button><button class="pdel" data-dup="${p.id}" title="Duplicate" aria-label="Duplicate ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="pdel" data-pkg="${p.id}" title="Package project…" aria-label="Package ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></button><button class="pdel" data-trash="${p.id}" data-name="${esc(p.name)}" title="Delete" aria-label="Delete ${esc(p.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></span></div>`).join('') || '<p class="hint">No saved projects yet.</p>'}</div>
     <div class="actions"><button data-close>Close</button></div>`, 'wide');
@@ -5468,7 +5490,7 @@ async function openProjects() { // CapCut's home: a card per project with a fram
 async function openVersions(id = P.id) { // CapCut keeps no history: snapshots while you edit, versions you name, each restorable
   if (id === P?.id) await flushSave(); // (the list and a new version start from what's on screen)
   const list = await api(`/api/projects/${id}/versions`).catch(() => []);
-  modal(`<h2>Versions</h2><p class="hint">A snapshot is kept every few minutes while you edit (the last 60), and every version you save. Restoring keeps the current state as a version first.</p>
+  modal(`<h2>Versions</h2><p class="hint">A snapshot is kept every few minutes while you edit (the last ${opt('versionsKeep', 60)}), and every version you save. Restoring keeps the current state as a version first.</p>
     <div class="vsave"><input id="verName" maxlength="80" placeholder="Name (optional)" aria-label="Version name"><button class="primary" data-vsave="${id}">Save version</button></div>
     <div class="vlist">${list.map(v => `<div class="vrow"><span title="${new Date(v.t * 1000).toLocaleString()}"><b>${esc(v.name || 'Snapshot')}</b><small>${ago(v.t)} · ${fmtDur(v.dur || 0)} · ${v.clips} clip${v.clips === 1 ? '' : 's'}</small></span><button data-vrestore="${v.id}" data-pid="${id}">Restore</button>`
       + (v.named ? `<button class="pdel" data-vdel="${v.id}" data-pid="${id}" title="Delete version" aria-label="Delete ${esc(v.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : '<i></i>') + '</div>').join('') || '<p class="hint">None yet: the first snapshot is kept with your next edit.</p>'}</div>
@@ -5554,8 +5576,9 @@ function modal(html, cls = '') { const m = $('#modal'); m.innerHTML = `<div clas
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
 // ---------- timeline interaction ----------
-function magnet(t, self) { // nearest playhead / clip edge within 8 px -> [time, distance]; distance Infinity = no snap
-  let best = t, bd = 8 / S.pps, hit = false;
+function magnet(t, self) { // nearest playhead / clip edge within 8 px (Settings: off, or 4 / 8 / 16 px) -> [time, distance]; distance Infinity = no snap
+  if (!opt('snap', true)) return [t, Infinity];
+  let best = t, bd = opt('snapPx', 8) / S.pps, hit = false;
   const near = p => { if (Math.abs(p - t) < bd) { bd = Math.abs(p - t); best = p; hit = true; } };
   near(0); near(S.t);
   for (const L of LANES) for (const x of P[L.key]) if (x !== self) { near(x.start); near(x.start + tdur(x, L.key)); }
@@ -5938,7 +5961,7 @@ function wire() {
   for (const [id, unit] of [['trDur', 's'], ['lookAmt', '%']]) $(`#${id}`).addEventListener('input', e => { fill(e.target); e.target.nextElementSibling.textContent = fmt(+e.target.value, unit); });
   $('#btnTrAll').addEventListener('click', () => applyTransition(G.lastTr || cutTarget()?.tr?.type || 'fade', true));
   $('#btnTrNone').addEventListener('click', () => applyTransition('none'));
-  $('#btnAddText').addEventListener('click', () => { addText('Subtitle'); editText(); });
+  $('#btnAddText').addEventListener('click', () => { addText(TEXT_PRESETS[opt('textPreset')] ? opt('textPreset') : 'Subtitle'); editText(); });
   $('#musicStyles').innerHTML = Object.keys(MUSIC_STYLES).map(k => `<button data-mstyle="${esc(k)}">${esc(k)}</button>`).join('');
   $('#musicStyles').addEventListener('click', e => { const b = e.target.closest('[data-mstyle]'); if (b) { $('#musicPrompt').value = MUSIC_STYLES[b.dataset.mstyle]; for (const x of $('#musicStyles').children) x.classList.toggle('on', x === b); } });
   $('#btnMusic').addEventListener('click', async () => {
@@ -6443,7 +6466,7 @@ function wire() {
   addEventListener('keydown', e => {
     if (!P) return;
     if (!$('#modal').hidden) { // (History: ↑ ↓ step through it)
-      if (KC.for && $('#modal .keysheet')) keyCapture(e);
+      if (KC.for && $('#modal .keysheet, #setKeys')) keyCapture(e);
       else if (e.key === 'Escape') closeModal();
       else if ($('#histList') && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); jump(undo.length + (e.key === 'ArrowUp' ? 1 : -1)); openHistory(); }
       return;
@@ -6945,7 +6968,7 @@ const REMOTE = {
     const r = await packageOpened(await job('/api/package/open', { path: String(path) }, 'Opening the package', () => {}));
     return { ...r, now: await REMOTE.status() };
   },
-  async new_project({ ratio = '9:16', name, branded }) { // branded: default = the brand's "New projects start branded"
+  async new_project({ ratio = PREFS.ratio || '9:16', name, branded }) { // branded: default = the brand's "New projects start branded"
     if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
     newBranded(ratio, branded ?? undefined); if (name) P.name = name; scheduleSave(); renderAll();
     return { ...(await REMOTE.status()), branded: !!P.brand };
@@ -7329,8 +7352,8 @@ const REMOTE = {
       for (const r of rest) more.push(await enqueue({ ...(await withWm(watermark, () => shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format))), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
       const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `${plat('~/Movies/Cutroom/exports/')}${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
-        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${plat('~/Movies/Cutroom/exports/')}${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
+      return { file: jb.file, path: `${jb.dir || plat('~/Movies/Cutroom/exports')}/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
+        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${j.dir || plat('~/Movies/Cutroom/exports')}/${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
     } finally { S.exporting = false; }
   },
 };
@@ -7390,6 +7413,7 @@ async function pilotRun(steps, say = () => {}) { // one step = one undo step; a 
 }
 function pilotOpen() {
   if (!P || !$('#modal').hidden) return;
+  if (!opt('ai.llm', true)) return toast('The local language model is turned off in Settings (AI and this computer)');
   modal(`<h3>Ask Cutroom</h3><input id="pilotQ" type="text" autocomplete="off" spellcheck="true" placeholder="cut the silences · add captions in Bold · export for TikTok" aria-label="What should Cutroom do?">
     <p class="hint">Planned by the local model on this Mac, then run step by step. Every step is one undo (⌘Z).</p>
     <ol id="pilotSteps" class="pilot"></ol><p id="pilotMsg" class="muted" role="status"></p>
@@ -7491,6 +7515,7 @@ Object.assign(REMOTE, {
     if (id) await openProject(id);
     else { setProject(newProject()); scheduleSave(); }
     tourMaybe(); // tour.js: once, on a first start (an empty library)
+    if (id && !opt('openLast', true) && !$('#tour')) openProjects(); // (Settings: not straight into the last project: pick one)
     loadVoices();
     loadAI();
     const ping = await api('/api/ping');

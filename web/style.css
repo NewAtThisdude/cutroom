@@ -349,7 +349,8 @@ body.theater .gut { display: none; }
 .hrow small { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .hrow.on, .hrow.on:hover:not(:disabled) { border-color: var(--accent); }
 .hrow.undone b { color: var(--muted); }
-@media (prefers-reduced-motion: reduce) { .pthumb, .pacts { transition: none; } .pitem:hover .pthumb { transform: none; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion=full]) :is(.pthumb, .pacts) { transition: none; } :root:not([data-motion=full]) .pitem:hover .pthumb { transform: none; } }
+:root[data-motion=reduce] :is(.pthumb, .pacts) { transition: none; } :root[data-motion=reduce] .pitem:hover .pthumb { transform: none; } /* Settings: Reduce / Full override the system */
 /* templates: the gallery (poster, the preview while pointed at), saving one, filling its slots */
 .tplcard .pthumb img, .tplcard .pthumb video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; } /* a tall poster whole, not cropped */
 .tplcard .pthumb video { background: #0e0e0f; opacity: 0; pointer-events: none; }
@@ -393,7 +394,8 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 12px; 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 10px; border: 2px solid var(--panel); }
 ::-webkit-scrollbar-track { background: transparent; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } } /* decorative transitions only; playback is unaffected */
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion=full]) * { transition: none !important; } } /* decorative transitions only; playback is unaffected */
+:root[data-motion=reduce] * { transition: none !important; }
 .row output { cursor: text; border-radius: 4px; padding: 1px 3px; }
 .row output:hover { background: var(--hover); color: var(--text); }
 .numedit { width: 66px; padding: 2px 6px; font: inherit; font-size: 12px; text-align: right; }
@@ -548,7 +550,8 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #tour .td { margin: 0 0 20px; color: var(--muted); line-height: 1.5; }
 #tour .actions { display: flex; gap: 8px; justify-content: flex-end; }
 #tour .actions .ghost { margin-right: auto; }
-@media (prefers-reduced-motion: no-preference) { #tour .tring, #tour .tcard { transition: left .2s, top .2s, width .2s, height .2s; } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion=reduce]) #tour :is(.tring, .tcard) { transition: left .2s, top .2s, width .2s, height .2s; } }
+:root[data-motion=full] #tour :is(.tring, .tcard) { transition: left .2s, top .2s, width .2s, height .2s; }
 /* Export > Also export as, and the Exports panel (the one queue: every export, rendered one at a time; above the dialog's backdrop) */
 .exalso { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .exalso label { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }

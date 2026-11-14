@@ -23,7 +23,8 @@ Times are seconds on the timeline; a clip's in/out are seconds in its source fil
 clips play back to back), overlay (picture-in-picture, free start), audio, text, captions, fx (video effects: they change
 everything under them for their duration; text stays on top). Call options for valid values (transitions, looks, effects,
 sound effects, animations, text and caption presets, fonts, voices, formats).
-Exports land in the library's exports folder (~/Movies/Cutroom/exports unless CUTROOM_HOME says otherwise)."""
+Exports land in the library's exports folder (~/Movies/Cutroom/exports unless CUTROOM_HOME says otherwise), or the folder
+chosen in Settings (export returns the path)."""
 
 CLIP_PROPS = """Clip properties (objects merge, null deletes a key):
 speed 0.1-100 | volume 0-10 (1 = 100%) | pitch bool (speed changes pitch) | fit fit|fill|blur (blur = blurred background, main only)
@@ -313,7 +314,11 @@ TOOLS = [
                 'the step the project is at now); or goto a step: the project as it was just after it (0 = the oldest state kept). '
                 'Steps after it stay redoable until the next edit.',
      S({'action': {'type': 'string', 'enum': ['undo', 'redo', 'list', 'goto']}, 'step': {'type': 'integer'}}, ['action']), 'history'),
-    ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
+    ('settings', 'The editor\'s Settings: with no arguments, every option with its value, label, section, options and where it is kept '
+     '(this computer or this library). set = {key: value} changes them at once (null = back to the default), e.g. {"snap": false, "pq": "half", '
+     '"ratio": "16:9", "fps": 60, "exportDir": "/Users/me/Desktop", "ai.music": false}. A feature turned off (ai.<kind>) is refused by its tools.',
+     S({'set': obj}), 'settings'),
+    ('snapshot','Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
     ('batch', 'Batch editing: one recipe over many library videos. Each video gets its own project (named after it): the recipe\'s steps in this order, '
