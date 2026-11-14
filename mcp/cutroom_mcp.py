@@ -113,7 +113,17 @@ TOOLS = [
      S({'path': {**txt, 'description': 'absolute path or ~/...'}, 'add_to': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num}, ['path']), None),
     ('projects', 'List saved projects.', S(), 'projects'),
     ('open_project', 'Open a project by id or (part of its) name.', S({'project': txt}, ['project']), 'open_project'),
-    ('new_project', 'Start a new empty project.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt}), 'new_project'),
+    ('new_project', 'Start a new empty project. With a brand kit set up it starts branded (intro, outro, watermark, caption style) unless '
+                    'branded=false, or the brand\'s auto is off.', S({'ratio': {**txt, 'description': '9:16, 16:9, 1:1, 4:5, 3:4, 4:3, 21:9'}, 'name': txt, 'branded': boo}), 'new_project'),
+    ('brand', 'The library\'s brand kit (one per library). action get (default): the brand, applied = the open project carries it, watermark = it has one. '
+              'set: merges `set` into it (null clears a field): logo (an image, library id or name), intro, outro (videos or images), '
+              'colors (up to 5 "#rrggbb"), head / body: {font, weight} (heading and body fonts: options().fonts, imported ones included), '
+              'cap (a caption preset the brand\'s caption style starts from), wm: {on, corner tl|tr|bl|br, size (logo width / canvas width, 0.03-0.5), '
+              'opacity 0.05-1}, auto (new projects start branded, default true). Brand presets then come first in options(): '
+              'text "Brand title", "Brand text", "Brand label", caption "Brand". '
+              'apply: on the open project, one undo step: the intro first and the outro last on the main track, the watermark on a locked top overlay '
+              'track spanning the edit, the caption style; applying again replaces the earlier brand clips.',
+     S({'action': {'type': 'string', 'enum': ['get', 'set', 'apply']}, 'set': obj}), 'brand'),
     ('set_project', 'Change project settings: name, ratio, fps, bg (hex colour), capStyle (caption style object), markers (list of seconds: the timeline markers, also the YouTube chapter starts), rippleAll (bool: main-track cuts and trims move every track after them, linked or not), unlinked (bool).', S({'set': obj}, ['set']), 'set_project'),
     ('add_clip', 'Put a library item on a track. Main clips append (or insert at start); overlay/audio clips start at start (default: playhead).',
      S({'media': {**txt, 'description': 'media id or (part of its) name'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay', 'audio']}, 'start': num, 'in': num, 'out': num}, ['media']), 'add_clip'),
@@ -300,12 +310,13 @@ TOOLS = [
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
                'loudness: false | true (-14 LUFS) | -14 (social) | -16 (podcast) | -23 (EBU broadcast): one gain for the whole edit. '
-               'show=true opens the result in the Mac\'s player when it is done. '
+               'show=true opens the result in the Mac\'s player when it is done. watermark=true adds the brand logo (see brand) to this export only, '
+               'if the project has no watermark of its own. '
                'also = more shapes to export in the same go, e.g. ["9:16", "1:1"] (of 9:16|16:9|1:1|4:5): each is a copy of the edit laid out for that canvas '
                '(main clips keep their fit, overlays and text keep their place and scale with the short side); every export renders one after another '
                'in the editor\'s Exports panel, and the result lists them under `also`.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt,
-        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo,
+        'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo, 'watermark': boo,
         'also': {'type': 'array', 'items': {'type': 'string', 'enum': ['9:16', '16:9', '1:1', '4:5']}, 'description': 'more shapes, rendered in the same queue'}}), 'export'),
 ]
 SCHEMAS = [{'name': n, 'description': d, 'inputSchema': s} for n, d, s, _ in TOOLS]

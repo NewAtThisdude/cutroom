@@ -83,7 +83,8 @@ await ev(() => { S.sel = null; renderAll(); });
 await audit('inspector project', '#inspector');
 await audit('top bar', 'header');
 await audit('timeline', '.tl-body');
-for (const [btn, name] of [['#btnExport', 'export dialog'], ['#btnProjects', 'projects'], ['#btnTemplates', 'templates']]) {
+for (const [btn, name] of [['#btnExport', 'export dialog'], ['#btnProjects', 'projects'], ['#btnTemplates', 'templates'], ['#btnBrandText', 'brand']]) {
+  if (btn === '#btnBrandText') await ev(() => openTab('text')); // (it sits in the Text tab)
   if (await page.$(btn)) { await page.click(btn); await page.waitForTimeout(500); await audit(name, '#modal'); await page.keyboard.press('Escape'); await page.waitForTimeout(200); }
 }
 if (errs.length) console.log('page errors:', errs.slice(0, 5));
