@@ -147,6 +147,7 @@ export async function seedLibrary({ baseUrl = process.env.B, home = process.env.
     audio: cachedMedia('fixture-tone-noise-12s-v1.wav', ['-f', 'lavfi', '-i', 'sine=f=220:r=48000:d=12',
       '-f', 'lavfi', '-i', 'anoisesrc=c=pink:r=48000:d=12:seed=42:amplitude=0.03',
       '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=shortest', '-c:a', 'pcm_s16le']),
+    image: cachedMedia('fixture-testsrc-1280x720-v1.png', ['-f', 'lavfi', '-i', 'testsrc=s=1280x720', '-frames:v', '1']),
   };
   const media = {};
   for (const [name, file] of Object.entries(inputs)) {
@@ -156,7 +157,9 @@ export async function seedLibrary({ baseUrl = process.env.B, home = process.env.
   }
   const until = Date.now() + 120000;
   for (;;) {
-    const items = await api('/api/media');
+    // A media JSON file can be briefly unreadable while preparation writes it.
+    const response = await fetch(baseUrl + '/api/media', { headers: { 'X-Cutroom': '1' }, signal: AbortSignal.timeout(30000) });
+    const items = response.ok ? await response.json() : [];
     if (Object.values(media).every(id => items.find(m => m.id === id)?.ready)) break;
     const failed = items.find(m => Object.values(media).includes(m.id) && m.error);
     if (failed || Date.now() > until) throw new Error(`fixture preparation failed: ${failed?.error || JSON.stringify(items.filter(m => Object.values(media).includes(m.id)))}`);

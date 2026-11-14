@@ -46,7 +46,9 @@ ids.phone = PHONE ? await up(PHONE) : ids.k4;
 // into the former three-minute wait for M.get(undefined).
 const readyUntil = Date.now() + 120000;
 for (;;) {
-  const media = await api('/api/media');
+  // A media JSON file can be briefly unreadable while preparation writes it.
+  const response = await fetch(B + '/api/media', { headers: { 'X-Cutroom': '1' }, signal: AbortSignal.timeout(30000) });
+  const media = response.ok ? await response.json() : [];
   if (Object.values(ids).every(id => media.find(m => m.id === id)?.ready)) break;
   const broken = media.find(m => Object.values(ids).includes(m.id) && m.error);
   if (broken || Date.now() > readyUntil) throw new Error(`format fixture preparation failed: ${broken?.error || 'timed out after 120 seconds'}`);
