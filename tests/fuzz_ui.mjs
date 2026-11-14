@@ -13,7 +13,11 @@ import os from 'node:os';
 const LIB = requireHome(); // the library the server under test uses
 const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
 if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
-const STUB = /\/api\/(matte|isolate|remove_object|mask_preview|ai\/|track$|faces|stabilize|reverse|slowmo|transcribe|transcript|fillers|lift|tts)/;
+// every endpoint that runs an on-device model (the release gate runs no AI models): upscale / relight / retouch, smart search
+// (vision + embeddings), B-roll, and the sounds made by Demucs or the WORLD-vocoder voices (sound_prep, below). Also the sound
+// library download (packs/install): a fresh library shows its button, and the gate downloads nothing
+const STUB = /\/api\/(matte|isolate|remove_object|mask_preview|ai\/|track$|faces|stabilize|reverse|slowmo|transcribe|transcript|fillers|lift|tts|upscale|relight|retouch|index$|search$|broll|packs\/install)/;
+const AI_SOUND = /(^|\+)(svm|elf|giant|monster|alien)(\+|$)/, stubbed = new WeakSet();
 const get = async p => (await fetch(B + p)).json();
 const EXP = `${LIB}/exports`;
 const before = { p: new Set((await get('/api/projects')).map(x => x.id)), m: new Set((await get('/api/media')).map(x => x.id)), t: new Set((await get('/api/templates')).map(x => x.id)), e: new Set(fs.readdirSync(EXP)) };
@@ -37,8 +41,13 @@ page.on('console', m => { if (m.type() === 'error' && !/status of 500|stubbed/.t
 page.on('dialog', d => d.dismiss()); // confirm() answers no: nothing in the library is removed
 page.on('request', r => { if (r.url().includes('/api/') && !r.url().includes('/api/remote/next')) inflight++; });
 for (const ev of ['requestfinished', 'requestfailed']) page.on(ev, r => { if (r.url().includes('/api/') && !r.url().includes('/api/remote/next')) inflight--; });
-page.on('response', r => { if (r.status() >= 400 && !STUB.test(new URL(r.url()).pathname)) errs.push(`HTTP ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`); });
+page.on('response', r => { if (r.status() >= 400 && !STUB.test(new URL(r.url()).pathname) && !stubbed.has(r.request())) errs.push(`HTTP ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`); });
 await page.route(u => STUB.test(u.pathname), r => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"stubbed in the UI fuzz"}' }));
+await page.route(u => u.pathname === '/api/sound_prep', r => { // RNNoise / Studio voice / the ffmpeg voices run; the model-made ones are stubbed
+  let fx = ''; try { fx = String(r.request().postDataJSON()?.fx || ''); } catch { /* no JSON body */ }
+  if (!AI_SOUND.test(fx)) return r.continue();
+  stubbed.add(r.request()); return r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"stubbed in the UI fuzz"}' });
+});
 await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); }); // don't take the real app's MCP commands
 
 await page.goto(`${B}/`, { waitUntil: 'load' });
