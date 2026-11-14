@@ -4,14 +4,15 @@
 // toast that leaks an internal error, the project still sane (finite numbers, clips with length, every clip drawn), the
 // preview still paints, and one undo puts the project back exactly. Slow AI endpoints answer with a stub error, so their
 // error paths are exercised (the real models are covered by mcp_e2e.mjs). Scratch media/projects are trashed after.
-//   node fuzz_ui.mjs [only-section]   (server on 127.0.0.1:4610)
+//   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node fuzz_ui.mjs [only-section]   (never 4610)
 import { browser } from './browser.mjs';
 import { requireHome } from './runtime.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const LIB = requireHome(); // the library the server under test uses
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2];
+if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
 const STUB = /\/api\/(matte|isolate|remove_object|mask_preview|ai\/|track$|faces|stabilize|reverse|slowmo|transcribe|transcript|fillers|lift|tts)/;
 const get = async p => (await fetch(B + p)).json();
 const EXP = `${LIB}/exports`;
