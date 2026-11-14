@@ -374,13 +374,17 @@ TOOLS = [
               'save = a name to keep the recipe for later. media = list of ids or names, or "last import". A video that fails is reported and the rest carry on. '
               'No arguments: the saved recipes, the steps (and which are unavailable) and the last import. Returns per video: project id, state, each step\'s result, files with sizes.',
      S({'media': {'type': ['array', 'string'], 'items': txt, 'description': 'media ids or names, or "last import"'}, 'recipe': {'type': ['object', 'string']}, 'save': txt}), 'batch'),
-    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
+    ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|mkv|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
                '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption; '
                'fcpxml = the whole timeline for Final Cut Pro / DaVinci Resolve; edl = a CMX3600 EDL of the main track; '
                'chapters = YouTube chapter lines from the markers, returned as `text`, with `notes` when YouTube would refuse them); '
                'resolution 720p|1080p|1440p|4K|8K (8K needs 16 GB of memory); quality fast|best; bitrate 1|1.6|2.5, or mbps = a custom bitrate in Mbps; '
                'fps 24|25|30|50|60|120 = the export frame rate (default the project\'s; above it frames repeat); light=true decodes on the media engine (less CPU); '
                'preset tiktok|reels|shorts|yt1080|yt4k|master fills format/resolution/fps/mbps/loudness, anything given explicitly wins. '
+               'fit discord|nitro|email|whatsapp|custom|off sets a maximum decimal MB size (10|50|25|100); fitMB is the custom size. '
+               'Resolution may be lowered to keep picture quality; bytes, fit and notes report the measured result. '
+               'subtitles burned|file|both|off: file embeds one track per caption language (including translations). '
+               'language and translationLanguage supply ISO 639-2 codes for cues without a known language (und = unknown). '
                'loudness: false | true (-14 LUFS) | -14 (social) | -16 (podcast) | -23 (EBU broadcast): one gain for the whole edit. '
                'show=true opens the result in the Mac\'s player when it is done. watermark=true adds the brand logo (see brand) to this export only, '
                'if the project has no watermark of its own. '
@@ -388,6 +392,7 @@ TOOLS = [
                '(main clips keep their fit, overlays and text keep their place and scale with the short side); every export renders one after another '
                'in the editor\'s Exports panel, and the result lists them under `also`.',
      S({'format': txt, 'resolution': txt, 'quality': txt, 'bitrate': num, 'mbps': num, 'fps': num, 'light': boo, 'preset': txt, 'name': txt,
+        'fit': txt, 'fitMB': num, 'subtitles': txt, 'language': txt, 'translationLanguage': txt,
         'loudness': {'type': ['boolean', 'number'], 'description': 'false, true (= -14), -14, -16 or -23 LUFS'}, 'at': num, 'show': boo, 'watermark': boo,
         'also': {'type': 'array', 'items': {'type': 'string', 'enum': ['9:16', '16:9', '1:1', '4:5']}, 'description': 'more shapes, rendered in the same queue'}}), 'export'),
 ]

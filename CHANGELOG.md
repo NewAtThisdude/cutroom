@@ -65,6 +65,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
 - Letter and word reveals, drawn accents, blur and glitch text animations, palette-based loops, keyframeable curved text, and ten more clip motions using the shared preview/export renderer
+- Export captions burned in, as language-tagged tracks in MP4/MOV, WebM or MKV (text kept exactly, symbols like < & { included), both ways, or off, including a separate track for translations.
 - Find and replace in captions: match count, next and previous, replace one or all in one undo step, match case, whole word, and the second-language line
 
 ### AI features (all run on your computer)
@@ -88,6 +89,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
+- Fit exports within a chosen file size, never over it: sharing presets, measured bitrate correction (two-pass software encoding when the hardware encoder overshoots), lower sound and then resolution only when needed, an embedded cover counted in the size, and a final byte count; GIF adapts its palette, size and frame rate.
 - Cover image: pick the frame at the playhead or a library picture, add a title in any text style; it is saved as a JPG or PNG next to the video and embedded as the MP4's cover (Finder, Explorer and players show it). Remembered per project
 
 ### Templates, brand kit and batch

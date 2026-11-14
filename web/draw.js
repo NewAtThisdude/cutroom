@@ -301,9 +301,9 @@ function emojiPic(e) {
   return c;
 }
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? { ...P.capStyle, ...it.style } : it.style) }; }
-function drawTexts(ctx, t, k, preview) {
+function drawTexts(ctx, t, k, preview, captions = true) {
   drawFxLayers(ctx, t, k);
-  for (const lane of ['text', 'captions']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
+  for (const lane of captions ? ['text', 'captions'] : ['text']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
 }
 
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
@@ -577,7 +577,7 @@ function drawViz(ctx, it, lt, k, preview) {
 function layerDraw(ctx, k, f) { // frame f drawn: its pixels, their hash and ink box ([x0, y0, x1, y1], ends exclusive; null = nothing shows)
   const w = ctx.canvas.width, h = ctx.canvas.height;
   ctx.clearRect(0, 0, w, h);
-  drawTexts(ctx, f / P.fps, k, false); // exactly what the preview draws on that frame (same function, same time)
+  drawTexts(ctx, f / P.fps, k, false, ctx.exportCaptions !== false); // soft-only/off omits captions; titles and effects still use the preview renderer
   // the same picture again (a looping title comes back every half second) is found by its pixels, not encoded again
   const img = ctx.getImageData(0, 0, w, h), px = new Uint32Array(img.data.buffer);
   let h1 = 2166136261, h2 = 0x9e3779b9, x0 = w, y0 = -1, x1 = -1, y1 = -1;

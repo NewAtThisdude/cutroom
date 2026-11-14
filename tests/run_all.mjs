@@ -14,7 +14,7 @@ const DEFAULT_TESTS = [
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
   'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools', 'mask_grade',
   'layouts_viz', 'source_viewer', 'polish_e2e', 'adjust_panes', 'fonts_captions', 'motion_blur', 'layer_race', 'photos_button', 'recorder',
-  'audio_tools', 'voiceover', 'audio_packs', 'fx_pack', 'ramp_play', 'export_hdr_alpha', 'hdr_iphone', 'media_folders', 'text_fx',
+  'audio_tools', 'voiceover', 'audio_packs', 'fx_pack', 'ramp_play', 'export_hdr_alpha', 'hdr_iphone', 'media_folders', 'text_fx', 'export_extra',
 ];
 const LONG = { fx_pack: 2400 }; // per-test timeouts (s) above --timeout: fx_pack plays ~45 effects 3 times each (886 s on an idle M4 Max)
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub', 'zoom3d'];

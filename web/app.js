@@ -138,13 +138,17 @@ const LOOP_ANIMS = [['none', 'None'], ['kbin', 'Ken Burns in'], ['kbout', 'Ken B
   ['breathe', 'Breathe'], ['orbit', 'Orbit'], ['bounce', 'Bounce'], ['jitter', 'Jitter']];
 const LOOPS = [['none', 'None'], ['bounce', 'Bounce'], ['pulse', 'Pulse'], ['wiggle', 'Wiggle'], ...TEXT_FX_LOOPS];
 const FORMATS = [['mp4', 'MP4 · H.264'], ['hevc', 'MP4 · HEVC (smaller)'], ['av1', 'MP4 · AV1 (smallest, slower)'], ['av1webm', 'WebM · AV1 + Opus'],
-  ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
+  ['webm', 'WebM · VP9 + Opus (keeps transparency)'], ['mkv', 'MKV · H.264 + AAC'], ['prores', 'MOV · ProRes 422 (for editing)'], ['prores4444', 'MOV · ProRes 4444 (with transparency)'], ['gif', 'GIF'],
   ['pngseq', 'PNG sequence (zip)'], ['mp3', 'Audio · MP3'], ['m4a', 'Audio · AAC (M4A)'], ['wav', 'Audio · WAV'], ['png', 'Still frame at playhead (PNG)'],
   ['srt', 'Subtitles · SRT (captions)'], ['vtt', 'Subtitles · WebVTT'], ['txt', 'Transcript · TXT with times'],
   ['fcpxml', 'Timeline · FCPXML (Final Cut Pro, DaVinci Resolve)'], ['edl', 'Timeline · EDL (CMX3600, main track)'], ['chapters', 'YouTube chapters (from the markers)']];
 const ALPHA_FMTS = ['prores4444', 'webm', 'gif', 'pngseq', 'png']; // keep a transparent background (server.py ALPHA_FORMATS)
 const HDR_NAMES = { sdr: 'SDR', hlg: 'HDR · HLG', pq: 'HDR · PQ (HDR10)' };
 const SOUND_FMT = ['mp3', 'm4a', 'wav'], SUB_FMT = ['srt', 'vtt', 'txt'], HAND_FMT = ['fcpxml', 'edl', 'chapters'], EXPORT_FPS = [24, 25, 30, 50, 60, 120];
+const SOFT_FMT = ['mp4', 'hevc', 'av1', 'av1webm', 'webm', 'mkv', 'prores', 'prores4444'];
+const FIT_FMT = ['mp4', 'hevc', 'av1', 'av1webm', 'webm', 'mkv', 'gif', 'mp3', 'm4a'];
+// Conservative decimal-MB budgets, not promises about a service's current account/connection limits.
+const FIT_PRESETS = { discord: ['Discord · 10 MB', 10], nitro: ['Discord Nitro Basic · 50 MB', 50], email: ['Email · 25 MB', 25], whatsapp: ['WhatsApp · 100 MB (fast connection)', 100] };
 // platform presets: they fill the dialog's fields, which stay editable. Bitrates (Mbps at 30 / 60 fps) are YouTube's published
 // SDR upload numbers and the usual range for TikTok / Reels (they re-encode everything anyway); vertical ones want a 9:16 canvas
 const EX_PRESETS = {
@@ -1759,11 +1763,11 @@ function backdrop(ctx) { // the background colour, or a checkerboard where it's 
   }
   return backdrop.p;
 }
-function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); server.py hdr_why() decides, this tells before the export
+function hdrWhy(fmt, captions = true) { // why an HDR export comes out SDR ('' = it stays HDR); server.py hdr_why() decides, this tells before the export
   if (!['mp4', 'hevc', 'prores'].includes(fmt)) return 'HDR is made as HEVC (MP4) or ProRes 422 HQ only';
   if (!P.main.length) return 'there is no main track';
   if (!P.mute.overlay && shown('overlay').length) return 'overlay clips';
-  if (['text', 'captions'].some(l => !P.mute[l] && shown(l).length) || (!P.mute.fx && shown('fx').some(f => FX[f.fx]?.layer))) return 'text, captions or stickers';
+  if ((captions ? ['text', 'captions'] : ['text']).some(l => !P.mute[l] && shown(l).length) || (!P.mute.fx && shown('fx').some(f => FX[f.fx]?.layer))) return 'text, captions or stickers';
   if (!P.mute.fx && shown('fx').length) return 'effects';
   for (const [i, c] of P.main.entries()) {
     const a = c.adj || {}, n = c.fit === 'blur' ? 'a blurred background' : (c.opacity ?? 1) < 1 ? 'opacity' : trF(i) && c.tr?.type !== 'fade' ? 'a transition other than Dissolve'
@@ -5170,9 +5174,9 @@ async function autoCaptions(force) { // words come back in source time; map them
     if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
     packMain(); src = speech().filter(c => words.has(c.media));
     const caps = capsFromWords(src, words, per), nw = caps.reduce((n, c) => n + c.words.length, 0);
-    const EXTRA = ['style', 'tr', 'kw', 'emoji', 'spk'], kept = new Map(P.captions.filter(c => EXTRA.some(k => c[k] !== undefined)).map(c => [c.text, c])); // a restyled (translated, labelled...) caption keeps that when captions are re-made after a cut
+    const EXTRA = ['style', 'tr', 'trLang', 'lang', 'kw', 'emoji', 'spk'], kept = new Map(P.captions.filter(c => EXTRA.some(k => c[k] !== undefined)).map(c => [c.text, c])); // a restyled (translated, labelled...) caption keeps that when captions are re-made after a cut
     for (const c of caps) if (kept.has(c.text)) for (const k of EXTRA) if (kept.get(c.text)[k] !== undefined) c[k] = structuredClone(kept.get(c.text)[k]);
-    change(() => { P.captions = caps; S.sel = null; });
+    change(() => { P.captions = caps; P.captionLanguage = subtitleLanguage(lang); S.sel = null; });
     status.textContent = caps.length ? `${caps.length} captions from ${nw} words. Click one to edit it.` : 'No speech found.';
   } catch (e) { status.textContent = e.message; throw e; }
   finally { btn.disabled = false; }
@@ -5235,12 +5239,42 @@ async function loadMedia() {
 loadMedia.poll = () => loadMedia().catch(() => {}); // (a background poll: a failure was rescheduled above)
 // ---------- subtitles: SRT / WebVTT in and out ----------
 const srtTime = t => { const ms = Math.max(0, Math.round(t * 1000)), p2 = (v, n = 2) => String(v).padStart(n, '0'); return `${p2(Math.floor(ms / 3600000))}:${p2(Math.floor(ms / 60000) % 60)}:${p2(Math.floor(ms / 1000) % 60)},${p2(ms % 1000, 3)}`; };
-function toSRT(kind = 'srt') { // the captions (or, with none, the text clips) as SubRip, WebVTT or a timed transcript (one "[a --> b] text" per cue)
-  const src = (P.captions.length ? P.captions : P.text).filter(c => String(c.text || '').trim()).sort((a, b) => a.start - b.start);
+function subtitleCues() { // ONE millisecond timeline for sidecars and embedded tracks (translation keeps the same times)
+  const end = Math.round(total() * 1000);
+  return (P.captions.length ? P.captions : P.text).map(c => ({ start: Math.max(0, Math.round(c.start * 1000)), end: Math.min(end, Math.round((c.start + c.dur) * 1000)),
+    text: String(c.text || '').trim(), tr: String(c.tr || '').trim(), lang: c.lang, trLang: c.trLang })).filter(c => c.text && c.end > c.start).sort((a, b) => a.start - b.start);
+}
+function subtitleText(src, kind = 'srt') {
   if (!src.length) throw new Error('no captions or text to save as subtitles');
-  const tm = t => kind === 'srt' ? srtTime(t) : srtTime(t).replace(',', '.');
-  if (kind === 'txt') return src.map(c => `[${tm(c.start)} --> ${tm(c.start + c.dur)}] ${String(c.text).trim().replace(/\s*\n\s*/g, ' ')}\n`).join('');
-  return (kind === 'vtt' ? 'WEBVTT\n\n' : '') + src.map((c, i) => `${i + 1}\n${tm(c.start)} --> ${tm(c.start + c.dur)}\n${String(c.text).trim()}\n`).join('\n');
+  const tm = t => kind === 'srt' ? srtTime(t / 1000) : srtTime(t / 1000).replace(',', '.');
+  if (kind === 'txt') return src.map(c => `[${tm(c.start)} --> ${tm(c.end)}] ${c.text.replace(/\s*\n\s*/g, ' ')}\n`).join('');
+  return (kind === 'vtt' ? 'WEBVTT\n\n' : '') + src.map((c, i) => `${i + 1}\n${tm(c.start)} --> ${tm(c.end)}\n${c.text}\n`).join('\n');
+}
+const toSRT = (kind = 'srt') => subtitleText(subtitleCues(), kind);
+const SUB_LANGS = [['en', 'eng', 'English'], ['es', 'spa', 'Spanish'], ['fr', 'fra', 'French'], ['de', 'deu', 'German'], ['it', 'ita', 'Italian'], ['pt', 'por', 'Portuguese'],
+  ['ru', 'rus', 'Russian'], ['hy', 'hye', 'Armenian'], ['uk', 'ukr', 'Ukrainian'], ['tr', 'tur', 'Turkish'], ['ar', 'ara', 'Arabic'], ['fa', 'fas', 'Persian'],
+  ['hi', 'hin', 'Hindi'], ['ja', 'jpn', 'Japanese'], ['ko', 'kor', 'Korean'], ['zh', 'zho', 'Chinese'], ['nl', 'nld', 'Dutch'], ['pl', 'pol', 'Polish']];
+const SUB_ISO = Object.fromEntries('af:afr am:amh as:asm az:aze ba:bak be:bel bg:bul bn:ben bo:bod br:bre bs:bos ca:cat cs:ces cy:cym da:dan el:ell et:est eu:eus fi:fin fo:fao gl:glg gu:guj ha:hau he:heb hr:hrv ht:hat hu:hun id:ind is:isl jv:jav ka:kat kk:kaz km:khm kn:kan la:lat lb:ltz ln:lin lo:lao lt:lit lv:lav mg:mlg mi:mri mk:mkd ml:mal mn:mon mr:mar ms:msa mt:mlt my:mya ne:nep nn:nno no:nor oc:oci pa:pan ps:pus ro:ron sa:san sd:snd si:sin sk:slk sl:slv sn:sna so:som sq:sqi sr:srp su:sun sv:swe sw:swa ta:tam te:tel tg:tgk th:tha tk:tuk tl:tgl tt:tat ur:urd uz:uzb vi:vie yi:yid yo:yor'.split(' ').map(s => s.split(':')));
+function subtitleLanguage(value) {
+  const v = String(value || 'und').toLowerCase();
+  if (v === 'auto') return 'und';
+  const known = SUB_LANGS.find(row => row.some(x => x.toLowerCase() === v));
+  if (known) return known[1];
+  if (SUB_ISO[v]) return SUB_ISO[v];
+  if (/^[a-z]{3}$/.test(v)) return v;
+  throw new Error('Use a three-letter ISO 639-2 language code, such as eng or spa, or und for unknown');
+}
+function subtitleTracks(options = {}) {
+  const groups = new Map(), cues = subtitleCues();
+  for (const second of [false, true]) for (const c of cues) {
+    const text = second ? c.tr : c.text;
+    if (!text) continue;
+    const language = subtitleLanguage(second ? c.trLang || options.translationLanguage || P.translationLanguage : c.lang || options.language || P.captionLanguage);
+    const key = language === 'und' && second ? 'und-translation' : language;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ start: c.start, end: c.end, text });
+  }
+  return [...groups].map(([language, cues]) => ({ language: language.split('-')[0], cues: cues.sort((a, b) => a.start - b.start) }));
 }
 function parseSubs(txt) { // SubRip or WebVTT cues -> [{start, dur, text}]
   const sec = x => { const m = x.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})$/); return m ? (+m[1] || 0) * 3600 + +m[2] * 60 + +m[3] + +m[4].padEnd(3, '0') / 1000 : NaN; };
@@ -5336,8 +5370,9 @@ async function layerPool(snap, w, h, k, n, fonts) { // n workers with the projec
   } catch (e) { ws.forEach(x => x.close()); throw e; }
   return ws.map(x => ({ scan: f => x.call({ scan: f }).then(d => d.res), encode: (lid, box, items, onDone) => x.call({ encode: { lid, box, items } }, onDone).then(d => d.redrawn), close: x.close }));
 }
-function layerPage(w, h, k) { // the fallback: the page's own canvas, yielding between blocks so the editor keeps drawing
+function layerPage(w, h, k, captions = true) { // the fallback: the page's own canvas, yielding between blocks so the editor keeps drawing
   const ctx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
+  ctx.exportCaptions = captions;
   return [{ scan: async f => { await new Promise(r => setTimeout(r)); return layerScan(ctx, k, f); }, encode: (lid, box, items, onDone) => layerEncode(ctx, k, box, items, lid, onDone), close() {} }];
 }
 async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n, box, frames} (null when nothing ever shows)
@@ -5367,10 +5402,10 @@ async function layerRun(rs, fr, fps) { // runners -> the plan's text: {layer, n,
     return { layer: lid, n: items.length, box, frames: spans };
   } finally { rs.forEach(r => r.close()); }
 }
-async function textLayer(w, h, k, fr, fonts) {
+async function textLayer(w, h, k, fr, fonts, captions = true) {
   const t0 = performance.now(), n = Math.min(clamp((navigator.hardwareConcurrency || 4) - 1, 1, 7), fr.length - 1);
   // the project as it plays, taken now: a compound clip borrows P only while its plan is built
-  const snap = { w: P.w, h: P.h, fps: P.fps, mute: P.mute, capStyle: P.capStyle, tracks: {}, text: shown('text').map(it => (it.viz ? { ...it, lv: vizLevels(it) } : it)), captions: shown('captions'), fx: shown('fx'),
+  const snap = { w: P.w, h: P.h, fps: P.fps, mute: { ...P.mute, captions: P.mute.captions || !captions }, capStyle: P.capStyle, tracks: {}, text: shown('text').map(it => (it.viz ? { ...it, lv: vizLevels(it) } : it)), captions: shown('captions'), fx: shown('fx'),
     emoji: Object.fromEntries([...new Set(shown('captions').map(c => c.emoji).filter(Boolean))].map(e => [e, emojiPic(e).getContext('2d').getImageData(0, 0, 256, 256)])) }; // the page's emoji pixels
   let why = S.layerForce === 'page' ? 'forced' : '', pool = null;
   S.layerStats = {};
@@ -5382,12 +5417,16 @@ async function textLayer(w, h, k, fr, fonts) {
     S.layerMode = 'workers'; S.layerStats = { ...S.layerStats, n, startMs: Math.round(t1 - t0), ms: Math.round(performance.now() - t0) }; return r;
   } catch (e) { why = e.message; }
   console.warn('layer: page fallback', why);
-  const r = await layerRun(layerPage(w, h, k), fr, snap.fps);
+  const r = await layerRun(layerPage(w, h, k, captions), fr, snap.fps);
   S.layerMode = 'page'; S.layerStats = { ...S.layerStats, n: 1, why, ms: Math.round(performance.now() - t0) };
   return r;
 }
 const blobURL = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
-async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
+async function buildPlan(w, h, quality, name, loud, format = 'mp4', options = {}) {
+  const burn = !['file', 'off'].includes(options.subtitles), soft = ['file', 'both'].includes(options.subtitles);
+  if (soft && !SOFT_FMT.includes(format)) throw new Error('This format cannot store subtitle tracks; choose MP4, MOV, WebM or MKV');
+  const subtitles = soft ? subtitleTracks(options) : [];
+  if (options.targetBytes) await api('/api/export_budget', { w, h, fps: P.fps, efps: options.efps || 0, duration: total(), format, targetBytes: options.targetBytes, subtitles, alpha: !!P.alpha });
   await lutsReady([...P.main, ...P.overlay, ...P.fx]); // imported LUTs in the grades are loaded
   await duckReady();
   const k = w / P.w, D = total();
@@ -5426,7 +5465,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     if ((lane === 'main' || lane === 'overlay') && P.mute.main && lane === 'main') { o.volume = 0; delete o.vkf; } // muted main track
     return o;
   };
-  const items = ['text', 'captions'].filter(l => !P.mute[l]).flatMap(l => shown(l).map(it => [l, it])), layerFx = P.mute.fx ? [] : shown('fx').filter(f => FX[f.fx]?.layer);
+  const items = (burn ? ['text', 'captions'] : ['text']).filter(l => !P.mute[l]).flatMap(l => shown(l).map(it => [l, it])), layerFx = P.mute.fx ? [] : shown('fx').filter(f => FX[f.fx]?.layer);
   let text = null;
   if ((items.length || layerFx.length) && !['mp3', 'wav'].includes(format)) { // one PNG per interval in which the visible text (and effect overlays) don't change; none for sound only
     await Promise.all([...new Set(items.map(([l, it]) => { const s = textStyle(it, l); return `${s.weight} 40px "${s.font}"`; }))].map(f => document.fonts.load(f)));
@@ -5456,9 +5495,9 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     for (const [l, it] of items) { const s = textStyle(it, l); if (l === 'captions' && ((s.bi && it.tr) || (s.spk && it.spk != null))) fonts.push(`${s.italic ? 'italic ' : ''}${Math.min(s.weight, 700)} 64px "${s.biFont || s.font}", system-ui, sans-serif`, `700 64px "${s.font}", system-ui, sans-serif`); } // the second line and speaker names
     await Promise.all(fonts.map(f => document.fonts.load(f)));
     if (items.some(([, it]) => it.viz)) await vizReady(); // its numbers worked out before a frame is drawn
-    text = await textLayer(w, h, k, fr, [...new Set(fonts)]);
+    text = await textLayer(w, h, k, fr, [...new Set(fonts)], burn);
   }
-  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: await fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
+  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, subtitles, fx: await fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').filter(c => !c.cell?.off).map(c => clip(c, 'overlay'))),
     audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }
@@ -5544,7 +5583,7 @@ function qDraw() {
   for (const q of S.q) {
     const j = q.st, p = j.state === 'done' ? 1 : j.progress || 0, run = j.state === 'running', wait = run && !j.started && j.note, el = j.started ? now - j.started : 0;
     const left = p >= 0.03 && el > 2 ? (el / p) * (1 - p) : j.eta, ahead = (j.note || '').match(/\((\d+) ahead\)/); // from its own speed once it has some, else the server's estimate
-    q.say.textContent = j.state === 'done' ? 'Saved' : j.state === 'cancelled' ? 'Cancelled' : !run ? `Failed: ${j.error || j.state}` : wait ? `Waiting${ahead ? ` · ${ahead[1]} ahead` : ''}` : !j.started ? 'Starting…'
+    q.say.textContent = j.state === 'done' ? `Saved${exportResultNote(j)}` : j.state === 'cancelled' ? 'Cancelled' : !run ? `Failed: ${j.error || j.state}` : wait ? `Waiting${ahead ? ` · ${ahead[1]} ahead` : ''}` : !j.started ? 'Starting…'
       : `${Math.round(p * 100)}%${left >= 1 ? ` · about ${aboutSecs(left)} left` : ''}`;
     q.say.title = j.note || j.error || '';
     q.row.dataset.state = wait ? 'waiting' : j.state;
@@ -5553,8 +5592,21 @@ function qDraw() {
     if (j.file) { q.nameEl.textContent = q.nameEl.title = j.file; q.reveal.dataset.reveal = j.file; }
   }
 }
+function exportResultNote(j) {
+  return `${j.bytes != null ? ` · ${(j.bytes / 1e6).toFixed(2)} MB (${j.bytes.toLocaleString()} bytes)` : ''}${j.notes?.length ? ` · ${j.notes.join('. ')}` : ''}`;
+}
+function exportTarget(options = {}) {
+  const mb = options.fit === 'off' ? 0 : options.fit ? FIT_PRESETS[options.fit]?.[1] ?? (options.fit === 'custom' ? +options.fitMB : NaN) : +options.fitMB || 0;
+  if (!Number.isFinite(mb) || mb < 0 || mb > 20000 || ((options.fit && options.fit !== 'off') && mb === 0)) throw new Error('Fit in needs a size greater than 0 and at most 20000 MB');
+  return Math.floor(mb * 1e6);
+}
+function exportExtraFields() {
+  return { fit: $('#exFit').disabled ? 'off' : $('#exFit').value, fitMB: $('#exFit').disabled || $('#exFit').value === 'off' ? 0 : +$('#exFitMB').value,
+    subtitles: $('#exSubs').disabled ? 'burned' : $('#exSubs').value, language: $('#exSubLang').value, translationLanguage: $('#exSubLang2').value };
+}
 function openExport() {
   if (total() <= 0) return toast('Add something to the timeline first');
+  const extra = P.exportExtra || {};
   modal(`<h2>Export</h2>
     <label class="row"><span>File name</span><input id="exName" value="${esc(P.name)}"></label>
     <label class="row"><span>Preset</span><select id="exPreset"><option value="">None (choose below)</option>${Object.entries(EX_PRESETS).map(([k, x]) => `<option value="${k}">${x.name}</option>`).join('')}</select></label>
@@ -5563,10 +5615,16 @@ function openExport() {
     <label class="row"><span>Encoder</span><select id="exQ"><option value="fast">Fast (Apple hardware)</option><option value="best">Best quality (x264, slower)</option></select></label>
     <label class="row"><span>Bitrate</span><select id="exRate"><option value="1">Standard</option><option value="1.6">High</option><option value="2.5">Very high</option><option value="custom">Custom (Mbps)</option></select></label>
     <label class="row" id="exMbpsRow" hidden><span>Mbps</span><input id="exMbps" type="number" min="0.5" max="400" step="0.5" value="10"></label>
+    <label class="row"><span>Fit in</span><select id="exFit"><option value="off">Off</option>${Object.entries(FIT_PRESETS).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join('')}<option value="custom">Custom MB</option></select></label>
+    <label class="row" id="exFitMBRow" hidden><span>Maximum MB</span><input id="exFitMB" type="number" min="0.01" max="20000" step="0.01" value="${esc(extra.fitMB || 10)}" title="Decimal megabytes: 1 MB is 1000000 bytes"></label>
+    <p class="muted" id="exFitHint"></p>
     <label class="row" title="One gain for the whole edit, measured first (true peak held at −1.5 dBTP)"><span>Loudness</span><select id="exLoud"><option value="off">Off (as mixed)</option><option value="-14">−14 LUFS · social</option><option value="-16">−16 LUFS · podcast</option><option value="-23">−23 LUFS · broadcast (EBU)</option></select></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
     ${M.get(G.brand.logo) && !wmOf() ? '<label class="row chk" title="The brand logo in its corner, for this export only: the project stays as it is"><span>Add watermark</span><input id="exWm" type="checkbox"></label>' : ''}
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
+    <label class="row"><span>Subtitles</span><select id="exSubs"><option value="burned">Burned in</option><option value="file">In the file</option><option value="both">Both</option><option value="off">Off</option></select></label>
+    <div id="exSubLangs"><label class="row"><span>Caption language</span><input id="exSubLang" value="${esc(extra.language || P.captionLanguage || 'und')}" placeholder="eng" title="ISO 639-2 code for captions without a known language; und means unknown"></label>
+    <label class="row"><span>Second-line language</span><input id="exSubLang2" value="${esc(extra.translationLanguage || P.translationLanguage || 'und')}" placeholder="spa" title="ISO 639-2 code for translations without a known language; und means unknown"></label></div>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <label class="row chk" id="exCoverRow" title="A picture saved next to the video. In an MP4 it is also embedded as the video's cover: Finder, Explorer and players show it (a MOV cannot carry one)"><span>Cover image</span><input id="exCover" type="checkbox"></label>
     <div id="exCoverBox" hidden>
@@ -5584,9 +5642,19 @@ function openExport() {
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
     cvSync();
-    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
-    const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
-    $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
+    $('#exRes').disabled = snd || sub; $('#exQ').disabled = !['mp4', 'mkv'].includes(f); $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
+    $('#exFit').disabled = !FIT_FMT.includes(f);
+    const fit = !$('#exFit').disabled && $('#exFit').value !== 'off';
+    $('#exFitMBRow').hidden = !fit || $('#exFit').value !== 'custom';
+    $('#exFitHint').textContent = fit ? 'The finished file is checked against this limit. Resolution may be lowered to keep picture quality; the result reports any change.' +
+      ($('#exFit').value === 'whatsapp' ? ' WhatsApp: 100 MB at 720p on faster connections, 64 MB at 480p on slower ones; documents allow 2 GB.' : $('#exFit').value === 'discord' ? ' A conservative 10 MB budget; Discord currently documents 20 MB for free accounts.' : $('#exFit').value === 'email' ? ' Mail providers differ; attachment encoding can also count toward their limit.' : '') +
+      (f === 'gif' ? ' GIF reduces palette colours, dimensions and frame rate.' : '') : $('#exFit').disabled ? 'Fit in is available for compressed video, GIF, MP3 and AAC.' : '';
+    $('#exSubs').disabled = snd || sub;
+    for (const o of $('#exSubs').options) o.disabled = ['file', 'both'].includes(o.value) && !SOFT_FMT.includes(f);
+    if (!SOFT_FMT.includes(f) && ['file', 'both'].includes($('#exSubs').value)) $('#exSubs').value = 'burned';
+    $('#exSubLangs').hidden = $('#exSubs').disabled || !['file', 'both'].includes($('#exSubs').value);
+    const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f, !['file', 'off'].includes($('#exSubs').value)), hdr = hk !== 'sdr' && !why;
+    $('#exRate').disabled = fit || !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (['mp4', 'mkv'].includes(f) && ($('#exQ').value === 'fast' || hdr)));
     $('#exHdr').disabled = !['mp4', 'hevc', 'prores'].includes(f);
     if (hdr && f === 'mp4') $('#exQ').disabled = true; // HDR in an MP4 is HEVC Main 10 on the Apple encoder
     const tr = HDR_NAMES[hk];
@@ -5606,7 +5674,7 @@ function openExport() {
     if (px?.tall && P.w >= P.h) notes.push(`${px.name} wants a vertical 9:16 canvas; this project is ${P.w}×${P.h} (change the ratio to fill the screen, or tick 9:16 below Also export as).`);
     if ($$('#exAlso input:checked:not(:disabled)').length) notes.push('Each extra shape is a copy of the edit laid out for it. They render one after another in the Exports panel, which stays open when this window closes.');
     $('#exHint').textContent = [{ mp4: hdr ? `MP4 · HEVC Main 10 + AAC · ${vid}` : `MP4 · H.264 + AAC · ${vid}`, hevc: `MP4 · HEVC${hdr ? ' Main 10' : ''} + AAC, about half the size · ${vid}`, av1: `MP4 · AV1 + AAC, the smallest; slower to make and to play on older devices · ${vid}`,
-      av1webm: `WebM · AV1 + Opus, for the web (Safari plays it on recent Macs and iPhones only) · ${vid}`, webm: `WebM · VP9 + Opus, for the web and Chrome / Firefox; the slowest to make${P.alpha ? '; keeps transparency' : ''} · ${vid}`,
+      av1webm: `WebM · AV1 + Opus, for the web (Safari plays it on recent Macs and iPhones only) · ${vid}`, webm: `WebM · VP9 + Opus, for the web and Chrome / Firefox; the slowest to make${P.alpha ? '; keeps transparency' : ''} · ${vid}`, mkv: `MKV · H.264 + AAC, with WebVTT subtitle tracks · ${vid}`,
       prores: `MOV · ProRes 422${hdr ? ' HQ' : ''} + PCM, for further editing (large) · ${fps} fps · ${d}`, prores4444: `MOV · ProRes 4444 + PCM, for editing apps (large) · ${fps} fps · ${d}`,
       pngseq: `ZIP of ${Math.round(total() * fps)} PNG frames · ${fps} fps, no sound · ${d}`,
       gif: `GIF · 15 fps, up to 640 px wide, no sound, loops${P.alpha ? ', clear or solid pixels only' : ''} · ${d}${total() > 15 ? ' (long for a GIF: the file gets big)' : ''}`,
@@ -5637,6 +5705,12 @@ function openExport() {
     hint();
   };
   $('#exLoud').addEventListener('change', e => { if (e.target.value !== 'off') meterTarget(+e.target.value); }); // the meter's target follows the export's
+  $('#exFit').value = extra.fit || 'off'; $('#exSubs').value = extra.subtitles || 'burned';
+  for (const s of ['#exFit', '#exFitMB', '#exSubs', '#exSubLang', '#exSubLang2']) $(s).addEventListener('change', () => {
+    const next = exportExtraFields();
+    change(() => { P.exportExtra = next; }); // one undo step, saved with the project
+    hint();
+  });
   for (const s of ['#exFmt', '#exQ', '#exRes', '#exFps', '#exRate', '#exMbps', '#exHdr', '#exAlso']) $(s).addEventListener(s === '#exMbps' ? 'input' : 'change', hint);
   $('#exPreset').addEventListener('change', preset);
   if (PREFS.preset && EX_PRESETS[PREFS.preset]) { $('#exPreset').value = PREFS.preset; preset(); } // the first-start answers
@@ -5700,23 +5774,26 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       exportUI(100, `Saved <b>${esc(r.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${r.notes.length ? `<br>${esc(r.notes.join(' '))}` : ''}`, `<button data-reveal="${esc(r.file)}">Show in Finder</button>`);
       return;
     }
-    const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt));
+    const extra = exportExtraFields(), targetBytes = exportTarget(extra);
+    Object.assign(extra, { targetBytes, efps: +$('#exFps').value });
+    const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt, extra));
+    plan.targetBytes = targetBytes;
     const cv = coverOf();
     if (cv.on && COVER_FMTS.includes(fmt)) { exportUI(0, 'Making the cover…'); const k = Math.min(1, 1920 / Math.max(w, h)); plan.cover = { image: await coverImage(even(w * k), even(h * k), cv), fmt: cv.fmt }; }
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
-    const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
+    const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps, targetBytes };
     S.exporting.job = job;
     for (const r of also) { // queued behind it; the dialog's own progress stays this one's
       exportUI(0, `Laying out ${r}…`);
-      await enqueue({ ...(await withWm(wm, () => shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt))), ...same }, r);
+      await enqueue({ ...(await withWm(wm, () => shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt, extra))), ...same }, r);
     }
     for (;;) {
       await new Promise(r => setTimeout(r, 400));
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
         S.exporting = null; S.exportsDir = j.dir || S.exportsDir;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${j.cover ? `. Cover: <b>${esc(j.cover)}</b>${j.coverEmbedded ? ', embedded in the video' : ' (beside the video; a MOV cannot carry one)'}` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${esc(exportResultNote(j))}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${j.cover ? `. Cover: <b>${esc(j.cover)}</b>${j.coverEmbedded ? ', embedded in the video' : /\.mov$/i.test(j.file) ? ' (beside the video; a MOV cannot carry one)' : ' (beside the video)'}` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
         tell(`Exported ${j.file} (${S.exportsDir || 'the exports folder'})`);
         break;
       }
@@ -7343,11 +7420,12 @@ async function translateCaptions({ to, bilingual = false, say = sayIn('#trStatus
   const per = Math.max(1, +$('#capWords').value || 3), CJK = '぀-ヿ㐀-鿿＀-￯　-〿';
   if (bilingual) { // the original stays: each caption gets its share of its sentence's translation as a second line
     change(() => {
+      P.translationLanguage = subtitleLanguage(to);
       groups.forEach((g, gi) => {
         const tr = String(texts[gi] || '').trim(), cjk = new RegExp(`[${CJK}]`).test(tr), units = (cjk ? [...tr.replace(/\s+/g, '')] : tr.split(/\s+/)).filter(Boolean);
         const n = g.map(c => c.text.split(/\s+/).filter(Boolean).length || 1), tot = n.reduce((a, b) => a + b, 0);
         let at = 0, acc = 0;
-        g.forEach((c, i) => { acc += n[i]; const to2 = i === g.length - 1 ? units.length : Math.round((units.length * acc) / tot); c.tr = units.slice(at, to2).join(cjk ? '' : ' '); if (!c.tr) delete c.tr; at = to2; });
+        g.forEach((c, i) => { acc += n[i]; const to2 = i === g.length - 1 ? units.length : Math.round((units.length * acc) / tot); c.tr = units.slice(at, to2).join(cjk ? '' : ' '); c.trLang = P.translationLanguage; if (!c.tr) delete c.tr; at = to2; });
       });
       P.capStyle.bi = true;
     });
@@ -7369,7 +7447,7 @@ async function translateCaptions({ to, bilingual = false, say = sayIn('#trStatus
         at += dur;
       }
     });
-    P.captions = out;
+    P.captions = out; P.captionLanguage = subtitleLanguage(to);
     if (S.sel?.lane === 'captions') S.sel = null;
   });
   return { sentences: groups.length, captions: P.captions.length, kept, first: P.captions.slice(0, 5).map(c => c.text),
@@ -8127,6 +8205,10 @@ const REMOTE = {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
     const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
     const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [], watermark = false } = a;
+    const extra = { subtitles: 'burned', ...a }, targetBytes = exportTarget(extra);
+    Object.assign(extra, { targetBytes, efps: +fps || 0 });
+    if (!['burned', 'file', 'both', 'off'].includes(extra.subtitles)) throw new Error('subtitles must be burned, file, both or off');
+    if (targetBytes && !FIT_FMT.includes(format)) throw new Error('Fit in needs a compressed video, GIF, MP3 or AAC format');
     if (!Array.isArray(also) || also.some(r => !SHAPES.includes(r))) throw new Error(`also must be a list of shapes: ${SHAPES.join(', ')}`);
     if (fps && !EXPORT_FPS.includes(+fps)) throw new Error(`fps must be one of ${EXPORT_FPS.join(', ')} (or 0 = the project's)`);
     const sz = exportSizes().find(x => x[0] === resolution);
@@ -8138,14 +8220,15 @@ const REMOTE = {
     S.exporting = true;
     try {
       if (watermark && !M.get(G.brand.logo)) throw new Error('watermark: the brand has no logo (brand action set, logo)');
-      const plan = await withWm(watermark, () => buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format)); // true = -14 LUFS
+      const plan = await withWm(watermark, () => buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format, extra)); // true = -14 LUFS
+      plan.targetBytes = targetBytes;
       plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
       const own = shapeOf(sz[1], sz[2]), rest = [...new Set(also)].filter(r => r !== own), q = await enqueue(plan, own), more = [];
-      for (const r of rest) more.push(await enqueue({ ...(await withWm(watermark, () => shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format))), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
+      for (const r of rest) more.push(await enqueue({ ...(await withWm(watermark, () => shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format, extra))), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps, targetBytes }, r));
       const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
-      return { file: jb.file, path: `${jb.dir || plat('~/Movies/Cutroom/exports')}/${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
-        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${j.dir || plat('~/Movies/Cutroom/exports')}/${j.file}`, size: `${more[i].w}x${more[i].h}` })) } : {}) };
+      return { file: jb.file, path: `${jb.dir || plat('~/Movies/Cutroom/exports')}/${jb.file}`, size: (jb.fit?.size || [sz[1], sz[2]]).join('x'), bytes: jb.bytes, fit: jb.fit, notes: jb.notes || [], format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
+        ...(rest.length ? { also: js.map((j, i) => ({ shape: rest[i], file: j.file, path: `${j.dir || plat('~/Movies/Cutroom/exports')}/${j.file}`, size: (j.fit?.size || [more[i].w, more[i].h]).join('x'), bytes: j.bytes, notes: j.notes || [] })) } : {}) };
     } finally { S.exporting = false; }
   },
 };
