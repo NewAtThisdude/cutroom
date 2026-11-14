@@ -126,7 +126,7 @@ for (const rm of ['no-preference', 'reduce']) {
   // across clip kinds: a title and a sound clip take what applies, the rest is skipped with a note
   const kinds = await ev(async ([ids, A]) => {
     S.t = 0; addText('Title', { text: 'Hello' });
-    const txt = P.text.at(-1); addMedia(A, 'audio', 0); const au = P.audio.at(-1); au.start = 0;
+    const txt = P.text.at(-1); const au = { id: hex12(), media: A, start: 0, in: 0, out: 2, speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }; P.audio.push(au);
     const r = await REMOTE.paste_attributes({ from: ids.s, to: [txt.id, au.id], categories: ['adjust', 'transform', 'speed', 'audio', 'kf', 'masks'] });
     const a = P.audio.find(c => c.id === au.id), t = P.text.find(c => c.id === txt.id);
     const ok = a.speed === 1.5 && a.volume === 0.5 && a.au.bass === 3 && !a.adj?.temp && !a.mask && !a.kf && !t.adj?.temp && !t.mask && !t.kf?.length;
