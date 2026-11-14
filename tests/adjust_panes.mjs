@@ -9,7 +9,8 @@ import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', res = [];
+const B = process.env.B, res = [];
+if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-adj-`), f = `${tmp}/adjust-shots.mp4`;
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=9', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '15', f]);
@@ -60,7 +61,7 @@ const open = async (rm, vp = { width: 1517, height: 904 }, ctx) => {
   const pm = [...r.parity1, ...r.parity2];
   check('adjust: export = preview on all 32 frames (mean <= 4, worst block <= 28)', pm.every(([m, w]) => m <= 4 && w <= 28), `mean <= ${mx(pm.map(x => x[0]))}, worst block <= ${mx(pm.map(x => x[1]))}`);
   check('adjust: without WebGL2 (CPU lookup) export = preview too', r.cpu[0] <= 4 && r.cpu[1] <= 28, `mean ${r.cpu[0].toFixed(2)}, worst block ${r.cpu[1].toFixed(1)}`);
-  check('adjust: inspector shows the layer with Adjust / Color tabs', r.sel === 'Adjustment layer' && r.tabs.join() === 'Adjust,Color', `${r.sel} · ${r.tabs}`);
+  check('adjust: inspector shows the layer with Adjust / Color / Mask tabs', r.sel === 'Adjustment layer' && r.tabs.join() === 'Adjust,Color,Mask', `${r.sel} · ${r.tabs}`);
   // the UI path: the Effects tab button adds one
   await page.click('.rail button[data-tab="effects"]');
   const before = await ev(() => P.fx.length);

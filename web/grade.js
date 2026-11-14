@@ -157,7 +157,7 @@ in vec2 p; out vec2 uv; void main() { uv = p * 0.5 + 0.5; uv.y = 1.0 - uv.y; gl_
 precision highp float; precision highp sampler3D;
 in vec2 uv; out vec4 o;
 uniform sampler2D src, tone, mask; uniform sampler3D lut;
-uniform vec4 crop; uniform bool flip, useTone, useLook, useLut, useKey, useMask, useColour;
+uniform vec4 crop; uniform bool flip, useTone, useLook, useLut, useKey, useMask, useColour, maskCol;
 uniform float bri, con, lutN, mixK, sim, blnd, vig, beauty, bSig; uniform mat3 sat, look; uniform vec3 keyC; uniform vec2 size, texel;
 vec3 r8(vec3 c) { return clamp(floor(c + 0.5), 0.0, 255.0); }
 float tn(float v) { return texelFetch(tone, ivec2(int(floor(v + 0.5)), 0), 0).r * 255.0; }
@@ -185,9 +185,10 @@ void main() {
     if (useLut) c = r8(texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0);
     c = r8(c0 + (c - c0) * mixK);
   }
+  if (useMask && maskCol) { float m = floor(texture(mask, uv).a * 255.0 + 0.5); c = floor((c0 * (255.0 - m) + c * m + 127.0) / 255.0); } // the grade only where the mask is (the export's maskedmerge)
   float a = s.a;
   if (useKey) { vec3 d = c - keyC; float diff = sqrt(dot(d, d) / 195075.0); a *= blnd > 0.0001 ? clamp((diff - sim) / blnd, 0.0, 1.0) : (diff > sim ? 1.0 : 0.0); }
-  if (useMask) a *= texture(mask, uv).a;
+  if (useMask && !maskCol) a *= texture(mask, uv).a;
   if (vig > 0.0) { vec2 f = vec2(gl_FragCoord.x, size.y - gl_FragCoord.y) - 0.5; float u = clamp((length((2.0 * f + 1.0) / size - 1.0) / 1.41421356 - 0.3) / 0.75, 0.0, 1.0); c = r8(c * (1.0 - vig * u * u * (3.0 - 2.0 * u))); }
   o = vec4(c / 255.0 * a, a);
 }`));
@@ -197,7 +198,7 @@ void main() {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const n of ['src', 'tone', 'mask', 'lut', 'crop', 'flip', 'useTone', 'useLook', 'useLut', 'useKey', 'useMask', 'useColour', 'bri', 'con', 'lutN', 'mixK', 'sim', 'blnd', 'vig', 'beauty', 'bSig', 'texel', 'sat', 'look', 'keyC', 'size']) U[n] = gl.getUniformLocation(pg, n);
+    for (const n of ['src', 'tone', 'mask', 'lut', 'crop', 'flip', 'useTone', 'useLook', 'useLut', 'useKey', 'useMask', 'useColour', 'maskCol', 'bri', 'con', 'lutN', 'mixK', 'sim', 'blnd', 'vig', 'beauty', 'bSig', 'texel', 'sat', 'look', 'keyC', 'size']) U[n] = gl.getUniformLocation(pg, n);
     gl.uniform1i(U.src, 0); gl.uniform1i(U.tone, 1); gl.uniform1i(U.lut, 2); gl.uniform1i(U.mask, 3);
     const t2 = (unit, filter) => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
     const lutT = gl.createTexture();
@@ -251,7 +252,7 @@ function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, colour
   gl.uniform1i(U.useKey, key ? 1 : 0);
   if (key) { gl.uniform3f(U.keyC, ...hexRgb(c.key.color)); gl.uniform1f(U.sim, c.key.sim); gl.uniform1f(U.blnd, c.key.blend); }
   const mk = opt.mask !== undefined ? opt.mask : c.mask;
-  gl.uniform1i(U.useMask, mk ? 1 : 0);
+  gl.uniform1i(U.useMask, mk ? 1 : 0); gl.uniform1i(U.maskCol, opt.maskCol ? 1 : 0);
   if (mk) { const mc = maskCanvas(mk, W, H); if (GPU.maskKey !== mc) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GPU.maskT); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mc); GPU.maskKey = mc; } }
   gl.uniform1f(U.vig, opt.noVig ? 0 : a.vig || 0); gl.uniform2f(U.size, W, H);
   const bt = c.beauty?.amt || 0; // bilateral sigma: 0.8 % of the clip's short side, in source pixels as the export
@@ -533,7 +534,7 @@ function fxgl() {
     gl.attachShader(pg, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
     gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, `#version 300 es
 precision highp float; precision highp int; precision highp sampler3D;
-uniform sampler2D src, vid; uniform sampler3D lut; uniform int mode, n, r, flipOut; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN, sg; uniform vec4 box, crop; uniform vec3 bgc;
+uniform sampler2D src, vid, msk; uniform sampler3D lut; uniform int mode, n, r, flipOut, useM; uniform ivec2 size, shift, dir; uniform mat3 M; uniform float s, seed, lutN, sg; uniform vec4 box, crop; uniform vec3 bgc;
 out vec4 o;
 vec3 at(ivec2 q) { return texelFetch(src, clamp(q, ivec2(0), size - 1), 0).rgb * 255.0; }
 float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
@@ -556,7 +557,11 @@ void main() {
     c = floor(sum / k);
   } // mode 3, pixelate 2: each pixel takes its block's mean (the fetch above)
   else if (mode == 4) c += (hash(vec2(q) + vec2(seed, seed * 1.7)) * 2.0 - 1.0) * s; // grain on brightness
-  else if (mode == 7) c = texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0; // an adjustment layer's table (gpuPass's lookup)
+  else if (mode == 7) { // an adjustment layer's table (gpuPass's lookup); with a mask, only where it is (the export's maskedmerge)
+    vec3 g = texture(lut, (c / 255.0 * (lutN - 1.0) + 0.5) / lutN).rgb * 255.0;
+    if (useM == 1) { float m = floor(texelFetch(msk, q, 0).a * 255.0 + 0.5); g = floor((floor(c + 0.5) * (255.0 - m) + floor(g + 0.5) * m + 127.0) / 255.0); }
+    c = g;
+  }
   else if (mode == 5) { vec3 sum = vec3(0.0); for (int i = -32; i <= 32; i++) if (i >= -r && i <= r) sum += at(q + dir * i); c = sum / float(2 * r + 1); } // one box pass (boxblur), edges clamped
   else if (mode == 10) { // sharpen like ffmpeg unsharp: c + (c - blur) * s; its binomial kernel as one of the
     vec3 sum = vec3(0.0); float wt = 0.0; // same spread (sigma sg: the export's, in this picture's pixels), r = its reach
@@ -579,14 +584,14 @@ void main() {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const lp = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
     const U = {};
-    for (const k of ['src', 'vid', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed', 'sg', 'box', 'crop', 'bgc']) U[k] = gl.getUniformLocation(pg, k);
+    for (const k of ['src', 'vid', 'msk', 'useM', 'lut', 'lutN', 'mode', 'n', 'r', 'flipOut', 'size', 'shift', 'dir', 'M', 's', 'seed', 'sg', 'box', 'crop', 'bgc']) U[k] = gl.getUniformLocation(pg, k);
     const lutT = gl.createTexture(); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lutT);
     for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v);
-    gl.uniform1i(U.src, 0); gl.uniform1i(U.lut, 1); gl.uniform1i(U.vid, 2); gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(U.src, 0); gl.uniform1i(U.lut, 1); gl.uniform1i(U.vid, 2); gl.uniform1i(U.msk, 3); gl.activeTexture(gl.TEXTURE0);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
     const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; };
-    Object.assign(FXG, { gl, cv, U, pg, lp, xp: new Map(), vidT: null, lutT, lutKey: '', tex: [tex(), tex(), tex()], fb: [gl.createFramebuffer(), gl.createFramebuffer(), gl.createFramebuffer()], sz: [[0, 0], [0, 0], [0, 0]] });
+    Object.assign(FXG, { gl, cv, U, pg, lp, xp: new Map(), vidT: null, lutT, lutKey: '', mT: tex(), mKey: null, tex: [tex(), tex(), tex()], fb: [gl.createFramebuffer(), gl.createFramebuffer(), gl.createFramebuffer()], sz: [[0, 0], [0, 0], [0, 0]] });
     cv.addEventListener('webglcontextlost', e => { e.preventDefault(); FXG.gl = null; FXG.failed = false; });
     return gl;
   } catch (e) { FXG.failed = true; console.warn('GPU effects off:', e.message); return null; }
@@ -629,6 +634,11 @@ function fxGPU(src, W, H, steps) {
     if (st.box) gl.uniform4f(U.box, ...st.box);
     if (st.G && FXG.lutKey !== st.G.key) { gl.activeTexture(gl.TEXTURE1); gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, GN, GN, GN, 0, gl.RGB, gl.FLOAT, st.G.d); gl.activeTexture(gl.TEXTURE0); FXG.lutKey = st.G.key; gl.bindTexture(gl.TEXTURE_2D, tex[cur]); }
     if (st.G) gl.uniform1f(U.lutN, GN);
+    gl.uniform1i(U.useM, st.mask ? 1 : 0); // (st.M is mode 0's colour matrix)
+    if (st.mask && FXG.mKey !== st.mask) { // an adjustment layer's mask (maskCanvas, W x H, top row first like the textures here)
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, FXG.mT); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, st.mask);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[cur]); FXG.mKey = st.mask;
+    }
     gl.uniform1i(U.n, st.n || 1); gl.uniform1i(U.r, st.r || 0); gl.uniform1f(U.s, st.s || 0); gl.uniform1f(U.seed, (Math.random() * 1000) | 0); gl.uniform1f(U.sg, st.sg || 1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     if (small) { // pixelate, 2: back to full size from the block means
@@ -642,7 +652,7 @@ function fxGPU(src, W, H, steps) {
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   return [cv, cv.height - H];
 }
-const FX_GPU = { lut: o => [{ mode: 7, G: o.G }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }], transform: o => [{ mode: 9, s: o.z, box: [o.x, o.y, 0, 0] }] };
+const FX_GPU = { lut: o => [{ mode: 7, G: o.G, mask: o.M }], matrix: o => [{ mode: 0, M: o.m.map(v => v * (o.k ?? 1)) }], rgbshift: o => [{ mode: 1, shift: [o.rh, o.bh] }], pixelize: o => [{ mode: 2, n: o.size }], noise: o => [{ mode: 4, s: o.s }], transform: o => [{ mode: 9, s: o.z, box: [o.x, o.y, 0, 0] }] };
 
 // ---------- adjustment layer: an Effects-track clip (fx 'adjust') whose colour stage grades the composite under it ----------
 // Its brightness/contrast/saturation, temperature/tint, exposure/highlights/shadows/fade, filter and grade (wheels, curves,
@@ -671,9 +681,14 @@ function adjustLUT(f) { // -> { key, d } or null (nothing to do)
   }
   return gradeCache.get(key);
 }
-const adjustOps = f => { const G = adjustLUT(f); return G ? [{ op: 'lut', G }] : []; }; // its step in the effect list (runOps)
-function lutPass(x, W, H, G) { // the table on the CPU (no WebGL2), like lut3d interp=trilinear
-  const img = x.getImageData(0, 0, W, H), d = img.data, L = { n: GN, d: G.d };
-  for (let i = 0; i < d.length; i += 4) { const o = sampleLUT(L, d[i] / 255, d[i + 1] / 255, d[i + 2] / 255); d[i] = o[0] * 255; d[i + 1] = o[1] * 255; d[i + 2] = o[2] * 255; }
+const adjustOps = (f, W, H, lt) => { const G = adjustLUT(f); return G ? [{ op: 'lut', G, M: f.mask && W ? maskCanvas(maskAt(f, lt), W, H) : undefined }] : []; }; // its step in the effect list (runOps); a masked layer grades only inside its mask
+function lutPass(x, W, H, G, Mk) { // the table on the CPU (no WebGL2), like lut3d interp=trilinear (Mk: the mask canvas, maskedmerge's mix)
+  const img = x.getImageData(0, 0, W, H), d = img.data, L = { n: GN, d: G.d }, mm = Mk && scratch(W, H, 'lutm').getContext('2d', { willReadFrequently: true });
+  if (mm) { mm.globalCompositeOperation = 'copy'; mm.drawImage(Mk, 0, 0); }
+  const ma = mm && mm.getImageData(0, 0, W, H).data;
+  for (let i = 0; i < d.length; i += 4) {
+    const o = sampleLUT(L, d[i] / 255, d[i + 1] / 255, d[i + 2] / 255), m = ma ? ma[i + 3] : 255;
+    for (let k = 0; k < 3; k++) d[i + k] = m === 255 ? o[k] * 255 : Math.floor((d[i + k] * (255 - m) + Math.round(o[k] * 255) * m + 127) / 255);
+  }
   x.putImageData(img, 0, 0);
 }
