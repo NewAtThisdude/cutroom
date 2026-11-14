@@ -20,8 +20,8 @@ const textSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(
 const textChars = s => textSegmenter ? Array.from(textSegmenter.segment(s), x => x.segment) : [...s];
 const textStagger = (p, i, n) => clamp((p - 0.65 * i / Math.max(1, n - 1)) / 0.35, 0, 1);
 const textLetterFx = a => ['letterrise', 'letterdrop', 'letterblur', 'decode', 'wave', 'glitch'].includes(a);
-function textArc(dx, width, curve) { // arc length -> baseline point and tangent, signed 180-degree arc at +/-100
-  const bend = clamp(curve, -100, 100) * Math.PI / (100 * Math.max(1, width));
+function textArc(dx, width, curve, lineHeight = 0) { // arc length -> baseline and tangent; short lines keep a radius large enough for their background
+  const bend = clamp(curve, -100, 100) * Math.PI / (100 * Math.max(1, width, lineHeight * Math.PI));
   return Math.abs(bend) < 1e-8 ? { x: dx, y: 0, a: 0 } : { x: Math.sin(dx * bend) / bend, y: (1 - Math.cos(dx * bend)) / bend, a: dx * bend };
 }
 function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, deterministic blur taps: also works in WebKit workers without ctx.filter
@@ -324,8 +324,8 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       const chars = textChars(w), { ln, ci } = wordFx, mid = lx(ln) + ln.w / 2;
       let xx = x0;
       for (const [i, ch] of chars.entries()) {
-        const cw = ctx.measureText(ch).width, off = LS ? xx - x0 : meas(chars.slice(0, i).join(''));
-        const pos = textArc(x0 + off + cw / 2 - mid, ln.w, curve);
+        const cw = ctx.measureText(ch).width, off = LS ? xx - x0 : meas(chars.slice(0, i + 1).join('')) - cw;
+        const pos = textArc(x0 + off + cw / 2 - mid, ln.w, curve, lh);
         let dy = 0, dx = 0, alpha = 1, blur = 0, glyph = ch;
         for (const [type, p] of [[st.anim, av], [st.out, ao]]) if (p < 1 && textLetterFx(type)) {
           const v = textStagger(p, ci + i, all), q = 1 - v;
@@ -419,7 +419,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       if (curve) {
         const mid = lx(ln) + ln.w / 2, cy = top + li * lh + lh / 2;
         for (const side of [-1, 1]) for (let j = 0; j <= 40; j++) {
-          const dx = ((side < 0 ? j : 40 - j) / 40 - 0.5) * (ln.w + padX * 2), a = textArc(dx, ln.w, curve);
+          const dx = ((side < 0 ? j : 40 - j) / 40 - 0.5) * (ln.w + padX * 2), a = textArc(dx, ln.w, curve, lh);
           const px = mid + a.x - Math.sin(a.a) * side * lh / 2, py = cy + a.y + Math.cos(a.a) * side * lh / 2;
           if (side === -1 && j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
@@ -431,7 +431,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   if (av < 1 && (st.anim === 'underline' || st.anim === 'highlight')) for (const [li, ln] of lines.entries()) {
     ctx.save(); ctx.globalAlpha *= Math.sin(Math.PI * av); ctx.strokeStyle = ctx.fillStyle = st.grad || st.color2 || st.color;
     if (st.anim === 'highlight') { ctx.globalAlpha *= 0.35; ctx.fillRect(lx(ln) - padX, top + li * lh, (ln.w + padX * 2) * av, lh); }
-    else { ctx.lineWidth = size * 0.06; ctx.beginPath(); for (let j = 0; j <= 40; j++) { const a = textArc((j / 40 * av - 0.5) * ln.w, ln.w, curve); const px = lx(ln) + ln.w / 2 + a.x, py = top + li * lh + lh * 0.9 + a.y; if (!j) ctx.moveTo(px, py); else ctx.lineTo(px, py); } ctx.stroke(); }
+    else { ctx.lineWidth = size * 0.06; ctx.beginPath(); for (let j = 0; j <= 40; j++) { const a = textArc((j / 40 * av - 0.5) * ln.w, ln.w, curve, lh); const px = lx(ln) + ln.w / 2 + a.x, py = top + li * lh + lh * 0.9 + a.y; if (!j) ctx.moveTo(px, py); else ctx.lineTo(px, py); } ctx.stroke(); }
     ctx.restore();
   }
   const spkC = st.spk && it.spk != null ? st.spkc?.[it.spk] || SPK_C[it.spk % SPK_C.length] : null, baseC = spkC || st.color; // a speaker's captions in their colour
@@ -496,7 +496,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
       cx += w.ww * grow + sp;
     }
   }
-  const arcEdge = textArc(BW / 2, BW, curve).y;
+  const arcEdge = textArc(BW / 2, BW, curve, lh).y;
   let yTop = top + Math.min(0, arcEdge), yBot = top + lines.length * lh + Math.max(0, arcEdge); // extras around the block: speaker name and emoji above, the translation below
   if (st.bi && it.tr) {
     let bs = size * (st.biSize ?? 0.6);

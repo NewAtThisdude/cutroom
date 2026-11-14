@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { browser } from './browser.mjs';
 import { cachedMedia } from './fixtures.mjs';
 import { requireHome } from './runtime.mjs';
@@ -83,6 +84,11 @@ try {
       }, name);
       check(`${rm}: loop ${name} changes and is periodic`, r.changed && r.periodic < 0.02, JSON.stringify(r));
     }
+    const palette = await ev(() => {
+      const a = tx.render({ loop: 'colorcycle', color: '#ff0000', color2: '#0000ff' }, 0.5);
+      return tx.ink(a) && a.every((v, i) => i % 4 !== 1 || v === 0);
+    });
+    check(`${rm}: colour cycle stays inside the text palette`, palette);
     for (const name of ['letterrise', 'letterdrop', 'letterblur', 'wave', 'glitch']) {
       const r = await ev(name => {
         const extra = { text: 'HHHHHH' }, style = { anim: name, ls: 0.4 }, base = tx.boxes(tx.render({ ls: 0.4 }, 1.5, extra));
@@ -111,6 +117,8 @@ try {
     check(`${rm}: Curve bends the top edge in either direction; zero stays straight`, arcs[0] < -12 && Math.abs(arcs[1]) < 2 && arcs[2] > 12, JSON.stringify(arcs));
     const glyphs = await ev(() => textChars('A\u0301👨‍👩‍👧‍👦B').length);
     check(`${rm}: combining marks and joined emoji remain whole characters`, glyphs === 3);
+    const unchanged = await ev(() => tx.diff(tx.render(), tx.render({}, 1.5, { curve: 0 })) === 0);
+    check(`${rm}: old text without Curve retains the straight drawing`, unchanged);
 
     // Real inspector edits, one-step command undo, curve keyframes, validation and disk persistence.
     const id = await ev(async () => {
@@ -147,6 +155,10 @@ try {
       pause(); return { labels, ok };
     }, { id, inventory, rm });
     check(`${rm}: gallery names and motion-aware preset previews`, galleries.labels && galleries.ok);
+    await ev(() => { seekTo(0.1); play(); });
+    const advanced = await page.waitForFunction(() => S.t > 0.2, null, { timeout: 5000 }).then(() => true, () => false);
+    await ev(() => pause());
+    check(`${rm}: explicit playback advances with reduced motion as well as full motion`, advanced);
     // Restore the saved project first: gallery previews above intentionally made subsequent edits.
     await ev(async saved => { P.text = [JSON.parse(saved)]; await flushSave(); }, history.saved);
     await page.reload({ waitUntil: 'load' });
@@ -207,7 +219,42 @@ try {
     }
     for (const i of [0, 1]) check(`${rm}: ${i ? 'page' : 'workers'} export equals preview pictures on all 72 frames`, exports[i].hashes.length === 72 && exports[i].hashes.every((h, f) => h === exports[2].hashes[f]));
     check(`${rm}: both export drawing paths were exercised`, exports[0].layerMode === 'workers' && exports[1].layerMode === 'page', exports.map(x => x.layerMode).join(', '));
-    await page.screenshot({ path: new URL(`${rm}.png`, OUT).pathname });
+    await page.screenshot({ path: fileURLToPath(new URL(`${rm}.png`, OUT)) });
+
+    // Clip motions also cross the actual ffmpeg boundary: sampled geometry alone cannot prove pixel parity.
+    const clipExport = await ev(async media => {
+      await REMOTE.new_project({ name: 'Clip FX parity', ratio: '16:9', branded: false });
+      await REMOTE.set_project({ set: { fps: 24, bg: '#18202b' } });
+      const cases = ['bounce', 'elastic', 'whip', 'roll', 'tilt', 'snap'].map(n => ({ in: n, out: n, ind: 0.6, outd: 0.6 }));
+      cases.push(...['breathe', 'orbit', 'bounce', 'jitter'].map(loop => ({ loop })));
+      for (const [i, anim] of cases.entries()) {
+        const c = await REMOTE.add_clip({ media, lane: 'overlay', start: 0, in: 0, out: 2 });
+        await REMOTE.update_clip({ id: c.id, set: { scale: 0.16, x: (i % 5 + 0.5) / 5 - 0.5, y: Math.floor(i / 5) * 0.46 - 0.23, anim } });
+      }
+      const m = M.get(media), im = imgFor(m); if (!im.complete) await im.decode();
+      const cv = new OffscreenCanvas(960, 540), x = cv.getContext('2d'), previews = [];
+      for (const f of [3, 9, 18, 30, 42]) {
+        x.fillStyle = P.bg; x.fillRect(0, 0, 960, 540);
+        for (const c of P.overlay) drawMedia(x, 'overlay', c, m, im, f / P.fps, 960 / P.w);
+        previews.push({ f, png: await blobURL(await cv.convertToBlob({ type: 'image/png' })) });
+      }
+      const plan = await buildPlan(960, 540, 'fast', 'clip-fx-parity', false, 'prores'), { job } = await api('/api/export', plan), deadline = Date.now() + 180000;
+      while (Date.now() < deadline) { const j = await api(`/api/jobs/${job}`); if (j.state !== 'running') { if (j.state !== 'done') throw new Error(j.error || j.state); return { file: j.file, previews }; } await sleep(250); }
+      throw new Error('Clip FX export timed out');
+    }, media);
+    for (const { f, png } of clipExport.previews) {
+      const previewFile = fileURLToPath(new URL(`${rm}-clip-${f}.png`, OUT)); fs.writeFileSync(previewFile, Buffer.from(png.split(',')[1], 'base64'));
+      const pixels = (file, filter) => execFileSync('ffmpeg', ['-v', 'error', '-i', file, '-vf', `${filter}scale=160:90:flags=area`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 20 });
+      const a = pixels(previewFile, ''), e = pixels(path.join(HOME, 'exports', clipExport.file), `select=eq(n\\,${f}),`);
+      let sum = 0, worst = 0;
+      for (let by = 0; by < 90; by += 10) for (let bx = 0; bx < 160; bx += 10) {
+        let block = 0;
+        for (let y = by; y < by + 10; y++) for (let x = bx; x < bx + 10; x++) for (let c = 0; c < 3; c++) { const i = (y * 160 + x) * 3 + c; block += Math.abs(a[i] - e[i]); }
+        sum += block; worst = Math.max(worst, block / 300);
+      }
+      const mean = sum / (160 * 90 * 3);
+      check(`${rm}: clip export matches drawMedia at frame ${f}`, a.length === 43200 && e.length === a.length && mean <= 4 && worst <= 28, `mean ${mean.toFixed(2)}, worst block ${worst.toFixed(2)}`);
+    }
     check(`${rm}: no page errors`, errors.length === 0, errors.join('; '));
     await context.close();
   }
