@@ -28,9 +28,11 @@ Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardwa
 One line, on a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
 (`cutroom check`), says in plain words what it found, what it will install and why, and installs only the AI pack that
 computer can run. Every file it downloads is pinned to a version and checked by SHA-256 before use, and so is every Python
-package of the AI packs (uv lock files with each file's hash, installed with `--require-hashes`). Two exceptions, both on a
-Mac: Homebrew's `ffmpeg`, `whisper-cpp` and `python` are whatever version Homebrew has (Homebrew checks its own downloads),
-and the MLX pack's image model, Z-Image-Turbo, is fetched at its current revision before the 4-bit copy is made. Everything
+package of the AI packs (uv lock files with each file's hash, installed with `--require-hashes`). Three exceptions, all on a
+Mac: Homebrew's `ffmpeg`, `whisper-cpp` and `python` are whatever version Homebrew has (Homebrew checks its own downloads);
+the MLX pack's image model, Z-Image-Turbo, is fetched at its current revision before the 4-bit copy is made; and when Ollama
+is installed, its search model `nomic-embed-text:v1.5` is pulled by tag (Ollama checks the download; the pack only warns
+when it is not the build it was tested with). Everything
 goes into your own folders, with no admin rights, no PATH change and nothing that starts at login.
 
     curl -fsSL <url>/install.sh | sh          # Mac

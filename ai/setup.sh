@@ -7,7 +7,8 @@
 # an nvfp4 MLX build that takes 4.2 GB). Cutroom picks the biggest that fits.
 # Pinned: the Python packages from mac.lock (each file's SHA-256, installed with --require-hashes; made from mac.in), the voice,
 # Demucs and MusicGen models at fixed Hugging Face revisions with the weight file checked, repos at fixed commits, weights by
-# SHA-256. Not pinned: Z-Image-Turbo (mflux-save fetches the current revision before it makes the 4-bit copy).
+# SHA-256. Not pinned: Z-Image-Turbo (mflux-save fetches the current revision before it makes the 4-bit copy) and Ollama's
+# nomic-embed-text:v1.5 (pulled by tag; a warning below when it is not the tested build).
 set -eu
 cd "$(dirname "$0")"
 env -u PYTHONPATH uv venv --python 3.12 .venv

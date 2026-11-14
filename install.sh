@@ -5,7 +5,8 @@
 # `cutroom check` and installs the AI pack this Mac can run (Apple Silicon: the MLX pack, ai/setup.sh), then builds the app.
 # Every file this script downloads is pinned and checked by SHA-256, and so are the MLX pack's packages (ai/mac.lock, installed
 # with --require-hashes). Not pinned: Homebrew's ffmpeg, whisper-cpp and python (its current versions; Homebrew checks its own
-# downloads) and the MLX pack's Z-Image-Turbo (its current revision). Everything goes into the prefix, the library and
+# downloads), the MLX pack's Z-Image-Turbo (its current revision) and, with Ollama, its nomic-embed-text:v1.5 (by tag; a warning
+# when it is not the tested build). Everything goes into the prefix, the library and
 # ~/Applications/Cutroom.app: no sudo, no PATH or login-item change. Safe to run again. Settings:
 #   CUTROOM_PREFIX   the source (when downloaded) and uv          (default ~/.local/share/cutroom)
 #   CUTROOM_HOME     the library: media, projects, exports, models (default ~/Movies/Cutroom)

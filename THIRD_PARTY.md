@@ -2,7 +2,8 @@
 
 Cutroom's own code is licensed under the GNU General Public License v3.0 or later (see LICENSE). It ships very little that isn't its own; most of what is listed here is
 downloaded by `install.sh`, `ai/setup.sh` or the app on first use, each at a pinned version with a SHA-256 check (except
-Homebrew's tools, at Homebrew's current versions, and Z-Image-Turbo, fetched at its current revision).
+Homebrew's tools, at Homebrew's current versions, Z-Image-Turbo, fetched at its current revision, and Ollama's
+nomic-embed-text:v1.5, pulled by tag).
 Nothing here is needed to cut, grade, caption-edit or export; the optional AI tools are what pull the models.
 
 ## In this repository
