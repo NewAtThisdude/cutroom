@@ -22,6 +22,8 @@ Windows PC. It is licensed GPL v3 or later.
 - Package project: one `.cutroom` file with the project and every file it uses
 - Timeline hand-off as FCPXML 1.10, CMX 3600 EDL and YouTube chapters
 - Remappable keyboard shortcuts
+- Crash recovery: edits made since the last save come back after a crash, a damaged project opens from its newest
+  version, and an export cut short by a crash is listed with a Retry button
 
 ### Effects, colour and transitions
 
