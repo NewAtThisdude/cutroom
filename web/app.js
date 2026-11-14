@@ -6865,7 +6865,7 @@ async function loadCaps() { // AI tab > This computer: what it has, and where / 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function cfind(id) { for (const L of LANES) { const c = P[L.key].find(x => x.id === id); if (c) return [c, L.key]; } throw new Error(`no clip with id ${id}`); }
 function mediaBy(q) {
-  const s0 = String(q).toLowerCase(), all = [...M.values()];
+  const s0 = String(q).toLowerCase(), all = [...M.values()].filter(m => !m.slate); // a template preview's slates are not library media
   const stem = x => x.name.replace(/\.[^.]+$/, '').toLowerCase(); // 'podcast-episode' is podcast-episode.mp4, not its 'podcast-episode (voice).m4a'
   const m = M.get(q) || all.find(x => x.name === q) || all.find(x => stem(x) === s0) || all.find(x => x.name.toLowerCase().includes(s0));
   if (!m) throw new Error(`no media "${q}" in the library (call media to list it, or import_media)`);
@@ -6940,7 +6940,7 @@ const REMOTE = {
     return { ...(await REMOTE.status()), markers: P.markers,
       tracks: Object.fromEntries(LANES.map(L => [L.key, L.key === 'captions' ? P.captions.map(c => ({ id: c.id, start: r3(c.start), dur: r3(c.dur), text: c.text })) : P[L.key].map(c => brief(c, L.key))])) };
   },
-  async media() { await loadMedia(); return [...M.values()].map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
+  async media() { await loadMedia(); return [...M.values()].filter(m => !m.slate).map(m => ({ id: m.id, name: m.name, kind: m.kind, duration: m.duration, w: m.w, h: m.h, hasAudio: m.hasAudio })); },
   async projects() { return api('/api/projects'); },
   async open_project({ project }) {
     await openProject(await projectId(project));
