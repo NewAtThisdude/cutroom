@@ -7360,7 +7360,7 @@ const REMOTE = {
     seekTo(t !== undefined ? +t : clamp(S.t, c0.start, c0.start + tdur(c0, L) - 1 / P.fps));
     if (S.t < c0.start || S.t >= c0.start + tdur(c0, L)) throw new Error('t must be a time inside the clip');
     S.sel = { lane: L, id };
-    if (off) { change(() => { if (fx) { delete c0.mask; delete c0.mkf; } else if (c0.mask) delete c0.mask.grade; }); return brief(c0, L); }
+    if (off) { change(() => { if (fx || c0.mask?.grade) { delete c0.mask; delete c0.mkf; } }); return brief(c0, L); } // (a clip's cut-out mask is left alone)
     const rect = box && { x: box.x * P.w, y: box.y * P.h, w: box.w * P.w, h: box.h * P.h }, pid = P.id;
     const at = c => { // the shape over the box: canvas frame for a layer, the clip's own frame for a clip
       if (!rect) return { x: 0, y: 0, w: 0.6, h: 0.6 };
