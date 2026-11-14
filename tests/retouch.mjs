@@ -3,7 +3,7 @@
 // head not flickering (smoothed vs raw landmarks), body slim / longer legs from the re-detected pose, the live preview
 // matching the rendered copy, and the inspector (sliders -> preview on the paused frame -> Apply -> Reset) in headless
 // WebKit in both motion modes, plus REMOTE.retouch (the MCP tool). Before/after PNGs go to tests/out.
-//   CUTROOM_HOME=<library> B=http://127.0.0.1:4755 [PHOTOS=<dir with IMG_4700.MOV>] node tests/retouch.mjs
+//   CUTROOM_HOME=<library> B=http://127.0.0.1:4755 [PHOTOS=<dir with talk-with-music.mp4, IMG_4700.MOV>] node tests/retouch.mjs
 import { browser } from './browser.mjs';
 import { requireHome } from './runtime.mjs';
 import { fileURLToPath } from 'node:url';
@@ -34,9 +34,17 @@ const Lstar = (r, g, b) => { const f = v => { v /= 255; return v <= 0.04045 ? v 
 const side = (a, b, o) => ff(['-i', a, '-i', b, '-filter_complex', '[0]scale=-2:720[x];[1]scale=-2:720[y];[x][y]hstack', o]); // before | after
 const pv = async (media, t, p, png) => { const r = await post('/api/retouch_preview', { media, t, p }); if (png) fs.writeFileSync(png, Buffer.from(r.png, 'base64')); return r; };
 
-const media = await get('/api/media');
+// Retouch is Apple Vision (landmarks, pose): a PC refuses it by design (server.py NOT_YET), and says so
+const off = (await get('/api/ai/caps')).jobs.find(j => j.kind === 'retouch')?.refused;
+if (/needs Apple Silicon/.test(off || '')) { console.log(`SKIP retouch: ${off}`); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(0); }
+// the test footage: a real face talking (no stand-in has the landmarks, teeth and skin these numbers are about); from PHOTOS if not in the library
+let media = await get('/api/media');
+if (!media.some(m => m.name === 'talk-with-music.mp4') && process.env.PHOTOS && fs.existsSync(`${process.env.PHOTOS}/talk-with-music.mp4`)) {
+  await post('/api/import_path', { path: `${process.env.PHOTOS}/talk-with-music.mp4` });
+  for (let i = 0; i < 600 && !(media = await get('/api/media')).find(m => m.name === 'talk-with-music.mp4')?.ready; i++) await new Promise(z => setTimeout(z, 500));
+}
 const TWM = media.find(m => m.name === 'talk-with-music.mp4' && m.kind === 'video');
-if (!TWM) { console.log('FAIL talk-with-music.mp4 is not in this library (the test footage)'); process.exit(1); }
+if (!TWM) { console.log(`SKIP retouch: real footage missing: talk-with-music.mp4 (a face talking) is not in this library or in PHOTOS (${process.env.PHOTOS || 'unset'})`); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(0); }
 const fps = TWM.fps || 30;
 
 // 1. landmarks on every frame (the Swift tool the job runs)

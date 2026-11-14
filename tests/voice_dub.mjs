@@ -85,6 +85,10 @@ const skip = (name, why) => console.log(`SKIP ${name}  [${why}]`);
 let GPU = (await get('/api/ai/status')).gpu; // the server's cached check of the GPU PC (its first one runs at start, ~3 s when the PC is off)
 for (let i = 0; i < 20 && GPU.configured && !GPU.checked; i++) { await new Promise(r => setTimeout(r, 500)); GPU = (await get('/api/ai/status')).gpu; }
 const GPU_ON = !!GPU.reachable;
+// Chatterbox (clone, dub) is MLX: a PC refuses it by design (server.py NOT_YET), and the AI tab says why
+const CLONE_OFF = ((await get('/api/ai/caps')).jobs.find(j => j.kind === 'clone')?.refused || '').match(/.*needs Apple Silicon.*/)?.[0];
+// the hint where the GPU tools are hidden: the GPU PC is opted in to (CUTROOM_GPU_HOST) but not answering, or there is none
+const GPU_HINT = GPU.configured ? /^Needs the GPU PC \(.+\): it is off or not answering/ : /NVIDIA GPU .* or a GPU PC you opt in to \(CUTROOM_GPU_HOST/;
 try {
 // ---------- fixtures: a 30 s English talk (a Kokoro voice that is not one of the stock baselines) on a video ----------
 ORIG = (await get('/api/media')).find(m => m.name === 'voice-dub-30s-v3.mp4');
@@ -113,6 +117,15 @@ if (run('clone') || run('dub') || run('lip')) {
   await page.locator('#btnClone').scrollIntoViewIfNeeded();
   check('the AI tab shows the clone and dub controls (consent off by default)', await page.locator('#btnClone').isVisible() && await page.locator('#btnDub').isVisible() && !(await page.locator('#vcConsent').isChecked())
     && await ev(() => $('#dubLang').options.length) >= 20, await ev(() => $('#dubLang').options.length));
+  if (CLONE_OFF) {
+    const st = await ev(() => ({ off: $('#btnClone').disabled && $('#btnDub').disabled, text: $('#dubStatus').textContent }));
+    check('Clone / dub on this computer: the buttons are off and the AI tab says why', st.off && st.text === CLONE_OFF, JSON.stringify(st));
+    const viaMcp = await ev(() => REMOTE.clone_voice({}).then(() => 'cloned', e => e.message));
+    check('...the MCP command still asks for consent first (it throws)', /consent/.test(viaMcp), viaMcp);
+    const asked = await ev(() => REMOTE.clone_voice({ consent: true }).then(() => 'cloned', e => e.message));
+    check('...and with consent it refuses in words', asked.includes('needs Apple Silicon'), asked);
+    skip('voice clone and dubbing', CLONE_OFF);
+  } else {
   await page.click('#btnClone');
   await page.waitForFunction(() => /consent/.test($('#dubStatus').textContent), null, { timeout: 5000 }).catch(() => {});
   check('Clone without the consent box: refused, in words', /consent/.test(await ev(() => $('#dubStatus').textContent)), await ev(() => $('#dubStatus').textContent));
@@ -129,6 +142,7 @@ if (run('clone') || run('dub') || run('lip')) {
     voice && `similarity ${voice.similarity}, stock ${JSON.stringify(voice.stock)}, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   check('...it showed progress, then the result', log.some(x => /Cloning the voice… \d+ (s|%)/.test(x)) && /similarity/.test(log.at(-1)), log.slice(-2).join(' | '));
   check('...and it is picked in the Voice list', voice && await ev(id => $('#vcVoice').value === id, voice.id));
+  }
 }
 
 // ---------- dub ----------
@@ -169,10 +183,10 @@ if (run('gpu') || run('lip') || run('talk') || !only) {
   await page.click('.rail [data-tab="ai"]');
   const ui = await ev(() => ({ tools: !$('#gpuTools').hidden, hint: $('#gpuHint').hidden ? '' : $('#gpuHint').textContent, lip: $('#btnLipSync').getBoundingClientRect().width > 0 }));
   check(`the AI tab: lip sync / talking photo ${GPU_ON ? 'shown (the PC answers)' : 'hidden, with a hint (the PC does not answer)'}`,
-    GPU_ON ? ui.tools && ui.lip && !ui.hint : !ui.tools && !ui.lip && /needs the 4090 PC/i.test(ui.hint), JSON.stringify(ui));
+    GPU_ON ? ui.tools && ui.lip && !ui.hint : !ui.tools && !ui.lip && GPU_HINT.test(ui.hint), JSON.stringify(ui));
   if (!GPU_ON) {
     const r = await ev(() => Promise.all([REMOTE.lip_sync({}), REMOTE.talking_photo({})].map(p => p.then(() => 'ran', e => e.message))));
-    check('...and the MCP commands refuse in words, at once', r.every(x => /needs the 4090 PC/i.test(x)), r.join(' | '));
+    check('...and the MCP commands refuse in words, at once', r.every(x => GPU_HINT.test(x)), r.join(' | '));
   }
   const mcp = spawnManaged(PYTHON, ['-X', 'utf8', '-I', `${ROOT}mcp/cutroom_mcp.py`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH')), CUTROOM_PORT: new URL(B).port }, stdio: ['pipe', 'pipe', 'ignore'] });
   const listed = await new Promise((res, rej) => { let buf = ''; mcp.stdout.on('data', d => { buf += d; const l = buf.split('\n').find(x => x.includes('"id": 2') || x.includes('"id":2')); if (l) res(JSON.parse(l).result.tools.map(t => t.name)); }); setTimeout(() => rej(new Error('no MCP answer')), 15000);

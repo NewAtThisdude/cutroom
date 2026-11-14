@@ -6650,7 +6650,8 @@ class App(BaseHTTPRequestHandler):
                     threading.Timer(5, remote_reoffer, (m,)).start()
                 return self.reply(m)
             if path == '/api/ai/status':
-                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
+                return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status(),
+                                   'refused': {k: t['refused'] for k in ('image', 'clone') if 'refused' in (t := tier(k))}})  # why, where this computer can't (MLX only)
             if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
                 return self.reply(caps())
             if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)

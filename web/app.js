@@ -6938,7 +6938,7 @@ async function loadAI() { // fill the AI tab from what is installed
   try { s = await api('/api/ai/status'); } catch { return; }
   $('#aiVoice').innerHTML = s.voices.map(v => `<option value="${v}"${v === 'af_heart' ? ' selected' : ''}>${esc(aiVoiceName(v))}</option>`).join('');
   $('#btnAiImage').disabled = !s.image; $('#btnStickerAI').disabled = !s.image; $('#btnAiVoice').disabled = !s.voice;
-  if (!s.image) $('#aiStatus').textContent = 'The image model is not installed (README: On-device AI).';
+  if (!s.image) $('#aiStatus').textContent = s.refused?.image || 'The image model is not installed (README: On-device AI).';
   if (!s.voice) $('#aiVoiceStatus').textContent = 'The voice model is not installed (README: On-device AI).';
   for (const id of ['btnShorts', 'btnHooks', 'btnTranslate']) $(`#${id}`).disabled = !s.llm;
   if (!s.llm) $('#scStatus').textContent = 'Without the local model, shots are kept in the order they were filmed.';
@@ -6949,7 +6949,7 @@ async function loadAI() { // fill the AI tab from what is installed
   if (!$('#dubLang').options.length) $('#dubLang').innerHTML = Object.entries(s.dubLangs || {}).map(([k, n]) => `<option value="${k}"${k === 'es' ? ' selected' : ''}>${n}</option>`).join('');
   for (const id of ['btnClone', 'btnDub']) $(`#${id}`).disabled = !s.cloneReady;
   $('#btnVcDel').disabled = !s.clones?.length;
-  if (!s.cloneReady) $('#dubStatus').textContent = 'The voice-clone model is not installed (README: On-device AI).';
+  if (!s.cloneReady) $('#dubStatus').textContent = s.refused?.clone || 'The voice-clone model is not installed (README: On-device AI).';
   const gpu = s.gpu || {}; // lip sync and talking photo run on the GPU PC only: shown while it is set up and answering (cached on the server)
   $('#gpuTools').hidden = !gpu.reachable; $('#gpuHint').hidden = !!gpu.reachable;
   $('#gpuHint').textContent = gpu.configured ? `Needs the GPU PC (${gpu.host}): it is off or not answering right now.` : 'Needs an NVIDIA GPU with 18-24 GB on this computer, or a GPU PC you opt in to (CUTROOM_GPU_HOST; see README).';

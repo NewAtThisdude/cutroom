@@ -28,6 +28,7 @@ Runs the 26 release tests serially, with export_formats in quick mode.
 --timeout   Per-test timeout in seconds, excluding server startup and fixture seeding.
 --ai        Permit AI model tests and append them to the default list. Off by default.
 --list      Print selected tests without starting anything.
+CUTROOM_TEST_AI_OFF=llm (comma list of AI kinds) starts each fresh library with those AI jobs off.
 
 Install dependencies first: npm ci --prefix tests
 macOS: npx --prefix tests playwright install webkit
@@ -204,6 +205,9 @@ function environment(home, scratch, port) {
   if (options.ai) env.CUTROOM_TEST_AI = '1';
   else { env.CUTROOM_MODEL = path.join(home, 'models', 'not-installed.bin'); env.CUTROOM_VAD = path.join(home, 'models', 'not-installed-vad.bin'); }
   fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(env.PHOTOS, { recursive: true });
+  // CUTROOM_TEST_AI_OFF=llm,...: those AI_BUDGET kinds start switched off in each fresh library (Settings > AI), so a run never loads
+  // a model into a shared service, e.g. an Ollama another job is using; the checks that need them fail and say why
+  if (process.env.CUTROOM_TEST_AI_OFF) fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify(Object.fromEntries(process.env.CUTROOM_TEST_AI_OFF.split(',').map(k => [`ai.${k.trim()}`, false]))));
   return env;
 }
 
