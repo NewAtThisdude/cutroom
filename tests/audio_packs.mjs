@@ -126,6 +126,7 @@ const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
 const SAY = 'We drove up the coast at sunset. [[slnc 900]] Then we ate dinner at a little cafe by the harbour. [[slnc 900]] The mountain trail was steep and the snow was deep.';
 const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000,volume=-10dB';
 const clips = { 'talk.mp4': [SAY, { lead: 0.5, dur: 12 }], 'talk-with-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC }],
+  'talk-loud-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC.replace(',volume=-10dB', '') }], // the music nearly as loud as the voice
   'podcast-episode.mp4': [`${SAY} [[slnc 900]] Back at the beach we talked about the drive home. [[slnc 900]] Next week we try the desert road, early, before the heat.`,
     { lead: 0.4, dur: 22, bed: 'anoisesrc=c=pink:r=48000:seed=9:amplitude=0.02' }] };
 const truth = {}, ids = {};
@@ -138,7 +139,7 @@ for (const [name, [text, o]] of Object.entries(clips)) {
 await ev(() => loadMedia());
 await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), Object.values(ids), { timeout: 120000 });
 const media = await get('/api/media'), byName = n => media.find(m => m.id === ids[n]);
-const TALK = byName('talk.mp4'), TWM = byName('talk-with-music.mp4'), POD = byName('podcast-episode.mp4');
+const TALK = byName('talk.mp4'), TWM = byName('talk-with-music.mp4'), POD = byName('podcast-episode.mp4'), LOUD = byName('talk-loud-music.mp4');
 const made = [];
 const fresh = name => ev(name => { setProject(newProject('16:9')); P.name = `${name} (scratch)`; S.t = 0; renderAll(); return P.id; }, name).then(id => (made.push(id), id));
 const exportWav = name => ev(async name => (await REMOTE.export({ format: 'wav', name })).file, name).then(f => `${LIB}/exports/${f}`);
@@ -147,6 +148,8 @@ const rows = p => p.evaluate(() => [...document.querySelectorAll('#sfxList .sfxr
 
 // ---------- 1. the CC0 library ----------
 let packsOffline = '';
+const NET = /urlopen error|timed out|Connection (reset|refused|aborted)|Network is unreachable|IncompleteRead|RemoteDisconnected|Remote end closed/i;
+const UPSTREAM = /HTTP Error|SHA-256 differs|changed upstream|no CC0 licence|no longer lists it as CC0/i;
 if (run('packs')) {
   let idx = await get('/api/packs');
   if (!idx.installed) { // the button in the Audio rail, as a user would (the sources must be reachable first: offline is a SKIP)
@@ -156,13 +159,21 @@ if (run('packs')) {
       await page.click('[data-tab="audio"]');
       const t0 = Date.now();
       await page.click('#btnPacks');
-      await page.waitForFunction(() => G.snd?.installed || /nothing could be downloaded/.test(document.querySelector('#toast')?.textContent), null, { timeout: 900000 });
+      await page.waitForFunction(() => G.snd?.installed || /nothing could be downloaded|failed|could not/i.test(document.querySelector('#toast')?.textContent), null, { timeout: 900000 });
       idx = await get('/api/packs');
-      const lost = (idx.skipped || []).filter(x => /download failed/.test(x));
-      if (!idx.installed || lost.length) packsOffline = `downloads failed: ${(lost.length ? lost : [await page.textContent('#toast')]).join('; ').slice(0, 300)}`;
-      else check('library downloads from the Audio rail button', true, `${((Date.now() - t0) / 1000).toFixed(0)} s`);
+      // the sources answered a moment ago: only a network-level failure (no connection, DNS, a timeout) is "offline". An HTTP
+      // status (link rot), a changed SHA-256 or a lost CC0 licence is the library breaking upstream: a FAIL, never a SKIP
+      const net = (idx.skipped || []).filter(x => NET.test(x)), toast = await page.textContent('#toast');
+      if (!idx.installed) {
+        if (NET.test(toast) && !UPSTREAM.test(toast)) packsOffline = `the network failed during the download: ${toast.slice(0, 300)}`;
+        else check('library downloads from the Audio rail button', false, toast.slice(0, 400));
+      } else {
+        check('library downloads from the Audio rail button', true, `${((Date.now() - t0) / 1000).toFixed(0)} s`);
+        if (net.length) packsOffline = `the network failed for some sources: ${net.join('; ').slice(0, 300)}`;
+      }
     }
   }
+  if (idx.installed) { const bad = (idx.skipped || []).filter(x => !NET.test(x)); check('no source changed or lost its CC0 licence upstream (SHA-256, licence, HTTP status)', !bad.length, bad.join('; ').slice(0, 400)); }
   if (packsOffline) console.log(`SKIP CC0 sound library: ${packsOffline}`);
 }
 if (run('packs') && !packsOffline) {
@@ -230,7 +241,7 @@ if (run('packs') && !packsOffline) {
 if (run('studio')) {
   const out = {}, FXS = AI ? ['dn', 'sv', 'svm'] : ['dn', 'sv'];
   if (!AI) console.log('SKIP Studio voice + remove music (svm, Demucs): AI models excluded (run_all --ai to enable)');
-  for (const m of [TWM, POD]) {
+  for (const m of [TWM, POD, LOUD]) {
     const sp = (await post('/api/speech', { media: m.id })).speech || truth[m.id], raw = await pcmOf(m.id), r0 = speechGap(raw, sp); // (no VAD: where the voice was put)
     out[m.name] = { raw: r0.db };
     for (const fx of FXS) {
@@ -244,6 +255,8 @@ if (run('studio')) {
   check('podcast-episode: Studio voice raises the speech-band SNR (speech over gaps) by > 3 dB', pod.sv.gain > 3, `+${pod.sv.gain.toFixed(2)} dB (Reduce noise alone +${pod.dn.gain.toFixed(2)})`);
   if (AI) check('talk-with-music: Studio + remove music raises it by > 10 dB', twm.svm.gain > 10, `+${twm.svm.gain.toFixed(2)} dB (Studio voice without Demucs +${twm.sv.gain.toFixed(2)}: RNNoise leaves music)`);
   check('talk-with-music: Studio voice alone still improves it', twm.sv.gain > 0.3, `+${twm.sv.gain.toFixed(2)} dB`);
+  const loud = out['talk-loud-music.mp4'];
+  check('music nearly as loud as the voice: Studio voice alone does not make the voice less clear', loud.sv.gain >= 0, `${loud.sv.gain >= 0 ? '+' : ''}${loud.sv.gain.toFixed(2)} dB (it made it -2.85 dB before)`);
   check('processed sound keeps the source length (sample exact)', Object.values(out).every(o => FXS.every(k => o[k].len)));
   check('podcast: no delay (cross-correlation lag within 2 ms) for dn / sv / svm', FXS.every(k => Math.abs(pod[k].lag) <= 96), FXS.map(k => `${k} ${pod[k].lag}`).join(', ') + ' samples');
   // onset: speech-like bursts (sharp starts) over a noise floor; each start through Studio voice, against the input
@@ -273,6 +286,17 @@ if (run('studio')) {
   check('Studio voice: the export is the sound the preview plays (inspector button)', s > 40 && on, `${s.toFixed(1)} dB SNR, export vs the preview's PCM; button on ${on}`);
   await page.click('[data-studio="off"]');
   check('Studio voice off again', await ev(() => !P.main[0].studio));
+  // a loud music bed: the inspector suggests Studio + remove music, in plain words; not on a normal music bed
+  const hint = async m => {
+    await fresh(`Studio voice hint ${m.name}`);
+    await ev(id => { addMedia(id, 'main', 0); renderAll(); }, m.id);
+    await select('main', await ev(() => P.main[0].id));
+    await page.click('[data-studio="on"]');
+    await page.waitForFunction(() => P.main[0].studio === true, null, { timeout: 120000 });
+    return ev(() => document.querySelector('#svLoud')?.offsetParent ? document.querySelector('#svLoud').textContent : '');
+  };
+  const hl = await hint(LOUD), hn = await hint(TWM);
+  check('loud music: the inspector suggests Studio + remove music', /Studio \+ remove music/.test(hl) && !hn, `loud: "${hl}"; normal bed: ${hn ? `"${hn}"` : 'no hint'}`);
 }
 
 // ---------- 3. voice characters ----------

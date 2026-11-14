@@ -494,6 +494,23 @@ VOICE_CHARS = (*AI_CHARS, *FF_CHARS)
 STUDIO = ('highpass=f=80:p=2,equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,agate=threshold=0.025:ratio=2:range=0.2:attack=3:release=250,'
           'acompressor=threshold=0.1:ratio=3:attack=5:release=150:makeup=2,'
           'equalizer=f=3500:t=q:w=1.2:g=3,equalizer=f=10000:t=q:w=1:g=1.5')
+# The same without the expander and the compressor. Over a music bed within ~10 dB of the voice they can't tell the music
+# from the voice: the expander stays open and the compressor presses the voice towards the music (speech over the gaps,
+# speech band: bed 0 dB -2.9 dB, -4 dB -0.2 dB; this chain +1.7 / +2.4). fx_pcm keeps whichever leaves the voice clearer.
+STUDIO_SOFT = 'highpass=f=80:p=2,equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,equalizer=f=3500:t=q:w=1.2:g=3,equalizer=f=10000:t=q:w=1:g=1.5'
+
+
+def band_contrast(f):
+    """How far the voice stands out, without knowing where it is: speech-band (300 Hz - 3.4 kHz) energy of the loudest
+    40 % of 20 ms frames over the quietest 30 %, dB, of a raw float32 48 kHz stereo file."""
+    r = sh(['ffmpeg', '-v', 'error', '-f', 'f32le', '-ar', '48000', '-ac', '2', '-i', str(f), '-af', 'pan=mono|c0=0.5*c0+0.5*c1,'
+            'highpass=f=300:p=2,highpass=f=300:p=2,lowpass=f=3400:p=2,lowpass=f=3400:p=2,asetnsamples=n=960:p=0,'
+            'astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-', '-f', 'null', '-'])
+    e = sorted(10 ** (float(v) / 10) if v not in ('-inf', 'inf', 'nan') else 0.0 for v in re.findall(r'RMS_level=(\S+)', r.stdout))
+    if len(e) < 10:
+        return 0.0
+    top, low = e[-int(len(e) * 0.4):], e[:int(len(e) * 0.3)]
+    return 10 * math.log10(max(sum(top) / len(top), 1e-20) / max(sum(low) / len(low), 1e-20))
 
 
 def fx_ok(fx):
@@ -547,7 +564,19 @@ def fx_pcm(m, fx, tmp, st=None):
     mid, i0 = tmp.with_suffix('.f32'), pcm_lufs(base)[0]
     try:
         if step in NOISE_FX:  # first to -20 LUFS: RNNoise and the expander's threshold then see a known level
-            ok, want = run(f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn},{STUDIO}', raw_in(base), mid, 'f32le'), -16
+            pre = f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn},'
+            ok, want = run(pre + STUDIO, raw_in(base), mid, 'f32le'), -16
+            if ok and step == 'sv':  # a loud music bed: the soft chain unless the full one is clearly (3 dB) clearer
+                soft, loud = mid.with_suffix('.soft.f32'), CACHE / f"{m['id']}.sv.loud"
+                try:
+                    use = run(pre + STUDIO_SOFT, raw_in(base), soft, 'f32le') and band_contrast(mid) < band_contrast(soft) + 3
+                    if use:
+                        retry(soft.replace, mid)
+                        loud.write_text('')  # sound_prep says so: Studio + remove music takes such a bed out
+                    else:
+                        loud.unlink(missing_ok=True)
+                finally:
+                    soft.unlink(missing_ok=True)
         elif step in FF_CHARS:
             ok, want = run(f'aformat=sample_fmts=flt,{FF_CHARS[step](n)},apad=whole_len={n},atrim=end_sample={n}', raw_in(base), mid, 'f32le'), i0
         else:
@@ -570,7 +599,7 @@ def sound_prep(st, mid, fx):
     m = meta(mid)
     if not m.get('hasAudio') or not pcm(m, fx=fx, st=st):
         raise RuntimeError('this clip has no sound to process')
-    return {'ok': True}
+    return {'ok': True, 'loudMusic': 'sv' in fx.split('+') and (CACHE / f'{mid}.sv.loud').exists()}
 
 
 def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):

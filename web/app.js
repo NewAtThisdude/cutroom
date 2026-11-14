@@ -1238,10 +1238,13 @@ const sndFx = c => [c.studio === 'music' ? 'svm' : c.studio ? 'sv' : c.denoise ?
 async function soundPrep(c, patch, label) { // make the processed sound first (a job with progress), then switch the clip to it
   const fx = sndFx({ ...c, ...patch, au: { ...c.au, ...patch.au } });
   if (fx && M.get(c.media)?.hasAudio) {
-    try { await job('/api/sound_prep', { media: c.media, fx }, label); } catch (e) { setStatus(e.message); throw e; }
+    let j;
+    try { j = await job('/api/sound_prep', { media: c.media, fx }, label); } catch (e) { setStatus(e.message); throw e; }
     setStatus('');
+    // a loud music bed: Studio voice keeps its level (pressing it down pressed the voice too); the inspector says what helps
+    if ((patch.studio ?? c.studio) === true) patch = { ...patch, loudBed: !!j.loudMusic };
   }
-  change(() => { Object.assign(c, { ...patch, au: patch.au ? { ...AU0, ...c.au, ...patch.au } : c.au }); if (!c.au) delete c.au; if (!c.studio) delete c.studio; });
+  change(() => { Object.assign(c, { ...patch, au: patch.au ? { ...AU0, ...c.au, ...patch.au } : c.au }); if (!c.au) delete c.au; if (!c.studio) delete c.studio; if (c.studio !== true || !c.loudBed) delete c.loudBed; });
   renderInspector();
 }
 const voiceOf = a => (a.voice !== 'none' ? a.voice : a.semi === 6 ? 'chipmunk' : a.semi === -5 ? 'deep' : 'none'); // chipmunk / deep are pitch presets
@@ -1355,6 +1358,7 @@ function mediaPanel(c, lane) {
     audio += slider('c.volume', 'Volume', dB(c.volume), -60, 20, 0.5, 'dB', ' data-db') + tick('c.denoise', 'Reduce noise', c.denoise)
       + `<p class="hint">RNNoise on this Mac, heard in the preview too. For the strongest cut, Isolate voice below keeps only the voice.</p>`
       + `<h4>Studio voice</h4><div class="seg wrap voices">${[['off', 'Off'], ['on', 'Studio voice'], ['music', 'Studio + remove music']].map(([k, n]) => `<button data-studio="${k}" class="${(c.studio === 'music' ? 'music' : c.studio ? 'on' : 'off') === k ? 'on' : ''}"${k === 'music' ? ' title="Demucs takes the music and ambience out first (about the clip&#39;s length to make)"' : ''}>${n}</button>`).join('')}</div>`
+      + (c.studio === true && c.loudBed ? '<p class="hint" id="svLoud">The music under this voice is loud, so Studio voice leaves it as loud as it was: turning it down would turn the voice down too. Studio + remove music takes the music out first.</p>' : '')
       + `<p class="hint">Noise removal, de-ess, compressor, presence and −16 LUFS loudness, made on this Mac; the preview plays the same sound the export gets.</p>`
       + `<h4>Separate</h4><div class="actions">${lane !== 'audio' && c.volume > 0 ? '<button data-act="detach">Detach audio</button>' : ''}<button data-act="isovoice" title="Keep only the voice (Demucs, on this Mac): the strongest noise reduction">Isolate voice</button><button data-act="novoice" title="Keep the music and ambience, drop the voice">Remove voice</button><button data-act="stems" title="Vocals, drums, bass and the rest as four audio clips (Demucs, on this Mac)">Split into stems</button></div>`;
   }

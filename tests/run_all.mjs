@@ -16,6 +16,7 @@ const DEFAULT_TESTS = [
   'audio_tools', 'voiceover', 'audio_packs', 'fx_pack', 'ramp_play',
   'export_hdr_alpha', 'hdr_iphone',
 ];
+const LONG = { fx_pack: 2400 }; // per-test timeouts (s) above --timeout: fx_pack plays ~45 effects 3 times each (886 s on an idle M4 Max)
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2);
@@ -304,7 +305,8 @@ try {
       test = start(process.execPath, [path.join(HERE, `${name}.mjs`), ...(name === 'export_formats' ? ['quick'] : [])], env, result.log, true);
       let timer;
       try {
-        await Promise.race([test.done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Test timed out after ${options.timeout} seconds`)), options.timeout * 1000); })]);
+        const limit = Math.max(options.timeout, LONG[name] || 0);
+        await Promise.race([test.done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Test timed out after ${limit} seconds`)), limit * 1000); })]);
       } finally { clearTimeout(timer); }
       result.failures = checkLines(test.output, /^(?:FAIL\b|FIX\b)/);
       result.skips = checkLines(test.output, /^SKIP\b/);
