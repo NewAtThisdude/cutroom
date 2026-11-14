@@ -49,6 +49,11 @@ const lagOf = (ref, x, max = 2400) => { // samples x trails ref by (cross-correl
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-at-`);
 if (!makeSpeech(`${tmp}/sp.wav`, 'The quick brown fox jumps over the lazy dog. [[slnc 700]] Cutroom cleans up noisy sound right on this Mac. [[slnc 700]] One more sentence to finish.')) { fs.rmSync(tmp, { recursive: true }); process.exit(0); }
 const sp = f32(['-i', `${tmp}/sp.wav`]), lead = SR; // 1 s of noise before the speech
+{ // peaks at -3.3 dBFS: the OS voices differ (macOS say -1.8 dBFS, Windows SAPI at full scale, clipping once the noise is added), and over
+  // -1 dBFS the export's limiter (server.py: alimiter at 0.891) changes the samples, which the preview (no limiter) plays as they are
+  let pk = 0; for (const v of sp) pk = Math.max(pk, Math.abs(v));
+  for (let i = 0; i < sp.length; i++) sp[i] *= 0.68 / pk;
+}
 const clean = new Float32Array(lead + sp.length + SR); clean.set(sp, lead);
 const noise = pink(clean.length, 0.03), noisy = clean.map((v, i) => v + noise[i]);
 const quiet = [], loud = [];
