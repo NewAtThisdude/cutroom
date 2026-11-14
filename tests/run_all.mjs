@@ -96,7 +96,7 @@ if (process.platform === 'darwin' && !process.env.CUTROOM_GPU_LOCK_HELD) {
   const shared = '/private/tmp/claude-501/-Users-marat/827eb4bf-5aee-4497-950b-e90b10220711/scratchpad/gpu.lock';
   const lock = process.env.CUTROOM_GPU_LOCK || (fs.existsSync(path.dirname(shared)) ? shared : path.join(os.tmpdir(), 'cutroom-gpu.lock'));
   // Two lanes (Marat, 2026-11-14): two runs may share this Mac at once; each takes whichever lock is free.
-  const lanes = [lock, lock.replace(/(\.lock)?$/, '-2.lock')];
+  const lanes = [lock, lock]; // one lane: two at once overheated the Mac (2026-11-14)
   console.log(`Waiting for a shared GPU lane: ${lanes.join(' or ')}`);
   let locked = null;
   process.on('SIGINT', () => locked?.kill('SIGINT'));

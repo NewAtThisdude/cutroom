@@ -110,7 +110,7 @@ for (const rm of ['no-preference', 'reduce']) {
   const before = (await api('/api/media')).length;
   await cmd({ action: 'create', path: 'Talks/Old' }); await cmd({ action: 'move', media: ['fold-beta.mp4'], to: 'Talks/Old' });
   await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(150);
-  await page.hover('.fold b'); await page.click('.fold [data-fdel]'); await page.waitForTimeout(500);
+  await page.hover('.fold:has(b:text-is("Old")) b'); await page.click('.fold:has(b:text-is("Old")) [data-fdel]'); await page.waitForTimeout(500);
   st = await api('/api/folders'); const oldId = Object.keys(st.folders).find(k => st.folders[k].name === 'Old');
   check(`${rm}: deleting the folder Old inside Talks keeps its media (moved up into Talks), nothing else lost`, !oldId && st.of[id.beta] === Object.keys(st.folders).find(k => st.folders[k].name === 'Talks') && (await api('/api/media')).length === before, JSON.stringify(st.of));
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
@@ -135,14 +135,15 @@ for (const rm of ['no-preference', 'reduce']) {
 
   // ---- search inside a folder and across all ----
   await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(150); // Talks
+  await cmd({ action: 'move', media: ['fold-delta.png'], to: '' }); // the one item of mine in no folder
   await page.fill('#mediaSearch', 'beta');
-  const inFolder = await cards(); await page.fill('#mediaSearch', 'alpha'); const none = await cards();
+  const inFolder = await cards(); await page.fill('#mediaSearch', 'delta'); const none = await cards();
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
   const across = await cards(); await page.fill('#mediaSearch', '');
   await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(100);
   const filt = await cards(); await page.click('#mediaFilter [data-mfilter="all"]');
-  check(`${rm}: search inside Talks finds beta, not alpha (it is in no folder); across all media it finds alpha; the Audio chip works inside a folder`,
-    inFolder.join() === 'fold-beta.mp4' && none.length === 0 && across.includes('fold-alpha.mp4') && filt.every(x => /\.(wav|mp3|m4a)$/.test(x)), `${inFolder} | ${none} | ${across} | ${filt}`);
+  check(`${rm}: search inside Talks finds beta (in a subfolder), not delta (in no folder); across all media it finds delta; the Audio chip works inside a folder`,
+    inFolder.join() === 'fold-beta.mp4' && none.length === 0 && across.includes('fold-delta.png') && filt.join() === 'fold-gamma.wav', `${inFolder} | ${none} | ${across} | ${filt}`);
   await page.fill('#mediaSearch', ''); await page.click('#folderBar .crumbs button:has-text("All media")');
 
   // ---- reload, a second project, a second editor ----
