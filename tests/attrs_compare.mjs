@@ -294,9 +294,11 @@ for (const rm of ['no-preference', 'reduce']) {
   // the saved project card never carries a before / after frame; a speed ramp a clip can't take is named
   const pst = await ev(async ([A]) => {
     REMOTE.compare({ on: true, mode: 'split', scope: 'clip', x: 0.5 }); S.sel = { lane: 'main', id: P.main[0].id };
-    const orig = cmpPaint; let n = 0; cmpPaint = (...a) => { n++; return orig(...a); };
+    // n: compare passes while the poster paints (S.noCmp set); m: all passes. The editor's own rAF paints during
+    // sendPoster's await show compare on purpose, so only passes inside the poster's paint count against it.
+    const orig = cmpPaint; let n = 0, m = 0; cmpPaint = (...a) => { m++; if (S.noCmp) n++; return orig(...a); };
     let during, after;
-    try { await sendPoster(); during = n; S.dirty = true; paint(); after = n; } finally { cmpPaint = orig; }
+    try { await sendPoster(); during = n; const m0 = m; S.dirty = true; paint(); after = m - m0; } finally { cmpPaint = orig; }
     const still = CMP.on && S.sel?.id === P.main[0].id;
     REMOTE.compare({ on: false });
     const src = P.main[0]; src.ramp = { src: A, in: 0, out: 2, pts: [[0, 1], [1, 1]], copy: src.media };
