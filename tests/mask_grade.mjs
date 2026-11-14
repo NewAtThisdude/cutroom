@@ -21,7 +21,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const ff = (args, out) => { if (!fs.existsSync(OUT + out)) execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, OUT + out]); return OUT + out; };
 
 // ---- media: a flat-coloured video (the colour changes are easy to measure) and a textured patch moving right (to track) ----
-ff(['-f', 'lavfi', '-i', 'color=c=0x9090b0:s=640x360:r=30:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv444p', '-qp', '0'], 'mg-flat.mp4');
+ff(['-f', 'lavfi', '-i', 'color=c=0x9090b0:s=640x360:r=30:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-qp', '0'], 'mg-flat.mp4'); // (4:2:0: a 4:4:4 file makes the server build a proxy mid-test)
 ff(['-f', 'lavfi', '-i', 'color=c=0x606060:s=640x360:r=30:d=2', '-f', 'lavfi', '-i', 'testsrc2=s=96x96:r=30:d=2', '-filter_complex', "[0][1]overlay=x='80+200*t':y=132", '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '12'], 'mg-move.mp4');
 for (const f of ['mg-flat.mp4', 'mg-move.mp4']) if (!(await api('/api/media')).some(m => m.name === f)) await api('/api/import_path', { path: OUT + f });
 for (let i = 0; i < 120 && (await api('/api/media')).some(m => !m.ready); i++) await sleep(500);
@@ -59,7 +59,8 @@ for (const [rm, dpr] of [['no-preference', 1], ['reduce', 2]]) {
   await boot();
   // both sides at T: { pv: {L, R, C, K}, ex: {...} } mean colours
   const both = T => ev(async ([T, boxes]) => {
-    const out = {}, ex = await REMOTE.snapshot({ t: T, max: 640 }), pv = await REMOTE.snapshot({ t: T, max: 640, preview: true });
+    const out = {}, ex = await REMOTE.snapshot({ t: T, max: 640 });
+    const pv = await REMOTE.snapshot({ t: T, max: 640, preview: true });
     for (const [side, im] of [['ex', ex.image], ['pv', pv.image]]) { out[side] = {}; for (const [k, bx] of Object.entries(boxes)) out[side][k] = (await window.__mean(im, bx)).map(v => Math.round(v * 10) / 10); }
     return out;
   }, [T, BOX]);

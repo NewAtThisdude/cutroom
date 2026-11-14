@@ -2493,12 +2493,13 @@ function aiImg(mk, i) {
   const key = `${mk.src}/${i}`;
   let im = aiImgs.get(key);
   if (!im) {
-    im = new Image(); im.onload = () => { S.dirty = true; }; im.src = `/cache/${mk.src}.aimask/${String(i).padStart(5, '0')}.png`; aiImgs.set(key, im);
+    im = new Image(); im.src = `/cache/${mk.src}.aimask/${String(i).padStart(5, '0')}.png`; aiImgs.set(key, im);
+    im.decode().then(() => { im.ok = true; S.dirty = true; }, () => {}); // ready once decoded: WebKit hands a cached picture over complete but not yet drawable, and its empty mask was kept
     for (const k2 of aiImgs.keys()) { if (aiImgs.size <= 240) break; aiImgs.delete(k2); }
   }
   return im;
 }
-const aiReady = im => im.complete && im.naturalWidth > 0;
+const aiReady = im => !!im.ok && im.naturalWidth > 0;
 function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview and the exported mask PNG
   const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h)), key = `${W}x${H}${JSON.stringify(mk)}`;
   if (maskCache.has(key)) return maskCache.get(key);
@@ -2532,7 +2533,7 @@ function maskCanvas(mk, w, h) { // white = keep. Same drawing for the preview an
 async function maskPNG(c, m, mk = c.mask, side = 1280) { // export: opaque greyscale (luma -> alpha via alphamerge) at the cropped source aspect
   const cr = c.crop || {}, mw = m.w * (1 - (cr.l || 0) - (cr.r || 0)), mh = m.h * (1 - (cr.t || 0) - (cr.b || 0)), s = Math.min(1, side / Math.max(mw, mh));
   const W = Math.round(mw * s), H = Math.round(mh * s), cv = new OffscreenCanvas(W, H), x = cv.getContext('2d');
-  if (mk.type === 'ai') { const im = aiImg(mk, mk.fi ?? 0); if (!aiReady(im)) await im.decode().catch(() => { throw new Error('the AI mask frames are missing: make the AI mask again'); }); }
+  if (mk.type === 'ai') { const im = aiImg(mk, mk.fi ?? 0); if (!aiReady(im)) { await im.decode().catch(() => { throw new Error('the AI mask frames are missing: make the AI mask again'); }); im.ok = true; } }
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(mk, W, H), 0, 0);
   return blobURL(await cv.convertToBlob({ type: 'image/png' }));
 }
