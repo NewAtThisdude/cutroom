@@ -24,9 +24,12 @@ function textArc(dx, width, curve, lineHeight = 0) { // arc length -> baseline a
   const bend = clamp(curve, -100, 100) * Math.PI / (100 * Math.max(1, width, lineHeight * Math.PI));
   return Math.abs(bend) < 1e-8 ? { x: dx, y: 0, a: 0 } : { x: Math.sin(dx * bend) / bend, y: (1 - Math.cos(dx * bend)) / bend, a: dx * bend };
 }
+// the text scratch canvases are CPU canvases: WebKit's GPU ones, cleared and redrawn for the next letter, now and then lent a
+// drawImage queued before it the next letter's pixels (each draw of a frame came out different and the export refused it)
+const TX_2D = { willReadFrequently: true };
 function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, deterministic blur taps: also works in WebKit workers without ctx.filter
   if (radius < 0.01) { ctx.drawImage(cv, x, y); return; }
-  const layer = scratch(cv.width, cv.height, 'txblur'), q = layer.getContext('2d'), n = 13;
+  const layer = scratch(cv.width, cv.height, 'txblur'), q = layer.getContext('2d', TX_2D), n = 13;
   q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, layer.width, layer.height);
   q.globalCompositeOperation = 'lighter'; q.globalAlpha = 1 / n; // average premultiplied pixels; source-over taps would lose opacity
   for (let i = 0; i < n; i++) {
@@ -38,8 +41,9 @@ function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, 
 function textGlyph(ctx, stroke, ch, x, y, size, alpha, blur, gradient) { // raster first: WebKit's text shadows otherwise ignore per-letter globalAlpha
   if (alpha <= 0) return;
   const m = ctx.measureText(ch), pad = Math.ceil(size * 2 + ctx.lineWidth + ctx.shadowBlur * 2 + Math.abs(ctx.shadowOffsetX) + Math.abs(ctx.shadowOffsetY));
-  const w = Math.ceil(Math.max(m.width, m.actualBoundingBoxRight || 0) + Math.max(0, m.actualBoundingBoxLeft || 0) + 2 * pad), h = Math.ceil(size * 2 + 2 * pad);
-  const cv = scratch(w, h, 'txglyph'), q = cv.getContext('2d');
+  const r32 = v => Math.ceil(v / 32) * 32; // sizes in steps of 32 px: a canvas per letter width churned the 64-canvas scratch cache every frame
+  const w = r32(Math.max(m.width, m.actualBoundingBoxRight || 0) + Math.max(0, m.actualBoundingBoxLeft || 0) + 2 * pad), h = r32(size * 2 + 2 * pad);
+  const cv = scratch(w, h, 'txglyph'), q = cv.getContext('2d', TX_2D);
   q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, w, h);
   for (const k of ['font', 'textBaseline', 'lineJoin', 'lineWidth', 'fillStyle', 'strokeStyle', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY']) q[k] = ctx[k];
   q.setTransform(1, 0, 0, 1, pad - x, pad + size - y);
@@ -405,7 +409,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   // in the preview and the export): such text is drawn solid on a scratch canvas, then laid on at the fade
   const main = ctx, fade = ctx.globalAlpha;
   if ((st.shadow && fade < 1) || fxBlur > 0 || (st.loop === 'glow' && fade < 1)) {
-    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d');
+    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d', TX_2D);
     sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, sx.canvas.width, sx.canvas.height);
     sx.setTransform(main.getTransform()); sx.font = main.font; sx.textBaseline = 'middle'; sx.lineJoin = 'round';
     ctx = sx;
