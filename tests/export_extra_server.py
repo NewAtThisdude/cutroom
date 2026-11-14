@@ -138,7 +138,7 @@ def main():
 
         # An embedded cover counts toward the limit: the fitted MP4 with its cover attached is still under the target.
         cover = Path(scratch) / 'cover.png'
-        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360,noise=alls=40:allf=t', '-frames:v', '1', str(cover))
+        ff('ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360', '-frames:v', '1', str(cover))  # a picture-like cover (a few tens of KB as JPG); pure noise is too big to embed under 1 MB, and the 300 KB case below covers that refusal
         f, st, info = run(targetBytes=1_000_000, cover={'image': base64.b64encode(cover.read_bytes()).decode(), 'fmt': 'jpg'}, subtitles=tracks)
         assert st['bytes'] <= 1_000_000 and st.get('coverEmbedded') and any(x['disposition'].get('attached_pic') for x in info['streams']), st
         print(f"PASS fitted MP4 with embedded cover: {st['bytes']} / 1000000 bytes", flush=True)
