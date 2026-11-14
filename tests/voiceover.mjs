@@ -6,12 +6,15 @@
 // Checks: each beep lands within 5 ms of its spoken time on the timeline (clip start + file time - clip in, the file read
 // as the export reads it), at two playhead start positions, with the measured and the remembered delay; the "hear the
 // project while recording" toggle (off by default, headphone warning) in both motion modes.
-//   CUTROOM_HOME=<lib> B=http://127.0.0.1:4703 node voiceover.mjs
+//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node voiceover.mjs   (never 4610)
+import { requireHome } from './runtime.mjs';
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+requireHome();
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-vo-`), f = `${tmp}/vo-v.mp4`;
