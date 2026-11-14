@@ -296,7 +296,7 @@ for (const rm of ['no-preference', 'reduce']) {
     REMOTE.compare({ on: true, mode: 'split', scope: 'clip', x: 0.5 }); S.sel = { lane: 'main', id: P.main[0].id };
     const orig = cmpPaint; let n = 0; cmpPaint = (...a) => { n++; return orig(...a); };
     let during, after;
-    try { await sendPoster(); during = n; S.dirty = true; paint(); after = n; } finally { cmpPaint = orig; }
+    try { const pr = sendPoster(); during = n; await pr; const n1 = n; S.dirty = true; paint(); after = n - n1; } finally { cmpPaint = orig; } // (the card's own paint is synchronous; the preview may repaint while the upload is out)
     const still = CMP.on && S.sel?.id === P.main[0].id;
     REMOTE.compare({ on: false });
     const src = P.main[0]; src.ramp = { src: A, in: 0, out: 2, pts: [[0, 1], [1, 1]], copy: src.media };
