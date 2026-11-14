@@ -7833,7 +7833,7 @@ def resume_prepare():
         wk = CACHE / f"{m.get('id')}.wk.mov"
         if wk.exists() and 'iec61966-2-1' not in sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
                                                        '-of', 'csv=p=0', str(wk)]).stdout:
-            wk.unlink()  # from before its container was relabelled too (WebKit showed it lifted): remade on the next request
+            wk.unlink(missing_ok=True)  # (Clear preview cache may have taken it meanwhile) from before its container was relabelled too (WebKit showed it lifted): remade on the next request
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
                 not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and proxy_pref(m) != 'never' and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
@@ -7948,13 +7948,41 @@ def clear_preview_cache():
         except ValueError:
             continue
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file():
-            for k in ('grid', 'peaks', 'stripN', 'wave', 'proxy'):
+            for k in REMADE:
                 m.pop(k, None)
             m['ready'] = False  # the page polls until it is ready again and reloads its players
             save_meta(m)
             again.append(m)
-    threading.Thread(target=lambda: [prepare(m) for m in again], daemon=True).start()
+    # shortest first: one 5-minute 4K clip's proxy (3.5 min) held 13 short items 'preparing' behind it. One worker: a second
+    # Clear while it runs restarts its list (two workers took both PREP slots and an import waited minutes for one)
+    with REMAKE_LOCK:
+        start = not REMAKE['on']
+        REMAKE.update(ids=[m['id'] for m in sorted(again, key=lambda m: m.get('duration') or 0)], on=True)
+    if start:
+        threading.Thread(target=remake_cache, daemon=True).start()
     return {'removed': removed, 'bytes': size, 'rebuilding': len(again)}
+
+
+REMAKE, REMAKE_LOCK = {'ids': [], 'on': False}, threading.Lock()  # what Clear preview cache has still to make again
+REMADE = ('grid', 'peaks', 'stripN', 'wave', 'proxy')  # the media fields that say a cache file is there
+
+
+def remake_cache():
+    while True:
+        with REMAKE_LOCK:
+            if not REMAKE['ids']:
+                REMAKE['on'] = False
+                return
+            mid = REMAKE['ids'].pop(0)
+        try:
+            m = meta(mid)
+            if not (MEDIA / m['file']).is_file():
+                continue
+            for k in REMADE:  # again here: an item that was being made when Clear came is made again
+                m.pop(k, None)
+            prepare(m)
+        except Exception as e:  # one bad item mustn't leave the rest 'preparing' for good
+            print(f'preview cache: {mid} not made again: {e!r}', file=sys.stderr, flush=True)
 
 
 def reveal_path(p):
