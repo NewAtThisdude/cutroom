@@ -2,12 +2,12 @@
 // where it runs (Apple GPU / NVIDIA / CPU / the GPU PC) or why not; in both motion modes. Run against a server on a scratch
 // library, optionally started with CUTROOM_PROFILE (e.g. win:cuda:12:32) to see that computer's choices:
 //   B=http://127.0.0.1:<port> [SHOTS=<dir>] node tests/this_computer.mjs
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 
 const B = process.env.B || 'http://127.0.0.1:4610', fails = [];
 const check = (name, ok, got) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `: ${JSON.stringify(got)}`}`); if (!ok) fails.push(name); };
 const caps = await (await fetch(`${B}/api/ai/caps`)).json();
-const b = await webkit.launch();
+const b = await browser.launch();
 try {
   for (const rm of ['reduce', 'no-preference']) {
     const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();

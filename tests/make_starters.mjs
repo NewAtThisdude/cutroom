@@ -2,14 +2,15 @@
 // patterns made here (they become the numbered slots and never ship), the sounds are Cutroom's own synthesized effects
 // (kept by name, made again on any Mac). Run it again after changing a starter's recipe below.
 //   CUTROOM_HOME=<scratch lib> CUTROOM_PORT=4751 python3 -I server.py, then B=http://127.0.0.1:4751 CUTROOM_SCRATCH=<dir> node make_starters.mjs
-import { webkit } from 'playwright';
+import { execNiceSync } from './runtime.mjs';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const B = process.env.B || 'http://127.0.0.1:4751', SCR = process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch', OUT = fileURLToPath(new URL('../templates/', import.meta.url));
 if (/:4610\b/.test(B)) throw new Error('run on a scratch server');
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH'));
-const ff = (...a) => execFileSync('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-y', ...a], { env });
+const ff = (...a) => execNiceSync('ffmpeg', [ '-v', 'error', '-y', ...a], { env });
 const api = async (path, body) => {
   const r = await fetch(B + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json(); if (!r.ok) throw new Error(j.error); return j;
@@ -29,7 +30,7 @@ ff('-f', 'lavfi', '-i', "aevalsrc='0.4*sin(2*PI*55*t)*exp(-8*mod(t,0.5))':s=4800
 const MUS = await api('/api/import_path', { path: `${FX}/beat.m4a` });
 for (let i = 0; i < 120; i++) { if ((await api('/api/media')).filter(m => [...V, ...SQ, TALK, MUS].some(x => x.id === m.id)).every(m => m.ready)) break; await new Promise(r => setTimeout(r, 500)); }
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const page = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 page.on('pageerror', e => { throw e; });
 await page.goto(`${B}/`);

@@ -9,7 +9,7 @@
 //   captions from speech-to-text STUBBED here (the page's /api/transcribe answered by the test: no whisper runs), styled,
 //   and the brand kit step skipped with its reason when this version has none.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node batch.mjs   (never 4610)
-import { webkit } from 'playwright';
+import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,7 +39,7 @@ fs.writeFileSync(`${HOME}/media/${broken.file}`, Buffer.alloc(4096, 7)); // brok
 check('six videos imported', media.every(m => m.id && m.kind === 'video'), media.map(m => m.name).join(', '));
 
 const expect = D - 0.8 - 1.0; // the two pauses less Remove pauses' 0.1 s of air on each side
-const b = await webkit.launch(), made = [], projects = [];
+const b = await browser.launch(), made = [], projects = [];
 let recipeId = null;
 const jobsOf = items => items.flatMap(it => it.steps.filter(s => s.q).map(s => s.q.job));
 const settled = async (page, timeout = 600000) => page.waitForFunction(() => !BATCH.running, null, { timeout, polling: 500 });

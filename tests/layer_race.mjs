@@ -7,6 +7,7 @@
 //   frames at once, each its own upload; and through the page: an export with snapshots taken while it renders.
 // Every finished export / still is checked picture by picture (each span's colour at its box).
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> [SERVER_PY=<server.py for the second server>] node layer_race.mjs   (never 4610)
+import { PYTHON, spawnManaged, stopChild } from './runtime.mjs';
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -86,9 +87,9 @@ for (const [how, harm] of [['deleted', d => fs.rmSync(`${d}/t5.png`)], ['damaged
   const lid = await layer(), r = await post('/api/export', plan(lid, { format: 'webm', w: 1280, h: 720, main: [{ media, in: 0, out: D, frames: D * F, geom: { x: 0, y: 0, w: 1280, h: 720 } }] }));
   const env = { ...process.env, CUTROOM_HOME: HOME, CUTROOM_PORT: new URL(B).port }; // the same port: it clears what it clears, then can't listen and exits
   delete env.PYTHONPATH;
-  const second = spawn('python3', ['-I', SERVER_PY], { env, stdio: 'ignore' });
+  const second = spawnManaged(PYTHON, ['-X', 'utf8', '-I', SERVER_PY], { env, stdio: 'ignore' });
   const exited = await Promise.race([new Promise(ok => second.on('exit', ok)), sleep(30000).then(() => 'timeout')]);
-  if (exited === 'timeout') second.kill();
+  if (exited === 'timeout') await stopChild(second);
   const still = layersOf(lid).length, [st, bad] = await done(r);
   check('a second server starting on the library mid-export: the export keeps every picture', exited !== 'timeout' && still === 1 && st === 'done' && bad.length === 0, `second server ${exited}, layer dir ${still ? 'kept' : 'GONE'}, ${st}${bad?.length ? ` wrong at ${JSON.stringify(bad)}` : ''}`);
 }

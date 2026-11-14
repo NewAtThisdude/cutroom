@@ -9,15 +9,19 @@
 // STRICTLY one job at a time: before each heavy job the GPU must be under 20 % for 10 s (ioreg AGXAccelerator); one server
 // at a time (ports 4813, 4814; scratch libraries); never 4610. The jobs run on THIS Mac's hardware: memory sizes are the
 // smaller Mac's, times are this Mac's (the panel scales its estimates by GPU cores).
+import { makeSpeech } from './fixtures.mjs';
+import { PYTHON, spawnManaged, stopChild } from './runtime.mjs';
 import { browser, macOnly } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 macOnly('allmacs: memory, GPU and process probes of a Mac (footprint, ioreg, vm_stat)');
-import { execFileSync, execFile, spawn } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const REPO = fileURLToPath(new URL('..', import.meta.url)), OUT = fileURLToPath(new URL('./out/', import.meta.url));
 const SCR = process.env.SCR || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}`;
+const AI_MODELS = process.env.CUTROOM_AI_MODELS;
+if (!AI_MODELS || !fs.existsSync(AI_MODELS)) throw new Error('allmacs requires CUTROOM_AI_MODELS=<installed model directory>');
 const RAMS = (process.argv[2] || '8,16').split(',').map(Number), only = process.argv[3], want = n => !only || new RegExp(`^(${only})$`).test(n);
 const FIX = `${SCR}/allmacs-fixtures`, PAGE = 16384, SWAP_MB = 256; // a job may page out at most this much (other agents share this Mac)
 fs.mkdirSync(FIX, { recursive: true });
@@ -28,11 +32,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const ff = (out, args) => { if (!fs.existsSync(`${FIX}/${out}`)) execFileSync('ffmpeg', ['-v', 'error', '-y', ...args, `${FIX}/${out}`]); return `${FIX}/${out}`; };
 
 // ---------- fixtures (made once, kept in the scratchpad) ----------
-if (!fs.existsSync(`${FIX}/speech.aiff`)) execFileSync('say', ['-v', 'Samantha', '-o', `${FIX}/speech.aiff`, 'Welcome back to the channel. Today we test every Mac, from eight gigabytes to thirty six. ' +
-  'The editor picks a model that fits, or it tells you why it cannot. Nothing is uploaded, and nothing swaps.']);
-const MIX = ff('mix.m4a', ['-i', `${FIX}/speech.aiff`, '-f', 'lavfi', '-i', "aevalsrc='0.5*sin(2*PI*55*t)*exp(-12*mod(t,0.5))+0.08*sin(2*PI*220*t)+0.06*sin(2*PI*277*t)':s=44100:d=10",
+if (!makeSpeech(`${FIX}/speech.wav`, 'Welcome back to the channel. Today we test every Mac, from eight gigabytes to thirty six. ' +
+  'The editor picks a model that fits, or it tells you why it cannot. Nothing is uploaded, and nothing swaps.', { voice: 'Samantha' })) process.exit(0);
+const MIX = ff('mix.m4a', ['-i', `${FIX}/speech.wav`, '-f', 'lavfi', '-i', "aevalsrc='0.5*sin(2*PI*55*t)*exp(-12*mod(t,0.5))+0.08*sin(2*PI*220*t)+0.06*sin(2*PI*277*t)':s=44100:d=10",
   '-filter_complex', '[0]aresample=44100,apad[a];[a][1]amix=inputs=2:duration=shortest:normalize=0', '-t', '10', '-c:a', 'aac', '-b:a', '192k']);
-const TALK = ff('talk.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=10', '-i', `${FIX}/speech.aiff`, '-af', 'apad', '-t', '10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac']);
+const TALK = ff('talk.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=10', '-i', `${FIX}/speech.wav`, '-af', 'apad', '-t', '10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac']);
 // a red box moving over a still picture, 1080p30 (remove, cut out, track, slow-mo, relight)
 const V = ff('box1080.mp4', ['-f', 'lavfi', '-i', 'smptehdbars=s=1920x1080:r=30:d=3', '-vf', "noise=alls=12:allf=p,drawbox=x='400+200*t':y=380:w=260:h=260:color=red@1:t=fill",
   '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p']);
@@ -41,7 +45,7 @@ const V4K = ff('uhd60.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=3840x2160:r=60:d=2
 if (!fs.existsSync(`${FIX}/face.png`)) { // a face for Retouch: Z-Image on this Mac, once (the same tool as Generate image)
   const env = { ...process.env, VIRTUAL_ENV: `${REPO}ai/.venv`, PATH: `${REPO}ai/.venv/bin:${process.env.PATH}` };
   delete env.PYTHONPATH;
-  execFileSync(`${REPO}ai/.venv/bin/mflux-generate-z-image-turbo`, ['--model', `${os.homedir()}/Movies/Cutroom/ai/z-image-turbo-4bit`, '--prompt', 'passport photo of a smiling woman, face centred, looking at the camera, plain background, soft light',
+  execFileSync(`${REPO}ai/.venv/bin/mflux-generate-z-image-turbo`, ['--model', `${AI_MODELS}/z-image-turbo-4bit`, '--prompt', 'passport photo of a smiling woman, face centred, looking at the camera, plain background, soft light',
     '--width', '768', '--height', '768', '--steps', '8', '--seed', '7', '--output', `${FIX}/face.png`], { env, stdio: 'ignore' });
 }
 const FACE = ff('face.mp4', ['-loop', '1', '-i', `${FIX}/face.png`, '-vf', "zoompan=z='1+0.002*on':d=1:s=720x720:fps=30", '-t', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p']);
@@ -118,13 +122,13 @@ async function server(ram, port) {
   delete env.CUTROOM_CORES;
   if (ram !== 36) Object.assign(env, { CUTROOM_RAM_GB: String(ram), CUTROOM_CORES: '8' });
   // a fresh scratch library each run: cached transcripts / stems / outlines would measure nothing. The ai link (the image
-  // model, read only) is unlinked first so nothing can follow it into ~/Movies/Cutroom.
+  // model, read only) is unlinked first so nothing can follow it into the supplied models directory.
   try { if (fs.lstatSync(`${env.CUTROOM_HOME}/ai`).isSymbolicLink()) fs.unlinkSync(`${env.CUTROOM_HOME}/ai`); } catch {}
   if (!env.CUTROOM_HOME.startsWith(SCR)) throw new Error('scratch libraries only');
   fs.rmSync(env.CUTROOM_HOME, { recursive: true, force: true });
   fs.mkdirSync(env.CUTROOM_HOME, { recursive: true });
-  if (!fs.existsSync(`${env.CUTROOM_HOME}/ai`)) fs.symlinkSync(`${os.homedir()}/Movies/Cutroom/ai`, `${env.CUTROOM_HOME}/ai`); // the image model's weights (read only)
-  const p = spawn('python3', ['-I', 'server.py'], { cwd: REPO, env, stdio: ['ignore', 'ignore', fs.openSync(`${SCR}/allmacs-${ram}.log`, 'w')] });
+  if (!fs.existsSync(`${env.CUTROOM_HOME}/ai`)) fs.symlinkSync(AI_MODELS, `${env.CUTROOM_HOME}/ai`); // the image model's weights (read only)
+  const p = spawnManaged(PYTHON, ['-X', 'utf8', '-I', 'server.py'], { cwd: REPO, env, stdio: ['ignore', 'ignore', fs.openSync(`${SCR}/allmacs-${ram}.log`, 'w')] });
   const B = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) { try { await fetch(`${B}/api/ping`); return { p, B }; } catch { await sleep(200); } }
   throw new Error(`the ${ram} GB server did not start (${SCR}/allmacs-${ram}.log)`);
@@ -272,7 +276,7 @@ for (const [i, ram] of RAMS.entries()) {
       await br.close();
     }
   } finally {
-    srv.kill();
+    await stopChild(srv);
   }
 }
 fs.writeFileSync(`${OUT}allmacs.json`, JSON.stringify({ results, idle }, null, 1));

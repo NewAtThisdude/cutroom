@@ -1,3 +1,4 @@
+import { requireHome, PYTHON } from './runtime.mjs';
 // HDR and transparent exports through the real dialog, headless WebKit, both motion modes.
 // HDR: a real iPhone clip (4K 120 fps HLG, portrait by rotation) trimmed + faded in, in a 120 fps 9:16 project, exported
 // as HEVC Main 10 HLG and PQ: labels, 10-bit, upright, 120 fps, hvc1, and its luma against the source at 5 frames (10-bit
@@ -11,8 +12,10 @@ import { browser } from './browser.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
-const DIR = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`, SRC = `${DIR}/IMG_4705.MOV`;
+import path from 'node:path';
+const B = process.env.B || 'http://127.0.0.1:4810', HOME = requireHome();
+const SRC = process.env.HDR_PHONE || (process.env.PHOTOS && path.join(process.env.PHOTOS, 'IMG_4705.MOV'));
+if (!SRC || !fs.existsSync(SRC)) { console.log('SKIP HDR/alpha source comparison: set HDR_PHONE or PHOTOS to the real rotated 4K120 HLG source IMG_4705.MOV'); process.exit(0); }
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
@@ -216,8 +219,8 @@ for (const [fmt, frames, kind] of [['prores4444', 90, 'yuva444p'], ['webm', 90, 
   if (!f) { check(`alpha ${fmt} file`, false, 'no export'); continue; }
   let pxk, info, n, dur, w;
   if (fmt === 'pngseq') {
-    const names = execFileSync('unzip', ['-Z1', f], { encoding: 'utf8' }).trim().split('\n').filter(x => x.endsWith('.png')).sort();
-    fs.writeFileSync(`${TMP}/f45.png`, execFileSync('unzip', ['-p', f, names[45]], { maxBuffer: 64 << 20 }));
+    const names = JSON.parse(execFileSync(PYTHON, ['-X', 'utf8', '-I', '-c', 'import json, sys, zipfile; print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist()))', f], { encoding: 'utf8' })).filter(x => x.endsWith('.png')).sort();
+    fs.writeFileSync(`${TMP}/f45.png`, execFileSync(PYTHON, ['-X', 'utf8', '-I', '-c', 'import sys, zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))', f, names[45]], { maxBuffer: 64 << 20 }));
     const v = probe(`${TMP}/f45.png`).streams[0];
     info = v.pix_fmt; n = names.length; dur = n / 30; w = `${v.width}x${v.height}`; pxk = rgbaAt(`${TMP}/f45.png`, 0, 1080);
   } else {

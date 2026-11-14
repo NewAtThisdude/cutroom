@@ -1,13 +1,15 @@
+import { requireHome } from './runtime.mjs';
 // Reduce noise and auto duck, measured. Headless WebKit + the real export, on a scratch server:
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node audio_tools.mjs
 // Denoise: speech (say) + pink noise -> export WAV: the cleaned speech must sit where the clean speech is (lag), the noise
 // between words must drop >= 10 dB, and the preview must play the same denoised samples (&fx=dn). Duck: a night drive (road
 // noise, nobody talking) must leave the song alone; on talk + music, trimming 2 s off the talk moves every dip 2 s.
+import { makeSpeech } from './fixtures.mjs';
 import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
-const LIB = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
+const LIB = requireHome();
 const B = process.env.B || 'http://127.0.0.1:4610', SR = 48000, res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
@@ -42,8 +44,8 @@ const lagOf = (ref, x, max = 2400) => { // samples x trails ref by (cross-correl
 
 // ---- test signals: speech with gaps, in pink noise; tone bursts in pink noise
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-at-`);
-execFileSync('say', ['-o', `${tmp}/sp.aiff`, 'The quick brown fox jumps over the lazy dog. [[slnc 700]] Cutroom cleans up noisy sound right on this Mac. [[slnc 700]] One more sentence to finish.']);
-const sp = f32(['-i', `${tmp}/sp.aiff`]), lead = SR; // 1 s of noise before the speech
+if (!makeSpeech(`${tmp}/sp.wav`, 'The quick brown fox jumps over the lazy dog. [[slnc 700]] Cutroom cleans up noisy sound right on this Mac. [[slnc 700]] One more sentence to finish.')) { fs.rmSync(tmp, { recursive: true }); process.exit(0); }
+const sp = f32(['-i', `${tmp}/sp.wav`]), lead = SR; // 1 s of noise before the speech
 const clean = new Float32Array(lead + sp.length + SR); clean.set(sp, lead);
 const noise = pink(clean.length, 0.03), noisy = clean.map((v, i) => v + noise[i]);
 const quiet = [], loud = [];

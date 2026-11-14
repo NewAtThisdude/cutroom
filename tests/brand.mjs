@@ -5,7 +5,8 @@
 // carries the brand (an empty library adopts it); the Brand panel in both motion modes; no page errors. No AI step is involved.
 //   CUTROOM_HOME=<scratch lib> CUTROOM_PORT=4752 python3 -I server.py, then
 //   B=http://127.0.0.1:4752 CUTROOM_HOME=<same lib> CUTROOM_SCRATCH=<scratch dir> node brand.mjs
-import { webkit } from 'playwright';
+import { PYTHON, execNiceSync } from './runtime.mjs';
+import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +21,7 @@ const api = async (path, body) => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PYTHONPATH'));
-const ff = (...a) => execFileSync('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-y', ...a], { env });
+const ff = (...a) => execNiceSync('ffmpeg', [ '-v', 'error', '-y', ...a], { env });
 const near = (p, q, tol = 40) => p.every((v, i) => Math.abs(v - q[i]) <= tol);
 const MAG = [255, 0, 255], RED = [255, 0, 0], GREEN = [0, 192, 0], BLUE = [0, 0, 255];
 
@@ -35,7 +36,7 @@ for (let i = 0; i < 120; i++) { const m = await api('/api/media'); if ([L, I, O,
 const font = await (await fetch(`${B}/api/fonts?name=Brand%20Face.ttf`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: readFileSync(`${ROOT}/web/fonts/BebasNeue.ttf`) })).json();
 const before = await api('/api/brand'); // put back at the end (a scratch library may have one)
 
-const b = await webkit.launch();
+const b = await browser.launch();
 const errs = [];
 const open = async rm => {
   const page = await (await b.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: rm })).newPage();
@@ -142,7 +143,7 @@ await pa.evaluate(() => flushSave());
 
 // ---- packages carry the brand: an empty brand adopts it ----
 const pk = await R(pa, 'package_project', {});
-const man = JSON.parse(execFileSync('python3', ['-I', '-c', 'import json,sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);print(json.dumps({"m":json.loads(z.read("manifest.json")),"p":json.loads(z.read("project.json"))}))', `${HOME}/exports/${pk.file}`], { env, encoding: 'utf8' }));
+const man = JSON.parse(execFileSync(PYTHON, ['-X', 'utf8', '-I', '-c', 'import json,sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);print(json.dumps({"m":json.loads(z.read("manifest.json")),"p":json.loads(z.read("project.json"))}))', `${HOME}/exports/${pk.file}`], { env, encoding: 'utf8' }));
 check('the package holds the logo, intro, outro, the clip and the brand font, and the brand', [L, I, O, V].every(x => man.m.media.some(r => r.id === x.id)) && man.m.fonts.some(f => f.family === font.family) && man.p.brand?.logo === L.id,
   `${man.m.media.length} media, fonts ${man.m.fonts.map(f => f.family)}`);
 await api('/api/brand', {});

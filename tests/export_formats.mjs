@@ -6,15 +6,21 @@
 //   bitrate; SRT / VTT / TXT round-trip through the subtitle importer; the MCP export with preset + fps + light.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> [SERVER_PID=<pid>] [LOW_B=<same lib, CUTROOM_RAM_GB=8>] node export_formats.mjs [quick]   (never 4610)
 import { browser } from './browser.mjs';
+import { cachedMedia, ensurePhoneFixture } from './fixtures.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
+import path from 'node:path';
 const B = process.env.B || 'http://127.0.0.1:4732', HOME = process.env.CUTROOM_HOME, QUICK = process.argv[2] === 'quick';
 if (!HOME || /:4610\b/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port>');
-const EXP = `${HOME}/exports`, PHONE = process.env.PHONE || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos/IMG_4697.MOV`;
+const EXP = `${HOME}/exports`, PHONE = ensurePhoneFixture();
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
-const api = async (path, body) => (await fetch(B + path, body ? { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { headers: { 'X-Cutroom': '1' } })).json();
+const api = async (route, body) => {
+  const response = await fetch(B + route, { ...(body ? { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { headers: { 'X-Cutroom': '1' } }), signal: AbortSignal.timeout(30000) });
+  const result = await response.json();
+  if (!response.ok || result.error) throw new Error(`${route}: ${result.error || response.status}`);
+  return result;
+};
 const ff = (bin, args, opt = {}) => execFileSync(bin, args, { maxBuffer: 1 << 28, ...opt });
 const probe = f => JSON.parse(ff('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', f]).toString());
 const psnr = (a, b, fps, scale = '') => { // by frame number (WebM's 1 ms clock), the first file scaled to the second's size when asked
@@ -24,16 +30,28 @@ const psnr = (a, b, fps, scale = '') => { // by frame number (WebM's 1 ms clock)
 const small = f => { const raw = ff('ffmpeg', ['-v', 'error', '-i', f, '-vf', 'scale=64:36,format=gray', '-f', 'rawvideo', '-']), n = 64 * 36, out = []; for (let i = 0; i + n <= raw.length; i += n) out.push(raw.subarray(i, i + n)); return out; };
 const dif = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 
-// media: the iPhone clip by path (APFS clone into the scratch library), a synthetic 4K60 clip and a 1080p30 clip
-const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-formats-`);
-const gen = (name, args) => { const f = `${tmp}/${name}`; ff('ffmpeg', ['-v', 'error', '-y', ...args, f]); return f; };
-const up = async f => (await (await fetch(`${B}/api/import?name=${f.split('/').pop()}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
-const ids = {
-  phone: (await api('/api/import_path', { path: PHONE })).id,
-  k4: await up(gen('formats-4k60.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=3840x2160:r=60:d=5', '-f', 'lavfi', '-i', 'sine=f=330:d=5', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest'])),
-  pip: await up(gen('formats-pip.mp4', ['-f', 'lavfi', '-i', 'testsrc=s=1920x1080:r=30:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'])),
+// Cached synthetic sources, plus PHONE or a generated HLG HEVC source. The SDR source
+// keeps the format/settings checks running if this ffmpeg cannot encode HEVC.
+const up = async file => {
+  const item = await api('/api/import_path', { path: file });
+  if (!item.id) throw new Error(`import returned no media id: ${path.basename(file)}`);
+  return item.id;
 };
-fs.rmSync(tmp, { recursive: true });
+const ids = {
+  k4: await up(cachedMedia('formats-4k60-v1.mp4', ['-f', 'lavfi', '-i', 'testsrc2=s=3840x2160:r=60:d=5', '-f', 'lavfi', '-i', 'sine=f=330:d=5', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest'])),
+  pip: await up(cachedMedia('formats-pip-v1.mp4', ['-f', 'lavfi', '-i', 'testsrc=s=1920x1080:r=30:d=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'])),
+};
+ids.phone = PHONE ? await up(PHONE) : ids.k4;
+// Check preparation outside the page so invalid ids and failed imports cannot turn
+// into the former three-minute wait for M.get(undefined).
+const readyUntil = Date.now() + 120000;
+for (;;) {
+  const media = await api('/api/media');
+  if (Object.values(ids).every(id => media.find(m => m.id === id)?.ready)) break;
+  const broken = media.find(m => Object.values(ids).includes(m.id) && m.error);
+  if (broken || Date.now() > readyUntil) throw new Error(`format fixture preparation failed: ${broken?.error || 'timed out after 120 seconds'}`);
+  await new Promise(resolve => setTimeout(resolve, 250));
+}
 
 const b = await browser.launch();
 let page, ev, errs;
@@ -44,7 +62,7 @@ const open = async (rm, base = B) => {
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0, null, { timeout: 20000 });
   ev = (f, a) => page.evaluate(f, a);
   await ev(() => loadMedia());
-  await page.waitForFunction(ids => Object.values(ids).every(id => M.get(id)?.ready), ids, { timeout: 180000 });
+  await page.waitForFunction(ids => Object.values(ids).every(id => M.get(id)?.ready), ids, { timeout: 20000 });
 };
 const SRT = '1\n00:00:00,500 --> 00:00:02,250\nHello from Cutroom\n\n2\n00:00:03,000 --> 00:00:05,125\nSecond line, with a comma\n\n3\n00:00:06,000 --> 00:00:09,500\nThe end\n';
 const build = () => ev(async ({ ids, SRT }) => { // the 10 s mixed project
@@ -161,7 +179,7 @@ for (const kind of ['srt', 'vtt', 'txt']) { // subtitles out and back in
 }
 if (!QUICK) { // 8K of the 4K sources (ffmpeg memory watched when SERVER_PID is given)
   let peak = 0;
-  const pid = process.env.SERVER_PID, watch = pid && setInterval(() => {
+  const pid = process.env.SERVER_PID, watch = pid && process.platform !== 'win32' && setInterval(() => {
     try { const kids = ff('pgrep', ['-P', pid]).toString().trim().split('\n'); const rss = ff('ps', ['-o', 'rss=', '-p', kids.join(',')]).toString().trim().split('\n').reduce((s, x) => s + +x, 0); peak = Math.max(peak, rss); } catch { /* none running */ }
   }, 500);
   const r = await run({ fmt: 'mp4', res: '8K', fps: 0 }, '8k');

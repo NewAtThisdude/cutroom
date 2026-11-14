@@ -1,3 +1,4 @@
+import { requireHome } from './runtime.mjs';
 // Real iPhone footage end to end: 4K 120 fps HLG HEVC, portrait by rotation metadata. Imports two clips by path, then checks
 // the 720p proxy (upright pixels, no rotation left in the file, BT.709 labels), the WebKit copy's labels, preview == export on
 // HDR frames (headless WebKit, both motion modes), a 1080x1920 60 fps export that decodes end to end, and its colours against
@@ -5,15 +6,16 @@
 // Skips cleanly when the clips aren't there.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node hdr_iphone.mjs     (a scratch server, never 4610)
 //   PHOTOS=<dir of .MOV files> overrides where the clips are read from (they are cloned, never modified)
-import { browser } from './browser.mjs';
+import { browser, macOnly } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME || `${os.homedir()}/Movies/Cutroom`;
-const DIR = process.env.PHOTOS || `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos`;
+const B = process.env.B || 'http://127.0.0.1:4810', HOME = requireHome();
+macOnly('iPhone reference comparison (VideoToolbox and AVFoundation)');
+const DIR = process.env.PHOTOS;
 const CLIPS = ['IMG_4705.MOV', 'IMG_4697.MOV'];
-if (!CLIPS.every(f => fs.existsSync(`${DIR}/${f}`))) { console.log(`SKIP: iPhone clips not found in ${DIR}`); process.exit(0); }
+if (!DIR || !CLIPS.every(f => fs.existsSync(`${DIR}/${f}`))) { console.log('SKIP iPhone reference comparison: set PHOTOS to the directory containing IMG_4705.MOV and IMG_4697.MOV (the real rotated 4K120 HLG sources)'); process.exit(0); }
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
