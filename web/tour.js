@@ -11,6 +11,7 @@ const TOUR = [
   { el: '#inspector', t: 'Clip settings', d: 'Select a clip and its speed, colour, sound, masks and keyframes appear here.' },
   { el: '#btnAsk', t: 'Ask for an edit', d: '⌘K: say what you want ("cut the pauses, add captions"); the local model plans it and you watch it happen. Each step is one undo.' },
   { el: '#btnExport', t: 'Export', d: 'MP4, HEVC, ProRes, GIF, HDR, transparent video, subtitles, and Final Cut / Resolve timelines. Press ? for every shortcut.' },
+  { t: 'Please enjoy Cutroom', d: 'It is free and open source, made for people who edit. If you like it, star the GitHub repo so more people can find it.', link: ['https://github.com/NewAtThisdude/cutroom', 'Star Cutroom on GitHub'] },
 ];
 let tourAt = -1;
 
@@ -20,7 +21,7 @@ function tourShow(i) {
   if (!box) {
     box = document.createElement('div');
     box.id = 'tour';
-    box.innerHTML = '<div class="tring"></div><div class="tcard" role="dialog" aria-modal="true" aria-labelledby="tourT"><p class="tstep"></p><h3 id="tourT"></h3><p class="td"></p>'
+    box.innerHTML = '<div class="tring"></div><div class="tcard" role="dialog" aria-modal="true" aria-labelledby="tourT"><p class="tstep"></p><h3 id="tourT"></h3><p class="td"></p><p class="tlink"><a target="_blank" rel="noopener"></a></p>'
       + '<div class="actions"><button data-t="skip" class="ghost">Skip</button><button data-t="back">Back</button><button data-t="next" class="primary">Next</button></div></div>';
     box.addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (b) tourGo(b.dataset.t); });
     document.body.append(box);
@@ -30,6 +31,7 @@ function tourShow(i) {
   $('.tstep', box).textContent = `${i + 1} of ${TOUR.length}`;
   $('#tourT').textContent = s.t;
   $('.td', box).textContent = s.d;
+  const a = $('.tlink a', box); a.parentNode.hidden = !s.link; if (s.link) { a.href = s.link[0]; a.textContent = s.link[1]; } // (the app opens it in the browser)
   $('[data-t="back"]', box).hidden = !i;
   $('[data-t="next"]', box).textContent = i === TOUR.length - 1 ? 'Start editing' : i ? 'Next' : 'Show me around';
   tourPlace();

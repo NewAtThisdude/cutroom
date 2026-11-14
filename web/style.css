@@ -540,3 +540,5 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #tour .sopt b { font-weight: 500; }
 #tour .sopt span { color: var(--muted); font-size: 12px; }
 #tour .sopt:hover, #tour .sopt:focus-visible { border-color: var(--accent); outline: none; }
+#tour .tlink { margin: -8px 0 20px; }
+#tour .tlink a { color: var(--accent); }

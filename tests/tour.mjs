@@ -25,10 +25,10 @@ for (const rm of ['no-preference', 'reduce']) {
     set.prefs.ratio === '16:9' && set.prefs.preset === 'yt1080' && set.prefs.fps === 60 && set.w === 1920 && set.h === 1080 && set.fps === 60 && set.lang === 'en' && set.at === 1, JSON.stringify(set));
   await page.evaluate(async () => { await REMOTE.add_text({ text: 'Setup check', start: 0, duration: 2 }); openExport(); }); // (Export needs something on the timeline)
   const ex = await page.evaluate(() => [$('#exPreset')?.value, $('#exFps')?.value]);
-  await page.evaluate(() => { closeModal(); restore(undo, redo); });
+  await page.evaluate(() => { closeModal(); P.text = []; renderAll(); scheduleSave(); }); // (the check's text off again)
   check(`${rm}: the Export dialog starts on the YouTube 1080p preset`, ex[0] === 'yt1080', JSON.stringify(ex));
   await page.evaluate(() => tourShow(0));
-  const n = await page.evaluate(() => TOUR.length), bad = [];
+  const n = await page.evaluate(() => TOUR.length), TOUR_EL = await page.evaluate(() => TOUR.map(s => !!s.el)), bad = [];
   for (let i = 0; i < n; i++) {
     await page.waitForTimeout(rm === 'reduce' ? 50 : 300); // (the ring glides there without reduced motion)
     const g = await page.evaluate(() => {
@@ -40,8 +40,9 @@ for (const rm of ['no-preference', 'reduce']) {
     const inside = c => c && c.left >= 0 && c.top >= 0 && c.right <= 1517 && c.bottom <= 904;
     const apart = !g.ring || g.card.right <= g.ring.left + 4 || g.card.left >= g.ring.right - 4 || g.card.bottom <= g.ring.top + 4 || g.card.top >= g.ring.bottom - 4;
     const ringOn = !g.er || (g.ring && Math.abs(g.ring.left - (g.er.left - 4)) < 1 && Math.abs(g.ring.width - (g.er.width + 8)) < 1);
-    if (!(g.i === i && inside(g.card) && (i === 0 ? !g.ring : g.ring) && ringOn && g.focus === 'next' && g.step === `${i + 1} of ${n}`)) bad.push(JSON.stringify(g));
-    if (i > 0 && !apart && !/timeline/.test(await page.evaluate(() => TOUR[tourAt].el))) bad.push(`step ${i + 1}: the card covers the part it points at`);
+    if (!(g.i === i && inside(g.card) && (TOUR_EL[i] ? g.ring : !g.ring) && ringOn && g.focus === 'next' && g.step === `${i + 1} of ${n}`)) bad.push(JSON.stringify(g));
+    if (i === n - 1 && !(await page.evaluate(() => /github\.com/.test($('#tour .tlink a')?.href || '') && !$('#tour .tlink').hidden))) bad.push('the last step has no GitHub link');
+    if (i > 0 && TOUR_EL[i] && !apart && !/timeline/.test(await page.evaluate(() => TOUR[tourAt].el))) bad.push(`step ${i + 1}: the card covers the part it points at`);
     if (i === 2) { // Back returns; Space presses the focused Next (as on any button) and never reaches the editor (no playing)
       await page.keyboard.press('ArrowLeft'); const back = await page.evaluate(() => tourAt);
       await page.keyboard.press('Space'); await page.waitForTimeout(100);
