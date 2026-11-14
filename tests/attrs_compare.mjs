@@ -70,7 +70,7 @@ for (const rm of ['no-preference', 'reduce']) {
     effects: ['adj.vig', 'adj.blur', 'adj.pix', 'adj.sharp', 'beauty', 'glow', 'key', 'mb'], masks: ['mask', 'mkf'], transform: ['fit', 'scale', 'x', 'y', 'rot', 'opacity', 'crop', 'flip'], speed: ['speed', 'pitch'],
     audio: ['volume', 'denoise', 'studio', 'au', 'vkf'], anim: ['anim', 'fadeIn', 'fadeOut'], trans: ['tr'], kf: ['kf'] };
   // a category on its own: its fields (and no others) now equal the source's; everything else is exactly as before
-  const one = (k, ids) => ev(async ([k, fields, ids]) => {
+  const one = (k, fields, ids) => ev(async ([k, fields, ids]) => {
     const src = P.main.find(c => c.id === ids.s), tgt = P.main.find(c => c.id === ids.tg[0]), before = structuredClone(tgt);
     const get = (o, p) => p.split('.').reduce((x, q) => x?.[q], o);
     const setp = (o, p, v) => { const q = p.split('.'), l = q.pop(), t = q.reduce((x, y) => (x[y] ??= {}), o); if (v === undefined) delete t[l]; else t[l] = structuredClone(v); };
