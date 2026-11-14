@@ -2775,6 +2775,8 @@ NO_FORMAT = set()  # models Ollama serves without structured output
 def llm(system, user, ctx=8192, images=None):
     """One JSON answer from the local model (Ollama on this Mac; thinking off: answers in seconds, not minutes).
     images: base64 JPEGs for a vision model (qwen3.5 sees)."""
+    if 'llm' in AI_OFF:  # off in Settings even as a step inside another job (dubbing's shorter lines fall back to the tempo cap)
+        raise RuntimeError(f"{tier('llm')['what']} is turned off in Settings (AI and this computer)")
     if not ollama_up():
         raise RuntimeError(f'the local language model is not available (install Ollama, then {LLM_HINT})')
     model = llm_model()
@@ -3470,6 +3472,8 @@ def ptext(p):
 
 
 def index_many(st, mids):
+    if 'llm' in AI_OFF:  # (indexing describes pictures with the local model: off in Settings, no speech-only index either)
+        raise RuntimeError(f"{tier('llm')['what']} is turned off in Settings (AI and this computer)")
     done, errs = 0, []  # no ids: every item not indexed yet
     mids = [x for x in dict.fromkeys(map(str, mids or [f.stem for f in MEDIA.glob('*.json') if not (CACHE / f'{f.stem}.index.json').exists()]))
             if (MEDIA / f'{x}.json').exists()][:500]
