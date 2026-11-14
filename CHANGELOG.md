@@ -14,6 +14,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Speed ramps drawn as one curve, reverse, freeze frame, stabilize, detach audio, auto reframe
 - Compound clips, multicam, adjustment layers
 - Fade handles on clips: drag a top corner to fade in or out
+- Split-screen layouts (side by side, stacked, one big and two small, grid of four, reaction, picture in picture) for any project shape: drop clips into the cells, pan and zoom inside a cell, gap colour and rounded corners; the cells stay ordinary clips you can trim and animate, and they re-flow when you change the layout or the canvas shape
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
 - Library source viewer with hover skim, In and Out points and Replace clip
@@ -51,6 +52,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
 
+- Audio visualizer (bars, mirrored bars, line, circle) in your brand colours, following one clip or the whole mix, with smoothing and sensitivity; worked out from the sound frame by frame, so the export matches the preview exactly
 ### AI features (all run on your computer)
 
 - Remove filler words and pauses
