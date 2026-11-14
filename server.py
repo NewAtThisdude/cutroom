@@ -8282,9 +8282,11 @@ def folders_op(b):
     with FOLD_LOCK:
         st = folders_read()
         F, of = st['folders'], st['of']
-        name = ' '.join(str(b.get('name', '')).split())[:60]
+        name = ' '.join(str(b.get('name', '')).split())[:60].strip()
         if op in ('create', 'rename') and not name:
             raise ValueError('a folder needs a name')
+        if op in ('create', 'rename') and ('/' in name or '\\' in name or name in ('.', '..')):
+            raise ValueError('a folder name cannot contain / or be . or .. (a / separates folders in a path like Interviews/B-roll)')
         if op in ('create', 'nest') and (b.get('parent') or None) not in (None, *F):
             raise ValueError('no such folder to put it in')
         if op in ('rename', 'delete', 'nest') and b.get('id') not in F:
@@ -8334,7 +8336,7 @@ def folders_op(b):
         else:
             raise ValueError('unknown folder action')
         folders_write(st)
-    return folders_state()
+    return {**folders_state(), **({'id': fid} if op == 'create' else {})}
 
 
 # ---------- settings that live with the library: <library>/settings.json (the page's Settings window; the rest are per

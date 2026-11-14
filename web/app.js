@@ -984,7 +984,7 @@ const fdPath = id => { const out = []; for (let k = id, n = 0; k && FD.folders[k
 const fdFind = ref => { // a folder by id or by path ("Interviews/B-roll", any case); undefined if none
   if (!ref) return undefined;
   if (FD.folders[ref]) return ref;
-  const want = String(ref).split('/').map(x => x.trim().toLowerCase()).filter(Boolean);
+  const want = String(ref).split('/').map(x => x.split(/\s+/).join(' ').trim().slice(0, 60).trim().toLowerCase()).filter(Boolean);
   return Object.keys(FD.folders).find(k => fdPath(k).join('/').toLowerCase() === want.join('/'));
 };
 const fdMedia = () => [...M.values()].filter(m => !m.slate);
@@ -1009,6 +1009,7 @@ async function fdOp(body) {
 function fdAsk(title, value, label, go) {
   modal(`<h3>${title}</h3><form id="fdForm"><input id="fdName" maxlength="60" value="${esc(value)}" aria-label="Folder name" autocomplete="off"><p id="fdErr" class="hint"></p><div class="actions"><button type="button" data-close>Cancel</button><button class="primary">${label}</button></div></form>`);
   $('#fdName').select();
+  $('#fdName').addEventListener('input', e => { $('#fdErr').textContent = /[\\/]/.test(e.target.value) ? 'A folder name cannot contain / (it separates folders in a path)' : ''; });
   $('#fdForm').addEventListener('submit', async e => { e.preventDefault(); try { await go($('#fdName').value); closeModal(); } catch (err) { $('#fdErr').textContent = err.message; } });
 }
 const fdNew = () => fdAsk('New folder', '', 'Create', name => fdOp({ op: 'create', name, parent: FD.folders[FD.cur] ? FD.cur : null }));
@@ -7183,10 +7184,12 @@ const REMOTE = {
   async media_folders({ action = 'list', path, name, to, media }) { // list | create | rename | delete | move (a folder is its id or its path "A/B"); media sits in a folder only by move
     await loadMedia(); await fdLoad();
     const need = ref => { const id = fdFind(ref); if (!id) throw new Error(`no folder "${ref}" (media_folders list shows them)`); return id; };
-    const ids = (Array.isArray(media) ? media : media ? [media] : []).map(r => { const m = M.get(r) || fdMedia().find(x => x.name === r) || fdMedia().find(x => x.name.toLowerCase().includes(String(r).toLowerCase())); if (!m) throw new Error(`no media "${r}"`); return m.id; });
+    const ids = (Array.isArray(media) ? media : media ? [media] : []).map(r => mediaBy(r).id);
+    const segs = p => String(p || '').split('/').map(x => x.split(/\s+/).join(' ').trim().slice(0, 60).trim()).filter(Boolean); // the same clean-up the server does to a name
+    if (action === 'create' && segs(path || name).some(x => x === '.' || x === '..')) throw new Error('a folder name cannot be . or ..');
     if (action === 'create') { // path "A/B/C" makes what is missing
       let parent = null;
-      for (const seg of String(path || name || '').split('/').map(x => x.trim()).filter(Boolean)) { const id = fdKids(parent).find(k => FD.folders[k].name.toLowerCase() === seg.toLowerCase()); if (id) parent = id; else { const j = await fdOp({ op: 'create', name: seg, parent }); parent = Object.keys(j.folders).find(k => j.folders[k].name === seg && (j.folders[k].parent || null) === parent); } }
+      for (const seg of segs(path || name)) { const id = fdKids(parent).find(k => FD.folders[k].name.toLowerCase() === seg.toLowerCase()); if (id) parent = id; else parent = (await fdOp({ op: 'create', name: seg, parent })).id; }
       if (!parent) throw new Error('give the new folder a path or name');
     } else if (action === 'rename') await fdOp({ op: 'rename', id: need(path), name });
     else if (action === 'delete') await fdOp({ op: 'delete', id: need(path) });

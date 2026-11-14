@@ -19,10 +19,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // seed: two videos, a sound, a photo (own names, so a busy library does not matter)
 const FILES = [['fold-alpha.mp4', ['-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-shortest']],
   ['fold-beta.mp4', ['-f', 'lavfi', '-i', 'testsrc2=size=180x320:rate=30:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30']],
-  ['fold-gamma.wav', ['-f', 'lavfi', '-i', 'sine=frequency=330:duration=2']], ['fold-delta.png', ['-f', 'lavfi', '-i', 'testsrc2=size=200x120:rate=1', '-frames:v', '1']]];
+  ['fold-gamma.wav', ['-f', 'lavfi', '-i', 'sine=frequency=330:duration=2']], ['fold-gamma (voice).wav', ['-f', 'lavfi', '-i', 'sine=frequency=550:duration=2']], ['fold-delta.png', ['-f', 'lavfi', '-i', 'testsrc2=size=200x120:rate=1', '-frames:v', '1']]];
 for (const [n, a] of FILES) {
   if (!fs.existsSync(OUT + n)) execFileSync('ffmpeg', ['-v', 'error', '-y', ...a, OUT + n]);
-  if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${n}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
+  if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${encodeURIComponent(n)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
 }
 for (let i = 0; i < 120 && (await api('/api/media')).some(m => !m.ready); i++) await sleep(500);
 const lib = await api('/api/media'), id = Object.fromEntries(FILES.map(([n]) => [n.slice(5, -4), lib.find(m => m.name === n)?.id]));
@@ -135,7 +135,8 @@ for (const rm of ['no-preference', 'reduce']) {
 
   // ---- search inside a folder and across all ----
   await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(150); // Talks
-  await cmd({ action: 'move', media: ['fold-delta.png'], to: '' }); // the one item of mine in no folder
+  await cmd({ action: 'move', media: ['fold-delta.png'], to: '' }); // an item of mine in no folder
+  await cmd({ action: 'move', media: ['fold-beta'], to: 'Talks/B-roll' }); // beta in a subfolder of Talks
   await page.fill('#mediaSearch', 'beta');
   const inFolder = await cards(); await page.fill('#mediaSearch', 'delta'); const none = await cards();
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
@@ -167,8 +168,22 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.evaluate(() => fdLoad()); await page2.evaluate(() => fdLoad());
   check(`${rm}: both editors show all of them after refreshing`, (await snap(page)) === (await snap(page2)), `${await snap(page)} | ${await snap(page2)}`);
 
+  // ---- folder names and paths: "/" refused, names cleaned the same on both sides, media found like every other command ----
+  const nF = async () => Object.keys((await api('/api/folders')).folders).length, n0 = await nF();
+  const bad = await api('/api/folders', { op: 'create', name: 'A/B' }), badRn = await api('/api/folders', { op: 'rename', id: Object.keys((await api('/api/folders')).folders)[0], name: 'x/y' }), dots = await api('/api/folders', { op: 'create', name: '..' });
+  check(`${rm}: the server refuses a folder name with / (create and rename) or ".." in words, and makes nothing`, [bad, badRn, dots].every(r => /cannot contain/.test(r.error || '')) && (await nF()) === n0, JSON.stringify([bad, badRn, dots]).slice(0, 200));
+  const long = 'x'.repeat(70), want = `Two Spaces/${'x'.repeat(60)}`;
+  await cmd({ action: 'move', media: ['fold-gamma (voice)'], to: `Two   Spaces/${long}` });
+  const again = await cmd({ action: 'move', media: ['fold-gamma (voice)'], to: `Two  Spaces/${long}` });
+  check(`${rm}: a path with doubled spaces and a segment over 60 characters makes exactly its two folders (cleaned like the server does), and the same raw path finds them again`,
+    (await nF()) === n0 + 2 && again.folders.filter(f => f.path === want).length === 1 && !again.folders.some(f => f.path === 'x'.repeat(70)) && (await api('/api/folders')).of[id['gamma (voice)']] === again.folders.find(f => f.path === want).id, again.folders.map(f => f.path.slice(0, 30)).join(' | '));
+  let rej = ''; try { await cmd({ action: 'create', path: 'Fresh/..' }); } catch (e) { rej = e.message; }
+  check(`${rm}: a path with .. is refused before anything is made`, /cannot be/.test(rej) && !(await cmd({})).folders.some(f => f.path === 'Fresh'), rej);
+  await cmd({ action: 'move', media: ['fold-gamma'], to: 'Mix' });
+  st = await api('/api/folders');
+  check(`${rm}: media given by name resolves like every other command: "fold-gamma" is fold-gamma.wav, not "fold-gamma (voice).wav"`, st.of[id.gamma] === Object.keys(st.folders).find(k => st.folders[k].name === 'Mix') && st.of[id['gamma (voice)']] !== st.of[id.gamma], JSON.stringify(st.of));
   // ---- neighbours of the feature stay whole: library still lists everything, old media untouched ----
-  check(`${rm}: all my media is still in the library`, (await api('/api/media')).filter(m => ALL.includes(m.id)).length === 4);
+  check(`${rm}: all my media is still in the library`, (await api('/api/media')).filter(m => ALL.includes(m.id)).length === ALL.length);
   check(`${rm}: no page errors`, errs.length === 0, errs.join(' | '));
   await page2.context().close(); await ctx.close();
 }
