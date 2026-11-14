@@ -5,7 +5,7 @@
                                                    and is the ring around it still sharp
   track_truth.py faces <export> <src> <faces.json> -> the same for each face Vision found on the source (faces.json = its 'all' lines)
   track_truth.py alpha <cutout.webm>            -> per frame the centre of the cutout's alpha (normalized), or null
-  track_truth.py fox <home>                     -> per frame the centre of the fox in fox-walk.mp4 (its clean plate = talk-with-music.mp4)"""
+  track_truth.py fox <fox.mp4> <plate.mp4>      -> per frame the centre of the fox in fox-walk (fixtures.mjs aiFootage) from its clean plate"""
 import json
 import math
 import subprocess
@@ -109,8 +109,8 @@ def alpha(f):
     return {'centres': out}
 
 
-def fox(home):
-    a, b = gray(f'{home}/media/87cf24520932.mp4', 1280, 720), gray(f'{home}/media/d83ef70ebbad.mp4', 1280, 720)
+def fox(walk, plate):
+    a, b = gray(walk, 1280, 720), gray(plate, 1280, 720)
     out = []
     for x, y in zip(a, b):
         m = cv2.morphologyEx((np.abs(x - y) > 30).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))

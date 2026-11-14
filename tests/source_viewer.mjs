@@ -3,14 +3,22 @@
 // + adds just that range at the playhead, library search / sort / "This project", and Replace clip.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node tests/source_viewer.mjs
 import { browser } from './browser.mjs';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+import { importNamedMedia } from './fixtures.mjs';
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
 const before = new Set((await get('/api/projects')).map(x => x.id));
+// the clips it names (a 5:27 drone file, a talk, a hike, a podcast) and enough others that sorting means something (> 10 items)
+const vid = (d, src = 'testsrc2', snd = 0) => ['-f', 'lavfi', '-i', `${src}=s=640x360:r=30:d=${d}`, ...(snd ? ['-f', 'lavfi', '-i', `sine=f=${snd}:r=48000:d=${d}`, '-c:a', 'aac', '-shortest'] : []),
+  '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '30', '-movflags', '+faststart'];
+const still = src => ['-f', 'lavfi', '-i', `${src}=s=640x360`, '-frames:v', '1'];
+await importNamedMedia(B, { 'DJI_0482_001.MP4': vid(327), 'talk.mp4': vid(16, 'testsrc', 300), 'mountain-hike.mp4': vid(9, 'smptehdbars'), 'podcast-episode.mp4': vid(12, 'rgbtestsrc', 200),
+  'beach-day.mp4': vid(5, 'yuvtestsrc'), 'city-night.mp4': vid(7, 'testsrc2', 500), 'forest.png': still('testsrc'), 'harbor.jpg': still('smptebars') });
 const lib = await get('/api/media'), by = n => lib.find(m => m.name === n);
 const DJI = by('DJI_0482_001.MP4'), TALK = by('talk.mp4'), HIKE = by('mountain-hike.mp4');
-if (!DJI || !TALK || !HIKE) { console.log('FAIL the scratch library needs DJI_0482_001.MP4, talk.mp4 and mountain-hike.mp4'); process.exit(1); }
+if (!DJI || !TALK || !HIKE) { console.log('FAIL the scratch library did not get DJI_0482_001.MP4, talk.mp4 and mountain-hike.mp4'); process.exit(1); }
 const b = await browser.launch();
 
 for (const reducedMotion of ['reduce', 'no-preference']) {

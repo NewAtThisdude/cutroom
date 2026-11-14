@@ -6,7 +6,8 @@ import { browser } from './browser.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 300)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
@@ -30,10 +31,10 @@ try {
     // 1. rail tabs on short windows
     const rail = () => ev(() => { const n = $('.rail'), r = n.getBoundingClientRect(), bs = [...n.querySelectorAll('button')]; return { n: bs.length, vis: bs.filter(x => { const q = x.getBoundingClientRect(); return q.top >= r.top - 0.5 && q.bottom <= r.bottom + 0.5; }).length, label: getComputedStyle(bs[0].querySelector('span')).display, fade: n.className, scroll: n.scrollHeight > n.clientHeight + 1 }; });
     const r800 = await rail();
-    check(`${rm}: 1440x800 shows all ${r800.n} rail tabs, with their names`, r800.n === 10 && r800.vis === 10 && r800.label !== 'none', JSON.stringify(r800));
+    check(`${rm}: 1440x800 shows all ${r800.n} rail tabs, with their names`, r800.n >= 11 && r800.vis === r800.n && r800.label !== 'none', JSON.stringify(r800));
     await page.setViewportSize({ width: 1440, height: 760 }); await page.waitForTimeout(150);
     const r760 = await rail();
-    check(`${rm}: 1440x760 (below 780): icons only, all ten visible`, r760.vis === 10 && r760.label === 'none', JSON.stringify(r760));
+    check(`${rm}: 1440x760 (below 780): icons only, all ${r760.n} visible`, r760.n >= 11 && r760.vis === r760.n && r760.label === 'none', JSON.stringify(r760));
     await page.setViewportSize({ width: 1440, height: 560 }); await page.waitForTimeout(150);
     const r560 = await rail();
     await ev(() => { const n = $('.rail'); n.scrollTop = 9999; }); await page.waitForTimeout(100);

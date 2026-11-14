@@ -256,6 +256,7 @@ function drawTexts(ctx, t, k, preview) {
 }
 
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders
+  if (it.viz) return drawViz(ctx, it, lt, k, preview); // an audio visualizer, not text
   const st = textStyle(it, lane), pr = lane === 'captions' ? { scale: 1, x: 0.5, y: P.capStyle.y, opacity: 1, rot: 0 } : propsAt(it, lt);
   const u = (Math.min(P.w, P.h) / 1080) * k * pr.scale, size = st.size * u;
   const timed = it.words?.length ? it.words : null;
@@ -412,6 +413,42 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
     const bw = Math.max(size, ...lines.map(l => l.w)) / 2 + padX;
     hits.push({ lane, id: it.id, x0: x - bw, y0: yTop, x1: x + bw, y1: yBot, rot: pr.rot || 0 });
   }
+}
+
+// the audio visualizer (a text-track item with .viz): this frame's levels, per bar 0..1, from vizLevels (viz.js: worked out once
+// from the sound, per frame of the item). The export's workers get the same numbers in the snapshot (it.lv), so the preview
+// and the export draw the very same bars; nothing is measured live.
+const mixHex = (a, b, u) => `#${[1, 3, 5].map(i => Math.round(parseInt(a.substr(i, 2), 16) * (1 - u) + parseInt(b.substr(i, 2), 16) * u).toString(16).padStart(2, '0')).join('')}`;
+function drawViz(ctx, it, lt, k, preview) {
+  const v = it.viz, pr = propsAt(it, lt), L = it.lv || (typeof vizLevels === 'function' ? vizLevels(it) : null), n = L?.n || clamp(Math.round(v.n || 32), 4, 64);
+  const W = (v.w ?? 0.8) * P.w * k * pr.scale, H = (v.h ?? 0.25) * P.h * k * pr.scale, cx = pr.x * P.w * k, cy = pr.y * P.h * k;
+  const f = L ? clamp(Math.floor((it.start + lt) * P.fps + 1e-6) - L.f0, 0, L.nF - 1) : 0, lev = i => (L ? L.lv[f * n + i] : 0);
+  const c1 = /^#[0-9a-f]{6}$/i.test(v.c1) ? v.c1 : '#ffffff', c2 = /^#[0-9a-f]{6}$/i.test(v.c2) ? v.c2 : c1, col = i => mixHex(c1, c2, n > 1 ? i / (n - 1) : 0);
+  const bw = W / n, x0 = cx - W / 2, bot = cy + H / 2, minH = 0.03 * H; // silence: a flat row at 3 % of the height
+  ctx.save();
+  ctx.globalAlpha = pr.opacity;
+  if (pr.rot) { ctx.translate(cx, cy); ctx.rotate((pr.rot * Math.PI) / 180); ctx.translate(-cx, -cy); }
+  if (v.style === 'line') {
+    const g = ctx.createLinearGradient(x0, 0, x0 + W, 0), lw = Math.max(0.035 * H, 1), pt = i => [x0 + (i + 0.5) * bw, bot - lw / 2 - lev(i) * (H - lw)];
+    g.addColorStop(0, c1); g.addColorStop(1, c2);
+    ctx.strokeStyle = g; ctx.lineWidth = lw; ctx.lineJoin = ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(...pt(0));
+    for (let i = 1; i < n; i++) { const [ax, ay] = pt(i - 1), [bx, by] = pt(i); ctx.quadraticCurveTo(ax, ay, (ax + bx) / 2, (ay + by) / 2); }
+    ctx.lineTo(...pt(n - 1)); ctx.stroke();
+  } else if (v.style === 'circle') {
+    const R = Math.min(W, H) / 2, r0 = R * 0.5, room = R - r0;
+    ctx.lineWidth = Math.max(1, ((2 * Math.PI * r0) / n) * 0.55);
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (2 * Math.PI * i) / n, l = Math.max(0.06 * room, lev(i) * room), ca = Math.cos(a), sa = Math.sin(a);
+      ctx.strokeStyle = col(i); ctx.beginPath(); ctx.moveTo(cx + ca * r0, cy + sa * r0); ctx.lineTo(cx + ca * (r0 + l), cy + sa * (r0 + l)); ctx.stroke();
+    }
+  } else for (let i = 0; i < n; i++) { // bars from the bottom, or mirrored about the middle
+    const h = Math.max(minH, lev(i) * H);
+    ctx.fillStyle = col(i);
+    ctx.fillRect(x0 + i * bw + bw * 0.14, v.style === 'mirror' ? cy - h / 2 : bot - h, bw * 0.72, h);
+  }
+  ctx.restore();
+  if (preview) hits.push({ lane: 'text', id: it.id, x0: cx - W / 2, y0: cy - H / 2, x1: cx + W / 2, y1: cy + H / 2, rot: pr.rot || 0 });
 }
 
 // ---------- the export's text layer (buildPlan's textLayer): the same functions run in the layer workers and, as the fallback, on the page ----------

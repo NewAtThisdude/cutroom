@@ -189,6 +189,162 @@ export async function seedLibrary({ baseUrl = process.env.B, home = process.env.
 
 export const seedFixtures = options => seedLibrary({ ...options, baseUrl: options?.baseUrl ?? options?.baseURL });
 
+// ---------- the AI suites' named footage (ai_worker, captions_pro, tracking), made here and imported on demand ----------
+// The suites once used clips and ids of one personal library; these stand-ins are made with ffmpeg and the speech helper, cached
+// in out/fixtures, imported through the API when the library lacks them, and found BY NAME (ids differ per library):
+//   podcast  podcast-episode-v1.mp4: ~1 min of one voice, sentences apart, over a quiet noise bed
+//   fox      fox-walk-v1.mp4 and its clean plate fox-plate-v1.mp4: an orange "fox" with dark legs walking right over a still
+//            textured ground, 1280x720 30 fps, 120 frames (tests/fox_truth.py takes the two files: their difference is the fox);
+//            PHOTOS/fox-walk.mp4 + PHOTOS/talk-with-music.mp4 (the real shot and its plate) instead when they are there
+//   drive    night-drive-{1,2,3}-v1.mp4 (~1 min of talk each, long pauses) and the project "Midnight Highway Journey" that uses a
+//            short span of each; "Cutroom demo (fixture)": the podcast on the main track (edit by script)
+const AI_TALK = [
+  'Welcome back to the show. Today we are talking about editing video on your own computer.',
+  'Most people start with their phone, and that is fine for short clips.',
+  'But once you have an hour of footage, you need a real timeline.',
+  'The first thing I do is cut the long pauses out of every interview.',
+  'Then I add captions, because most viewers watch without sound.',
+  'Colour comes next. A warm grade makes skin look healthy and bright.',
+  'Music should sit under the voice, never on top of it.',
+  'Finally, I export a vertical version for social media.',
+  'That is the whole workflow. Thanks for listening, and see you next week.',
+];
+const AI_DRIVE = [
+  ['We left the city just after midnight, with an empty highway ahead of us.', 'The engine was quiet and the radio played old songs.',
+    'Every few miles a truck passed us going the other way.', 'My friend counted the bridges while I kept my eyes on the road.'],
+  ['Around two in the morning we stopped for coffee at a gas station.', 'The cashier told us the mountain pass was closed for repairs.',
+    'So we took the coast road instead, which added an hour.', 'Nobody minded, because the ocean looked silver under the moon.'],
+  ['By four the sky started to turn grey over the hills.', 'We were tired, but the sunrise made the whole trip worth it.',
+    'I parked by the beach and we watched the waves for a while.', 'Then we drove the last twenty miles home and slept until noon.'],
+];
+
+function aiSpeechMedia(name, lines, gap, video) { // speech (lines `gap` ms apart) on a video source, over a quiet pink-noise bed
+  const wav = path.join(fixtureDir, `${path.basename(name, path.extname(name))}.speech.wav`);
+  if (!fs.existsSync(path.join(fixtureDir, name)) && !makeSpeech(wav, lines.join(` [[slnc ${gap}]] `))) return null;
+  return cachedMedia(name, ['-f', 'lavfi', '-i', video, '-i', wav, '-f', 'lavfi', '-i', 'anoisesrc=c=pink:r=48000:seed=5:amplitude=0.004',
+    '-filter_complex', '[1:a]aresample=48000,apad=pad_dur=1[s];[s][2:a]amix=inputs=2:duration=first:normalize=0[a]', '-map', '0:v', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-movflags', '+faststart'], { timeout: 600000 });
+}
+
+function foxFiles() {
+  // the ground: still blurred noise round a dark green; the fox (a 176x164 sprite): body, head and tail orange, legs dark brown from
+  // 92 px down, so its pixels below y = 590 are the legs (fox_truth.py). At t = 1 s it spans x 283-459, y 458-622: the ai_worker
+  // box {0.21, 0.62, 0.16, 0.26} with ~2 % margin; it walks 20 px/s to the right
+  const ground = cachedMedia('fox-ground-v1.png', ['-f', 'lavfi', '-i', 'color=c=0x46603a:s=1280x720,format=rgb24', '-vf',
+    'noise=alls=40:allf=u,gblur=sigma=5', '-frames:v', '1']);
+  const body = 'lte(pow((X-88)/70,2)+pow((Y-60)/40,2),1)+lte(pow(X-150,2)+pow(Y-24,2),576)+lte(pow((X-20)/22,2)+pow((Y-50)/10,2),1)';
+  const legs = 'gte(Y,92)*(between(X,40,52)+between(X,62,74)+between(X,108,120)+between(X,128,140))';
+  const sprite = cachedMedia('fox-sprite-v1.png', ['-f', 'lavfi', '-i', 'color=c=black:s=176x164,format=rgba', '-vf',
+    `geq=r='if(${legs},45,215)':g='if(${legs},32,110)':b='if(${legs},25,45)':a='255*gt(${body}+${legs},0)'`, '-frames:v', '1']);
+  const enc = ['-r', '30', '-frames:v', '120', '-c:v', 'libx264', '-preset', 'slow', '-crf', '10', '-pix_fmt', 'yuv420p', '-colorspace', 'bt709',
+    '-color_primaries', 'bt709', '-color_trc', 'bt709', '-movflags', '+faststart'];
+  const plate = cachedMedia('fox-plate-v1.mp4', ['-loop', '1', '-framerate', '30', '-i', ground, ...enc]);
+  const walk = cachedMedia('fox-walk-v1.mp4', ['-loop', '1', '-framerate', '30', '-i', ground, '-loop', '1', '-framerate', '30', '-i', sprite,
+    '-filter_complex', "[0:v][1:v]overlay=x='263+20*t':y=458:format=rgb", ...enc]);
+  return { plate, walk };
+}
+
+// names: any of 'podcast', 'fox', 'drive'. Returns { podcast, fox, plate, drive: [3 media], driveProject, demoProject } (media
+// objects from /api/media; project ids); speech footage is null where this computer has no speech service (a SKIP line says so)
+export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
+  requireHome();
+  if (!baseUrl || new URL(baseUrl).port === '4610') throw new Error('fixtures require a scratch server URL (never port 4610)');
+  const api = async (route, body) => {
+    const r = await fetch(baseUrl + route, { headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(`fixture ${route}: ${j.error || r.status}`);
+    return j;
+  };
+  const files = {};
+  if (names.includes('podcast') || names.includes('drive')) files.podcast = aiSpeechMedia('podcast-episode-v1.mp4', AI_TALK, 900, 'testsrc2=s=1280x720:r=30');
+  // the real fox clip and its clean plate (Marat's footage, where SAM 2 is unsure of a loose box) when PHOTOS has them, else the stand-in
+  const real = ['fox-walk.mp4', 'talk-with-music.mp4'].map(f => process.env.PHOTOS && path.join(process.env.PHOTOS, f));
+  if (names.includes('fox')) { const f = real.every(x => x && fs.existsSync(x)) ? { walk: real[0], plate: real[1] } : foxFiles(); files.fox = f.walk; files.plate = f.plate; }
+  if (names.includes('drive')) AI_DRIVE.forEach((lines, i) => { files[`drive${i}`] = aiSpeechMedia(`night-drive-${i + 1}-v1.mp4`, lines, 2500, 'testsrc2=s=640x360:r=30'); });
+  let lib = await api('/api/media');
+  const out = {};
+  for (const [key, file] of Object.entries(files)) {
+    out[key] = file && (lib.find(m => m.name === path.basename(file)) || await api('/api/import_path', { path: file }));
+  }
+  const ids = Object.values(out).filter(Boolean).map(m => m.id);
+  for (const until = Date.now() + 300000; ;) {
+    lib = await api('/api/media');
+    if (ids.every(id => lib.find(m => m.id === id)?.ready)) break;
+    const bad = lib.find(m => ids.includes(m.id) && m.error);
+    if (bad || Date.now() > until) throw new Error(`fixture preparation failed: ${bad?.error || 'not ready in 300 s'}`);
+    await pause(250);
+  }
+  for (const k of Object.keys(out)) if (out[k]) out[k] = lib.find(m => m.id === out[k].id);
+  const res = { podcast: out.podcast, fox: out.fox, plate: out.plate, realFox: !!files.fox && files.fox === real[0] };
+  if (names.includes('drive')) {
+    res.drive = [0, 1, 2].map(i => out[`drive${i}`]);
+    if (res.drive.every(Boolean) && res.podcast) {
+      const projects = await api('/api/projects'), find = n => projects.find(p => p.name === n)?.id;
+      res.driveProject = find('Midnight Highway Journey');
+      res.demoProject = find('Cutroom demo (fixture)');
+      if (!res.driveProject || !res.demoProject) {
+        const { browser } = await import('./browser.mjs');
+        const b = await browser.launch();
+        try {
+          const page = await b.newPage({ viewport: { width: 1517, height: 904 } });
+          await page.goto(baseUrl + '/', { waitUntil: 'load' });
+          await page.waitForFunction(() => typeof REMOTE !== 'undefined' && typeof P !== 'undefined' && P, null, { timeout: 30000 });
+          await page.evaluate(() => loadMedia());
+          const make = (name, clips) => page.evaluate(async ([name, clips]) => {
+            await REMOTE.new_project({ name, ratio: '16:9', branded: false });
+            await REMOTE.set_project({ set: { fps: 30 } });
+            for (const c of clips) await REMOTE.add_clip(c);
+            await flushSave();
+            return P.id;
+          }, [name, clips]);
+          // a short span of each long take, as an edit of a night drive would: whisper should hear these (+1 s), not the whole takes
+          res.driveProject ||= await make('Midnight Highway Journey', res.drive.map((m, i) => ({ media: m.id, in: 2 + 3 * i, out: 12 + 3 * i })));
+          res.demoProject ||= await make('Cutroom demo (fixture)', [{ media: res.podcast.id, in: 0, out: Math.min(30, res.podcast.duration) }]);
+        } finally { await b.close(); }
+      }
+    }
+  }
+  return res;
+}
+
+// Media a test expects under its own file names (the library shows a file's name): made once with ffmpeg into
+// out/fixtures/named-<hash of name and args>/<name> (so two tests can't share a name with different contents), imported
+// through the API and waited on until ready. specs: { 'talk.mp4': [ffmpeg input/output args], ... } -> { name: media item }.
+export async function importNamedMedia(baseUrl, specs, { timeout = 180000 } = {}) {
+  requireHome();
+  if (!baseUrl || new URL(baseUrl).port === '4610') throw new Error('fixtures require a scratch server URL (never port 4610)');
+  const call = async (route, body) => {
+    const r = await fetch(baseUrl + route, { headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(`fixture ${route}: ${j.error || r.status}`);
+    return j;
+  };
+  const ids = {};
+  for (const [name, args] of Object.entries(specs)) {
+    if (path.basename(name) !== name) throw new Error('fixture name must be a filename');
+    const dir = path.join(fixtureDir, `named-${createHash('sha256').update(JSON.stringify([name, args])).digest('hex').slice(0, 12)}`), file = path.join(dir, name);
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(dir, { recursive: true });
+      const partial = path.join(dir, `.${process.pid}.partial${path.extname(name)}`);
+      try {
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...args, partial], { timeout: 600000, maxBuffer: 8 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+        fs.renameSync(partial, file);
+      } finally { fs.rmSync(partial, { force: true }); }
+    }
+    ids[name] = (await call('/api/import_path', { path: file })).id;
+  }
+  for (const until = Date.now() + timeout; ;) {
+    const items = await call('/api/media').catch(() => []); // a media JSON can be briefly unreadable while preparation writes it
+    const mine = Object.values(ids).map(id => items.find(m => m.id === id));
+    if (mine.every(m => m?.ready)) return Object.fromEntries(Object.keys(ids).map((n, i) => [n, mine[i]]));
+    const failed = mine.find(m => m?.error);
+    if (failed || Date.now() > until) throw new Error(`fixture preparation failed: ${failed?.error || 'timed out'}`);
+    await pause(250);
+  }
+}
+
 // ---- speech clips and a rotated HLG source (audio_tools, audio_packs, export_hdr_alpha) ----
 // A "talk" clip: OS speech (makeSpeech) placed at `lead` s over an optional lavfi sound bed (music, noise), padded to `dur`
 // s, with a test-pattern picture unless `video: false`. Returns { file, speech: [[start, end], ...] }: where the voice is,
