@@ -291,6 +291,21 @@ for (const rm of ['no-preference', 'reduce']) {
   });
   check(`${rm}: exports are unaffected (the export frame and the export plan are identical with it on or off; nothing is saved in the project)`, ex.same && ex.planSame && ex.proj, JSON.stringify(ex));
 
+  // the saved project card never carries a before / after frame; a speed ramp a clip can't take is named
+  const pst = await ev(async ([A]) => {
+    REMOTE.compare({ on: true, mode: 'split', scope: 'clip', x: 0.5 }); S.sel = { lane: 'main', id: P.main[0].id };
+    const orig = cmpPaint; let n = 0; cmpPaint = (...a) => { n++; return orig(...a); };
+    let during, after;
+    try { await sendPoster(); during = n; S.dirty = true; paint(); after = n; } finally { cmpPaint = orig; }
+    const still = CMP.on && S.sel?.id === P.main[0].id;
+    REMOTE.compare({ on: false });
+    const src = P.main[0]; src.ramp = { src: A, in: 0, out: 2, pts: [[0, 1], [1, 1]], copy: src.media };
+    const au = { id: hex12(), media: A, start: 0, in: 0, out: 2, speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }; P.audio.push(au);
+    const r = await REMOTE.paste_attributes({ from: src.id, to: [au.id], categories: ['speed'] });
+    delete src.ramp; P.audio.length = 0;
+    return { during, after, still, skipped: r.skipped, defaults: (await REMOTE.paste_attributes({ from: src.id, to: [P.main[1].id] })).pasted.length };
+  }, [A]);
+  check(`${rm}: the project card is painted without before / after (compare stays on); a speed ramp a sound clip can't take is named; no categories means all`, pst.during === 0 && pst.after === 1 && pst.still && /speed ramp on sound clips/.test(JSON.stringify(pst.skipped)) && pst.defaults >= 8, JSON.stringify(pst));
   check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
   await ctx.close();
 }

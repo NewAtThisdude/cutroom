@@ -2132,7 +2132,7 @@ function paint() {
   if (!fxDone) fxPixels(ctx, t);
   drawTexts(ctx, t, k, true);
   if (SCOPE.on && (!S.playing || performance.now() - SCOPE.at >= 60)) drawScope(); // the finished frame, before the selection box; ~15 Hz while playing
-  if (CMP.on) cmpPaint(ctx, layers, act, mi, tr, t, k); // before / after: the same frame without its colour work, over one side (a preview aid: the export never sees it)
+  if (CMP.on && !S.noCmp) cmpPaint(ctx, layers, act, mi, tr, t, k); // before / after: the same frame without its colour work, over one side (a preview aid: the export never sees it)
   const mp = S.maskPreview, mh = mp && Math.abs(t - mp.T) < 0.5 / P.fps && hits.find(q => q.id === mp.id);
   if (mh) overlayMask(ctx, mp, mh); // what Best removal (or a cutout) will take, on the frame it was drawn on
   if (S.pickRect) {
@@ -3103,14 +3103,17 @@ async function pasteAttrs(src, targets, cats, kfMode = 'scale') { // src: { c, l
     return ok;
   }) }));
   const ramp = src.c.ramp && M.get(src.c.ramp.src) && src.c.media === src.c.ramp.copy ? src.c.ramp : null, pid = P.id;
-  if (ramp) for (const p of plan) { // a speed ramp is rendered once per target, over that clip's own picture, before the one undo step
-    const m = M.get(p.c.media);
-    if (!p.cats.includes('speed') || m?.kind !== 'video' || m.alpha || m.trans || p.lane === 'audio') continue;
-    const pl = rampPlan(p.c, ramp.pts);
-    if (pl.b - pl.a < 0.25) { skip('speed ramp on clips under 0.25 s'); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
-    p.ramp = { pl, was: p.c.media, j: await job('/api/ramp', { media: pl.src, t0: pl.a, t1: pl.b, map: pl.tbl, fps: P.fps }, 'Rendering the ramp') };
-  }
-  if (plan.some(p => p.ramp)) { await loadMedia(); for (const p of plan) p.c = live(p.c, pid, p.ramp ? p.ramp.was : undefined); }
+  try {
+    if (ramp) for (const p of plan) { // a speed ramp is rendered once per target, over that clip's own picture, before the one undo step
+      if (!p.cats.includes('speed')) continue;
+      const m = M.get(p.c.media), no = m?.alpha || m?.trans ? 'transparent clips' : p.lane === 'audio' || m?.kind !== 'video' ? 'sound clips' : '';
+      if (no) { skip(`speed ramp on ${no}`); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
+      const pl = rampPlan(p.c, ramp.pts);
+      if (pl.b - pl.a < 0.25) { skip('speed ramp on clips under 0.25 s'); p.cats = p.cats.filter(k => k !== 'speed'); continue; }
+      p.ramp = { pl, was: p.c.media, j: await job('/api/ramp', { media: pl.src, t0: pl.a, t1: pl.b, map: pl.tbl, fps: P.fps }, 'Rendering the ramp') };
+    }
+    if (plan.some(p => p.ramp)) { await loadMedia(); for (const p of plan) p.c = live(p.c, pid, p.ramp ? p.ramp.was : undefined); }
+  } catch (e) { setStatus(e.message); throw e; } // like applyRamp: the reason stays next to the clip
   const done = plan.filter(p => p.cats.length), note = () => [...skipped].map(([k, n]) => `${k}${n > 1 ? ` (${n})` : ''}`).join(', ');
   if (!done.length) { toast(`Nothing to paste: ${note() || 'no clips'}`); return { pasted: [], clips: [], skipped: Object.fromEntries(skipped) }; }
   const s = src.c;
@@ -5752,7 +5755,8 @@ function sendPoster(leaving) { // the projects screen's card = the preview as yo
   if (!P || !LANES.some(L => P[L.key].length)) return;
   const sel = S.sel, multi = new Set(S.multi), pick = S.pickRect;
   S.sel = null; S.multi.clear(); S.pickRect = null; // the frame as rendered: no selection box
-  try { paint(); } catch { return; } finally { S.sel = sel; for (const x of multi) S.multi.add(x); S.pickRect = pick; S.dirty = true; }
+  S.noCmp = true; // the card shows the finished picture, never a before / after frame
+  try { paint(); } catch { return; } finally { S.noCmp = false; S.sel = sel; for (const x of multi) S.multi.add(x); S.pickRect = pick; S.dirty = true; }
   const cv = $('#cv'), k = Math.min(1, 480 / Math.max(cv.width, cv.height)), o = document.createElement('canvas');
   o.width = Math.round(cv.width * k); o.height = Math.round(cv.height * k);
   o.getContext('2d').drawImage(cv, 0, 0, o.width, o.height);
@@ -7374,12 +7378,12 @@ const REMOTE = {
     change(() => { const T = { ...(P.tracks[key] || {}) }; if (hidden !== undefined) T.off = !!hidden; if (lk !== undefined) T.lock = !!lk; if (T.off || T.lock) P.tracks[key] = T; else delete P.tracks[key]; });
     return { tracks: P.tracks };
   },
-  async paste_attributes({ from, to, categories, keyframes = 'scale' }) { // from: a clip id (default: the copied clip); to: clip ids (default: the selection); categories: ids of ATTR_CATS (default: the last checklist)
+  async paste_attributes({ from, to, categories, keyframes = 'scale' }) { // from: a clip id (default: the copied clip); to: clip ids (default: the selection); categories: ids of ATTR_CATS (default: all)
     const src = from ? (([c, lane]) => ({ c: structuredClone(c), lane }))(cfind(from)) : clipboard?.items[0];
     if (!src) throw new Error('from: a clip id, or copy a clip first');
     const tg = to?.length ? to.map(cfind) : selection();
     if (!tg.length) throw new Error('to: clip ids, or select clips first');
-    const all = ATTR_CATS.map(a => a[0]), cats = categories === 'all' ? all : categories || all.filter(k => attrPrefs().cats[k]);
+    const all = ATTR_CATS.map(a => a[0]), cats = categories === 'all' || !categories ? all : categories;
     const bad = cats.filter(k => !all.includes(k));
     if (bad.length) throw new Error(`categories: ${all.join(', ')} (or "all"); not: ${bad.join(', ')}`);
     if (!['scale', 'abs'].includes(keyframes)) throw new Error('keyframes: scale (to each clip\'s length) or abs (keep the same times)');
