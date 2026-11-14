@@ -139,7 +139,7 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.fill('#mediaSearch', 'beta');
   const inFolder = await cards(); await page.fill('#mediaSearch', 'delta'); const none = await cards();
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
-  const across = await cards(); await page.fill('#mediaSearch', '');
+  const across = await cards(); await page.fill('#mediaSearch', 'fold');
   await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(100);
   const filt = await cards(); await page.click('#mediaFilter [data-mfilter="all"]');
   check(`${rm}: search inside Talks finds beta (in a subfolder), not delta (in no folder); across all media it finds delta; the Audio chip works inside a folder`,
