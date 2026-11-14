@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f0b23e'/%3E%3Cpath d='M9 8v16M15 8v16M21 8l4 8-4 8' stroke='%2317130a' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="record.css">
 </head>
 <body>
 <header class="top">
@@ -45,6 +46,7 @@
     <div class="panes">
     <section id="tab-media" class="pane on">
       <div class="imports"><label class="import"><input id="fileInput" type="file" multiple accept="video/*,audio/*,image/*,.heic,.mkv,.gif,.srt,.vtt,.txt"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import media</label><button id="btnPhotos" class="import" hidden title="Import from your Photos library"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.5"/><path d="M21 16l-5-5-8 8"/></svg>Photos</button></div>
+      <button id="btnRecord" class="wide ghostline" title="Screen, camera and microphone, each saved as its own file and placed in sync, with a teleprompter">Record screen and camera…</button>
       <button id="btnMulticam" class="wide ghostline" title="Several recordings of the same moment, lined up by their sound">Multicam…</button>
       <div id="mediaFilter" class="chips"><button data-mfilter="all" class="on">All</button><button data-mfilter="video">Videos</button><button data-mfilter="image">Photos</button><button data-mfilter="audio">Audio</button><button data-mfilter="proj" title="Only what this project uses">Used</button></div>
       <div class="mtools"><input id="mediaSearch" type="search" placeholder="Search: name, or Enter for what's in it / said" title="Typing filters by name. Enter searches inside: what the picture shows (red car, night, two people) and what is said" aria-label="Search the library"><select id="mediaSort" aria-label="Sort the library"><option value="new">Newest</option><option value="name">Name</option><option value="dur">Longest</option></select></div>
@@ -344,5 +346,6 @@
 <script src="viz.js"></script>
 <script src="tour.js"></script>
 <script src="settings.js"></script>
+<script src="record.js"></script>
 </body>
 </html>

@@ -108,6 +108,7 @@ final class EditorView: WKWebView {
         cfg.userContentController.add(self, name: "busy") // at rest the app may nap like any other: it used to hold App Nap off for good
         cfg.userContentController.add(self, name: "pick")
         cfg.userContentController.add(self, name: "photos") // the Media panel's Photos button
+        cfg.userContentController.add(self, name: "record") // the recorder (web/record.js): true while it records
         let view = EditorView(frame: .zero, configuration: cfg)
         view.onFiles = { [weak self] urls in Task { _ = await self?.importPaths(urls, fallback: false) } }
         web = view
@@ -132,6 +133,12 @@ final class EditorView: WKWebView {
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "pick" { pickLibrary = true; return }
         if message.name == "photos" { pickPhotos(); return }
+        if message.name == "record" { // recording: this window (teleprompter, countdown, camera preview) stays out of the screen capture
+            let on = (message.body as? Bool) == true // sharingType .none: ScreenCaptureKit, which WebKit records the screen through, leaves the window out
+            window.sharingType = on ? .none : .readOnly
+            window.level = on ? .floating : .normal // and it stays in front of the app being recorded
+            return
+        }
         guard message.name == "busy" else { return }
         if (message.body as? Bool) == true {
             if activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Cutroom is working") }
@@ -434,6 +441,15 @@ final class EditorView: WKWebView {
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType, decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
         decisionHandler(origin.host == base.host ? .grant : .deny) // voiceover recording; macOS still asks once per app
+    }
+
+    /// The recorder's getDisplayMedia (screen, a window, an area). WebKit asks this (WKUIDelegatePrivate) and, granted, shows
+    /// macOS's own screen / window picker, which is the user's consent: without it the request was refused. 1 = prompt (the
+    /// picker), 0 = deny. Unknown to a WebKit without it: never called, and the page says recording was not allowed.
+    @objc(_webView:requestDisplayCapturePermissionForOrigin:initiatedByFrame:withSystemAudio:decisionHandler:)
+    func webView(_ webView: WKWebView, requestDisplayCapture origin: WKSecurityOrigin, initiatedBy frame: WKFrameInfo, withSystemAudio: Bool,
+                 decisionHandler: @escaping (Int) -> Void) {
+        decisionHandler(origin.host == base.host ? 1 : 0)
     }
 }
 
