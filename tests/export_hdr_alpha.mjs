@@ -7,15 +7,20 @@ import { requireHome, PYTHON } from './runtime.mjs';
 // (VP9 alpha) on a transparent background, as ProRes 4444, WebM VP9, GIF and a PNG sequence: alpha in the file, 0 where
 // nothing is, 255 on the text / sticker / cut-out, frame counts; the preview shows a checkerboard where the file is clear.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node export_hdr_alpha.mjs     (a scratch server, never 4610)
-//   PHOTOS=<dir of .MOV files> overrides where IMG_4705.MOV is read from (cloned, never modified)
+//   PHOTOS=<dir of .MOV files> overrides where IMG_4705.MOV is read from (cloned, never modified). Without it: the synthetic
+//   4K60 HLG HEVC source turned portrait by a display rotation (fixtures ensureRotatedPhoneFixture), else a SKIP.
 import { browser } from './browser.mjs';
+import { ensureRotatedPhoneFixture } from './fixtures.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-const B = process.env.B || 'http://127.0.0.1:4810', HOME = requireHome();
-const SRC = process.env.HDR_PHONE || (process.env.PHOTOS && path.join(process.env.PHOTOS, 'IMG_4705.MOV'));
-if (!SRC || !fs.existsSync(SRC)) { console.log('SKIP HDR/alpha source comparison: set HDR_PHONE or PHOTOS to the real rotated 4K120 HLG source IMG_4705.MOV'); process.exit(0); }
+const B = process.env.B, HOME = requireHome();
+if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
+const PHONE = process.env.HDR_PHONE || (process.env.PHOTOS && path.join(process.env.PHOTOS, 'IMG_4705.MOV'));
+const SRC = PHONE && fs.existsSync(PHONE) ? PHONE : ensureRotatedPhoneFixture();
+if (!SRC) { console.log('SKIP HDR/alpha export: no real rotated HLG iPhone clip (HDR_PHONE / PHOTOS IMG_4705.MOV) and no HEVC encoder for the synthetic one'); process.exit(0); }
+console.log(`HDR source: ${SRC}`);
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };

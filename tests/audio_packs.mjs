@@ -3,22 +3,27 @@ import { requireHome } from './runtime.mjs';
 // Audio rail: search, categories, listen, add), (2) Studio voice (speech-band SNR on talk-with-music and podcast-episode,
 // onset delay, preview == export), (3) the 8 voice characters (pitch / formant / band checks, preview == export),
 // (4) export loudness targets -14 / -16 / -23 / off, (5) beats() on a 3 minute song (time, same grid as before).
-//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4751 node audio_packs.mjs [packs|studio|voices|loud|beats]
+//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node audio_packs.mjs [packs|studio|voices|loud|beats]   (never 4610)
+// Its talk clips are made here (OS speech over music / noise, fixtures speechClip). The library download needs the internet:
+// offline, or a source that won't download, is a SKIP (not a failure of the app). Demucs ("remove music") runs only with
+// run_all --ai; the WORLD characters and the numpy beats need the AI tools' Python (ai/.venv), else SKIP.
 import { PYTHON } from './runtime.mjs';
+import { speechClip } from './fixtures.mjs';
 import { browser } from './browser.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const LIB = requireHome();
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], SR = 48000;
-if (/:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), not on 4610');
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, only = process.argv[2], SR = 48000;
+if (!B || /:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), not on 4610');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${String(detail).slice(0, 400)}]` : ''}`); };
 const get = async p => (await fetch(B + p)).json();
 const post = async (p, body) => (await fetch(B + p, { method: 'POST', headers: H, body: JSON.stringify(body) })).json();
 const run = name => !only || name === only;
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const AI = process.env.CUTROOM_TEST_AI === '1', AI_PY = `${ROOT}ai/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, WORLD = fs.existsSync(AI_PY);
 
 // ---------- signal helpers ----------
 const mono = buf => { const x = new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), n = x.length >> 1, y = new Float32Array(n); for (let i = 0; i < n; i++) y[i] = (x[2 * i] + x[2 * i + 1]) / 65536; return y; };
@@ -114,7 +119,22 @@ const open = async rm => {
   return page;
 };
 const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
-const media = await get('/api/media'), byName = n => media.find(m => m.name === n);
+// the talk clips: a voice that stops at 10.4 s (the cave's tail is read after it), one over music, a 22 s podcast over room noise
+const SAY = 'We drove up the coast at sunset. [[slnc 900]] Then we ate dinner at a little cafe by the harbour. [[slnc 900]] The mountain trail was steep and the snow was deep.';
+const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000';
+const clips = { 'talk.mp4': [SAY, { lead: 0.5, dur: 12 }], 'talk-with-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC }],
+  'podcast-episode.mp4': [`${SAY} [[slnc 900]] Back at the beach we talked about the drive home. [[slnc 900]] Next week we try the desert road, early, before the heat.`,
+    { lead: 0.4, dur: 22, bed: 'anoisesrc=c=pink:r=48000:seed=9:amplitude=0.02' }] };
+const truth = {}, ids = {};
+for (const [name, [text, o]] of Object.entries(clips)) {
+  const c = speechClip(name, text, o);
+  if (!c) { console.log('SKIP audio packs suite: no OS speech service for its talk clips'); await b.close(); process.exit(0); }
+  const m = await (await fetch(`${B}/api/import?name=${name}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(c.file) })).json();
+  truth[m.id] = c.speech; ids[name] = m.id;
+}
+await ev(() => loadMedia());
+await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), Object.values(ids), { timeout: 120000 });
+const media = await get('/api/media'), byName = n => media.find(m => m.id === ids[n]);
 const TALK = byName('talk.mp4'), TWM = byName('talk-with-music.mp4'), POD = byName('podcast-episode.mp4');
 const made = [];
 const fresh = name => ev(name => { setProject(newProject('16:9')); P.name = `${name} (scratch)`; S.t = 0; renderAll(); return P.id; }, name).then(id => (made.push(id), id));
@@ -123,16 +143,27 @@ const select = async (lane, id) => { await ev(([lane, id]) => { S.sel = { lane, 
 const rows = p => p.evaluate(() => [...document.querySelectorAll('#sfxList .sfxrow')].map(r => [r.querySelector('b').textContent, r.querySelector('span').textContent, r.querySelector('b').title]));
 
 // ---------- 1. the CC0 library ----------
+let packsOffline = '';
 if (run('packs')) {
   let idx = await get('/api/packs');
-  if (!idx.installed) { // the button in the Audio rail, as a user would
-    await page.click('[data-tab="audio"]');
-    const t0 = Date.now();
-    await page.click('#btnPacks');
-    await page.waitForFunction(() => G.snd?.installed, null, { timeout: 900000 });
-    check('library downloads from the Audio rail button', true, `${((Date.now() - t0) / 1000).toFixed(0)} s`);
-    idx = await get('/api/packs');
+  if (!idx.installed) { // the button in the Audio rail, as a user would (the sources must be reachable first: offline is a SKIP)
+    const down = (await Promise.all(['https://kenney.nl/', 'https://archive.org/'].map(u => fetch(u, { signal: AbortSignal.timeout(20000) }).then(r => (r.body?.cancel(), r.status < 500 ? '' : `${u} ${r.status}`), e => `${u} ${e.cause?.code || e.message}`)))).filter(Boolean);
+    if (down.length) packsOffline = `the CC0 sources are unreachable (${down.join(', ')})`;
+    else {
+      await page.click('[data-tab="audio"]');
+      const t0 = Date.now();
+      await page.click('#btnPacks');
+      await page.waitForFunction(() => G.snd?.installed || /nothing could be downloaded/.test(document.querySelector('#toast')?.textContent), null, { timeout: 900000 });
+      idx = await get('/api/packs');
+      const lost = (idx.skipped || []).filter(x => /download failed/.test(x));
+      if (!idx.installed || lost.length) packsOffline = `downloads failed: ${(lost.length ? lost : [await page.textContent('#toast')]).join('; ').slice(0, 300)}`;
+      else check('library downloads from the Audio rail button', true, `${((Date.now() - t0) / 1000).toFixed(0)} s`);
+    }
   }
+  if (packsOffline) console.log(`SKIP CC0 sound library: ${packsOffline}`);
+}
+if (run('packs') && !packsOffline) {
+  const idx = await get('/api/packs');
   const src = JSON.parse(fs.readFileSync(`${ROOT}packs.json`, 'utf8'));
   const sfx = idx.items.filter(x => x.kind === 'sfx'), mus = idx.items.filter(x => x.kind === 'music');
   const cats = new Set(sfx.map(x => x.cat)), moods = new Set(mus.map(x => x.cat));
@@ -194,23 +225,24 @@ if (run('packs')) {
 
 // ---------- 2. Studio voice ----------
 if (run('studio')) {
-  const out = {};
+  const out = {}, FXS = AI ? ['dn', 'sv', 'svm'] : ['dn', 'sv'];
+  if (!AI) console.log('SKIP Studio voice + remove music (svm, Demucs): AI models excluded (run_all --ai to enable)');
   for (const m of [TWM, POD]) {
-    const sp = (await post('/api/speech', { media: m.id })).speech, raw = await pcmOf(m.id), r0 = speechGap(raw, sp);
+    const sp = (await post('/api/speech', { media: m.id })).speech || truth[m.id], raw = await pcmOf(m.id), r0 = speechGap(raw, sp); // (no VAD: where the voice was put)
     out[m.name] = { raw: r0.db };
-    for (const fx of ['dn', 'sv', 'svm']) {
+    for (const fx of FXS) {
       const t0 = Date.now(), y = await pcmOf(m.id, fx), r = speechGap(y, sp);
       out[m.name][fx] = { db: r.db, gain: r.db - r0.db, s: (Date.now() - t0) / 1000, len: y.length === raw.length, lag: xlag(raw, y) };
     }
     const o = out[m.name];
-    console.log(`     ${m.name}: speech/gap ${o.raw.toFixed(1)} dB; ` + ['dn', 'sv', 'svm'].map(k => `${k} ${o[k].db.toFixed(1)} (+${o[k].gain.toFixed(1)}) lag ${o[k].lag} made ${o[k].s.toFixed(1)} s`).join('; ') + ` (VAD: ${r0.act} speech / ${r0.gap} gap frames)`);
+    console.log(`     ${m.name}: speech/gap ${o.raw.toFixed(1)} dB; ` + FXS.map(k => `${k} ${o[k].db.toFixed(1)} (+${o[k].gain.toFixed(1)}) lag ${o[k].lag} made ${o[k].s.toFixed(1)} s`).join('; ') + ` (VAD: ${r0.act} speech / ${r0.gap} gap frames)`);
   }
   const pod = out['podcast-episode.mp4'], twm = out['talk-with-music.mp4'];
   check('podcast-episode: Studio voice raises the speech-band SNR (speech over gaps) by > 3 dB', pod.sv.gain > 3, `+${pod.sv.gain.toFixed(2)} dB (Reduce noise alone +${pod.dn.gain.toFixed(2)})`);
-  check('talk-with-music: Studio + remove music raises it by > 10 dB', twm.svm.gain > 10, `+${twm.svm.gain.toFixed(2)} dB (Studio voice without Demucs +${twm.sv.gain.toFixed(2)}: RNNoise leaves music)`);
+  if (AI) check('talk-with-music: Studio + remove music raises it by > 10 dB', twm.svm.gain > 10, `+${twm.svm.gain.toFixed(2)} dB (Studio voice without Demucs +${twm.sv.gain.toFixed(2)}: RNNoise leaves music)`);
   check('talk-with-music: Studio voice alone still improves it', twm.sv.gain > 0.3, `+${twm.sv.gain.toFixed(2)} dB`);
-  check('processed sound keeps the source length (sample exact)', Object.values(out).every(o => o.dn.len && o.sv.len && o.svm.len));
-  check('podcast: no delay (cross-correlation lag within 2 ms) for dn / sv / svm', ['dn', 'sv', 'svm'].every(k => Math.abs(pod[k].lag) <= 96), ['dn', 'sv', 'svm'].map(k => `${k} ${pod[k].lag}`).join(', ') + ' samples');
+  check('processed sound keeps the source length (sample exact)', Object.values(out).every(o => FXS.every(k => o[k].len)));
+  check('podcast: no delay (cross-correlation lag within 2 ms) for dn / sv / svm', FXS.every(k => Math.abs(pod[k].lag) <= 96), FXS.map(k => `${k} ${pod[k].lag}`).join(', ') + ' samples');
   // onset: speech-like bursts (sharp starts) over a noise floor; each start through Studio voice, against the input
   const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-sv-`), f = `${tmp}/studio-onsets.wav`;
   execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'aevalsrc=0.004*(random(0)-0.5)+if(lt(mod(t\\,1.5)\\,0.6)*gt(t\\,0.5)\\,0.5*(random(1)-0.5)*(1+0.6*sin(2*PI*180*t))*(0.6+0.4*sin(2*PI*4*t))\\,0):s=48000:d=9', '-ac', '2', f]);
@@ -244,7 +276,8 @@ if (run('studio')) {
 if (run('voices')) {
   const raw = await pcmOf(TALK.id), p0 = pitch(raw);
   const hp = x => biquad(biquad(x, 'hp', 1200), 'hp', 1200), out = {}, AI = ['elf', 'giant', 'monster', 'alien'];
-  for (const v of ['elf', 'giant', 'monster', 'alien', 'radio', 'megaphone', 'cave', 'underwater']) {
+  if (!WORLD) console.log(`SKIP voice characters elf, giant, monster, alien (WORLD vocoder): no AI tools Python at ${AI_PY}`);
+  for (const v of [...(WORLD ? AI : []), 'radio', 'megaphone', 'cave', 'underwater']) {
     const t0 = Date.now(), y = await pcmOf(TALK.id, v);
     out[v] = { y, s: (Date.now() - t0) / 1000, len: y.length === raw.length, rms: dB(energy(y)) - dB(energy(raw)), p: pitch(y), warp: warp(raw, y), lag: AI.includes(v) ? envLag(raw, y) : xlag(band(raw, 100, 1000), band(y, 100, 1000), 960),
       high: dB(energy(band(y, 6000, 12000))) - dB(energy(band(y, 300, 3000))) - dB(energy(band(raw, 6000, 12000))) + dB(energy(band(raw, 300, 3000))), above: dB(energy(hp(y))) - dB(energy(hp(raw))) };
@@ -254,10 +287,12 @@ if (run('voices')) {
   check('all 8 characters keep the length', Object.values(out).every(o => o.len));
   const r = v => out[v].p.f0 / p0.f0;
   const ok = (v, f0, fr) => Math.abs(r(v) / f0 - 1) < 0.15 && Math.abs(out[v].warp / fr - 1) < 0.1, say = v => `pitch x${r(v).toFixed(2)}, spectral envelope x${out[v].warp.toFixed(2)}`;
-  check('elf: pitch x1.65 and formants x1.2 (pitch +-15 %, envelope +-10 %)', ok('elf', 1.65, 1.2), say('elf'));
-  check('giant: pitch x0.6 and formants x0.8', ok('giant', 0.6, 0.8), say('giant'));
-  check('monster: pitch x0.5 and formants x0.72', ok('monster', 0.5, 0.72), say('monster'));
-  check('alien: pitch x1.25 (with vibrato) and formants x1.12', ok('alien', 1.25, 1.12), say('alien'));
+  if (WORLD) {
+    check('elf: pitch x1.65 and formants x1.2 (pitch +-15 %, envelope +-10 %)', ok('elf', 1.65, 1.2), say('elf'));
+    check('giant: pitch x0.6 and formants x0.8', ok('giant', 0.6, 0.8), say('giant'));
+    check('monster: pitch x0.5 and formants x0.72', ok('monster', 0.5, 0.72), say('monster'));
+    check('alien: pitch x1.25 (with vibrato) and formants x1.12', ok('alien', 1.25, 1.12), say('alien'));
+  }
   check('formant-aware: a reverb (cave) leaves the envelope where it was (x1 +-5 %)', Math.abs(out.cave.warp - 1) <= 0.05, `cave x${out.cave.warp.toFixed(2)}`);
   const peak = y => y.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
   check('no character clips: peaks under -1.5 dBFS (the export limiter at -1 dBFS then changes nothing)', Object.values(out).every(o => peak(o.y) < 0.85), Object.entries(out).map(([k, o]) => `${k} ${(20 * Math.log10(peak(o.y))).toFixed(1)}`).join(', ') + ' dBFS');
@@ -268,7 +303,7 @@ if (run('voices')) {
   check('cave: a reverb tail where the voice has stopped', cave > 10, `${cave.toFixed(1)} dB more in 10.55-10.85 s`);
   check('characters are not delayed: within 2 ms (waveform; WORLD ones by their loudness envelope, 1 ms steps)', Object.values(out).every(o => Math.abs(o.lag) <= 96), Object.entries(out).map(([k, o]) => `${k} ${o.lag}`).join(', ') + ' samples');
   // preview == export through the inspector's voice buttons; a character on top of Studio voice too
-  for (const [v, studio] of [['elf', false], ['cave', false], ['giant', true]]) {
+  for (const [v, studio] of [['elf', false], ['cave', false], ['giant', true]].filter(([v]) => WORLD || !AI.includes(v))) {
     await fresh(`Voice ${v} parity`);
     await ev(id => addMedia(id, 'main', 0), TALK.id);
     await select('main', await ev(() => P.main[0].id));
@@ -316,7 +351,8 @@ if (run('loud')) {
 // ---------- 5. beats on a 3 minute song ----------
 if (run('beats')) {
   const song = (await get('/api/packs')).items?.find(x => x.name === 'Sunglasses');
-  if (!song) check('beats: the pack song Sunglasses is installed', false);
+  if (!song && packsOffline) console.log(`SKIP beats on the pack song: ${packsOffline}`);
+  else if (!song) check('beats: the pack song Sunglasses is installed', false);
   else {
     const m = await post('/api/packs/add', { id: song.id });
     for (let k = 0; k < 60 && !(await get('/api/media')).find(x => x.id === m.id)?.peaks; k++) await new Promise(r => setTimeout(r, 500)); // its preview PCM is made at import
@@ -378,12 +414,13 @@ for _ in range(3):
 f.unlink(missing_ok=True)
 print(json.dumps({'t': min(ts), 'out': out}))`;
     const py = (exe, code, ...a) => JSON.parse(execFileSync(exe, ['-I', '-c', code, ...a], { env: { ...process.env, CUTROOM_HOME: LIB, PYTHONPATH: '' }, maxBuffer: 1 << 26 }).toString());
-    const old = py(PYTHON, OLD, raw), np = py(`${ROOT}ai/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, NEW, `${ROOT}ai/beats.py`, raw), sl = py(PYTHON, FALLBACK, ROOT, m.id);
+    const old = py(PYTHON, OLD, raw), np = WORLD ? py(AI_PY, NEW, `${ROOT}ai/beats.py`, raw) : null, sl = py(PYTHON, FALLBACK, ROOT, m.id);
     fs.rmSync(raw, { force: true });
     const same = o => JSON.stringify(o) === JSON.stringify(r);
     check('beats on a 2:50 song: the app grid == the old per-sample loops on the same song (117.2 BPM, 335 beats)', same(old.out) && r.bpm === 117.2 && r.beats.length === 335, `${r.bpm} BPM, ${r.beats.length} beats, gap sd ${(sd * 1000).toFixed(1)} ms; old ${old.out.bpm} BPM ${old.out.beats.length} beats`);
-    check('beats: numpy (ai/beats.py) and the stdlib fallback give that same grid', same(np.out) && same(sl.out), `numpy ${np.out.bpm}/${np.out.beats.length}, stdlib ${sl.out.bpm}/${sl.out.beats.length}`);
-    check('beats: the computation >= 5x faster than the old loops (same bytes, same run)', old.t / np.t >= 5, `old loops ${old.t.toFixed(3)} s, numpy ${np.t.toFixed(4)} s: ${(old.t / np.t).toFixed(1)}x; stdlib fallback end to end ${sl.t.toFixed(3)} s`);
+    if (!np) console.log(`SKIP beats with numpy (ai/beats.py): no AI tools Python at ${AI_PY}`);
+    else check('beats: numpy (ai/beats.py) and the stdlib fallback give that same grid', same(np.out) && same(sl.out), `numpy ${np.out.bpm}/${np.out.beats.length}, stdlib ${sl.out.bpm}/${sl.out.beats.length}`);
+    if (np) check('beats: the computation >= 5x faster than the old loops (same bytes, same run)', old.t / np.t >= 5, `old loops ${old.t.toFixed(3)} s, numpy ${np.t.toFixed(4)} s: ${(old.t / np.t).toFixed(1)}x; stdlib fallback end to end ${sl.t.toFixed(3)} s`);
     // end to end the ffmpeg decode is the floor (5x is not reachable): the old way's MP3 decode alone is ~0.17 s on a quiet
     // Mac, the cached PCM's resample ~0.09 s, and the app's beats() is that resample + ~40 ms. 1.6-4.1x measured under load
     const e2eOld = dec + old.t, e2e = Math.min(...ts);

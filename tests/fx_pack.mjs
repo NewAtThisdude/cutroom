@@ -11,15 +11,21 @@
 //  3. gallery tiles, in both motion modes: every new tile drawn (not blank, not just one scene), hovered tiles animate,
 //     the film-look tiles show the selected clip's own frame through their table.
 //  4. what the export pays: seconds for a 1080p30 export with the heaviest new transitions / effects vs a dissolve.
-//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node fx_pack.mjs [exact|parity|perf|tiles|export ...]
+//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node fx_pack.mjs [exact|parity|perf|tiles|export ...]   (never 4610)
+// The HLG footage: $CUTROOM_SCRATCH/photos/IMG_0324.MOV (a real iPhone clip) when there, else the synthetic 4K60 HLG HEVC
+// source (fixtures ensurePhoneFixture), else those looks are left out with a SKIP line.
 import { browser } from './browser.mjs';
+import { ensurePhoneFixture } from './fixtures.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
+const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
 const parts = process.argv.slice(2).length ? process.argv.slice(2) : ['exact', 'parity', 'perf', 'tiles', 'export'];
-const REAL = `${process.env.CUTROOM_SCRATCH || '/tmp/cutroom-scratch'}/photos/IMG_0324.MOV`; // read-only: uploaded as a copy
+if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
+const PHONE = `${process.env.CUTROOM_SCRATCH || os.tmpdir()}/photos/IMG_0324.MOV`;
+const REAL = parts.includes('parity') ? (fs.existsSync(PHONE) ? PHONE : ensurePhoneFixture()) : null; // read-only: uploaded as a copy
+if (parts.includes('parity')) console.log(REAL ? `HLG footage: ${REAL}` : 'SKIP film looks on HLG footage: no iPhone clip and no HEVC encoder for the synthetic one');
 const OUT = fileURLToPath(new URL('./out/fx_pack/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const NEW_TR = ['blurfade', 'whipup', 'whipdown', 'flashwhite', 'flashblack', 'lightleak', 'filmburn', 'cube', 'flip', 'punchin', 'zoomout', 'spin', 'glitchcut', 'rgbsplit',
@@ -38,7 +44,7 @@ for (const [k, vf] of [['A', ''], ['B', ',hue=h=140,negate']]) {
   ids[k] = (await (await fetch(`${B}/api/import?name=fxpack-${k}.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json()).id;
 }
 fs.rmSync(tmp, { recursive: true });
-if (fs.existsSync(REAL)) ids.R = (await (await fetch(`${B}/api/import?name=fxpack-real.mov`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(REAL) })).json()).id;
+if (REAL) ids.R = (await (await fetch(`${B}/api/import?name=fxpack-real.mov`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(REAL) })).json()).id;
 
 const b = await browser.launch(), pids = new Set();
 const open = async (rm = 'no-preference', scale = 1) => {

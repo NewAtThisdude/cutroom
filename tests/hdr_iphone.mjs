@@ -11,9 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4810', HOME = requireHome();
+const B = process.env.B, HOME = requireHome();
+if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
 macOnly('iPhone reference comparison (VideoToolbox and AVFoundation)');
-const DIR = process.env.PHOTOS;
+const DIR = process.env.PHOTOS || (process.env.CUTROOM_SCRATCH && `${process.env.CUTROOM_SCRATCH}/photos`); // run_all: <scratch>/photos
 const CLIPS = ['IMG_4705.MOV', 'IMG_4697.MOV'];
 if (!DIR || !CLIPS.every(f => fs.existsSync(`${DIR}/${f}`))) { console.log('SKIP iPhone reference comparison: set PHOTOS to the directory containing IMG_4705.MOV and IMG_4697.MOV (the real rotated 4K120 HLG sources)'); process.exit(0); }
 const res = [];

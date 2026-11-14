@@ -1,16 +1,18 @@
 // Speed ramps = one clip with a curve, rendered into a library copy played at 1x (item 40). Checks, on a scratch server:
-//  - playback of the 4K60 night-drive project with Bullet / Hero ramps on 4 shots: no backward clock snaps, no stalls
+//  - playback of a 4K60 six-shot project (the night drive's stand-in, made here) with Bullet / Hero ramps on 4 shots:
+//    no backward clock snaps, no stalls
 //  - preview == export on the ramped shots; the copy's frames == the source frames the curve says (60 fps test pattern)
 //  - the curve saves and reloads, Remove ramp restores the range, undo restores the media
 //  - the ramp editor (chips + curve drag) in both reduced-motion modes: the draft never touches the project or undo
-//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:4701 node tests/ramp_play.mjs   (needs project ab4bbf27d216 in that library)
+//   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node tests/ramp_play.mjs   (never 4610)
 import { browser } from './browser.mjs';
+import { cachedMedia } from './fixtures.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-const B = process.env.B || 'http://127.0.0.1:4610', RUNS = +(process.env.RUNS || 3), PROJ = process.env.PROJ || 'ab4bbf27d216';
-if (/:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), never the real library on 4610');
+const B = process.env.B, RUNS = +(process.env.RUNS || 3);
+if (!B || /:4610\b/.test(B)) throw new Error('run this on a scratch server (B=...), never the real library on 4610');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-ramp-`), fx = `${tmp}/ramp-truth.mp4`;
@@ -18,6 +20,14 @@ execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=12
 const FX = (await (await fetch(`${B}/api/import?name=ramp-truth.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(fx) })).json()).id;
 fs.rmSync(tmp, { recursive: true });
 const made = new Set([FX]), pids = [];
+// the 4K60 project: six 4 s shots (moving test patterns in different colours, with sound), H.264 like a drone's 4K60
+const SHOTS = [];
+for (const [k, vf] of ['', ',hue=h=60', ',hue=h=140', ',hue=h=220', ',negate', ',hue=h=300'].entries()) {
+  const f = cachedMedia(`ramp-4k60-shot${k}-v1.mp4`, ['-f', 'lavfi', '-i', `testsrc2=s=3840x2160:r=60:d=4${vf}`, '-f', 'lavfi', '-i', `sine=f=${200 + 50 * k}:r=48000:d=4`,
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', '60', '-c:a', 'aac', '-shortest', '-movflags', '+faststart'], { timeout: 600000 });
+  const m = await (await fetch(`${B}/api/import_path`, { method: 'POST', headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: f }) })).json();
+  SHOTS.push(m.id); made.add(m.id);
+}
 
 const b = await browser.launch();
 const page = await (await b.newContext({ viewport: { width: 1517, height: 904 } })).newPage();
@@ -25,6 +35,10 @@ const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.goto(B + '/', { waitUntil: 'load' });
 await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof M !== 'undefined' && M.size > 0, null, { timeout: 30000 });
 const ev = (f, a) => page.evaluate(f, a);
+await ev(() => loadMedia());
+await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), [...SHOTS, FX], { timeout: 600000, polling: 500 });
+const PROJ = await ev(async SHOTS => { setProject(newProject('16:9')); P.name = 'ramp 4K60 shots (scratch)'; P.fps = 60; for (const id of SHOTS) addMedia(id, 'main'); packMain(); renderAll(); await saveNow(); return P.id; }, SHOTS);
+pids.push(PROJ);
 await ev(() => { window.PT = []; const op = paint; paint = () => { op(); PT.push([performance.now(), S.t, S.lead?.currentTime ?? -1]); }; });
 // frame compare like video_parity: both images to 160x90, mean |a-b| and the worst 10x10 block, in 0-255 levels
 await ev(() => {
