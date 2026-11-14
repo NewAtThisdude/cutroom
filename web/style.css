@@ -613,6 +613,20 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .bsteps [data-state=failed] { color: var(--hot); }
 @media (max-width: 820px) { .bgrid { grid-template-columns: minmax(0, 1fr); } }
 
+.stage:fullscreen { background: #000; }
+.stage:-webkit-full-screen { background: #000; }
+.stage:fullscreen canvas { border-radius: 0; box-shadow: none; }
+.stage:-webkit-full-screen canvas { border-radius: 0; box-shadow: none; }
+.capfind { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.capfind .fr { display: flex; gap: 6px; align-items: center; }
+.capfind .fr > input:not([type=checkbox]) { flex: 1; min-width: 0; }
+.capfind #cfN { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; }
+.capfind .opts { flex-wrap: wrap; font-size: 12.5px; gap: 6px 12px; }
+.capfind .opts label { display: flex; gap: 5px; align-items: center; }
+.caprow.hit .ct { color: #eee; }
+.caprow.cur input { box-shadow: 0 0 0 1px #7c6cff; }
+.caprow input.tr { grid-column: 2; }
+body.fs #scope, body.fs #meter { display: none !important; }
 /* paste attributes */
 .dialog.attrdlg h4 { margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .attrs label.attr { display: flex; gap: 10px; align-items: flex-start; padding: 5px 2px; cursor: pointer; }

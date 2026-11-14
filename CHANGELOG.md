@@ -25,6 +25,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Remappable keyboard shortcuts
 - Crash recovery: edits made since the last save come back after a crash, a damaged project opens from its newest
   version, and an export cut short by a crash is listed with a Retry button
+- Full screen preview (Shift+F or the button beside Theater): the picture alone at full quality, Esc leaves, playback keys keep working
 
 ### Effects, colour and transitions
 
@@ -52,6 +53,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Automatic captions with 22 animated styles, a second-language line, keywords, emoji, lyrics and speaker labels
 - Caption translation and hook titles
 - Imported fonts and per-caption styling
+- Find and replace in captions: match count, next and previous, replace one or all in one undo step, match case, whole word, and the second-language line
 
 ### AI features (all run on your computer)
 
@@ -73,6 +75,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
+- Cover image: pick the frame at the playhead or a library picture, add a title in any text style; it is saved as a JPG or PNG next to the video and embedded as the MP4's cover (Finder, Explorer and players show it). Remembered per project
 
 ### Templates, brand kit and batch
 

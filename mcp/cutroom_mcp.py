@@ -243,6 +243,9 @@ TOOLS = [
     ('make_shorts', 'Long video -> shorts on this Mac: a local language model picks the best moments; each becomes a new 9:16 project with captions, face reframing and a hook title. '
                     'min/max = length range in seconds.',
      S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
+    ('caption_find_replace', 'Find (and replace) text in the captions of the open project: the first line and the second-language line. Without replace it lists the matches '
+                             '(count, first 20); with replace (may be empty) every match is replaced in one undo step. line: both | text | second.',
+     S({'find': txt, 'replace': txt, 'matchCase': boo, 'wholeWord': boo, 'line': txt}, ['find']), 'caption_find_replace'),
     ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working. '
                            'bilingual=true keeps the original and adds the translation as a second line under each caption.', S({'to': txt, 'bilingual': boo}, ['to']), 'translate_captions'),
     ('caption_extras', 'Smart caption layers, made on this Mac: keywords=true (the local model picks 1-2 key words per caption, drawn in the highlight colour), '

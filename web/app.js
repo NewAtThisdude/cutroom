@@ -868,6 +868,7 @@ const KEYMAP0 = [
   ['undo', 'Undo', ['Mod+KeyZ'], () => restore(undo, redo)], ['redo', 'Redo', ['Mod+Shift+KeyZ'], () => restore(redo, undo)],
   ['del', 'Delete', ['Backspace', 'Delete'], (e, field) => { if (G.tab === 'script' && SC.sel && $('#tab-script').contains(document.activeElement)) return cutScript(); if (field) return false; del(); }],
   ['theater', 'Big preview', ['KeyF'], () => toggleTheater()],
+  ['fullscreen', 'Full screen preview (Esc leaves)', ['Shift+KeyF'], () => toggleFullscreen()],
   ['scopes', 'Scopes: waveform, parade, vectorscope, histogram', ['KeyG'], () => setScope({ on: !SCOPE.on })],
   ['cmp', 'Before / after: the colour work off on one side of a line', ['\\'], (e, field) => { if (field) return false; cmpToggle(); }],
   ['history', 'History: every edit step, go back to any', ['KeyH'], () => openHistory()],
@@ -879,6 +880,7 @@ const KEYMAP0 = [
     else if (S.keyPick) { S.keyPick = null; $('#cv').style.cursor = ''; toast('Colour pick cancelled'); }
     else if (S.pick) { S.pick = null; toast('Cancelled'); }
     else if (menuEl) closeMenu();
+    else if (fsEl()) toggleFullscreen(false);
     else if (document.body.classList.contains('theater')) toggleTheater(false);
     else if (S.sel || S.multi.size) { S.sel = null; S.multi.clear(); renderAll(); S.dirty = true; }
     else return false;
@@ -889,7 +891,7 @@ const KEYDEF = Object.fromEntries(KEYMAP0.map(a => [a[0], a])), KEYS_RESERVED = 
 let KEYOWN = (() => { try { const o = JSON.parse(store.get('cutroom.keys')) || {}; return Object.fromEntries(Object.entries(o).filter(([id, v]) => KEYDEF[id] && Array.isArray(v) && v.every(k => typeof k === 'string'))); } catch { return {}; } })(); // this Mac's changes
 let KEYBY = new Map();
 const keysOf = id => KEYOWN[id] || KEYDEF[id][2];
-const KEY_TITLES = { btnStart: 'start', btnBack: 'frameL', btnPlay: 'play', btnFwd: 'frameR', btnEnd: 'end', btnTheater: 'theater', btnUndo: 'undo', btnRedo: 'redo', btnSplit: 'split', btnDelete: 'del', btnDup: 'dup' };
+const KEY_TITLES = { btnStart: 'start', btnBack: 'frameL', btnPlay: 'play', btnFwd: 'frameR', btnEnd: 'end', btnTheater: 'theater', btnFullscreen: 'fullscreen', btnUndo: 'undo', btnRedo: 'redo', btnSplit: 'split', btnDelete: 'del', btnDup: 'dup' };
 function applyKeys(save) {
   KEYBY = new Map(KEYMAP0.flatMap(([id]) => keysOf(id).map(k => [k, id])));
   if (save) store.set('cutroom.keys', JSON.stringify(KEYOWN));
@@ -1648,7 +1650,7 @@ function hdrWhy(fmt) { // why an HDR export comes out SDR ('' = it stays HDR); s
 // playing once frames are being missed (back to full on pause). The CSS size never changes: the browser scales it up.
 const PQ = { full: 1, half: 0.5, quarter: 0.25 };
 const pqMode = () => (PQ[store.get('cutroom.pq')] || store.get('cutroom.pq') === 'auto' ? store.get('cutroom.pq') : 'auto');
-const pqScale = () => PQ[pqMode()] ?? (S.pqLow ? 0.5 : 1);
+const pqScale = () => S.fs ? 1 : PQ[pqMode()] ?? (S.pqLow ? 0.5 : 1); // full screen always plays at full quality
 const cpx = () => { const cv = $('#cv'); return cv.width / (cv.clientWidth || cv.width) || 1; }; // canvas pixels per CSS pixel (selection handles keep their size)
 function setPQ(v) { store.set('cutroom.pq', v); S.pqLow = false; $('#pqSel').value = pqMode(); fitStage(); }
 function fitStage() {
@@ -2140,13 +2142,13 @@ function paint() {
     ctx.save(); ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = 2 * d; ctx.setLineDash([5 * d, 4 * d]);
     ctx.strokeRect(R.x * k, R.y * k, R.w * k, R.h * k); ctx.restore();
   }
-  const sel = selection(), byId = new Map(hits.map(q => [q.id, q]));
+  const sel = S.fs ? [] : selection(), byId = new Map(hits.map(q => [q.id, q])); // full screen shows the picture alone: no selection box or snap lines
   for (const [x, lane] of sel) { // the selection: a box that turns with the clip, with handles when one clip is selected
     const h = byId.get(x.id);
     if (h) drawSel(ctx, h, sel.length === 1 && canHandle(lane));
     if (h && sel.length === 1 && x.mask?.type === 'pen' && !S.playing) drawPen(ctx, x, h); // its points, to drag
   }
-  if (S.guides) { // dragged text is snapped: the line it snapped to
+  if (S.guides && !S.fs) { // dragged text is snapped: the line it snapped to
     const d = cpx(), { x: gx, y: gy } = S.guides;
     ctx.save(); ctx.strokeStyle = '#ff3d9a'; ctx.lineWidth = 1 * d; ctx.beginPath();
     if (gx != null) { ctx.moveTo(gx * P.w * k, 0); ctx.lineTo(gx * P.w * k, cv.height); }
@@ -3365,6 +3367,21 @@ function toggleTheater(on = !document.body.classList.contains('theater')) { // t
   requestAnimationFrame(() => { fitStage(); renderTimeline(); });
 }
 
+// Full screen (Shift+F, the button by Theater): the stage itself goes full screen (the picture and nothing else), at full preview quality; Esc leaves.
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+async function toggleFullscreen(on = !fsEl()) {
+  const st = $('#stage'), req = st.requestFullscreen || st.webkitRequestFullscreen, ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (on === !!fsEl()) return;
+  if (!(on ? req : ex)) return toast('Full screen is not available in this window');
+  try { await (on ? req.call(st) : ex.call(document)); } catch (e) { toast(`Full screen was refused: ${e.message || e}`); }
+}
+function fsChanged() { // entered or left (also by Esc, which the browser takes itself)
+  S.fs = !!fsEl(); S.pqLow = false;
+  document.body.classList.toggle('fs', S.fs); // (the scopes and the loudness meter hide: the picture alone)
+  const b = $('#btnFullscreen'); b.classList.toggle('on', S.fs); b.setAttribute('aria-pressed', S.fs);
+  fitStage(); requestAnimationFrame(() => { fitStage(); S.dirty = true; });
+}
+
 // ---------- edit by script: the main track's words; delete words or pauses to cut the video ----------
 const SC = { words: null, sel: null, anchor: null, drag: false, now: -1, busy: false };
 const wordCache = new Map(); // `${media}:${lang}` -> words in source time
@@ -3493,8 +3510,66 @@ function cutScript() {
 function renderCapList() { // every caption as an editable line; click the time to jump there
   const el = $('#capList');
   if (!el) return;
-  el.innerHTML = P.captions.length ? P.captions.map(c => `<div class="caprow"><button class="ct" data-capgo="${c.id}" title="Go there">${tc(c.start).slice(0, 5)}</button><input data-capid="${c.id}" value="${esc(c.text)}" spellcheck="true" aria-label="Caption at ${tc(c.start)}"></div>`).join('')
+  el.innerHTML = P.captions.length ? P.captions.map(c => `<div class="caprow" data-row="${c.id}"><button class="ct" data-capgo="${c.id}" title="Go there">${tc(c.start).slice(0, 5)}</button><input data-capid="${c.id}" value="${esc(c.text)}" spellcheck="true" aria-label="Caption at ${tc(c.start)}">${typeof c.tr === 'string' ? `<input class="tr" data-captr="${c.id}" value="${esc(c.tr)}" spellcheck="true" aria-label="Second language line at ${tc(c.start)}">` : ''}</div>`).join('')
     : '<p class="hint">Generate captions and every line shows up here, to fix words.</p>';
+  cfSync(false);
+}
+
+// ---------- caption find and replace: the first line and the second-language line, one undo step per replace ----------
+const CF = { i: 0 };
+const cfOpts = () => ({ q: $('#cfQ')?.value || '', cs: !!$('#cfCase')?.checked, ww: !!$('#cfWord')?.checked, line: $('#cfLine')?.value || 'both' });
+const cfRe = ({ q, cs, ww }) => q ? new RegExp(`${ww ? '(?<![\\p{L}\\p{N}_])' : ''}${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${ww ? '(?![\\p{L}\\p{N}_])' : ''}`, `gu${cs ? '' : 'i'}`) : null;
+const cfFields = (c, line) => [...(line !== 'second' ? [['text', c.text]] : []), ...(line !== 'text' && typeof c.tr === 'string' ? [['tr', c.tr]] : [])];
+const cfOrder = () => [...P.captions].sort((a, b) => a.start - b.start);
+function cfFind(o) { // every match in caption order: { c, f: 'text' | 'tr', at, len }
+  const re = cfRe(o), out = [];
+  if (re) for (const c of cfOrder()) for (const [f, t] of cfFields(c, o.line)) for (const m of t.matchAll(re)) out.push({ c, f, at: m.index, len: m[0].length });
+  return out;
+}
+function cfReplace(o, repl, only) { // every match, or just `only` (one of cfFind's); -> { replaced, captions }
+  const todo = cfFind(o).filter(m => !only || (m.c === only.c && m.f === only.f && m.at === only.at));
+  if (!todo.length) return { replaced: 0, captions: 0 };
+  const re = cfRe(o), caps = new Set(todo.map(m => m.c));
+  change(() => {
+    for (const c of caps) for (const [f, t] of cfFields(c, o.line)) {
+      const v = t.replace(re, (m, off) => !only || (c === only.c && f === only.f && off === only.at) ? repl : m).trim();
+      if (v === t) continue;
+      if (f === 'tr' && !v) delete c.tr; else c[f] = v;
+      if (f === 'text') retext(c);
+    }
+  }, 'Replace in captions');
+  return { replaced: todo.length, captions: caps.size };
+}
+function cfSync(scroll = true) { // the count, the highlighted rows, the current match
+  if (!$('#cfQ')) return;
+  const ms = cfFind(cfOpts()), n = ms.length, q = $('#cfQ').value;
+  CF.i = n ? clamp(CF.i, 0, n - 1) : 0;
+  $('#cfN').textContent = !q ? '' : n ? `${CF.i + 1} of ${n}` : 'No matches';
+  for (const b of ['#cfPrev', '#cfNext', '#cfOne', '#cfAll']) $(b).disabled = !n;
+  const cur = n && ms[CF.i].c.id, hit = new Set(ms.map(m => m.c.id));
+  for (const r of $$('#capList .caprow')) { r.classList.toggle('hit', hit.has(r.dataset.row)); r.classList.toggle('cur', r.dataset.row === cur); }
+  if (scroll) $('#capList .caprow.cur')?.scrollIntoView({ block: 'nearest' });
+}
+function cfGo(d) { // next / previous match (wraps): the playhead goes to its caption
+  const ms = cfFind(cfOpts());
+  if (!ms.length) return cfSync();
+  CF.i = (CF.i + d + ms.length) % ms.length;
+  const c = ms[CF.i].c;
+  seekTo(c.start + 0.01); S.sel = { lane: 'captions', id: c.id }; renderAll(); S.dirty = true; cfSync();
+}
+function cfOne() { // replace the current match, then stand on the next one
+  const o = cfOpts(), m = cfFind(o)[CF.i];
+  if (!m) return;
+  const repl = $('#cfR').value, ord = cfOrder(), key = x => [ord.indexOf(x.c), x.f === 'tr' ? 1 : 0, x.at], after = key({ ...m, at: m.at + repl.length });
+  const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  if (!cfReplace(o, repl, m).replaced) return;
+  CF.i = Math.max(0, cfFind(o).findIndex(x => cmp(key(x), after) >= 0));
+  renderAll(); cfGo(0);
+}
+function cfAll() {
+  const r = cfReplace(cfOpts(), $('#cfR').value);
+  if (r.replaced) { renderAll(); toast(`Replaced ${r.replaced} in ${r.captions} caption${r.captions === 1 ? '' : 's'}`); }
+  cfSync();
 }
 
 // ---------- auto adjust and colour match: a few numbers, solved from the clip's own pixels ----------
@@ -5249,6 +5324,14 @@ function openExport() {
     ${M.get(G.brand.logo) && !wmOf() ? '<label class="row chk" title="The brand logo in its corner, for this export only: the project stays as it is"><span>Add watermark</span><input id="exWm" type="checkbox"></label>' : ''}
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label class="row chk" id="exCoverRow" title="A picture saved next to the video. In an MP4 it is also embedded as the video's cover: Finder, Explorer and players show it (a MOV cannot carry one)"><span>Cover image</span><input id="exCover" type="checkbox"></label>
+    <div id="exCoverBox" hidden>
+      <label class="row"><span>Cover from</span><select id="exCvSrc"><option value="frame">The frame at the playhead</option><option value="image">A picture from the library</option></select></label>
+      <label class="row" id="exCvImgRow" hidden><span>Picture</span><select id="exCvImg" aria-label="Cover picture">${[...M.values()].filter(m => m.kind === 'image' && !m.slate).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('') || '<option value="">No pictures in the library</option>'}</select></label>
+      <label class="row"><span>Title</span><input id="exCvTitle" placeholder="Optional" aria-label="Cover title"></label>
+      <label class="row"><span>Title style</span><select id="exCvPreset" aria-label="Cover title style">${Object.keys(TEXT_PRESETS).map(k => `<option>${esc(k)}</option>`).join('')}</select></label>
+      <label class="row"><span>Cover file</span><select id="exCvFmt"><option value="jpg">JPG</option><option value="png">PNG</option></select></label>
+    </div>
     <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
     <p class="muted" id="exHint"></p><p class="muted" id="exHdrHint"></p>
     <div class="progress" hidden><div></div></div><p id="exStatus" class="muted"></p>
@@ -5256,6 +5339,7 @@ function openExport() {
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
+    cvSync();
     $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
     const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
     $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
@@ -5289,6 +5373,17 @@ function openExport() {
       edl: `The main track's cuts and dissolves as a CMX3600 EDL at ${+P.fps.toFixed(3)} fps${[29.97, 59.94].includes(+P.fps.toFixed(2)) ? ' drop-frame' : ''}, for apps that read EDLs.`,
       chapters: P.markers.length ? `${P.markers.length} marker${P.markers.length === 1 ? '' : 's'} as YouTube chapters ("0:00 Intro" lines, named after the text on screen), to paste in the description` : 'No markers yet: press M where each chapter starts.', png: `One frame at ${mss(clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)))}` }[f], ...notes].join(' ');
   };
+  const cvSync = () => { // the cover options: only for the containers that carry one
+    const ok = COVER_FMTS.includes($('#exFmt').value);
+    $('#exCover').disabled = !ok; $('#exCoverBox').hidden = !ok || !$('#exCover').checked; $('#exCvImgRow').hidden = $('#exCvSrc').value !== 'image';
+  };
+  const cv0 = coverOf();
+  $('#exCover').checked = cv0.on; $('#exCvSrc').value = cv0.src; $('#exCvTitle').value = cv0.title; $('#exCvPreset').value = cv0.preset; $('#exCvFmt').value = cv0.fmt;
+  if (M.get(cv0.media)) $('#exCvImg').value = cv0.media;
+  for (const id of ['exCover', 'exCvSrc', 'exCvImg', 'exCvTitle', 'exCvPreset', 'exCvFmt']) $(`#${id}`).addEventListener(id === 'exCvTitle' ? 'input' : 'change', () => { // kept with the project
+    P.cover = { on: $('#exCover').checked, src: $('#exCvSrc').value, media: $('#exCvImg').value, title: $('#exCvTitle').value, preset: $('#exCvPreset').value, fmt: $('#exCvFmt').value };
+    cvSync(); scheduleSave();
+  });
   const preset = () => { // fills the fields; any of them can still be changed afterwards
     const k = $('#exPreset').value;
     if (!k) return hint();
@@ -5317,6 +5412,30 @@ function exportUI(pct, msg, done) { // the dialog when it's open (it can be clos
   const b = $('#btnExport');
   b.classList.toggle('busy', busy); b.style.setProperty('--pct', `${busy ? pct : 0}%`); b.title = busy ? `Exporting… ${pct}%` : '';
 }
+// ---------- cover image: a frame or a picture, with an optional title, saved next to the video and embedded as its cover ----------
+// P.cover = { on, src: 'frame' | 'image', media, title, preset, fmt: 'jpg' | 'png' }: kept with the project (the Export dialog starts on it)
+const COVER_FMTS = ['mp4', 'hevc', 'av1', 'prores', 'prores4444']; // the MP4 and MOV containers (server.py COVER_FORMATS)
+const coverOf = () => ({ on: false, src: 'frame', media: '', title: '', preset: 'Title', fmt: 'jpg', ...P.cover });
+async function coverImage(w, h, cv) { // -> a PNG as base64, drawn by the export renderer: the frame at the playhead (or the picture) and the title on top
+  const t = cv.src === 'image' ? 0 : clamp(S.t, 0, Math.max(0, total() - 1 / P.fps)), m = cv.src === 'image' && M.get(cv.media), title = cv.title.trim();
+  if (cv.src === 'image' && m?.kind !== 'image') throw new Error('the cover picture is not in the library any more: choose another');
+  const make = P0 => {
+    const p = structuredClone(P0);
+    if (m) Object.assign(p, { main: [{ id: hex12(), media: m.id, start: 0, in: 0, out: 1, speed: 1, volume: 0, fit: 'fill', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }], overlay: [], audio: [], text: [], captions: [], fx: [], markers: [], mute: {} });
+    if (title) p.text = [...p.text, { id: hex12(), start: t, dur: 1, text: title, x: 0.5, y: 0.5, style: { ...TEXT_PRESETS[TEXT_PRESETS[cv.preset] ? cv.preset : 'Title'] } }];
+    return p;
+  };
+  const t0 = S.t;
+  return borrowP(make, async () => {
+    S.t = t;
+    try {
+      const plan = await buildPlan(w, h, 'fast', 'cover', false, 'png');
+      plan.still = t;
+      return (await api('/api/still_frame', plan)).image;
+    } finally { S.t = t0; }
+  });
+}
+
 async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
   if (S.exporting) return;
   const [res, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
@@ -5338,6 +5457,8 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       return;
     }
     const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt));
+    const cv = coverOf();
+    if (cv.on && COVER_FMTS.includes(fmt)) { exportUI(0, 'Making the cover…'); const k = Math.min(1, 1920 / Math.max(w, h)); plan.cover = { image: await coverImage(even(w * k), even(h * k), cv), fmt: cv.fmt }; }
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
@@ -5351,7 +5472,7 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       const j = await api(`/api/jobs/${job}`), pct = Math.round((j.progress || 0) * 100);
       if (j.state === 'done') {
         S.exporting = null; S.exportsDir = j.dir || S.exportsDir;
-        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
+        exportUI(100, `Saved <b>${esc(j.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${j.sdr ? ` (in SDR: ${esc(j.sdr)})` : ''}${j.cover ? `. Cover: <b>${esc(j.cover)}</b>${j.coverEmbedded ? ', embedded in the video' : ' (beside the video; a MOV cannot carry one)'}` : ''}${also.length ? `. ${also.length} more in the Exports panel` : ''}`, `<button data-reveal="${esc(j.file)}">Show in Finder</button><button data-play="${esc(j.file)}">Play</button>`);
         tell(`Exported ${j.file} (${S.exportsDir || 'the exports folder'})`);
         break;
       }
@@ -6512,6 +6633,8 @@ function wire() {
   $('#confirmBar').addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled) endPreview(['ok', 'again', 'smaller', 'bigger'].find(k => k in b.dataset) || null); });
   $('#btnTheater').innerHTML = ICON.expand;
   $('#btnTheater').addEventListener('click', () => toggleTheater());
+  $('#btnFullscreen').addEventListener('click', () => toggleFullscreen());
+  for (const n of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(n, fsChanged);
   $('#scriptBody').addEventListener('pointerdown', e => { // click a word: jump there; drag or ⇧-click: select words
     const w = e.target.closest('[data-i]'), g = e.target.closest('[data-g]');
     if (g) { SC.sel = { gap: +g.dataset.g }; const p = SC.words[+g.dataset.g - 1]; if (p) seekTo(p.t1); markScript(); return; }
@@ -6534,6 +6657,15 @@ function wire() {
     const inp = e.target.closest('[data-capid]'), c = inp && P.captions.find(x => x.id === inp.dataset.capid);
     if (c && inp.value.trim() !== c.text) change(() => { c.text = inp.value.trim(); retext(c); });
   });
+  $('#capList').addEventListener('change', e => {
+    const inp = e.target.closest('[data-captr]'), c = inp && P.captions.find(x => x.id === inp.dataset.captr);
+    if (c && inp.value.trim() !== c.tr) change(() => { if (inp.value.trim()) c.tr = inp.value.trim(); else delete c.tr; });
+  });
+  for (const id of ['cfQ', 'cfCase', 'cfWord', 'cfLine']) $(`#${id}`).addEventListener('input', () => { CF.i = 0; cfSync(); });
+  $('#cfQ').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); cfGo(e.shiftKey ? -1 : 1); } });
+  $('#cfR').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); cfOne(); } });
+  $('#cfNext').addEventListener('click', () => cfGo(1)); $('#cfPrev').addEventListener('click', () => cfGo(-1));
+  $('#cfOne').addEventListener('click', cfOne); $('#cfAll').addEventListener('click', cfAll);
   $('#capList').addEventListener('click', e => { const b = e.target.closest('[data-capgo]'), c = b && P.captions.find(x => x.id === b.dataset.capgo); if (c) { seekTo(c.start + 0.01); S.sel = { lane: 'captions', id: c.id }; renderAll(); S.dirty = true; } });
   $('#tplList').addEventListener('click', e => { const b = e.target.closest('[data-tpl]'); if (b) addTemplate(b.dataset.tpl); });
 
@@ -7585,6 +7717,13 @@ const REMOTE = {
   async transcript({ media, lang = 'auto' }) { const m = mediaBy(media); return { media: m.name, sentences: (await api('/api/transcript', { media: m.id, lang })).sentences }; },
   async smart_combine(args) { if (!args.media) throw new Error('media (a list of videos) is required'); return smartCombine(args); },
   async make_shorts(args) { if (!args.media) throw new Error('media is required'); return makeShorts(args); },
+  async caption_find_replace({ find, replace, matchCase = false, wholeWord = false, line = 'both' }) { // no replace: list the matches; replace (may be ''): replace them all, one undo step
+    if (!find) throw new Error('find (the text to look for) is required');
+    if (!['both', 'text', 'second'].includes(line)) throw new Error('line must be both, text or second');
+    const o = { q: find, cs: matchCase, ww: wholeWord, line };
+    if (typeof replace !== 'string') { const ms = cfFind(o); return { matches: ms.length, captions: new Set(ms.map(m => m.c.id)).size, first: ms.slice(0, 20).map(m => ({ id: m.c.id, line: m.f === 'tr' ? 'second' : 'text', text: m.c[m.f] })) }; }
+    const r = cfReplace(o, replace); renderAll(); return r;
+  },
   async translate_captions({ to, bilingual = false }) { if (!to) throw new Error('to (a language) is required'); return translateCaptions({ to, bilingual }); },
   async clone_voice(args) { return cloneVoice(args); },
   async dub_video(args) { await loadAI(); return dubVideo(args); },
