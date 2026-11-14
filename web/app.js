@@ -2213,7 +2213,7 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
     else { // no ctx.filter: the export's 3 box blurs, run at 1/(r/4) size (radius 4 there) and scaled back up
       const q = Math.max(1, r / 4), tw = Math.max(2, Math.round(bw / q)), th = Math.max(2, Math.round(bh / q)), tx = blurCv.getContext('2d', { willReadFrequently: true });
       if (blurCv.width !== tw || blurCv.height !== th) { blurCv.width = tw; blurCv.height = th; }
-      const gp = (filt || graded) && gpuPass(el, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], tw, th, { ...c, flip: false }, { k: sk, mask: null, noKey: true, noVig: true });
+      const gp = (filt || graded) && gpuPass(el, [(cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh], tw, th, { ...c, flip: false }, { k: sk, mask: c.mask?.grade ? maskAt(c, lt) : null, maskCol: true, noKey: true, noVig: true }); // (a colour-only mask grades the blurred fill the same way: it comes from the graded picture in the export)
       if (gp) { tx.clearRect(0, 0, tw, th); tx.drawImage(gp[0], 0, gp[1], tw, th, 0, 0, tw, th); }
       else { tx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, 0, 0, tw, th); if (filt || graded) colorPass(tx, tw, th, c, sk); }
       boxBlurRGB(tx, tw, th, Math.max(1, Math.round(r / q)));
@@ -2409,8 +2409,8 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
   if (keyCv.width !== W || keyCv.height !== H) { keyCv.width = W; keyCv.height = H; }
   const x = keyCv.getContext('2d', { willReadFrequently: true });
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
-  const sk = strengthAt(c, lt), mk = maskAt(c, lt), N = mbN(c), late = mk && (c.adj?.blur > 0 || c.adj?.pix > 0); // blur / mosaic come before the mask, as in the export
-  let gp = gpuPass(el, src, W, H, c, { k: sk, mask: late ? null : mk }); // Apple GPU: one shader pass instead of per-pixel JavaScript
+  const sk = strengthAt(c, lt), mk = maskAt(c, lt), gm = !!mk?.grade, N = mbN(c), late = mk && !gm && (c.adj?.blur > 0 || c.adj?.pix > 0); // blur / mosaic come before the mask, as in the export (gm: the mask limits the colour, it cuts nothing out)
+  let gp = gpuPass(el, src, W, H, c, { k: sk, mask: late ? null : mk, maskCol: gm }); // Apple GPU: one shader pass instead of per-pixel JavaScript
   if (gp && N > 1) { // motion blur: this frame and the clip's N-1 before it, mixed on the GPU (store: only keep this one, for mbFill)
     const j = store ?? clipFrame(c, lt), r = gpuMotion(c.id, mbSig(c), j, N, W, H, store != null);
     if (store != null) return null;
@@ -2426,11 +2426,14 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
     if (late) { g.globalCompositeOperation = 'destination-in'; g.drawImage(maskCanvas(mk, W, H), 0, 0); g.globalCompositeOperation = 'source-over'; }
     return keyCvG;
   }
+  const O = gm && scratch(W, H, 'gmo').getContext('2d'); // a colour-only mask: the picture as it was, under the graded one cut to the mask
+  if (O) { O.setTransform(1, 0, 0, 1, 0, 0); O.globalCompositeOperation = 'copy'; O.filter = 'none'; if (c.flip) { O.translate(W, 0); O.scale(-1, 1); } O.drawImage(el, ...src, 0, 0, W, H); O.setTransform(1, 0, 0, 1, 0, 0); O.globalCompositeOperation = 'source-over'; }
   x.filter = gradeOn(c.grade) || lookLutOf(c) || c.lkf?.length ? 'none' : filt || 'none';
   if (c.flip) { x.translate(W, 0); x.scale(-1, 1); }
   x.drawImage(el, ...src, 0, 0, W, H);
   x.setTransform(1, 0, 0, 1, 0, 0); x.filter = 'none';
   if ((filt && !CANVAS_FILTER) || gradeOn(c.grade) || lookLutOf(c) || c.lkf?.length) colorPass(x, W, H, c, sk);
+  if (O) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(mk, W, H), 0, 0); x.globalCompositeOperation = 'destination-over'; x.drawImage(O.canvas, 0, 0); x.globalCompositeOperation = 'source-over'; }
   if (c.key) { // alpha *= clip((dist - similarity) / blend)
     const img = x.getImageData(0, 0, W, H), d = img.data, [kr, kg, kb] = hexRgb(c.key.color), sim = c.key.sim, bl = c.key.blend;
     for (let i = 0; i < d.length; i += 4) {
@@ -2441,7 +2444,7 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
   }
   if (c.adj?.blur > 0) blurInPlace(x, W, H, c.adj.blur * 0.03 * Math.min(W, H));
   if (c.adj?.pix > 0) pixelInPlace(x, W, H, pixBlock(c, M.get(c.media), W));
-  if (mk) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(mk, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
+  if (mk && !gm) { x.globalCompositeOperation = 'destination-in'; x.drawImage(maskCanvas(mk, W, H), 0, 0); x.globalCompositeOperation = 'source-over'; }
   if (c.adj?.vig > 0) { // vignette: RGB x the multiplier map, alpha untouched (the export multiplies by the same map as a PNG)
     const img = x.getImageData(0, 0, W, H), d = img.data, mm = vigMap(c.adj.vig, W, H);
     for (let i = 0, j = 0; i < d.length; i += 4, j++) { d[i] *= mm[j]; d[i + 1] *= mm[j]; d[i + 2] *= mm[j]; }
@@ -2452,7 +2455,7 @@ function offscreen(el, c, src, w, h, filt, lt = 0, store = null) { // colour + m
 const MKF = ['x', 'y', 'w', 'h', 'rot', 'feather'];
 function maskAt(c, lt) { // the mask at clip time lt: its keyframes (c.mkf) interpolated linearly, or the mask as set
   const k = c.mkf, mk0 = c.mask; // an AI mask also says which of its source frames shows at lt (the preview's frame at or before it)
-  const mk = mk0?.type === 'ai' ? { ...mk0, fi: clamp(Math.floor((c.in + lt * (c.speed || 1) - mk0.t0) * mk0.fps + 1e-3), 0, mk0.n - 1), cr: c.crop, fl: !!c.flip } : mk0;
+  const mk = mk0?.type === 'ai' ? { ...mk0, fi: clamp(Math.floor(((mk0.in0 ?? c.in) + lt * (mk0.sp ?? c.speed ?? 1) - mk0.t0) * mk0.fps + 1e-3), 0, mk0.n - 1), cr: mk0.in0 !== undefined ? mk0.cr : c.crop, fl: mk0.in0 !== undefined ? !!mk0.fl : !!c.flip } : mk0; // (in0, sp: an adjustment layer's copy of a clip's AI mask, timed like that clip)
   if (!mk || !k?.length) return mk;
   let a = k[0], b = k[0], u = 0;
   if (lt >= k.at(-1).t) a = b = k.at(-1);
@@ -2538,10 +2541,10 @@ async function maskPNG(c, m, mk = c.mask, side = 1280) { // export: opaque greys
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H); x.drawImage(maskCanvas(mk, W, H), 0, 0);
   return blobURL(await cv.convertToBlob({ type: 'image/png' }));
 }
-async function maskSeq(c, m) { // keyframed mask: one PNG per frame where it changes (repeats reused), as runs of frames
-  const n = frames(c), pngs = [], seen = new Map(), spans = [];
+async function maskSeq(c, m, n = frames(c), t0 = 0) { // keyframed mask: one PNG per frame where it changes (repeats reused), as runs of frames (t0: clip time of the first)
+  const pngs = [], seen = new Map(), spans = [];
   for (let f = 0; f < n; f++) {
-    const mk = maskAt(c, f / P.fps), key = JSON.stringify(mk);
+    const mk = maskAt(c, t0 + f / P.fps), key = JSON.stringify(mk);
     let i = seen.get(key);
     if (i === undefined) { i = pngs.push(await maskPNG(c, m, mk, 720)) - 1; seen.set(key, i); }
     const last = spans.at(-1);
@@ -2559,7 +2562,7 @@ function sinceBeat(f, lt) { // beat zoom follows detected beats (Audio > Detect 
 }
 function fxOps(W, H, t) { // every active effect's steps in one list, in order: a run of per-pixel steps across effects is one GPU pass, not one each
   const u = Math.min(W, H) / 1080;
-  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f) : FX[f.fx].px(W, H, u, t - f.start, f)));
+  return P.mute.fx ? [] : shown('fx').filter(f => fxOn(f, t) && (FX[f.fx]?.px || f.fx === 'adjust')).flatMap(f => (f.fx === 'adjust' ? adjustOps(f, W, H, t - f.start) : FX[f.fx].px(W, H, u, t - f.start, f)));
 }
 function fxPixels(ctx, t) { runOps(ctx, ctx.canvas.width, ctx.canvas.height, fxOps(ctx.canvas.width, ctx.canvas.height, t)); } // effect steps on what is on the canvas so far (video and overlays)
 function fxCap(ctx, lane, c, m, el, t, k) { // one plain picture under GPU-only effects: composed and processed straight from its <video> on the GPU
@@ -2600,7 +2603,7 @@ function runOps(x, W, H, ops) { // the export's effect steps, on a canvas: same 
       const g = fxGPU(x.canvas, W, H, ops.slice(i, j + 1).flatMap(q => FX_GPU[q.op](q)));
       if (g) { x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'copy'; x.drawImage(g[0], 0, g[1], W, H, 0, 0, W, H); x.restore(); i = j; continue; }
     }
-    if (o.op === 'lut') { lutPass(x, W, H, o.G); continue; } // an adjustment layer without WebGL2
+    if (o.op === 'lut') { lutPass(x, W, H, o.G, o.M); continue; } // an adjustment layer without WebGL2
     if (o.op === 'negate') { x.save(); x.globalCompositeOperation = 'difference'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.restore(); continue; }
     if (o.op === 'matrix') { matrixPass(x, W, H, o.m.map(v => v * (o.k ?? 1))); continue; }
     if (o.op === 'hblur') { hblurInPlace(x, W, H, o.sigma); continue; }
@@ -2641,12 +2644,17 @@ function addEffect(type, start = S.t, dur, amt = 1) {
   change(() => { c = { id: hex12(), fx: type, start: snap(Math.max(0, start)), dur: Math.max(1 / P.fps, snap(dur ?? d.d)), amt: clamp(+amt || 1, 0.1, 2) }; P.fx.push(c); S.sel = { lane: 'fx', id: c.id }; });
   return c;
 }
-function fxPlan(w, h) { // the effect steps for the export, sampled at every frame they cover (on the frame grid, as the preview shows them)
+async function fxPlan(w, h) { // the effect steps for the export, sampled at every frame they cover (on the frame grid, as the preview shows them)
   const out = [], u = Math.min(w, h) / 1080, nF = Math.round(total() * P.fps);
   if (P.mute.fx) return out;
   for (const f of shown('fx')) {
     const d = FX[f.fx], a = Math.ceil(f.start * P.fps - 1e-6), b = Math.min(nF, Math.ceil((f.start + f.dur) * P.fps - 1e-6));
-    if (f.fx === 'adjust') { const G = b > a && adjustLUT(f); if (G) out.push({ op: 'lut', a, b, lut: gradeB64(G) }); continue; } // one table for all its frames (lut3d)
+    if (f.fx === 'adjust') { // one table for all its frames (lut3d); a mask (in the canvas frame) limits it, frame by frame where it moves
+      const G = b > a && adjustLUT(f), st = G && { op: 'lut', a, b, lut: gradeB64(G) }, cm = { w, h };
+      if (st && f.mask) { if (f.mkf?.length || f.mask.type === 'ai') st.maskSeq = await maskSeq(f, cm, b - a, a / P.fps - f.start); else st.mask = await maskPNG(f, cm); }
+      if (st) out.push(st);
+      continue;
+    }
     if (!d?.px || b <= a) continue;
     const per = [];
     for (let i = a; i < b; i++) per.push(d.px(w, h, u, i / P.fps - f.start, f));
@@ -4902,6 +4910,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
       const bk = bakeKf(c, lane); // keyframes as export-pixel width + top-left (they interpolate like scale/x/y do), clip animations baked in
       if (bk) o.kf = bk.map(f => { const q = geom(m, c, P.w, P.h, f); return { t: f.t, w: q.w * k, x: q.x * k, y: q.y * k, op: f.opacity ?? 1, a: f.rot ?? 0, e: f.e, u0: f.eu0 ?? 0, u1: f.eu1 ?? 1, bz: f.e ? f.bz : undefined }; });
       if (c.mask && (c.mkf?.length || c.mask.type === 'ai')) o.maskSeq = await maskSeq(c, m); else if (c.mask) o.mask = await maskPNG(c, m); // an AI mask changes every frame
+      if (c.mask?.grade) o.gmask = true; // the mask limits the colour (or, inverted, keeps it out), it cuts nothing out
       if (c.adj?.vig > 0) o.vig = await vigPNG(c, m);
       if (mbN(c)) o.mb = mbN(c);
       const cw = m.w * (1 - ((c.crop?.l || 0) + (c.crop?.r || 0))), ch = m.h * (1 - ((c.crop?.t || 0) + (c.crop?.b || 0))), short0 = Math.min(cw, ch);
@@ -4954,7 +4963,7 @@ async function buildPlan(w, h, quality, name, loud, format = 'mp4') {
     await Promise.all(fonts.map(f => document.fonts.load(f)));
     text = await textLayer(w, h, k, fr, [...new Set(fonts)]);
   }
-  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
+  return { w, h, fps: P.fps, duration: D, bg: P.bg, quality, name, loud: !!loud, lufs: typeof loud === 'number' ? loud : -14, text, format, fx: await fxPlan(w, h), hdr: P.hdr || 'sdr', alpha: !!P.alpha, still: clamp(S.t, 0, Math.max(0, D - 1 / P.fps)), // a frame at the very end doesn't exist
     main: await Promise.all(P.main.map((c, i) => clip(c, 'main', i))), overlay: P.mute.overlay ? [] : await Promise.all(shown('overlay').map(c => clip(c, 'overlay'))),
     audio: await Promise.all([...(P.mute.audio ? [] : shown('audio')), ...jlParts()].map(c => clip(c, 'audio'))) };
 }

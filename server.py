@@ -4099,6 +4099,7 @@ def clean_plan(p, claimed=False):  # claimed: a retried interrupted export, whos
             k['mask_seq'] = {'pngs': pngs, 'spans': spans}
         if k['mask'] is not None and not k['mask'].startswith(b'\x89PNG'):
             raise ValueError('mask must be PNG')
+        k['gmask'] = bool(c.get('gmask')) and (k['mask'] is not None or bool(k.get('mask_seq')))  # the mask limits the clip's colour, not its picture
         if timed:
             k['start'] = fnum(c['start'], 0, 6 * 3600)
         if m['kind'] != 'audio' and 'geom' in c:
@@ -4180,10 +4181,28 @@ def fx_op(f, W, H):
         k['lut'] = base64.b64decode(str(f.get('lut') or ''))
         if len(k['lut']) != 33 ** 3 * 3 * 2:
             raise ValueError('lut must be a 33-point 3D table')
+        k.update(fx_mask(f, n))  # its mask (canvas frame): the table only where it is
     for key in ('k', 'rh', 'bh', 'z', 'x', 'y'):
         if isinstance(k.get(key), list) and len(k[key]) != n:
             raise ValueError(f'{op}.{key} needs one value per frame ({n})')
     return k
+
+
+def fx_mask(f, n):
+    """An adjustment layer's mask from the page: one PNG ('mask') or PNGs + runs of frames ('maskSeq', n frames), as a clip's."""
+    if f.get('maskSeq'):
+        ms = f['maskSeq']
+        pngs = [base64.b64decode(str(x).split(',')[-1]) for x in (ms.get('pngs') or [])[:20000]]
+        spans = [{'i': int(fnum(q['i'], 0, len(pngs) - 1)), 'n': int(fnum(q['n'], 1, 1e8))} for q in (ms.get('spans') or [])[:200000]]
+        if not pngs or not spans or any(not x.startswith(b'\x89PNG') for x in pngs) or sum(q['n'] for q in spans) != n:
+            raise ValueError('maskSeq must be PNG frames with runs covering the effect')
+        return {'mask_seq': {'pngs': pngs, 'spans': spans}}
+    if f.get('mask'):
+        m = base64.b64decode(str(f['mask']).split(',')[-1])
+        if not m.startswith(b'\x89PNG'):
+            raise ValueError('mask must be PNG')
+        return {'mask': m}
+    return {}
 
 
 def even(x):
@@ -4737,9 +4756,12 @@ def graph(p, td):
         col = adjust(c) + tone(c) + look(c) + grade(c)
         if col and c.get('lkf'):  # filter strength keyframes: the original and the graded picture mixed by the curve
             tag = f'lk{next(AFX_N)}'
-            v += f",format=gbrp,split[{tag}a][{tag}b];[{tag}b]{col[1:]},format=gbrp[{tag}g];[{tag}a][{tag}g]blend=all_expr='A+(B-A)*({pw(c['lkf'], 'v', 'T')})'"
-        else:
-            v += col
+            col = f",format=gbrp,split[{tag}a][{tag}b];[{tag}b]{col[1:]},format=gbrp[{tag}g];[{tag}a][{tag}g]blend=all_expr='A+(B-A)*({pw(c['lkf'], 'v', 'T')})'"
+        if col and c.get('gmask'):  # a colour-only mask: the graded picture only where the mask is (maskedmerge; alpha stays the clip's)
+            tag, fm = f'gm{next(AFX_N)}', 'gbrap' if c.get('alpha') or c.get('trans') else 'gbrp'
+            col = (f",format={fm},split=3[{tag}o][{tag}q][{tag}r];[{tag}q]{col[1:]},format={fm}[{tag}g];{mask_input(c, tag, n / F, fm)}[{tag}m];"
+                   f"[{tag}m][{tag}r]scale=w=rw:h=rh,format={fm}[{tag}ms];[{tag}o][{tag}g][{tag}ms]maskedmerge=planes=7")
+        v += col
         if c.get('beauty'):  # smooth skin: luma bilateral, mixed in where the colour is skin's (chromakey's distance), by strength
             t, b = f'bt{next(AFX_N)}', c['beauty']
             v += (f",format=yuv444p,split[{t}o][{t}b];[{t}b]bilateral=sigmaS={b['sigma']:.3f}:sigmaR=0.1[{t}s];"
@@ -4835,25 +4857,27 @@ def graph(p, td):
         op = kf[0]['op'] if kf else c['opacity']
         return f',format=rgba,colorchannelmixer=aa={op:.4f}' if op < 1 else ''
 
-    def masked(v, c, tag, dur):  # mask = PNG drawn by the browser's maskCanvas(); its luma becomes alpha
-        if not c.get('mask') and not c.get('mask_seq'):
-            return v
+    def mask_input(c, tag, dur, fmt='gray', lead=0):  # the mask's frames as a new input -> '[N:v]...' (lead: frames before its first, which nothing reads)
         if c.get('mask_seq'):  # keyframed: the browser's frames as runs, played by the concat demuxer, one per output frame
             ms, lines = c['mask_seq'], ['ffconcat version 1.0']
             for q, png in enumerate(ms['pngs']):
                 (Path(td) / f'mask_{tag}_{q}.png').write_bytes(png)
-            for sp in ms['spans']:
+            for sp in ([{'i': ms['spans'][0]['i'], 'n': lead}] if lead else []) + ms['spans']:
                 lines += [f"file 'mask_{tag}_{sp['i']}.png'", f"duration {sp['n'] / F:.6f}"]
             lines.append(f"file 'mask_{tag}_{ms['spans'][-1]['i']}.png'")
             lf = Path(td) / f'mask_{tag}.ffconcat'
             lf.write_text('\n'.join(lines) + '\n')
             ins.append(['-f', 'concat', '-safe', '0', '-i', str(lf)])
-            msrc = f'[{len(ins) - 1}:v]fps={F:g},format=gray'
-        else:
-            f = Path(td) / f'mask_{tag}.png'
-            f.write_bytes(c['mask'])
-            ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
-            msrc = f'[{len(ins) - 1}:v]format=gray'
+            return f'[{len(ins) - 1}:v]fps={F:g},format={fmt}'
+        f = Path(td) / f'mask_{tag}.png'
+        f.write_bytes(c['mask'])
+        ins.append(['-loop', '1', '-framerate', f'{F:g}', '-t', f'{dur:.6f}', '-i', str(f)])
+        return f'[{len(ins) - 1}:v]format={fmt}'
+
+    def masked(v, c, tag, dur):  # mask = PNG drawn by the browser's maskCanvas(); its luma becomes alpha
+        if not c.get('mask') and not c.get('mask_seq') or c.get('gmask'):  # (a colour-only mask is used in video())
+            return v
+        msrc = mask_input(c, tag, dur)
         # the mask (made at most 1280 px, or 720 for keyframed ones) scaled to the clip with scale's reference input:
         # scale2ref=w=main_w:h=main_h leaves it at its own size in ffmpeg 9, and alphamerge then fails on any clip
         # whose cropped size isn't the PNG's (every source over 1280 px)
@@ -5040,6 +5064,11 @@ def graph(p, td):
             if op == 'expr':  # nearest pixels, like the preview's texel fetches; LF = this frame's number since the effect began
                 lf = f"(N-{f['a']})"
                 body = 'geq=interpolation=nearest:' + ':'.join(c + "='" + re.sub(r'\bLF\b', lf, f['e' + c]) + "'" for c in 'rgb') + (":a='alpha(X,Y)'" if A else '') + ':'
+            elif op == 'lut' and (f.get('mask') or f.get('mask_seq')):  # a masked adjustment layer: the table only where its mask is, on its frames
+                fg.append(f"[{cur[0]}]split[{tag}o][{tag}q];[{tag}q]{grade({'grade': f['lut']}, '')}[{tag}g];{mask_input(f, tag, f['b'] / F, RGB, f['a'])},scale={W}:{H},format={RGB}[{tag}m];"
+                          f"[{tag}o][{tag}g][{tag}m]maskedmerge=planes=7:{en}[{nxt}]")
+                cur[0] = nxt
+                continue
             elif op == 'lut':  # adjustment layer: the composite (gbrp, lut3d takes it as is) through the table
                 body = grade({'grade': f['lut']}, '') + ':'
             elif op == 'matrix':
