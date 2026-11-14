@@ -3,8 +3,10 @@
 # or from a copy of the source:            ./install.sh
 # Checks the tools (offers Homebrew's ffmpeg and whisper-cpp when they are missing), fetches the two speech models, runs
 # `cutroom check` and installs the AI pack this Mac can run (Apple Silicon: the MLX pack, ai/setup.sh), then builds the app.
-# Every file this script downloads is pinned and checked by SHA-256 (Homebrew checks its own). Everything goes into the
-# prefix, the library and ~/Applications/Cutroom.app: no sudo, no PATH or login-item change. Safe to run again. Settings:
+# Every file this script downloads is pinned and checked by SHA-256, and so are the MLX pack's packages (ai/mac.lock, installed
+# with --require-hashes). Not pinned: Homebrew's ffmpeg, whisper-cpp and python (its current versions; Homebrew checks its own
+# downloads) and the MLX pack's Z-Image-Turbo (its current revision). Everything goes into the prefix, the library and
+# ~/Applications/Cutroom.app: no sudo, no PATH or login-item change. Safe to run again. Settings:
 #   CUTROOM_PREFIX   the source (when downloaded) and uv          (default ~/.local/share/cutroom)
 #   CUTROOM_HOME     the library: media, projects, exports, models (default ~/Movies/Cutroom)
 #   CUTROOM_APP      where the app is built, or none               (default ~/Applications/Cutroom.app)

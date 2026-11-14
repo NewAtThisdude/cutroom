@@ -2,7 +2,8 @@
 // computer gets (simulated ones too), then install.sh is piped into sh from a local web server serving a tarball of this
 // working tree, into a scratch prefix and library (no AI pack, no app: CUTROOM_AI=none, CUTROOM_APP=none). It checks the
 // pinned source (a wrong SHA-256 is refused, a missing CUTROOM_SRC explained), that a second run keeps the AI pack's venv, and
-// that the installed copy's ./cutroom check answers. No Cutroom server needed; PORT is the web server's (default 4853):
+// that the installed copy's ./cutroom check answers; and that the AI packs install only hash-locked packages. No Cutroom
+// server needed; PORT is the web server's (default 4853):
 //   [PORT=4853] node tests/installer.mjs
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -28,6 +29,11 @@ for (const [sim, pack, why] of [['win:cuda:24:64', 'cuda', 'the CUDA pack'], ['w
 const cpu = checkOut({ CUTROOM_PROFILE: 'win:cpu:16' }).stdout;
 check('a CPU PC: Kokoro voices run, the Mac-only tools say why', cpu.includes('AI voiceover: Kokoro-82M (PyTorch, CPU)') && cpu.includes('Remove background: no, needs Apple Silicon'), cpu);
 check('CUTROOM_AI overrides the pick', checkOut({ CUTROOM_AI: 'none' }).stdout.includes('chosen with CUTROOM_AI=none\n'), '');
+// every package the AI packs install comes from a lock with each file's hash (the MLX pack too, ai/mac.lock)
+const pipLines = ['setup.sh', 'setup.ps1'].flatMap((f) => readFileSync(join(repo, 'ai', f), 'utf8').split('\n').filter((l) => /uv\b.*\bpip install/.test(l)));
+const lockReqs = ['mac.lock', 'win-cuda.lock', 'win-cpu.lock'].flatMap((f) => readFileSync(join(repo, 'ai', f), 'utf8').split(/\n(?=\S)/).filter((b) => !b.startsWith('#')));
+check('the AI packs install only hash-locked packages', pipLines.length >= 2 && pipLines.every((l) => l.includes('--require-hashes'))
+  && lockReqs.length > 100 && lockReqs.every((b) => b.includes('--hash=sha256:')), pipLines.join('\n'));
 
 // 2. install.sh piped from a local web server: a tarball of this working tree (tracked files, as they are now)
 const out = join(repo, 'tests', 'out', 'installer');

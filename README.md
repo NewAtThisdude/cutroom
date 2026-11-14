@@ -27,8 +27,11 @@ Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardwa
 
 One line, on a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
 (`cutroom check`), says in plain words what it found, what it will install and why, and installs only the AI pack that
-computer can run. Every file it downloads is pinned to a version and checked by SHA-256 before use; everything goes into
-your own folders, with no admin rights, no PATH change and nothing that starts at login.
+computer can run. Every file it downloads is pinned to a version and checked by SHA-256 before use, and so is every Python
+package of the AI packs (uv lock files with each file's hash, installed with `--require-hashes`). Two exceptions, both on a
+Mac: Homebrew's `ffmpeg`, `whisper-cpp` and `python` are whatever version Homebrew has (Homebrew checks its own downloads),
+and the MLX pack's image model, Z-Image-Turbo, is fetched at its current revision before the 4-bit copy is made. Everything
+goes into your own folders, with no admin rights, no PATH change and nothing that starts at login.
 
     curl -fsSL <url>/install.sh | sh          # Mac
     irm <url>/install.ps1 | iex               # Windows (PowerShell)
@@ -75,8 +78,10 @@ For example `curl -fsSL <url>/install.sh | CUTROOM_AI=none sh`, or in PowerShell
 ### Mac
 
 Needs macOS 14 or later. The installer uses [Homebrew](https://brew.sh)'s `ffmpeg`, `whisper-cpp` and `python` and offers
-to install the missing ones (Homebrew checks its own downloads); uv (for the AI pack's Python) is a pinned download into the
-prefix. It fetches the speech models into the library (575 MB: Whisper large-v3-turbo and Silero VAD; a copy VoiceInk
+to install the missing ones (Homebrew's current versions, not pinned; Homebrew checks its own downloads); uv (for the AI
+pack's Python) is a pinned download into the prefix. The MLX pack's packages come from `ai/mac.lock` (made from `ai/mac.in`,
+every file's SHA-256, installed with `--require-hashes`); its voice, Demucs and MusicGen models are pinned by revision with
+the weight file checked. It fetches the speech models into the library (575 MB: Whisper large-v3-turbo and Silero VAD; a copy VoiceInk
 already has is used instead), runs the check, installs the MLX pack, and builds **~/Applications/Cutroom.app** when the Swift
 compiler is there (`xcode-select --install`, which the Apple Vision helpers need too). Without it, `cutroom` in the source
 folder opens the same editor in a Chrome app window.
@@ -512,7 +517,8 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - `app/Cutroom.swift`, `app/build.sh`: the native app.
 - `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
 - `templates/`: the starter templates (JSON; each one's poster and preview are made on this Mac the first time the gallery shows it).
-- `ai/setup.sh`: installs the on-device AI on a Mac (venv in `ai/.venv`, gitignored); `ai/setup.ps1` the Windows AI pack
+- `ai/setup.sh`: installs the on-device AI on a Mac (venv in `ai/.venv`, gitignored; packages from `ai/mac.lock`, made from
+  `ai/mac.in`, with their hashes); `ai/setup.ps1` the Windows AI pack
   (CUDA or CPU), its packages pinned with their hashes in `ai/win-cuda.lock` / `ai/win-cpu.lock` (made from `ai/win.in`). `ai/remove.py`: the object-removal
   engine (runs in that venv). `tools/lift.swift`: Vision subject lifting.
 - `cutroom`: the Chrome-window launcher on a Mac (also downloads the VAD model if missing).
