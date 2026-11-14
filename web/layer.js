@@ -14,8 +14,8 @@ onmessage = async ({ data: m }) => {
       for (const [family, buf, desc] of m.init.fonts) { const f = new FontFace(family, buf, desc); await f.load(); self.fonts.add(f); }
       ctx = new OffscreenCanvas(m.init.w, m.init.h).getContext('2d', { willReadFrequently: true });
       postMessage({ ok: 1 });
-    } else if (m.probe) postMessage({ px: m.probe.map(probeText) });
-    else if (m.scan) postMessage({ res: layerScan(ctx, k, m.scan) });
+    } else if (m.probe) postMessage({ px: await layerSerial(() => m.probe.map(probeText)) });
+    else if (m.scan) postMessage({ res: await layerScan(ctx, k, m.scan) });
     else if (m.encode) {
       const { lid, box, items } = m.encode;
       postMessage({ end: 1, redrawn: await layerEncode(ctx, k, box, items, lid, i => postMessage({ done: i })) });

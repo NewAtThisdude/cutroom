@@ -52,7 +52,7 @@ const run = async mode => {
       const fr = [...new Set(plan.text.frames.flatMap(s => [Math.round(s.start * P.fps), Math.round(s.end * P.fps)]))].sort((a, b) => a - b);
       for (let i = 0; i + 1 < fr.length; i++) {
         const a = fr[i] / P.fps; ctx.clearRect(0, 0, 1920, 1080); drawTexts(ctx, a, k, false);
-        const key = layerScan(ctx, k, [fr[i]])[0][1];
+        const key = (await layerScan(ctx, k, [fr[i]]))[0][1];
         let idx = seen.get(key);
         if (idx === undefined) { idx = pngs.push(await blobURL(await cv.convertToBlob({ type: 'image/png' }))) - 1; seen.set(key, idx); }
         const last = spans.at(-1);

@@ -574,12 +574,19 @@ function drawViz(ctx, it, lt, k, preview) {
 }
 
 // ---------- the export's text layer (buildPlan's textLayer): the same functions run in the layer workers and, as the fallback, on the page ----------
-function layerDraw(ctx, k, f) { // frame f drawn: its pixels, their hash and ink box ([x0, y0, x1, y1], ends exclusive; null = nothing shows)
+// WebKit's 2D drawing is not deterministic across threads: layer workers drawing at the same moment now and then got each
+// other's state (a title's shadow, a box's lower edge, a karaoke clip came out different; one worker alone never did), so the
+// workers paint and read back one at a time (Web Locks); hashing, PNG encoding and uploads still run side by side
+const layerSerial = fn => typeof WorkerGlobalScope !== 'undefined' && self.navigator?.locks ? navigator.locks.request('cutroom-layer-draw', fn) : fn();
+async function layerDraw(ctx, k, f) { // frame f drawn: its pixels, their hash and ink box ([x0, y0, x1, y1], ends exclusive; null = nothing shows)
   const w = ctx.canvas.width, h = ctx.canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  drawTexts(ctx, f / P.fps, k, false, ctx.exportCaptions !== false); // soft-only/off omits captions; titles and effects still use the preview renderer
+  const img = await layerSerial(() => {
+    ctx.clearRect(0, 0, w, h);
+    drawTexts(ctx, f / P.fps, k, false, ctx.exportCaptions !== false); // soft-only/off omits captions; titles and effects still use the preview renderer
+    return ctx.getImageData(0, 0, w, h);
+  });
   // the same picture again (a looping title comes back every half second) is found by its pixels, not encoded again
-  const img = ctx.getImageData(0, 0, w, h), px = new Uint32Array(img.data.buffer);
+  const px = new Uint32Array(img.data.buffer);
   let h1 = 2166136261, h2 = 0x9e3779b9, x0 = w, y0 = -1, x1 = -1, y1 = -1;
   for (let y = 0, j = 0; y < h; y++) {
     let a = -1, b = -1;
@@ -588,24 +595,25 @@ function layerDraw(ctx, k, f) { // frame f drawn: its pixels, their hash and ink
   }
   return { img, key: `${h1 >>> 0}:${h2 >>> 0}`, bb: y0 < 0 ? null : [x0, y0, x1 + 1, y1 + 1] };
 }
-function layerScan(ctx, k, frames) { // [frame, hash, ...ink box or null] per frame
-  return frames.map(f => { const { key, bb } = layerDraw(ctx, k, f); return [f, key, ...(bb || [null])]; });
+async function layerScan(ctx, k, frames) { // [frame, hash, ...ink box or null] per frame
+  const res = [];
+  for (const f of frames) { const { key, bb } = await layerDraw(ctx, k, f); res.push([f, key, ...(bb || [null])]); }
+  return res;
 }
 async function layerEncode(ctx, k, box, items, lid, onDone) { // items [index, frame, scan hash, scan saw ink]: drawn again, cut to the box, PNG, uploaded; 2 uploads in flight
   const [bx, by, bw, bh] = box, crop = new OffscreenCanvas(bw, bh), cx = crop.getContext('2d', { willReadFrequently: true }), busy = new Set();
   const inBox = bb => !bb || (bb[0] >= bx && bb[1] >= by && bb[2] <= bx + bw && bb[3] <= by + bh);
   let redrawn = 0;
   for (const [i, f, key, ink] of items) {
-    // a picture is taken when two drawings of it agree: WebKit workers drawing at the same time now and then draw one
-    // differently (a title at another size, a box edge off; 2+ workers, also in the scan). This one matching the scan,
+    // a picture is taken when two drawings of it agree (a check: layerSerial keeps the workers' drawings apart). This one matching the scan,
     // or two redraws matching each other (the scan was the odd one), and its ink inside the box. Never two empty redraws
     // of a frame the scan saw text on: that would export the text as nothing, without an error
-    let d = layerDraw(ctx, k, f), last = null;
+    let d = await layerDraw(ctx, k, f), last = null;
     for (let n = 0; d.key !== key && !(last?.key === d.key && inBox(d.bb) && (d.bb || !ink)); n++, redrawn++) {
       if (n === 4) throw new Error(`text layer frame ${f} drew differently every time`);
-      last = d; d = layerDraw(ctx, k, f);
+      last = d; d = await layerDraw(ctx, k, f);
     }
-    cx.putImageData(d.img, -bx, -by, bx, by, bw, bh); // the box of the very pixels hashed
+    await layerSerial(() => cx.putImageData(d.img, -bx, -by, bx, by, bw, bh)); // the box of the very pixels hashed
     const png = await (await crop.convertToBlob({ type: 'image/png' })).arrayBuffer(); // bytes, not the Blob: a Blob body arrives empty under Playwright request interception (WebKit)
     const up = fetch(`/api/layer/${lid}/${i}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: png })
       .then(async r => { if (!r.ok) throw new Error(`text layer upload: ${(await r.json().catch(() => ({}))).error || r.status}`); onDone(i); }).finally(() => busy.delete(up));
