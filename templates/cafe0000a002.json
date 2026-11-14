@@ -1,0 +1,267 @@
+{
+ "id": "cafe0000a002",
+ "v": 2,
+ "name": "Product showcase",
+ "w": 1080,
+ "h": 1350,
+ "fps": 30,
+ "dur": 8,
+ "slots": [
+  {
+   "kind": "video",
+   "name": "square1.mp4",
+   "label": "The product, turning",
+   "w": 720,
+   "h": 900,
+   "need": 3
+  },
+  {
+   "kind": "image",
+   "name": "photo.png",
+   "label": "A close-up photo",
+   "w": 800,
+   "h": 1000,
+   "need": 2.6
+  },
+  {
+   "kind": "video",
+   "name": "square2.mp4",
+   "label": "It in use",
+   "w": 720,
+   "h": 900,
+   "need": 3
+  }
+ ],
+ "texts": [
+  {
+   "id": "a3a630305313"
+  },
+  {
+   "id": "d1b6fdf0deb0"
+  },
+  {
+   "id": "31c666c1594e"
+  }
+ ],
+ "recaption": false,
+ "project": {
+  "fps": 30,
+  "bg": "#000000",
+  "main": [
+   {
+    "id": "e88473fde1cd",
+    "media": "slot:0",
+    "start": 0,
+    "in": 0,
+    "out": 3,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "kbin",
+     "amt": 1
+    },
+    "tr": {
+     "type": "dissolve",
+     "d": 0.4
+    }
+   },
+   {
+    "id": "cea09b1e9d50",
+    "media": "slot:1",
+    "start": 2.6,
+    "in": 0,
+    "out": 2.6,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fill",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    },
+    "anim": {
+     "loop": "kbout",
+     "amt": 1
+    },
+    "tr": {
+     "type": "smoothleft",
+     "d": 0.4
+    }
+   },
+   {
+    "id": "82cb654f541d",
+    "media": "slot:2",
+    "start": 4.8,
+    "in": 0,
+    "out": 3,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   }
+  ],
+  "overlay": [],
+  "audio": [
+   {
+    "id": "3c510cdbce19",
+    "media": "sfx:pop",
+    "start": 3.1,
+    "in": 0,
+    "out": 0.15,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   },
+   {
+    "id": "cbc28af05fa6",
+    "media": "sfx:ding",
+    "start": 6,
+    "in": 0,
+    "out": 1.6,
+    "speed": 1,
+    "volume": 1,
+    "fit": "fit",
+    "scale": 1,
+    "x": 0,
+    "y": 0,
+    "opacity": 1,
+    "fadeIn": 0,
+    "fadeOut": 0,
+    "adj": {
+     "b": 1,
+     "c": 1,
+     "s": 1
+    }
+   }
+  ],
+  "text": [
+   {
+    "id": "a3a630305313",
+    "start": 0.3,
+    "dur": 2.5,
+    "text": "Aurora lamp",
+    "x": 0.5,
+    "y": 0.82,
+    "style": {
+     "font": "Montserrat",
+     "weight": 900,
+     "size": 96,
+     "shadow": true,
+     "anim": "fade",
+     "out": "fade"
+    }
+   },
+   {
+    "id": "d1b6fdf0deb0",
+    "start": 3.1,
+    "dur": 2.4,
+    "text": "$49",
+    "x": 0.5,
+    "y": 0.8,
+    "style": {
+     "font": "Poppins",
+     "weight": 800,
+     "size": 92,
+     "color": "#ffffff",
+     "box": true,
+     "boxColor": "#ff3d7f",
+     "boxAlpha": 1,
+     "boxR": 1,
+     "boxPad": 0.55,
+     "anim": "pop",
+     "out": "pop"
+    }
+   },
+   {
+    "id": "31c666c1594e",
+    "start": 6,
+    "dur": 2,
+    "text": "Shop now",
+    "x": 0.5,
+    "y": 0.84,
+    "style": {
+     "font": "Montserrat",
+     "weight": 800,
+     "size": 58,
+     "box": true,
+     "anim": "slide"
+    }
+   }
+  ],
+  "captions": [],
+  "fx": [
+   {
+    "id": "b65351973412",
+    "fx": "vignette",
+    "start": 0,
+    "dur": 8,
+    "amt": 0.6
+   }
+  ],
+  "markers": [],
+  "name": "Product showcase",
+  "w": 1080,
+  "h": 1350,
+  "tracks": {},
+  "mute": {
+   "main": false,
+   "overlay": false,
+   "audio": false,
+   "text": false,
+   "captions": false,
+   "fx": false
+  },
+  "capStyle": {
+   "font": "Montserrat",
+   "weight": 900,
+   "size": 78,
+   "color": "#ffffff",
+   "stroke": "#000000",
+   "strokeW": 7,
+   "hl": "#ffd400",
+   "upper": true,
+   "pop": true,
+   "y": 0.72
+  },
+  "v": 2
+ }
+}
