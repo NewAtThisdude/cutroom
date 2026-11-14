@@ -317,9 +317,9 @@ def camera(kind, amt, u):
         return lambda L: (1 + k * amt * 0.22 * (0.35 + L), 0.0, 0.0)
     if kind == 'orbit':
         a, s = 2 * math.pi * u, math.sin(math.pi * u)
-        return lambda L: (1 + 0.1 * amt * s, amt * 0.05 * (L - 0.5) * math.sin(a), amt * 0.05 * (L - 0.5) * (1 - math.cos(a)) / 2)
+        return lambda L: (1 + 0.12 * amt * s, amt * 0.05 * (L - 0.25) * math.sin(a), amt * 0.05 * (L - 0.25) * (1 - math.cos(a)) / 2)
     sg = 1 if kind == 'right' else -1
-    return lambda L: (1 + 0.09 * amt * e, sg * amt * 0.06 * (L - 0.5) * e, 0.0)
+    return lambda L: (1 + 0.1 * amt * e, sg * amt * 0.05 * (L - 0.25) * e, 0.0)  # the far background barely moves, the near moves most
 
 
 class Parallax:
