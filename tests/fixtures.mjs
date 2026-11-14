@@ -307,3 +307,40 @@ export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
   }
   return res;
 }
+
+// Media a test expects under its own file names (the library shows a file's name): made once with ffmpeg into
+// out/fixtures/named-<hash of name and args>/<name> (so two tests can't share a name with different contents), imported
+// through the API and waited on until ready. specs: { 'talk.mp4': [ffmpeg input/output args], ... } -> { name: media item }.
+export async function importNamedMedia(baseUrl, specs, { timeout = 180000 } = {}) {
+  requireHome();
+  if (!baseUrl || new URL(baseUrl).port === '4610') throw new Error('fixtures require a scratch server URL (never port 4610)');
+  const call = async (route, body) => {
+    const r = await fetch(baseUrl + route, { headers: { 'X-Cutroom': '1', 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(`fixture ${route}: ${j.error || r.status}`);
+    return j;
+  };
+  const ids = {};
+  for (const [name, args] of Object.entries(specs)) {
+    if (path.basename(name) !== name) throw new Error('fixture name must be a filename');
+    const dir = path.join(fixtureDir, `named-${createHash('sha256').update(JSON.stringify([name, args])).digest('hex').slice(0, 12)}`), file = path.join(dir, name);
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(dir, { recursive: true });
+      const partial = path.join(dir, `.${process.pid}.partial${path.extname(name)}`);
+      try {
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...args, partial], { timeout: 600000, maxBuffer: 8 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+        fs.renameSync(partial, file);
+      } finally { fs.rmSync(partial, { force: true }); }
+    }
+    ids[name] = (await call('/api/import_path', { path: file })).id;
+  }
+  for (const until = Date.now() + timeout; ;) {
+    const items = await call('/api/media').catch(() => []); // a media JSON can be briefly unreadable while preparation writes it
+    const mine = Object.values(ids).map(id => items.find(m => m.id === id));
+    if (mine.every(m => m?.ready)) return Object.fromEntries(Object.keys(ids).map((n, i) => [n, mine[i]]));
+    const failed = mine.find(m => m?.error);
+    if (failed || Date.now() > until) throw new Error(`fixture preparation failed: ${failed?.error || 'timed out'}`);
+    await pause(250);
+  }
+}

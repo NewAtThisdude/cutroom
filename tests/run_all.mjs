@@ -13,7 +13,7 @@ const DEFAULT_TESTS = [
   'versions', 'labels_keys', 'export_light', 'export_formats', 'layer_parity', 'package',
   'this_computer', 'fade_handles', 'features_e2e', 'interchange', 'timeline_pro', 'video_parity', 'audio_e2e',
   'settings', 'templates', 'brand', 'batch', 'fx_share', 'recovery', 'broll', 'installer', 'av_sync', 'attrs_compare', 'quick_tools', 'mask_grade',
-  'layouts_viz',
+  'layouts_viz', 'source_viewer', 'polish_e2e', 'adjust_panes', 'fonts_captions', 'motion_blur', 'layer_race', 'photos_button',
 ];
 const AI_TESTS = ['ai_worker', 'ai_enhance', 'captions_pro', 'tracking', 'retouch', 'voice_dub', 'zoom3d'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
