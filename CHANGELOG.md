@@ -19,6 +19,8 @@ Windows PC. It is licensed GPL v3 or later.
 - Library source viewer with hover skim, In and Out points and Replace clip
 - Command bar (Cmd-K / Ctrl-K) that plans edits with a local model, one undo step per command
 - Import from Photos (Mac app), Open With and drag to the Dock icon
+- Screen recorder: the whole screen, a window or an area, with your camera and microphone, each saved as its own file
+  and placed in sync (camera as a movable picture-in-picture), and a teleprompter that stays out of the recording
 - Package project: one `.cutroom` file with the project and every file it uses
 - Timeline hand-off as FCPXML 1.10, CMX 3600 EDL and YouTube chapters
 - Remappable keyboard shortcuts

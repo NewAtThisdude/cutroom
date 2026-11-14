@@ -215,6 +215,7 @@ async function rcStop(r) {
   if (r.phase === 'count') return rcEnd(r, 'Stopped during the countdown: nothing recorded');
   if (r.phase !== 'rec') return;
   r.phase = 'saving';
+  rcStop.last = {};
   const secs = (performance.now() - r.T0) / 1000, name = `Recording ${new Date().toLocaleTimeString().replace(/:/g, '.')}`;
   const d = $('#modal .dialog');
   if (d) rcHtml(d, '<h2>Saving the recording…</h2><p class="hint">Each source is saved as its own file.</p>');
@@ -227,7 +228,7 @@ async function rcStop(r) {
     }
     if (r.mic) parts.push(await rcMicTake(r, `${name} mic`));
     await loadMedia();
-    rcPlace(parts, r.crop);
+    rcStop.last = { ...rcStop.last, T0: r.T0, O: rcPlace(parts, r.crop) }; // (for tests: the timeline time of the recorders' start)
     rcEnd(r);
     closeModal();
     const scr = parts.some(p => p.kind === 'screen');
@@ -253,7 +254,7 @@ async function rcMicTake(r, name) { // the mic's samples from the recorders' sta
   const take = x.subarray(k0), lead = (w0 - r.T0) / 1000 + k0 / sr;
   if (take.length < sr * 0.1) throw new Error('the microphone recorded nothing after the countdown');
   const f = await uploadOne(new File([wavMono(take, sr)], `${name}.wav`, { type: 'audio/wav' }));
-  rcStop.last = { lat, heard, lead }; // for tests
+  Object.assign(rcStop.last, { lat, heard, lead });
   return { media: f.id, kind: 'mic', lead, dur: take.length / sr };
 }
 function rcPlace(parts, crop) { // one undo step: the screen (else the camera) at the playhead on the main track, the rest in sync with it
@@ -280,8 +281,10 @@ function rcPlace(parts, crop) { // one undo step: the screen (else the camera) a
       }
       P[lane].push(c);
     }
+    rcPlace.O = O;
   }, 'Record');
   renderAll();
+  return rcPlace.O;
 }
 addEventListener('keydown', e => { // while recording: Space pauses the teleprompter, the arrows change its speed, Esc stops (before the editor's keys)
   const r = RC;
