@@ -287,6 +287,14 @@ TOOLS = [
     ('open_package', 'Open a .cutroom package from this Mac by its path: its files go into the library (one already there with the same content is '
                      'reused), its fonts and LUTs are imported, and its project is added under a new id and opened.',
      S({'path': txt}, ['path']), 'open_package'),
+    ('list_templates', 'The templates (Cutroom\'s starters and the user\'s own): id, name, shape, duration, each numbered slot (kind, need = seconds of '
+                       'footage it uses, label = what it asks for; a sound slot is optional) and the texts that can change (id and current words).',
+     S(), 'list_templates'),
+    ('use_template', 'Make a new project from a template (id or name) and open it: media = library items (id or name) for slots 1, 2, ... in order '
+                     '(null leaves an optional sound slot empty); a clip longer than its slot gives its middle unless starts = {slot number: '
+                     'second in the clip to start at}; texts = {text id, or its number 1, 2..., or its current words: new words} (the style stays); '
+                     'captions=true makes captions from the new speech on this Mac when the template asks for them. The timing is the template\'s.',
+     S({'id': txt, 'media': {'type': 'array', 'items': {'type': ['string', 'null']}}, 'texts': obj, 'starts': obj, 'captions': boo}, ['id']), 'use_template'),
     ('meter', 'The preview\'s loudness meter (EBU R128): momentary (400 ms), short-term (3 s) and integrated (since reset) LUFS of what has played, '
               'sample peak per channel held since reset (dBFS), clipped = a peak over -1 dBFS. show=true/false shows or hides it (it only listens while shown); '
               'reset=true starts integrated, peaks and clip again; target -14|-16|-23 marks the export loudness to aim at. Play the timeline, then read it.',
@@ -347,7 +355,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

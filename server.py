@@ -3549,7 +3549,7 @@ def scenes(mid, thr=0.3):
 
 # ---------- command bar (⌘K): plain language -> the MCP's own commands, planned by the local model ----------
 _MCP = []
-PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
+PILOT_OFF = {'status', 'options', 'timeline', 'media', 'import_media', 'projects', 'list_templates', 'open_project', 'new_project', 'snapshot', 'preview_object', 'transcript',
              'main_transcript', 'remove_object', 'cut_out_object', 'blur_region', 'track_motion', 'import_subtitles', 'import_lut', 'relink_media', 'compound_clip',
              'break_compound', 'make_shorts', 'smart_combine', 'multicam', 'multicam_cut', 'add_clip', 'generate_video', 'pilot', 'search_media', 'open_package'}  # need a box, a path or a picture to look at, or only read
 PILOT_ENUM = {('auto_captions', 'style'): 'captionPresets', ('add_text', 'preset'): 'textPresets', ('set_transition', 'type'): 'transitions', ('add_effect', 'type'): 'effects',
@@ -5936,6 +5936,267 @@ def open_package(st, path, drop=False):
             Path(path).unlink(missing_ok=True)
 
 
+# ---------- templates you make and share ----------
+# A template is an edit whose footage became numbered slots ("slot:N"), its synthesized sounds by name ("sfx:whoosh") and
+# the rest (sound-library sounds, stickers, music you keep) library ids. Starters ship in the repo's templates/; yours live
+# in <library>/templates, with the poster and hover preview the page rendered once from slates (placeholder footage).
+# A .cutroom-template is a stored zip of one: template.json (with a files list: size, SHA-256), poster.jpg, preview.mp4,
+# and the media, fonts and LUTs it keeps. Never slot media. The page does the rest (filling, timing, the preview's plan).
+TPL = HOME / 'templates'
+TPL_STARTERS = Path(__file__).resolve().parent / 'templates'
+TPL_NAME = re.compile(r'template\.json|poster\.jpg|preview\.mp4|media/[a-f0-9]{12}\.[a-z0-9]{1,5}|fonts/[a-f0-9]{12}\.(?:ttf|otf|woff2)|luts/[a-f0-9]{12}\.cube')
+TPL_CAP = {'template.json': 16 << 20, 'poster.jpg': 4 << 20, 'preview.mp4': 64 << 20, 'media': 256 << 20, 'fonts': 32 << 20, 'luts': 64 << 20}  # bytes per entry
+TPL_TOTAL = 1 << 30  # a whole .cutroom-template
+
+
+def tpl_list():
+    """Starters first, then yours by name; a template of yours with a starter's id wins over it."""
+    out = {}
+    for d, starter in ((TPL_STARTERS, True), (TPL, False)):
+        for f in sorted(d.glob('*.json')):
+            try:
+                t = json.loads(f.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if isinstance(t, dict) and t.get('id') == f.stem and ID.fullmatch(f.stem) and isinstance(t.get('project'), dict):
+                jpg, mp4 = TPL / f'{f.stem}.jpg', TPL / f'{f.stem}.mp4'
+                pv = int(jpg.stat().st_mtime) if jpg.is_file() and jpg.stat().st_mtime >= f.stat().st_mtime else 0  # older than the template (changed since): made again
+                out[f.stem] = {**t, 'starter': starter, 'poster': bool(pv), 'preview': bool(pv) and mp4.is_file(), 'pv': pv}
+    return sorted(out.values(), key=lambda t: (not t['starter'], str(t.get('name', '')).lower()))
+
+
+def tpl_get(tid):
+    if t := next((x for x in tpl_list() if x['id'] == tid), None):
+        return t
+    raise ValueError('no such template')
+
+
+def tpl_slates(slots):
+    """Placeholder footage for a template's preview: per slot the page's PNG (graphite, the slot number, its label) as a
+    photo, or for a video slot that PNG with an amber bar running along its foot over the slot's length. Library items
+    marked slate: hidden from the library, removed once the preview is made. The same slate is made once."""
+    import hashlib
+    MEDIA.mkdir(parents=True, exist_ok=True)
+    out = []
+    for s in slots[:64]:
+        png = base64.b64decode(str(s.get('png', '')), validate=True)
+        if not (wh := png_size(png)) or len(png) > 8 << 20:
+            raise ValueError('a slate is not a PNG')
+        image, need = s.get('kind') == 'image', round(fnum(s.get('need', 3), 0.5, 600), 2)
+        sid = hashlib.sha1(png + f'{need}{image}'.encode()).hexdigest()[:12]
+        if (MEDIA / f'{sid}.json').is_file() and has_file(sid):
+            out.append(meta(sid))
+            continue
+        f = MEDIA / f"{sid}.{'png' if image else 'mp4'}"
+        if image:
+            f.write_bytes(png)
+        else:
+            src = CACHE / f'slate-{sid}.png'
+            CACHE.mkdir(parents=True, exist_ok=True)
+            src.write_bytes(png)
+            try:
+                r = sh(['ffmpeg', '-v', 'error', '-y', '-loop', '1', '-framerate', '30', '-i', str(src), '-f', 'lavfi', '-i', f'color=c=0xf0b23e:s={wh[0]}x{max(2, wh[1] // 90 * 2)}:r=30',
+                        '-filter_complex', f"[0][1]overlay=x='-w+w*t/{need}':y=H-h:shortest=1,format=yuv420p", '-t', str(need), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-an', str(f)], low=True)
+            finally:
+                src.unlink(missing_ok=True)
+            if r.returncode or not f.is_file():
+                f.unlink(missing_ok=True)
+                raise RuntimeError(f'the slate could not be made: {r.stderr.strip()[-200:]}')
+        info = probe(f)
+        if image:
+            info.update(duration=0, hasAudio=False, hdr=False)
+        m = {'id': sid, 'name': f"Slot {s.get('n', '')}".strip(), 'file': f.name, 'kind': 'image' if image else 'video', **info, 'ready': True, 'added': time.time(), 'slate': True}
+        save_meta(m)
+        out.append(m)
+    return out
+
+
+def tpl_unslate(ids):
+    for sid in ids:
+        if ID.fullmatch(str(sid)) and (j := MEDIA / f'{sid}.json').is_file():
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                m = json.loads(j.read_text())
+                if m.get('slate'):  # (only what tpl_slates made)
+                    (MEDIA / m['file']).unlink(missing_ok=True)
+                    j.unlink()
+
+
+def tpl_preview(tid, file, at, slates):
+    """The page's export of the template on slates -> its hover preview, and the frame at `at` as its poster."""
+    tpl_get(tid)
+    src = EXPORTS / Path(str(file)).name
+    if src.suffix != '.mp4' or not src.is_file():
+        raise ValueError('no such export')
+    TPL.mkdir(parents=True, exist_ok=True)
+    mp4, jpg = TPL / f'{tid}.mp4', TPL / f'{tid}.jpg'
+    retry(shutil.move, str(src), str(mp4))
+    at = min(fnum(at, 0, 1e5), max(0.0, probe(mp4)['duration'] - 0.1))
+    sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{at:.3f}', '-i', str(mp4), '-frames:v', '1', '-q:v', '3', str(jpg)], low=True)
+    tpl_unslate(slates)
+    return {'poster': jpg.is_file(), 'preview': True}
+
+
+def tpl_share(tid):
+    """<exports>/<name>.cutroom-template: the template, its poster and preview, and the media, fonts and LUTs it keeps."""
+    import hashlib
+    t = {k: v for k, v in tpl_get(tid).items() if k not in ('starter', 'poster', 'preview', 'pv')}
+    p = t['project']
+    refs = {d['media'] for d in dicts(p) if isinstance(d.get('media'), str) and ID.fullmatch(d['media'])}
+    ids = [i for i in dict.fromkeys(re.findall(r'"([a-f0-9]{12})"', json.dumps(p))) if has_file(i)]  # (clip ids match the pattern too: only library items count)
+    if gone := refs - set(ids):
+        raise ValueError(f"{len(gone)} file{'s' if len(gone) > 1 else ''} this template keeps {'are' if len(gone) > 1 else 'is'} no longer in the library")
+    fams = {d[k] for d in dicts(p) for k in ('font', 'biFont') if isinstance(d.get(k), str)}
+    fonts = [f for f in (json.loads(x.read_text()) for x in (HOME / 'fonts').glob('*.json')) if f['family'] in fams]
+    luts = sorted({d['lut']['id'] for d in dicts(p) if isinstance(d.get('lut'), dict) and ID.fullmatch(str(d['lut'].get('id'))) and (HOME / 'luts' / f"{d['lut']['id']}.cube").is_file()})
+    entries = [(f"media/{i}{Path(meta(i)['file']).suffix.lower()}", MEDIA / meta(i)['file'], {'id': i, 'name': meta(i)['name'], 'kind': meta(i)['kind'], **{k: meta(i)[k] for k in PKG_META if k in meta(i)}}) for i in ids]
+    entries += [(f"fonts/{f['file']}", HOME / 'fonts' / f['file'], {'id': f['id'], 'family': f['family']}) for f in fonts]
+    for lid in luts:
+        info = json.loads((HOME / 'luts' / f'{lid}.json').read_text()) if (HOME / 'luts' / f'{lid}.json').is_file() else {}
+        entries.append((f'luts/{lid}.cube', HOME / 'luts' / f'{lid}.cube', {'id': lid, 'name': info.get('name', 'LUT')}))
+    entries += [(n, TPL / f'{tid}{x}', {}) for n, x in (('poster.jpg', '.jpg'), ('preview.mp4', '.mp4')) if (TPL / f'{tid}{x}').is_file()]
+    t.update(format='cutroom-template', files=[])
+    for name, f, row in entries:
+        h = hashlib.sha256()
+        with open(f, 'rb') as fh:
+            while b := fh.read(1 << 20):
+                h.update(b)
+        t['files'].append({**row, 'file': name, 'size': f.stat().st_size, 'sha256': h.hexdigest()})
+    EXPORTS.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(t.get('name') or '')).strip(' .')[:100] or 'Template'
+    out = unique(EXPORTS / f'{stem}.cutroom-template')
+    part = out.with_name(f'.{out.name}.part')
+    try:
+        with zipfile.ZipFile(part, 'w', zipfile.ZIP_STORED, allowZip64=True) as z:
+            for name, f, _ in entries:
+                z.write(f, name)
+            z.writestr('template.json', json.dumps(t))
+        retry(part.replace, out)
+    finally:
+        part.unlink(missing_ok=True)
+    return {'file': out.name, 'dir': str(EXPORTS).replace(str(Path.home()), '~', 1), 'size': out.stat().st_size, 'files': len(entries)}
+
+
+def tpl_import(path):
+    """A .cutroom-template into this library under a new id: only the names one has, each within its cap and checksum
+    (zip-slip: a ../ or absolute name refuses it all), kept media reused when the same bytes are here, every reference remapped."""
+    import hashlib
+    work = CACHE / f'tpl-{uuid.uuid4().hex[:8]}'
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = {}
+            for i in z.infolist():
+                if not TPL_NAME.fullmatch(i.filename) or i.filename in infos or i.flag_bits & 1 or i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) \
+                        or i.file_size > TPL_CAP[i.filename.split('/')[0]]:
+                    raise ValueError(f'not a Cutroom template: it holds {i.filename[:80]!r}')
+                infos[i.filename] = i
+            if 'template.json' not in infos or sum(i.file_size for i in infos.values()) > TPL_TOTAL:
+                raise ValueError('not a Cutroom template')
+            t = json.loads(z.read('template.json'))
+            if not isinstance(t, dict) or t.get('format') != 'cutroom-template' or not isinstance(t.get('project'), dict) or not isinstance(t.get('slots'), list) \
+                    or not isinstance(t.get('files', []), list):
+                raise ValueError('not a Cutroom template')
+            if int(fnum(t.get('v', 2), 1, 1e6)) > 2:
+                raise ValueError('this template was made by a newer Cutroom')
+            rows = t.pop('files', [])
+            if any(not isinstance(r, dict) or r.get('file') not in infos or r['file'] == 'template.json' for r in rows):
+                raise ValueError('the template is damaged: its list names a file it does not hold')
+            work.mkdir(parents=True)
+            remap, fam, lut, got = {}, {}, {}, {}
+            for r in rows:
+                f, h = work / Path(r['file']).name, hashlib.sha256()
+                with z.open(infos[r['file']]) as src, open(f, 'wb') as out:
+                    while b := src.read(1 << 20):
+                        h.update(b)
+                        out.write(b)
+                if r.get('sha256') != h.hexdigest():
+                    raise ValueError(f"the template is damaged: {r['file']} does not match its checksum")
+                kind, rid = r['file'].split('/')[0], str(r.get('id', ''))
+                if kind == 'media':
+                    if not (m := same_file(f, h.hexdigest())):
+                        m = import_file(Path(str(r.get('name') or 'media')).stem[:150] + f.suffix, None, 0, src=f)
+                        if not m.pop('dup', None):
+                            m.update(name=str(r.get('name') or m['name'])[:200], sha256=h.hexdigest(), **{x: r[x] for x in PKG_META if x in r})
+                            m.pop('srckey', None)
+                            save_meta(m)
+                    remap[rid] = m['id']
+                elif kind == 'fonts':
+                    fam[str(r.get('family'))] = import_font(f"{r.get('family') or 'Font'}{f.suffix}", f.read_bytes())['family']
+                elif kind == 'luts':
+                    text, d = f.read_text(errors='replace'), HOME / 'luts'
+                    if not re.search(r'^\s*LUT_(3D|1D)_SIZE\s+\d+', text, re.M):
+                        raise ValueError('the template is damaged: a LUT in it is not a .cube')
+                    d.mkdir(parents=True, exist_ok=True)
+                    lid = rid if ID.fullmatch(rid) and not ((d / f'{rid}.cube').exists() and (d / f'{rid}.cube').read_text(errors='replace') != text) else uuid.uuid4().hex[:12]
+                    if not (d / f'{lid}.cube').exists():
+                        (d / f'{lid}.cube').write_text(text)
+                        (d / f'{lid}.json').write_text(json.dumps({'id': lid, 'name': str(r.get('name') or 'LUT')[:80]}))
+                    lut[rid] = lid
+                else:
+                    got[r['file']] = f
+
+        def fix(o):  # every reference to a file it brought, wherever it sits
+            for k, v in (o.items() if isinstance(o, dict) else enumerate(o)):
+                if isinstance(v, str):
+                    o[k] = remap.get(v, fam.get(v, v) if k in ('font', 'biFont') else v)
+                elif isinstance(v, (dict, list)):
+                    fix(v)
+            if isinstance(o, dict) and isinstance(o.get('lut'), dict) and o['lut'].get('id') in lut:
+                o['lut']['id'] = lut[o['lut']['id']]
+        fix(t)
+        t.update(id=uuid.uuid4().hex[:12], name=str(t.get('name') or 'Template')[:80], imported=time.time())
+        t.pop('format', None)
+        TPL.mkdir(parents=True, exist_ok=True)
+        tmp = TPL / f".{t['id']}.tmp"
+        tmp.write_text(json.dumps(t))
+        retry(tmp.replace, TPL / f"{t['id']}.json")
+        for name, x, ok in (('poster.jpg', '.jpg', lambda b: b[:2] == b'\xff\xd8'), ('preview.mp4', '.mp4', lambda b: b[4:8] == b'ftyp')):
+            if (f := got.get(name)) and ok(f.read_bytes()[:8]):
+                retry(shutil.move, str(f), str(TPL / f"{t['id']}{x}"))
+                (TPL / f"{t['id']}{x}").touch()  # (newer than the template: not made again)
+        return {**t, 'media': len(remap), 'fonts': len(fam), 'luts': len(lut)}
+    except zipfile.BadZipFile:
+        raise ValueError('not a Cutroom template (not a zip file)')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def tpl_route_get(h, path):  # -> True when it answered
+    if path == '/api/templates':
+        return h.reply(tpl_list()) or True
+    if m := re.fullmatch(r'/api/templates/([a-f0-9]{12})/(poster\.jpg|preview\.mp4)', path):
+        return h.file(TPL / f"{m[1]}{Path(m[2]).suffix}") or True
+
+
+def tpl_route_post(h, u):  # -> True when it answered
+    if u.path == '/api/templates/import':  # a .cutroom-template's bytes (Import…, or one dropped on the window)
+        n = int(h.headers.get('Content-Length') or 0)
+        if n > TPL_TOTAL:
+            raise ValueError('that template is too big (1 GB at most)')
+        CACHE.mkdir(parents=True, exist_ok=True)
+        f = CACHE / f'tpl-{uuid.uuid4().hex[:8]}.zip'
+        try:
+            with open(f, 'wb') as out:
+                while n > 0 and (b := h.rfile.read(min(n, 1 << 20))):
+                    out.write(b)
+                    n -= len(b)
+            if n:
+                raise ValueError('the upload was cut off')
+            return h.reply(tpl_import(f)) or True
+        finally:
+            f.unlink(missing_ok=True)
+    if not (m := re.fullmatch(r'/api/templates/([a-f0-9]{12})/(slates|preview|share)', u.path)):
+        return None
+    body = h.body()
+    if m[2] == 'slates':
+        tpl_get(m[1])
+        return h.reply(tpl_slates(body.get('slots') or [])) or True
+    if m[2] == 'preview':
+        if body.get('file') is None:  # the render failed: its slates go anyway
+            return h.reply(tpl_unslate(body.get('slates') or []) or {'ok': True}) or True
+        return h.reply(tpl_preview(m[1], body['file'], body.get('at', 1), body.get('slates') or [])) or True
+    return h.reply(tpl_share(m[1])) or True
+
+
 # ---------- HTTP ----------
 
 class App(BaseHTTPRequestHandler):
@@ -6042,7 +6303,7 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
             if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
                 return self.reply(sorted(({**m, 'prep': PREP_PCT[m['id']]} if m['id'] in PREP_PCT and not m.get('ready') else m
-                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file()), key=lambda m: -m.get('added', 0)))
+                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file() and not m.get('slate')), key=lambda m: -m.get('added', 0)))  # (slate: a template preview's placeholder)
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':
@@ -6113,8 +6374,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(system_fonts())
             if m := re.fullmatch(r'/fonts/([a-f0-9]{12}\.(?:ttf|otf|woff2))', path):
                 return self.file(HOME / 'fonts' / m[1])
-            if path == '/api/templates':
-                return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'templates').glob('*.json')), key=lambda t: t.get('name', '')))
+            if path.startswith('/api/templates') and tpl_route_get(self, path):  # templates you make and share (their block, above)
+                return
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.(?:strip\.jpg|wave\.png|grid\.jpg|peaks))', path):
                 return self.file(CACHE / m[1])
             if m := re.fullmatch(r'/cache/([a-f0-9]{12}\.aimask/\d{5}\.png)', path):  # AI mask frames
@@ -6135,6 +6396,8 @@ class App(BaseHTTPRequestHandler):
             return
         u = urlparse(self.path)
         try:
+            if u.path.startswith('/api/templates/') and tpl_route_post(self, u):  # templates you make and share (their block, above)
+                return
             if u.path == '/api/import':
                 name = parse_qs(u.query).get('name', ['file'])[0]
                 return self.reply(import_file(name, self.rfile, int(self.headers.get('Content-Length') or 0)))
@@ -6424,6 +6687,9 @@ class App(BaseHTTPRequestHandler):
                         retry(shutil.move, str(f), str(to := unique(HOME / 'trash' / f.name)))
                         if m[1] == 'projects' and versions_dir(m[2]).is_dir():  # its history goes with it: trash/<id> (2).versions beside trash/<id> (2).json
                             retry(shutil.move, str(versions_dir(m[2])), str(unique(to.with_suffix('.versions'))))
+                        for x in ('.jpg', '.mp4') if m[1] == 'templates' else ():  # a template's poster and preview go with it
+                            if f.with_suffix(x).is_file():
+                                retry(shutil.move, str(f.with_suffix(x)), str(to.with_suffix(x)))
                 return self.reply({'ok': True})
             if (m := re.fullmatch(r'/api/projects/([a-f0-9]{12})/versions(?:/(\d{13}[an])/(restore|delete))?', u.path)) and (PROJ / f'{m[1]}.json').exists():
                 f = PROJ / f'{m[1]}.json'

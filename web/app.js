@@ -3420,10 +3420,7 @@ async function makeCompound(sel = selection()) {
   delete inner.main.at(-1).tr;
   const P0 = P, name = `Compound ${new Date().toLocaleTimeString().replace(/:\d\d\s/, ' ')}`;
   const sub = migrate({ ...structuredClone(P0), id: hex12(), name, ...inner, captions: [], markers: [], tracks: {}, mute: {} });
-  let plan;
-  S.hold = true; // the preview and autosave leave the borrowed project alone
-  try { P = sub; packMain(); plan = await buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  const plan = await borrowP(sub, () => { packMain(); return buildPlan(even(P.w), even(P.h), 'fast', name, false, 'mp4'); });
   Object.assign(plan, { library: true, rate: 2.5 });
   const j = await job('/api/export', plan, 'Making the compound clip');
   await loadMedia();
@@ -3973,51 +3970,256 @@ function toggleMarker() {
   const i = P.markers.findIndex(t => Math.abs(t - S.t) < 0.5 / P.fps);
   change(() => { if (i >= 0) P.markers.splice(i, 1); else P.markers.push(S.t); });
 }
+// ---------- templates you make and share (CapCut's are its moat; these are open) ----------
+// A template is the edit with its footage as numbered slots ("slot:N", each used part starting at 0), its synthesized sounds
+// by name ("sfx:whoosh") and the files it keeps (sound-library sounds, stickers, your music) as library ids. Using one puts
+// new media in the slots (a longer clip gives its middle, or the part you slide to) and new words in its texts, styles kept.
+// The gallery's poster and hover preview are the template itself rendered once by the export on slates: a graphite card per
+// slot with its number, an amber bar along the foot running for the slot's length. The server's block: "templates you make and share".
 let tplCache = [];
-async function saveTemplate(name = prompt('Template name', P.name)) { // media become numbered slots
-  if (!name) return;
-  const t = structuredClone(P), slots = [], idx = new Map();
+const TPL = { sel: [], fill: null, busy: null, tried: new Set() };
+const tplSecs = x => (x < 60 ? `${(+x).toFixed(1)} s` : fmtDur(x));
+const tplVisual = k => k !== 'audio';
+const tplTexts = t => t.texts || (t.project.text || []).map(c => ({ id: c.id })); // (templates made before texts were chosen: every one)
+const tplStart = (t, i, m) => (t.v >= 2 && m.kind !== 'image' ? Math.max(0, (m.duration - (t.slots[i].need || 0)) / 2) : 0); // the middle of a longer clip
+const tplHTML = (el, s) => el.replaceChildren(document.createRange().createContextualFragment(s)); // (every name in s went through esc)
+function tplMeta(t) { return `${t.slots.length} slot${t.slots.length === 1 ? '' : 's'} · ${t.dur ? fmtDur(t.dur) : '?'} · ${shapeOf(t.w, t.h)}`; }
+function tplKeepDefault(m) { return m.kind === 'audio' ? !!(m.pack || m.licence) : !!m.trans && m.kind === 'image'; } // sound-library sounds and cut-out stickers travel with it
+
+function openSaveTemplate() { return act(openSaveTpl); } // (the open project, not a template preview's borrowed one)
+function openSaveTpl() {
+  if (!LANES.some(L => P[L.key].length)) return toast('Add something to the timeline first');
+  const media = [...new Set(LANES.flatMap(L => P[L.key].map(c => c.ramp && M.get(c.ramp.src) ? c.ramp.src : c.rt && M.get(c.rt.src) ? c.rt.src : c.media)).filter(id => M.get(id) && !(M.get(id).sfx && !M.get(id).pack)))];
+  modal(`<h2>Save as template</h2><p class="hint">The edit stays: cuts, timing, text styles, effects, transitions, sounds. Footage becomes numbered slots that whoever uses it fills.</p>
+    <label class="row"><span>Name</span><input id="tsName" maxlength="80" value="${esc(P.name)}"></label>
+    ${media.length ? `<h4>Media</h4><div class="tslist">${media.map(id => { const m = M.get(id); return `<div class="tsrow"><span class="tthumb" style="${thumbStyle(m)}"></span><span class="tsname"><b title="${esc(m.name)}">${esc(m.name)}</b><small>${m.kind}${m.kind === 'image' ? '' : ` · ${fmtDur(m.duration)}`}</small></span>`
+      + `<select data-tskeep="${id}" aria-label="What ${esc(m.name)} becomes"><option value="slot">Slot</option><option value="keep"${tplKeepDefault(m) ? ' selected' : ''}>Keep in template</option></select><input data-tslabel="${id}" maxlength="40" placeholder="Label, e.g. Wide shot" title="What the slot asks for: shown on its placeholder and when filling it" aria-label="Placeholder label for ${esc(m.name)}"${tplKeepDefault(m) ? ' disabled' : ''}></div>`; }).join('')}</div>` : ''}
+    ${P.text.length ? `<h4>Editable texts</h4><div class="tslist">${P.text.map(c => `<label class="row chk"><span title="${esc(c.text)}">${esc(short(String(c.text).replace(/\s+/g, ' '), 46))}</span><input type="checkbox" data-tstext="${c.id}"${/^[\p{Extended_Pictographic}\s‍️]+$/u.test(c.text) ? '' : ' checked'}></label>`).join('')}</div>` : ''}
+    ${P.captions.length ? '<label class="row chk" title="The captions here are this video\'s words: a template keeps their style and makes new ones from the new footage\'s speech"><span>Captions: make them again from the new speech</span><input type="checkbox" id="tsRecap" checked></label>' : ''}
+    <div class="actions"><button data-close>Cancel</button><button class="primary" data-savetplgo>Save template</button></div>`);
+}
+function saveTemplate(o) { return act(() => saveTpl(o)); }
+async function saveTpl({ name = P.name, keep = [], labels = {}, texts, recaption = false } = {}) { // -> the template
+  name = String(name || '').trim().slice(0, 80) || 'Template';
+  packMain();
+  const t = structuredClone(P), slots = [], idx = new Map(), kept = new Set(keep);
   for (const L of LANES) for (const c of t[L.key]) {
     if (!c.media) continue;
     if (c.ramp) { if (c.media === c.ramp.copy && M.get(c.ramp.src)) unramp(c); delete c.ramp; } // a ramp's copy belongs to its own footage: the slot gets the original range
     if (c.rt) { if (rtOn(c)) unretouch(c); delete c.rt; } // so does a retouched copy
-    if (!idx.has(c.media)) { const m = M.get(c.media); idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', need: 0 }); }
-    const s = idx.get(c.media);
-    slots[s].need = Math.max(slots[s].need, c.out);
-    c.media = `slot:${s}`;
-  }
-  const id = hex12();
-  await api(`/api/templates/${id}`, { id, name, slots, w: t.w, h: t.h, project: t }, 'PUT');
-  toast(`Template "${name}" saved with ${slots.length} media slot${slots.length === 1 ? '' : 's'}`);
-}
-async function openTemplates() {
-  tplCache = await api('/api/templates').catch(() => []);
-  modal(`<h2>Templates</h2><p class="hint">A template keeps the edit (cuts, timing, text, caption style, effects) and swaps in new media.</p>
-    <div class="actions"><button data-savetpl>Save this project as a template</button></div>
-    <div class="plist">${tplCache.map(t => `<div class="prow"><button class="pitem" data-tpl="${t.id}"><b>${esc(t.name)}</b><span>${t.w}×${t.h} · ${t.slots.length} media slots</span></button><button class="pdel" data-deltpl="${t.id}">Delete</button></div>`).join('') || '<p class="hint">No templates yet.</p>'}</div>
-    <div id="tplSlots"></div><div class="actions"><button data-close>Close</button></div>`);
-}
-function showTemplate(id) {
-  const t = tplCache.find(x => x.id === id);
-  const opts = kind => [...M.values()].filter(m => m.kind === kind || (kind !== 'audio' && m.kind !== 'audio')).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
-  $('#tplSlots').innerHTML = `<h4>${esc(t.name)}: choose media</h4>${t.slots.map((s, i) => `<label class="row"><span>${i + 1}. ${esc(s.kind)}, ${fmtDur(s.need)}+</span><select data-slot="${i}">${opts(s.kind)}</select></label>`).join('')}
-    <div class="actions"><button class="primary" data-usetpl="${t.id}">Create project</button></div>`;
-}
-function useTemplate(id) {
-  const t = tplCache.find(x => x.id === id), pick = $$('[data-slot]').map(s => s.value);
-  if (pick.some(v => !v)) return toast('Import media for every slot first');
-  const p = structuredClone(t.project);
-  p.id = hex12();
-  p.name = `${t.name} ${new Date().toLocaleDateString()}`;
-  for (const L of LANES) for (const c of p[L.key] || []) { // templates made before a lane existed don't have it
-    if (typeof c.media !== 'string' || !c.media.startsWith('slot:')) continue;
-    const m = M.get(pick[+c.media.slice(5)]);
-    c.media = m.id;
-    if (m.kind !== 'image') { c.out = Math.min(c.out, m.duration); c.in = Math.min(c.in, Math.max(0, c.out - 0.1)); }
+    const m = M.get(c.media);
+    if (m?.sfx && !m.pack) { c.media = `sfx:${m.sfx}`; continue; } // synthesized by Cutroom: made again by name on any Mac
+    if (kept.has(c.media)) continue;
+    if (!idx.has(c.media)) { idx.set(c.media, slots.length); slots.push({ kind: m?.kind || 'video', name: m?.name || 'media', label: String(labels[c.media] || '').slice(0, 40), w: m?.w, h: m?.h, a: Infinity, b: 0 }); }
+    const s = slots[idx.get(c.media)];
+    s.a = Math.min(s.a, c.in); s.b = Math.max(s.b, c.out);
+    c.media = `slot:${idx.get(c.media)}`;
     delete c.beats;
   }
-  setProject(p); scheduleSave(); closeModal();
+  for (const L of LANES) for (const c of t[L.key]) if (String(c.media).startsWith('slot:')) { const s = slots[+c.media.slice(5)]; c.in = r3(c.in - s.a); c.out = r3(c.out - s.a); } // each slot's used part starts at 0
+  for (const s of slots) { s.need = r3(s.b - s.a); delete s.a; delete s.b; }
+  if (recaption) t.captions = [];
+  const id = hex12(), tx = (texts ?? t.text.map(c => c.id)).filter(x => t.text.some(c => c.id === x)).map(x => ({ id: x }));
+  const tpl = { id, v: 2, name, w: t.w, h: t.h, fps: t.fps, dur: r3(total()), slots, texts: tx, recaption: !!recaption, created: Date.now() / 1000, project: { ...t, id: undefined } };
+  await api(`/api/templates/${id}`, tpl, 'PUT');
+  toast(`Template "${name}" saved with ${slots.length} slot${slots.length === 1 ? '' : 's'}`);
+  return tpl;
+}
+async function tplProject(t, pick, textVals = {}, starts = {}) { // the template's edit with media pick[i] in slot i (null: an empty sound slot, its clips go)
+  const p = migrate(structuredClone(t.project)), sfx = new Set();
+  for (const L of LANES) for (const c of p[L.key]) if (String(c.media).startsWith('sfx:')) sfx.add(c.media.slice(4));
+  const made = Object.fromEntries(await Promise.all([...sfx].map(async s => [s, (await api('/api/sfx/add', { id: s })).id])));
+  if (sfx.size && Object.values(made).some(id => !M.get(id))) await loadMedia();
+  for (const L of LANES) p[L.key] = p[L.key].filter(c => {
+    if (typeof c.media !== 'string') return true;
+    if (c.media.startsWith('sfx:')) { c.media = made[c.media.slice(4)]; return true; }
+    if (!c.media.startsWith('slot:')) { if (!M.get(c.media)) throw new Error('this template keeps a file that is not in the library (import its .cutroom-template again)'); return true; }
+    const i = +c.media.slice(5), m = M.get(pick[i]);
+    if (!m) return false;
+    c.media = m.id;
+    if (m.kind === 'image') { c.out = r3(c.out - c.in); c.in = 0; } // a photo: as long as the slot's clip was
+    else {
+      const off = starts[i] ?? tplStart(t, i, m);
+      c.in = r3(c.in + off); c.out = r3(c.out + off);
+      if (c.out > m.duration) { c.out = r3(m.duration); c.in = Math.min(c.in, Math.max(0, r3(c.out - 0.1))); } // a shorter clip: it ends early
+    }
+    return true;
+  });
+  for (const e of tplTexts(t)) { const c = p.text.find(x => x.id === e.id), v = textVals[e.id]; if (c && v != null && String(v).trim()) c.text = String(v); } // only the words: the style stays
+  return Object.assign(p, { id: hex12(), name: `${t.name} ${new Date().toLocaleDateString()}` });
+}
+function useTemplate(...a) { return act(() => useTpl(...a)); } // (a preview's borrow would put its project back over the new one)
+async function useTpl(t, pick, textVals = {}, { starts = {}, captions = false } = {}) {
+  const miss = t.slots.findIndex((s, i) => tplVisual(s.kind) && !M.get(pick[i]));
+  if (miss >= 0) throw new Error(`fill slot ${miss + 1} first`);
+  setProject(await tplProject(t, pick, textVals, starts)); scheduleSave(); closeModal();
   toast('Project created from the template');
+  if (captions && t.recaption) await autoCaptions(true).catch(e => toast(e.message)); // on this Mac (whisper), with the template's caption style
+  return P;
+}
+
+// the gallery: a card per template, its poster, and its preview playing while the pointer is on it
+async function openTemplates() {
+  tplCache = await api('/api/templates').catch(() => []);
+  modal(`<div class="phead"><h2>Templates</h2><div class="pnew"><label class="btn" title="A .cutroom-template someone shared">Import…<input type="file" id="tplIn" hidden accept=".cutroom-template"></label><button class="primary" data-savetpl>Save this project as a template</button></div></div>
+    <p class="hint">A template keeps the edit (cuts, timing, text, caption style, effects, sounds) and takes new footage in its numbered slots. Point at one to play it.</p><p id="tplStatus" class="muted" hidden></p>
+    <div class="pgrid">${tplCache.map(tplCard).join('') || '<p class="hint">No templates yet.</p>'}</div>
+    <div class="actions"><button data-close>Close</button></div>`, 'wide');
+  tplRenderMissing();
+}
+function tplCard(t) {
+  const v = Math.round(t.updated || t.pv || 0); // (the poster's time: a remade one isn't the cached one)
+  return `<div class="pcard tplcard" data-tcard="${t.id}"><button class="pitem" data-tpl="${t.id}" title="Use ${esc(t.name)}"><span class="pthumb">${t.poster ? `<img src="/api/templates/${t.id}/poster.jpg?v=${v}" alt="" loading="lazy" onerror="this.remove()">` : `<small class="tmaking">${TPL.tried.has(t.id) && TPL.busy !== t.id ? 'No preview' : 'Making the preview…'}</small>`}${t.preview ? `<video muted loop playsinline preload="none" data-src="/api/templates/${t.id}/preview.mp4?v=${v}"></video>` : ''}<i>${t.dur ? fmtDur(t.dur) : ''}</i></span>`
+    + `<b>${esc(t.name)}</b><span class="pmeta">${tplMeta(t)}${t.starter ? ' · Starter' : ''}</span></button>`
+    + `<span class="pacts"><button class="pdel" data-tplshare="${t.id}" title="Share: save a .cutroom-template file" aria-label="Share ${esc(t.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/></svg></button>`
+    + (t.starter ? '' : `<button class="pdel" data-deltpl="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>`) + '</span></div>';
+}
+function tplHover(e, on) {
+  const card = e.target.closest?.('.tplcard'), v = card?.querySelector('video');
+  if (!v || card.contains(e.relatedTarget)) return; // (moving between the card's own parts)
+  if (on) { if (!v.src) v.src = v.dataset.src; card.classList.add('playing'); v.play().catch(() => {}); }
+  else { v.pause(); v.currentTime = 0; card.classList.remove('playing'); }
+}
+async function tplRenderMissing() { // one at a time, each once a session, while the gallery is open
+  if (TPL.busy) return;
+  for (;;) {
+    const t = tplCache.find(x => !x.poster && !TPL.tried.has(x.id));
+    if (!t || !$('.tplcard')) return;
+    TPL.tried.add(t.id); TPL.busy = t.id;
+    try { await tplRender(t); t.poster = t.preview = true; t.updated = Date.now() / 1000; }
+    catch (e) { console.warn('template preview', t.name, e.message); }
+    finally { TPL.busy = null; }
+    const card = $(`.tplcard[data-tcard="${t.id}"]`);
+    if (card) card.replaceWith(document.createRange().createContextualFragment(tplCard(t)));
+  }
+}
+function slatePNG(n, label, ar) { // the placeholder for slot n: graphite, its number large, its label under it
+  ar = clamp(ar || 1, 0.25, 4);
+  const w = even(ar >= 1 ? 360 * ar : 360), h = even(ar >= 1 ? 360 : 360 / ar), cv = document.createElement('canvas'), x = cv.getContext('2d'), s = Math.min(w, h);
+  cv.width = w; cv.height = h;
+  x.fillStyle = '#232325'; x.fillRect(0, 0, w, h);
+  x.strokeStyle = 'rgba(237, 237, 237, .18)'; x.lineWidth = 2; x.strokeRect(s * 0.06, s * 0.06, w - s * 0.12, h - s * 0.12);
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#ededed';
+  x.font = `700 ${Math.round(s * 0.4)}px Montserrat, system-ui, sans-serif`; x.fillText(String(n), w / 2, h / 2 - (label ? s * 0.06 : 0));
+  if (label) { x.fillStyle = '#a1a1a6'; x.font = `500 ${Math.round(s * 0.075)}px -apple-system, system-ui, sans-serif`; x.fillText(short(label, 28), w / 2, h / 2 + s * 0.24); }
+  return cv.toDataURL('image/png').split(',')[1];
+}
+async function tplPlan(p, extra, w, h, name) { // buildPlan for project p, not the open one (borrowed like a compound clip's), with media extra known
+  for (const m of extra) M.set(m.id, m);
+  try { return await borrowP(p, () => { packMain(); return buildPlan(w, h, 'fast', name, false, 'mp4'); }, true); } // (in the background: after any action in progress)
+  finally { for (const m of extra) M.delete(m.id); }
+}
+async function tplRender(t) {
+  await document.fonts.load('700 100px Montserrat');
+  const vis = t.slots.map((s, i) => [s, i]).filter(([s]) => tplVisual(s.kind));
+  const slates = await api(`/api/templates/${t.id}/slates`, { slots: vis.map(([s, i]) => ({ n: i + 1, kind: s.kind, need: Math.max(1, s.need || 3), png: slatePNG(i + 1, s.label, s.w && s.h ? s.w / s.h : t.w / t.h) })) });
+  const pick = t.slots.map(() => null);
+  vis.forEach(([, i], k) => { pick[i] = slates[k].id; });
+  const ids = slates.map(m => m.id);
+  let file = null;
+  try {
+    for (const m of slates) M.set(m.id, m); // (tplProject reads them)
+    const p = await tplProject(t, pick, {}, Object.fromEntries(vis.map(([, i]) => [i, 0])));
+    Object.assign(p, { hdr: 'sdr', alpha: false });
+    const k = 480 / Math.max(t.w, t.h), plan = await tplPlan(p, slates, even(t.w * k), even(t.h * k), `Template preview ${t.id}`);
+    const j = await job('/api/export', { ...plan, queue: true }, 'Template preview', () => {});
+    file = j.file;
+    const tx = tplTexts(t).map(e => p.text.find(c => c.id === e.id)).filter(Boolean), dur = t.dur || plan.duration; // the poster: a moment its first text is on screen
+    await api(`/api/templates/${t.id}/preview`, { file, slates: ids, at: tx.length ? Math.min(dur * 0.9, Math.min(...tx.map(c => c.start)) + 1.2) : dur * 0.3 });
+  } finally {
+    for (const id of ids) M.delete(id);
+    if (!file) await api(`/api/templates/${t.id}/preview`, { file: null, slates: ids }).catch(() => {});
+  }
+}
+
+// using one: the slots, a library to fill them from, the texts
+function showTemplate(id) {
+  const t = tplCache.find(x => x.id === id);
+  if (!t) return;
+  TPL.fill = { t, pick: t.slots.map(() => null), starts: {} };
+  TPL.sel = [];
+  const lib = [...M.values()].filter(m => m.ready || m.kind === 'image');
+  modal(`<div class="phead"><h2>${esc(t.name)}</h2><span class="muted">${tplMeta(t)}</span></div>
+    <div class="tfill"><div><h4>Slots</h4><div id="tslots" class="tslots"></div></div>
+      <div><h4 class="tlhead">Library <button data-tplfill title="The selected items, in the order you picked them, into the slots in order">Fill from selection</button></h4>
+        <div class="tlib">${lib.map(m => `<button class="tlitem" draggable="true" data-tlm="${m.id}" title="${esc(m.name)}: click to select, or drag onto a slot"><span class="tthumb" style="${thumbStyle(m)}"></span><b>${esc(m.name)}</b><small>${m.kind === 'image' ? 'photo' : fmtDur(m.duration)}</small><i></i></button>`).join('') || '<p class="hint">Import some footage first.</p>'}</div></div></div>
+    ${tplTexts(t).length ? `<h4>Texts</h4><div class="ttexts">${tplTexts(t).map((e, n) => { const c = (t.project.text || []).find(x => x.id === e.id); if (!c) return ''; const f = String(c.style?.font || '').replace(/[^\w \-]/g, ''); return `<label class="row"><span>Text ${n + 1}</span><textarea rows="1" data-ttext="${c.id}" style="font-family:'${f}', system-ui" aria-label="Text ${n + 1}">${esc(c.text)}</textarea></label>`; }).join('')}</div>` : ''}
+    ${t.recaption ? '<label class="row chk" title="Whisper on this Mac, in the template\'s caption style"><span>Make captions from the new speech</span><input type="checkbox" id="tplCaps" checked></label>' : ''}
+    <div class="actions"><button data-tplback>Back</button><button class="primary" data-usetpl="${t.id}">Create project</button></div>`, 'wide');
+  tplDrawSlots();
+}
+function tplDrawSlots() {
+  const { t, pick, starts } = TPL.fill;
+  tplHTML($('#tslots'), t.slots.map((s, i) => {
+    const m = M.get(pick[i]), need = s.need || 0, vid = m && m.kind !== 'image' && tplVisual(s.kind), a = vid ? starts[i] ?? tplStart(t, i, m) : 0, room = vid ? m.duration - need : 0;
+    const say = !tplVisual(s.kind) ? `a sound · ${tplSecs(need)} · optional` : s.kind === 'image' ? `a photo, or ${tplSecs(need)} of video` : `needs ${tplSecs(need)}`;
+    return `<div class="tslot${m ? ' on' : ''}" data-tslot="${i}"><span class="tnum">${i + 1}</span><span class="tthumb" style="${m ? thumbStyle(m) : ''}">${m ? '' : 'Drop here'}</span>
+      <span class="tsinfo"><b>${esc(m ? m.name : s.label || (tplVisual(s.kind) ? `Slot ${i + 1}` : 'Music or sound'))}</b><small>${say}</small>
+      ${vid ? `<span class="tuse"><span class="tbar"><i style="left:${(a / m.duration) * 100}%;width:${(Math.min(need, m.duration) / m.duration) * 100}%"></i></span>${room > 0.05 ? `<input type="range" data-tstart="${i}" min="0" max="${r3(room)}" step="0.05" value="${r3(a)}" aria-label="Which part of ${esc(m.name)} slot ${i + 1} uses">` : ''}<small>${room >= -0.05 ? `uses ${tplSecs(a)}–${tplSecs(a + need)} of ${tplSecs(m.duration)}` : `shorter than the slot by ${tplSecs(-room)}: its clips end early`}</small></span>` : ''}</span>
+      ${m ? `<button class="ghost" data-tclear="${i}" aria-label="Empty slot ${i + 1}">Clear</button>` : ''}</div>`;
+  }).join(''));
+  for (const r of $$('#tslots input[type=range]')) fill(r);
+  for (const b of $$('.tlitem')) { const k = TPL.sel.indexOf(b.dataset.tlm); b.classList.toggle('on', k >= 0); b.querySelector('i').textContent = k >= 0 ? k + 1 : ''; }
+}
+function tplPut(i, id) { // -> false (with a toast) when the slot takes another kind
+  const s = TPL.fill.t.slots[i], m = M.get(id);
+  if (!m || tplVisual(s.kind) !== tplVisual(m.kind)) { toast(`Slot ${i + 1} takes ${tplVisual(s.kind) ? 'a video or a photo' : 'a sound'}`); return false; }
+  TPL.fill.pick[i] = id; delete TPL.fill.starts[i];
+  return true;
+}
+function tplFillSel(ids = TPL.sel) { // in the order picked: pictures into the picture slots in order, sounds into the sound slots
+  const { t } = TPL.fill, free = { v: t.slots.map((s, i) => i).filter(i => tplVisual(t.slots[i].kind)), a: t.slots.map((s, i) => i).filter(i => !tplVisual(t.slots[i].kind)) };
+  let n = 0;
+  for (const id of ids) { const m = M.get(id), q = m && free[tplVisual(m.kind) ? 'v' : 'a']; if (q?.length) { tplPut(q.shift(), id); n++; } }
+  tplDrawSlots();
+  return n;
+}
+function tplFields() { return Object.fromEntries($$('[data-ttext]').map(x => [x.dataset.ttext, x.value])); }
+async function importTemplateFile(f) {
+  const r = await fetch(`/api/templates/import?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: f });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'the template could not be read');
+  await Promise.all([loadMedia(), loadFonts(), api('/api/luts').then(l => { G.luts = l; }).catch(() => {})]);
+  toast(`Imported the template "${j.name}"${j.media ? ` with ${j.media} file${j.media === 1 ? '' : 's'}` : ''}`);
+  return j;
+}
+function tplWire() { // the gallery's and the fill dialog's own events (the modal's clicks go through tplClick)
+  const md = $('#modal');
+  md.addEventListener('pointerover', e => tplHover(e, true));
+  md.addEventListener('pointerout', e => tplHover(e, false));
+  md.addEventListener('dragstart', e => { const b = e.target.closest?.('[data-tlm]'); if (b) { e.dataTransfer.setData('text/cutroom-media', b.dataset.tlm); e.dataTransfer.effectAllowed = 'copy'; } });
+  md.addEventListener('dragover', e => { const s = e.target.closest?.('[data-tslot]'); if (s && e.dataTransfer.types.includes('text/cutroom-media')) { e.preventDefault(); s.classList.add('drop'); } });
+  md.addEventListener('dragleave', e => { const s = e.target.closest?.('[data-tslot]'); if (s && !s.contains(e.relatedTarget)) s.classList.remove('drop'); });
+  md.addEventListener('drop', e => { const s = e.target.closest?.('[data-tslot]'), id = e.dataTransfer.getData('text/cutroom-media'); if (!s || !id) return; e.preventDefault(); e.stopPropagation(); tplPut(+s.dataset.tslot, id); tplDrawSlots(); });
+  md.addEventListener('input', e => { const i = e.target.dataset?.tstart; if (i != null && TPL.fill) { TPL.fill.starts[i] = +e.target.value; tplDrawSlots(); $(`[data-tstart="${i}"]`)?.focus(); } });
+  md.addEventListener('change', e => {
+    if (e.target.id === 'tplIn' && e.target.files[0]) importTemplateFile(e.target.files[0]).then(openTemplates, err => toast(err.message));
+    const k = e.target.dataset?.tskeep, lab = k && $(`[data-tslabel="${k}"]`);
+    if (lab) lab.disabled = e.target.value === 'keep'; // a kept file is no slot: nothing to label
+  });
+}
+async function tplClick(d, b) { // -> true when it was one of the templates' buttons
+  if ('savetpl' in d) openSaveTemplate();
+  else if ('savetplgo' in d) {
+    const keep = $$('[data-tskeep]').filter(x => x.value === 'keep').map(x => x.dataset.tskeep), labels = Object.fromEntries($$('[data-tslabel]').map(x => [x.dataset.tslabel, x.value.trim()]));
+    b.disabled = true;
+    try { await saveTemplate({ name: $('#tsName').value, keep, labels, texts: $$('[data-tstext]').filter(x => x.checked).map(x => x.dataset.tstext), recaption: !!$('#tsRecap')?.checked }); } finally { b.disabled = false; }
+    await openTemplates();
+  }
+  else if (d.tpl) showTemplate(d.tpl);
+  else if ('tplback' in d) openTemplates();
+  else if (d.tlm) { const k = TPL.sel.indexOf(d.tlm); if (k >= 0) TPL.sel.splice(k, 1); else TPL.sel.push(d.tlm); tplDrawSlots(); }
+  else if ('tplfill' in d) { if (!TPL.sel.length) toast('Select library items first (click them in the order you want)'); else tplFillSel(); }
+  else if (d.tclear) { TPL.fill.pick[+d.tclear] = null; tplDrawSlots(); }
+  else if (d.usetpl) { const { t, pick, starts } = TPL.fill; await useTemplate(t, pick, tplFields(), { starts, captions: !!$('#tplCaps')?.checked }); }
+  else if (d.tplshare) {
+    const r = await api(`/api/templates/${d.tplshare}/share`, {}), st = $('#tplStatus');
+    if (st) { st.hidden = false; st.textContent = `Saved ${r.file} (${(r.size / 1e6).toFixed(1)} MB) in ${r.dir} `; const x = document.createElement('button'); x.className = 'ghost'; x.dataset.reveal = r.file; x.textContent = 'Show in Finder'; st.append(x); }
+    else toast(`Saved ${r.file} in ${r.dir}`);
+  }
+  else if (d.deltpl) { if (confirm(plat('Delete this template? It moves to Movies/Cutroom/trash.'))) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+  else return false;
+  return true;
 }
 async function uploadOne(file) {
   const r = await fetch(`/api/import?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: file });
@@ -4434,7 +4636,8 @@ const handOff = (name, format) => api('/api/interchange', { format, name: name |
 function importFiles(files) {
   for (const f of [...files].filter(x => /\.(srt|vtt|txt)$/i.test(x.name))) f.text().then(t => importSubs(t, f.name)).catch(e => toast(e.message));
   for (const f of [...files].filter(x => /\.cutroom$/i.test(x.name))) openPackageFile(f).catch(e => toast(e.message));
-  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom)$/i.test(x.name));
+  for (const f of [...files].filter(x => /\.cutroom-template$/i.test(x.name))) importTemplateFile(f).then(() => { if ($('.tplcard')) openTemplates(); }, e => toast(e.message));
+  files = [...files].filter(x => !/\.(srt|vtt|txt|cutroom|cutroom-template)$/i.test(x.name));
   for (const f of files) {
     const u = { name: f.name, pct: 0 }, x = new XMLHttpRequest();
     uploads.push(u);
@@ -4643,11 +4846,24 @@ function reshape(p0, W2, H2) { // a copy of the project on a W2×H2 canvas. Main
   }
   return Object.assign(p, { w: W2, h: H2 });
 }
-async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+// buildPlan reads the global P, so a plan for another project (a compound clip's, another shape's, a template preview's) borrows it:
+// P is that project until the plan is built. One borrow at a time; act() (saving or using a template, every REMOTE command) waits
+// for a borrow to end, and a background borrow (template previews) waits for acts: neither reads or replaces the other's P
+let heldP = null, acting = 0;
+async function borrowP(p, fn, background = false) { // -> fn()'s result, with P = p (or p(the open project)) meanwhile
+  for (;;) { if (heldP) await heldP.catch(() => {}); else if (background && acting) await sleep(100); else break; }
   const P0 = P;
-  S.hold = true; // ponytail: borrowed like a compound clip's plan; an edit made during these seconds lands on the copy
-  try { P = reshape(P0, ...RATIOS[ratio]); const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return await buildPlan(w, h, ...args); }
-  finally { P = P0; S.hold = false; S.dirty = true; }
+  S.hold = true; P = typeof p === 'function' ? p(P0) : p; // the preview and autosave leave the borrowed project alone
+  heldP = (async () => fn())();
+  try { return await heldP; } finally { P = P0; S.hold = false; S.dirty = true; heldP = null; }
+}
+async function act(fn) { // fn on the open project, never on a borrowed one
+  while (heldP) await heldP.catch(() => {});
+  acting++;
+  try { return await fn(); } finally { acting--; }
+}
+async function shapePlan(ratio, res, ...args) { // buildPlan(...args) at resolution res for the project re-laid as ratio
+  return borrowP(P0 => reshape(P0, ...RATIOS[ratio]), () => { const [, w, h] = exportSizes().find(x => x[0] === res) || exportSizes()[1]; return buildPlan(w, h, ...args); });
 }
 S.q = []; // the Exports panel: every export the page started, in order; the server renders them one at a time (ai_slot)
 const node = (tag, cls, parent, text = '') => { const e = parent.appendChild(document.createElement(tag)); e.className = cls; e.textContent = text; return e; };
@@ -5823,10 +6039,7 @@ function wire() {
     else if (d.vrestore) { await restoreVersion(d.pid, d.vrestore); closeModal(); toast('Version restored. Undo (⌘Z) brings the last state back.'); }
     else if (d.vdel) { if (confirm('Delete this version? It cannot be recovered.')) { await api(`/api/projects/${d.pid}/versions/${d.vdel}/delete`, {}); openVersions(d.pid); } }
     else if (d.dup) { const p = await api(`/api/projects/${d.dup}`); p.id = hex12(); p.name = `${p.name} (copy)`; await api(`/api/projects/${p.id}`, p, 'PUT'); openProjects(); }
-    else if ('savetpl' in d) { await saveTemplate(); openTemplates(); }
-    else if (d.tpl) showTemplate(d.tpl);
-    else if (d.usetpl) useTemplate(d.usetpl);
-    else if (d.deltpl) { if (confirm(plat('Delete this template? It moves to Movies/Cutroom/trash.'))) { await api(`/api/templates/${d.deltpl}/trash`, {}); openTemplates(); } }
+    else if (await tplClick(d, b)) { /* the templates' buttons */ }
     else if (d.pkg) openPackage(d.pkg);
     else if (d.pkgo) { // the dialog may be closed meanwhile: then the result is a toast
       const out = (msg, file) => {
@@ -5844,6 +6057,7 @@ function wire() {
     else if (d.play) open(`/exports/${encodeURIComponent(d.play)}`, '_blank', 'noopener');
   };
   $('#modal').addEventListener('click', e => { modalClick(e).catch(err => toast(err.message)); });
+  tplWire();
   $('#modal').addEventListener('change', e => { if (e.target.id === 'pkgIn' && e.target.files[0]) { const f = e.target.files[0]; closeModal(); openPackageFile(f).catch(err => toast(err.message)); } });
 
   addEventListener('keydown', e => {
@@ -6328,6 +6542,23 @@ const REMOTE = {
   async package_project({ project, trim = false }) { // the project (default: the open one) and every file it uses in one .cutroom in the exports folder
     return packageProject(project == null ? P.id : await projectId(project), trim === true, () => {});
   },
+  async list_templates() { // the gallery: starters and yours, each slot's kind and needed length, the texts that can change
+    tplCache = await api('/api/templates');
+    return tplCache.map(t => ({ id: t.id, name: t.name, starter: !!t.starter, shape: shapeOf(t.w, t.h), w: t.w, h: t.h, duration: r3(t.dur || 0), captionsFromSpeech: !!t.recaption,
+      slots: t.slots.map((s, i) => ({ slot: i + 1, kind: s.kind === 'audio' ? 'sound (optional)' : s.kind === 'image' ? 'photo or video' : 'video or photo', need: r3(s.need || 0), label: s.label || undefined })),
+      texts: tplTexts(t).map(e => ({ id: e.id, text: (t.project.text || []).find(c => c.id === e.id)?.text })).filter(x => x.text != null) }));
+  },
+  async use_template({ id, media = [], texts = {}, starts = {}, captions = false }) { // a new project from it: media[i] (id or name) into slot i + 1
+    if (!tplCache.some(t => t.id === id || t.name === id)) tplCache = await api('/api/templates');
+    const t = tplCache.find(x => x.id === id) || tplCache.find(x => x.name.toLowerCase() === String(id).toLowerCase());
+    if (!t) throw new Error(`no template "${id}" (list_templates lists them)`);
+    if (media.length > t.slots.length) throw new Error(`"${t.name}" has ${t.slots.length} slots`);
+    const pick = t.slots.map((s, i) => (media[i] == null || media[i] === '' ? null : mediaBy(media[i]).id)), ids = tplTexts(t).map(e => e.id), vals = {};
+    for (const [k, v] of Object.entries(texts)) vals[ids.includes(k) ? k : ids[+k - 1] ?? (t.project.text || []).find(c => c.text === k)?.id ?? k] = v; // by id, by number (1 = the first), or by its current words
+    const st = Object.fromEntries(Object.entries(starts).map(([k, v]) => [+k - 1, +v]));
+    await useTemplate(t, pick, vals, { starts: st, captions: captions === true });
+    return { ...(await REMOTE.status()), slots: P.main.concat(P.overlay, P.audio).filter(c => pick.includes(c.media)).map(c => brief(c, P.main.includes(c) ? 'main' : P.overlay.includes(c) ? 'overlay' : 'audio')), texts: P.text.filter(c => ids.includes(c.id)).map(c => c.text) };
+  },
   async open_package({ path }) {
     if (!path) throw new Error('path: a .cutroom file on this Mac');
     const r = await packageOpened(await job('/api/package/open', { path: String(path) }, 'Opening the package', () => {}));
@@ -6707,12 +6938,13 @@ async function remoteLoop() { // long-poll the server for commands from the MCP 
     api('/api/remote/ack', { id: m.id }).catch(() => {});
     let ok = true, result;
     remoteLog = [];
-    const p0 = P, u0 = undo.length;
     busy(1);
-    try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
-    catch (e) { ok = false; result = e.message; }
-    finally { busy(-1); }
-    if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    await act(async () => { // (never on a template preview's borrowed project)
+      const p0 = P, u0 = undo.length;
+      try { const fn = REMOTE[m.cmd]; if (!fn) throw new Error(`unknown command ${m.cmd}`); result = await fn(m.args || {}); }
+      catch (e) { ok = false; result = e.message; }
+      if (P === p0 && undo.length > u0 + 1) { undo.splice(u0 + 1); delete undo[u0].label; } // one command = one undo step (a command may make several changes), named by what it did
+    }).finally(() => busy(-1));
     const log = remoteLog;
     remoteLog = null;
     await api('/api/remote/result', { id: m.id, ok, result: result ?? null, log }).catch(() => {});
@@ -6733,7 +6965,7 @@ async function pilotCtx() { // the project in brief for the planner: clip ids, c
 }
 async function pilotRun(steps, say = () => {}) { // one step = one undo step; a step that fails is reported, the others still run
   const done = [], failed = [];
-  for (const [i, s] of steps.entries()) {
+  for (const [i, s] of steps.entries()) await act(async () => {
     say(i, 'run');
     const before = JSON.stringify(P), u0 = undo.length, log0 = remoteLog;
     remoteLog = [];
@@ -6744,9 +6976,9 @@ async function pilotRun(steps, say = () => {}) { // one step = one undo step; a 
       if (JSON.stringify(P) !== before) { undo.length = u0; step(before); syncHistory(); }
       s.log = remoteLog; remoteLog = log0;
     }
-    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); continue; }
+    if (err) { s.error = err; failed.push(s); say(i, 'fail', err); return; }
     done.push(s); say(i, 'ok', s.log.at(-1));
-  }
+  });
   return { done, failed };
 }
 function pilotOpen() {

@@ -350,6 +350,39 @@ body.theater .gut { display: none; }
 .hrow.on, .hrow.on:hover:not(:disabled) { border-color: var(--accent); }
 .hrow.undone b { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .pthumb, .pacts { transition: none; } .pitem:hover .pthumb { transform: none; } }
+/* templates: the gallery (poster, the preview while pointed at), saving one, filling its slots */
+.tplcard .pthumb img, .tplcard .pthumb video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; } /* a tall poster whole, not cropped */
+.tplcard .pthumb video { background: #0e0e0f; opacity: 0; pointer-events: none; }
+.tplcard.playing .pthumb video { opacity: 1; }
+.tplcard .pthumb i { z-index: 1; }
+.tmaking { color: var(--faint); font-size: 11.5px; }
+.tthumb { display: grid; place-items: center; width: 64px; height: 40px; flex: none; border-radius: 6px; border: 1px solid var(--line); background: #0e0e0f center / cover no-repeat; color: var(--faint); font-size: 10.5px; overflow: hidden; }
+.tslist { display: grid; gap: 4px; }
+.tsrow { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto minmax(0, 190px); align-items: center; gap: 10px; padding: 4px 0; }
+.tsname, .tsinfo { display: grid; min-width: 0; } .tsname b, .tsinfo b { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsname small, .tsinfo small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tfill { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; }
+.tfill h4 { margin-top: 4px; }
+.tslots { display: grid; gap: 6px; }
+.tslot { display: grid; grid-template-columns: 22px 64px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px; border: 1px dashed var(--line2); border-radius: 10px; }
+.tslot.on { border-style: solid; border-color: var(--line2); background: var(--panel); }
+.tslot.drop { border-color: var(--accent); }
+.tnum { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--raised); font: 600 11.5px/1 ui-monospace, "SF Mono", Menlo, monospace; }
+.tslot.on .tnum { background: var(--accent); color: var(--on); }
+.tuse { display: grid; gap: 3px; margin-top: 4px; }
+.tbar { position: relative; height: 6px; border-radius: 3px; background: #0e0e0f; overflow: hidden; }
+.tbar i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
+.tlhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tlhead button { padding: 3px 9px; font-size: 12px; color: var(--text); }
+.tlib { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; max-height: 340px; overflow: auto; padding: 2px; }
+.tlitem { position: relative; display: grid; gap: 2px; padding: 4px; text-align: left; justify-items: stretch; border-radius: 9px; background: transparent; }
+.tlitem .tthumb { width: 100%; height: auto; aspect-ratio: 16 / 10; }
+.tlitem b { font-size: 11.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlitem small { color: var(--muted); font-size: 10.5px; }
+.tlitem i { position: absolute; top: 8px; left: 8px; display: none; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: var(--on); font: 600 11px/18px ui-monospace, "SF Mono", Menlo, monospace; font-style: normal; text-align: center; }
+.tlitem.on { border-color: var(--accent); } .tlitem.on i { display: block; }
+.ttexts textarea { resize: vertical; min-height: 32px; font-size: 14px; }
+@media (max-width: 760px) { .tfill { grid-template-columns: 1fr; } .tsrow { grid-template-columns: 64px minmax(0, 1fr); } }
 .progress { height: 6px; border-radius: 3px; background: #0e0e0f; overflow: hidden; margin: 14px 0 4px; }
 .progress div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
 .toast { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); pointer-events: none; background: rgba(35, 35, 36, .96); border: 1px solid var(--line2); padding: 9px 16px; border-radius: 999px; z-index: 30; max-width: 70vw; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); font-weight: 500; }
