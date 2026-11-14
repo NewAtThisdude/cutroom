@@ -4726,6 +4726,10 @@ def graph(p, td):
         f = g['w'] / c['mw']  # canvas pixels per source pixel
         if f > 0.75:
             return ''
+        # at most half size on the GPU: VideoToolbox's scaler doesn't filter a bigger step, it skips pixels. 4K HLG into a
+        # 960 px frame aliased fine detail (texture 16.1 vs 11.5 shrunk on the CPU; the preview's 720p proxy and every SDR
+        # export: ~10), 4K -> 1920 on the GPU + swscale the rest matches the CPU path within 2.9 levels per block
+        f = max(f, 0.5)
         w, h = max(2, even(c['mw'] * f)), max(2, even(c['mh'] * f))
         return f'w={h}:h={w}' if c.get('rot', 0) % 180 else f'w={w}:h={h}'
 
