@@ -575,3 +575,11 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 #tour .sopt:hover, #tour .sopt:focus-visible { border-color: var(--accent); outline: none; }
 #tour .tlink { margin: -8px 0 20px; }
 #tour .tlink a { color: var(--accent); }
+/* brand kit: a picker with its Import button, colour chips */
+.bpick { display: flex; flex: 1; min-width: 0; gap: 6px; }
+.bpick select { flex: 1; min-width: 0; }
+.bpick label.btn { font-size: 12px; padding: 4px 9px; }
+.bcols { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.bcols input[type=color] { width: 30px; height: 24px; padding: 0; border: 1px solid var(--line2); border-radius: 6px; background: none; }
+.bcols button.ghost { padding: 4px; }
+.bcols .bsw { width: 22px; height: 22px; padding: 0; border: 1px solid var(--line2); border-radius: 6px; }

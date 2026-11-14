@@ -5922,6 +5922,7 @@ def open_package(st, path, drop=False):
             if isinstance(o, dict) and isinstance(o.get('lut'), dict) and o['lut'].get('id') in lut:
                 o['lut']['id'] = lut[o['lut']['id']]
         fix(p)
+        brand_adopt(p)
         p.update(id=uuid.uuid4().hex[:12], name=str(p.get('name') or 'Packaged project')[:200])
         PROJ.mkdir(parents=True, exist_ok=True)
         tmp = PROJ / f".{p['id']}.tmp"
@@ -6197,6 +6198,57 @@ def tpl_route_post(h, u):  # -> True when it answered
     return h.reply(tpl_share(m[1])) or True
 
 
+# ---------- brand kit ----------
+# One brand per library: <library>/brand/brand.json. Its logo, intro and outro are library items (Media), so a project that
+# applies the brand plays them like any clip (preview == export) and packages carry them. The page does the applying; the
+# server only keeps the file. A project that applied it holds a copy (p['brand']): opening its package in a library with no
+# brand yet makes it that library's brand.
+BRAND = HOME / 'brand' / 'brand.json'
+CORNERS = ('tl', 'tr', 'bl', 'br')
+
+
+def brand_get():
+    try:
+        return json.loads(BRAND.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def brand_clean(b):
+    """The brand as sent by the page -> only the known fields, each checked (it is drawn into every branded project)."""
+    if not isinstance(b, dict):
+        raise ValueError('brand: an object')
+    fam = lambda v: re.sub(r'[^\w\- ]', '', str(v)).strip()[:60]  # (as import_font names them: it goes into a CSS font string)
+    mid = lambda v: v if isinstance(v, str) and ID.fullmatch(v) else None
+    num = lambda v, lo, hi, d: min(hi, max(lo, float(v))) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    out = {'name': str(b.get('name') or 'Brand')[:80], 'colors': [c.lower() for c in (b.get('colors') or []) if isinstance(c, str) and HEX.fullmatch(c)][:5],
+           'logo': mid(b.get('logo')), 'intro': mid(b.get('intro')), 'outro': mid(b.get('outro')), 'auto': b.get('auto') is not False,
+           'cap': str(b.get('cap') or '')[:40] or None}
+    for k in ('head', 'body'):
+        f = b.get(k) if isinstance(b.get(k), dict) else {}
+        out[k] = {'font': fam(f.get('font') or '') or None, 'weight': int(num(f.get('weight'), 100, 900, 0)) or None}
+    w = b.get('wm') if isinstance(b.get('wm'), dict) else {}
+    out['wm'] = {'on': w.get('on') is True, 'corner': w.get('corner') if w.get('corner') in CORNERS else 'br',
+                 'size': num(w.get('size'), 0.03, 0.5, 0.12), 'opacity': num(w.get('opacity'), 0.05, 1.0, 0.8)}
+    return out
+
+
+def brand_set(b):
+    b = brand_clean(b)
+    BRAND.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BRAND.with_name(f'.brand.{uuid.uuid4().hex[:6]}')
+    tmp.write_text(json.dumps(b, indent=1))
+    tmp.replace(BRAND)
+    return b
+
+
+def brand_adopt(p):  # open_package: the project's brand (its references already remapped) becomes this library's if it has none
+    b = brand_get()
+    if isinstance(p.get('brand'), dict) and not (b.get('logo') or b.get('intro') or b.get('outro') or b.get('colors') or (b.get('head') or {}).get('font')):
+        with contextlib.suppress(ValueError, OSError):
+            brand_set(p['brand'])
+
+
 # ---------- HTTP ----------
 
 class App(BaseHTTPRequestHandler):
@@ -6368,6 +6420,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'luts').glob('*.json')), key=lambda x: x.get('name', '').lower()))
             if m := re.fullmatch(r'/luts/([a-f0-9]{12})\.cube', path):
                 return self.file(HOME / 'luts' / f'{m[1]}.cube')
+            if path == '/api/brand':  # the library's brand kit ({} = none yet)
+                return self.reply(brand_get())
             if path == '/api/fonts':  # imported fonts
                 return self.reply(sorted((json.loads(f.read_text()) for f in (HOME / 'fonts').glob('*.json')), key=lambda x: x['family'].lower()))
             if path == '/api/fonts/system':  # the Mac's installed families (drawn by name; nothing to load)
@@ -6434,6 +6488,8 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError('the upload was cut off')
                 return self.reply({'job': run_job(open_package, f, True)})
             body = self.body()
+            if u.path == '/api/brand':  # the brand kit, whole (brand_clean keeps the known fields)
+                return self.reply(brand_set(body))
             if u.path == '/api/package/open':  # the MCP server: a package on this Mac by its path
                 f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
                 if not f.is_file():

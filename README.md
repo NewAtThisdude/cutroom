@@ -259,6 +259,7 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Stabilize, auto reframe, HDR iPhone footage | `deshake` plus an 8% zoom; Apple Vision faces as eased keyframes; HLG/PQ tone-mapped by VideoToolbox, freeze frames too |
 | Text | 8 **text templates** (title + subtitle, lower third, countdown, subscribe, quote, big number, breaking news, hook): several animated layers at once | Plain text clips: every layer stays editable |
 | | 15 text styles shown as tiles (title, neon, glow, gradient, retro, comic, marker, bubble, minimal...), 4 bundled fonts plus system fonts with their real weights | Italic, alignment, letter spacing, line height, outline, shadow (colour, opacity, blur, offset), background (colour, opacity, roundness, padding), gradient fill. One `drawText()` renders the preview and the export layer |
+| | **Brand kit** (Text › Brand kit…; CapCut keeps it for Pro): a logo, 3-5 colours, heading and body fonts (imported ones too), a caption style, an intro and an outro clip, and a watermark (the logo, corner, size, opacity, on/off). Text styles and caption styles offer the brand first ("Brand title", "Brand text", "Brand label", caption "Brand"), the colour pickers suggest its colours and the font menu lists its fonts first. **Apply to this project** puts the intro first and the outro last on the main track and the logo on a locked overlay track over the whole edit, in one undo step; new projects start branded (a switch in the panel); the export dialog's **Add watermark** puts the logo on one export of a project that has none | One brand per library, in `brand/brand.json`; its logo, intro and outro are library items. Applied, it is plain clips (the watermark is an image overlay that stretches with the edit), so the preview and the export draw it the same way. The project keeps a copy of the brand, so packages carry its files and fonts, and a library with no brand takes the brand of a package opened there. `tests/brand.mjs` checks the logo's pixels in the preview, in the export engine's frame and in an exported MP4 |
 | | In/out animations (pop, fade, slide, zoom, drop, typewriter) with adjustable length, and loops (bounce, pulse, wiggle) | |
 | | Stickers: about 190 emoji in 7 groups, plus AI stickers (describe it; drawn on this Mac and cut out) | Emoji are text clips, so they animate like text |
 | | Auto-captions with word-by-word highlight and pop, 4 styles, 18 languages plus auto-detect; every line editable in a list | whisper.cpp on-device, with DTW word timing and a Silero VAD filter. It asks before replacing captions on the timeline |
@@ -311,7 +312,7 @@ There the first tool call opens `cutroom.cmd` instead of the app, and the tool t
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
 between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
-the preview frame as an image), and exports. The 71 tools cover projects, media import, clips (add, update any setting,
+the preview frame as an image), and exports. The tools cover projects, media import, the brand kit (`brand`: get, set, apply; `export` with `watermark`), clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
 undo/redo and the edit steps (`history`: list, goto), version history (`versions`: list, save, restore), packages (`package_project`, `open_package`), templates (`list_templates`, `use_template`: a new project from one with your media in its slots and your words in its texts), snapshots, the loudness meter (`meter`), export, on-device image, voice and music generation (`generate_music`), object removal (`remove_object`: Claude reads the
@@ -518,6 +519,11 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Cut out object:** edges come from SAM 2's mask at up to 1024 px, smoothed when scaled up, so fine hair on 4K is
   softer than a dedicated matting model would give.
 - **Isolate voice** keeps singing as "voice"; Remove voice keeps everything else, including sound effects.
+- **Brand kit:** one brand per library, not several. The watermark is a still image (an animated logo goes in as a clip on the
+  intro or the outro). It follows the edit's length and keeps the corner and size it was given when applied: after a change of
+  canvas shape or brand settings, apply the brand again (it replaces the earlier intro, outro and watermark). Intro and outro clips
+  are put on as they are, at the canvas's fit, with no transition. A text or caption already styled keeps its style when the
+  brand changes; only new ones and the presets follow it.
 - **Packages** carry imported fonts only: a Mac font the project uses must be installed on the other Mac. Caches are not
   carried (proxies, transcripts, AI masks for body effects and SAM 2 outlines are remade or redone there). Trim keeps whole
   any file used other than as plain clips (a multicam angle, a speed ramp's source), transparent and HDR video it can't stream

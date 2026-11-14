@@ -477,7 +477,7 @@ function reanchor(list, keepMoved) { // keepMoved: a clip the edit itself moved 
   }
   if (gone.size) P.captions = P.captions.filter(x => !gone.has(x));
 }
-function touched() { reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
+function touched() { brandFit(); reduck(); S.dirty = true; audioStop(); scheduleSave(); renderAll(); }
 const syncHistory = () => { $('#btnUndo').disabled = !undo.length; $('#btnRedo').disabled = !redo.length; }; // nothing to undo: the button says so
 function restore(from, to) { if (from.length) jump(undo.length + (from === undo ? -1 : 1)); }
 function jump(k) { // to the state just after step k (0 = the oldest kept): the steps in between move across, one render at the end
@@ -1047,7 +1047,8 @@ const fmt = (v, unit) => (unit === '%' ? `${Math.round(v * 100)}%` : unit === 's
 const fill = el => el.style.setProperty('--p', `${(el.value - el.min) / (el.max - el.min) * 100}%`); // slider track fill
 const slider = (k, label, v, min, max, step, unit = '', extra = '') => `<label class="row"><span>${label}</span><input type="range" data-k="${k}" data-unit="${unit}"${extra} min="${min}" max="${max}" step="${step}" value="${v}" style="--p:${clamp((v - min) / (max - min), 0, 1) * 100}%"><output title="Click to type a value">${fmt(v, unit)}</output></label>`;
 const pick = (k, label, v, opts) => `<label class="row"><span>${label}</span><select data-k="${k}"${typeof opts[0][0] === 'number' ? ' data-num' : ''}>${opts.map(([val, txt]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
-const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"></label>`;
+const colour = (k, label, v) => `<label class="row"><span>${label}</span><input type="color" data-k="${k}" value="${v}"${G.brand.colors?.length ? ' list="brandColours"' : ''}></label>`; // (the brand's colours as the picker's suggestions)
+const brandSwatches = () => (G.brand.colors?.length ? `<div class="row"><span>Brand colours</span><div class="bcols">${G.brand.colors.map(x => `<button class="bsw" data-brandc="${x}" style="background:${x}" title="${x}" aria-label="Brand colour ${x}"></button>`).join('')}</div></div>` : '');
 const tick = (k, label, v) => `<label class="row chk"><span>${label}</span><input type="checkbox" data-k="${k}"${v ? ' checked' : ''}></label>`;
 const segs = (attr, label, v, opts) => `<div class="row"><span>${label}</span><div class="seg">${opts.map(([val, txt]) => `<button data-${attr}="${val}" class="${val === v ? 'on' : ''}">${txt}</button>`).join('')}</div></div>`;
 const animTiles = (k, v, opts) => `<div class="presets small anims">${opts.map(([val, txt]) => `<button data-animk="${k}" data-animv="${val}" class="${val === v ? 'on' : ''}">${esc(txt)}</button>`).join('')}</div>`;
@@ -1455,9 +1456,10 @@ async function bodyEffect(c, lane, kind) { // CapCut's body effects: the person 
   } catch (e) { setStatus(e.message); throw e; }
 }
 function fontPick(k, v) { // Cutroom's own fonts, the imported ones, then every family on this Mac
-  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f)), all = [...FONTS, ...mine, ...mac];
+  const bnd = [...new Set([G.brand.head?.font, G.brand.body?.font].filter(Boolean))], not = f => !bnd.includes(f); // the brand's fonts first
+  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f)), all = [...bnd, ...FONTS, ...mine, ...mac];
   const grp = (label, fs) => (fs.length ? `<optgroup label="${label}">${fs.map(f => `<option value="${esc(f)}"${f === v ? ' selected' : ''}>${esc(f)}</option>`).join('')}</optgroup>` : '');
-  return `<label class="row"><span>Font</span><select data-k="${k}">${all.includes(v) ? '' : `<option value="${esc(v)}" selected>${esc(v)}</option>`}${grp('Cutroom', FONTS)}${grp('Imported', mine)}${grp('This Mac', mac)}</select></label>`
+  return `<label class="row"><span>Font</span><select data-k="${k}">${all.includes(v) ? '' : `<option value="${esc(v)}" selected>${esc(v)}</option>`}${grp('Brand', bnd)}${grp('Cutroom', FONTS.filter(not))}${grp('Imported', mine.filter(not))}${grp('This Mac', mac.filter(not))}</select></label>`
     + '<div class="actions"><label class="btn"><input type="file" data-fontin hidden accept=".ttf,.otf,.woff2">Import font…</label></div>';
 }
 const fontsOn = new Set();
@@ -1486,7 +1488,7 @@ function textPanel(c, lane) {
       + `<div class="actions"><button data-act="capall" title="Every caption takes this caption's style">Apply to all captions</button></div>`
       : `<div class="presets small">${Object.keys(TEXT_PRESETS).map(n => `<button data-textpreset="${n}">${n}</button>`).join('')}</div>`)
     + fontPick(`${r}.font`, st.font) + pick(`${r}.weight`, 'Weight', ws.includes(st.weight) ? st.weight : ws[0], ws.map(w => [w, WEIGHT_NAMES[w] || String(w)]))
-    + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + colour(`${r}.color`, 'Colour', st.color)
+    + tick(`${r}.italic`, 'Italic', st.italic) + slider(`${r}.size`, 'Size', st.size, 16, 260, 1) + brandSwatches() + colour(`${r}.color`, 'Colour', st.color)
     + (cap ? colour(`${r}.hl`, 'Highlight', st.hl) + tick(`${r}.pop`, 'Pop active word', st.pop) : '')
     + (cap && P.captions.some(x => x.tr) ? `<h4>Second line</h4>${tick('cap.bi', 'Show translation', !!P.capStyle.bi)}${P.capStyle.bi ? colour('cap.biColor', 'Colour', P.capStyle.biColor || '#ffe27a') + slider('cap.biSize', 'Size', P.capStyle.biSize ?? 0.6, 0.3, 1, 0.01, '%') : ''}` : '')
     + (cap && P.captions.some(x => x.kw) ? tick('cap.kw', 'Keyword highlight', !!P.capStyle.kw) : '') + (cap && P.captions.some(x => x.spk != null) ? tick('cap.spk', 'Speaker labels', !!P.capStyle.spk) : '')
@@ -3351,7 +3353,7 @@ function addMedia(id, lane, t, range) { // range: [in, out] marked in the source
   lane = m.kind === 'audio' ? 'audio' : lane === 'overlay' ? 'overlay' : 'main';
   const c = { id: hex12(), media: id, start: 0, in: range ? range[0] : 0, out: range ? range[1] : m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: lane === 'overlay' ? 'fill' : 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } };
   change(() => {
-    if (lane === 'main') { packMain(); P.main.splice(t === undefined ? P.main.length : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, 0, c); }
+    if (lane === 'main') { packMain(); P.main.splice(t === undefined ? P.main.length - (P.main.at(-1)?.brand === 'outro') : P.main.filter(x => x.start + tdur(x, 'main') / 2 < t).length, 0, c); } // (before a brand outro)
     else { c.start = Math.max(0, t ?? S.t); P[lane].push(c); }
     S.sel = { lane, id: c.id };
   });
@@ -4924,6 +4926,7 @@ function openExport() {
     <label class="row" id="exMbpsRow" hidden><span>Mbps</span><input id="exMbps" type="number" min="0.5" max="400" step="0.5" value="10"></label>
     <label class="row" title="One gain for the whole edit, measured first (true peak held at −1.5 dBTP)"><span>Loudness</span><select id="exLoud"><option value="off">Off (as mixed)</option><option value="-14">−14 LUFS · social</option><option value="-16">−16 LUFS · podcast</option><option value="-23">−23 LUFS · broadcast (EBU)</option></select></label>
     <label class="row chk" title="Decodes on the Mac's media engine: the processor stays free for editing, the export can take longer"><span>Light (less CPU)</span><input id="exLight" type="checkbox"></label>
+    ${M.get(G.brand.logo) && !wmOf() ? '<label class="row chk" title="The brand logo in its corner, for this export only: the project stays as it is"><span>Add watermark</span><input id="exWm" type="checkbox"></label>' : ''}
     <label class="row"><span>Format</span><select id="exFmt">${FORMATS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
     <label class="row"><span>Dynamic range</span><select id="exHdr">${Object.entries(HDR_NAMES).map(([v, n]) => `<option value="${v}"${(P.hdr || 'sdr') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <div class="row" id="exAlso"><span>Also export as</span><div class="exalso">${SHAPES.filter(r => r !== shapeOf(P.w, P.h)).map(r => `<label title="${RATIO_NAMES[r]}: a copy of this edit laid out for ${r}"><input type="checkbox" value="${r}">${r}</label>`).join('')}</div></div>
@@ -4933,7 +4936,7 @@ function openExport() {
   const hint = () => { // only the settings that apply to the chosen format are enabled
     const f = $('#exFmt').value, d = mss(total()), snd = SOUND_FMT.includes(f), sub = SUB_FMT.includes(f) || HAND_FMT.includes(f), still = ['gif', 'png'].includes(f);
     const efps = +$('#exFps').value, fps = efps || +P.fps.toFixed(3), [rl, w, h] = exportSizes()[+$('#exRes').value], src = sourceSize(), n = (P.captions.length ? P.captions : P.text).length;
-    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
+    $('#exRes').disabled = snd || sub; $('#exQ').disabled = f !== 'mp4'; $('#exLoud').disabled = still || sub || f === 'pngseq'; $('#exLight').disabled = snd || sub; if ($('#exWm')) $('#exWm').disabled = snd || sub; $('#exFps').disabled = snd || sub || still;
     const hk = $('#exHdr').value, why = hk !== 'sdr' && hdrWhy(f), hdr = hk !== 'sdr' && !why;
     $('#exRate').disabled = !(['hevc', 'av1', 'av1webm', 'webm'].includes(f) || (f === 'mp4' && ($('#exQ').value === 'fast' || hdr)));
     $('#exHdr').disabled = !['mp4', 'hevc', 'prores'].includes(f);
@@ -4996,7 +4999,7 @@ function exportUI(pct, msg, done) { // the dialog when it's open (it can be clos
 async function runExport() { // the editor stays usable meanwhile: close the dialog and keep working, Cancel stops it
   if (S.exporting) return;
   const [res, w, h] = exportSizes()[+$('#exRes').value], fmt = $('#exFmt').value, name = $('#exName').value.trim() || P.name;
-  const also = $$('#exAlso input:checked:not(:disabled)').map(x => x.value);
+  const also = $$('#exAlso input:checked:not(:disabled)').map(x => x.value), wm = !!$('#exWm:checked:not(:disabled)');
   S.exporting = { pct: 0 };
   exportUI(0, 'Rendering text layer…', '');
   const tell = msg => { if ($('#modal').hidden || !$('#exStatus')) toast(msg); };
@@ -5013,14 +5016,14 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
       exportUI(100, `Saved <b>${esc(r.file)}</b> in ${esc(S.exportsDir || 'the exports folder')}${r.notes.length ? `<br>${esc(r.notes.join(' '))}` : ''}`, `<button data-reveal="${esc(r.file)}">Show in Finder</button>`);
       return;
     }
-    const plan = await buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt);
+    const plan = await withWm(wm, () => buildPlan(w, h, $('#exQ').value, name, $('#exLoud').value !== 'off' && +$('#exLoud').value, fmt));
     plan.rate = +$('#exRate').value || 1; plan.light = $('#exLight').checked; plan.efps = +$('#exFps').value; plan.hdr = $('#exHdr').disabled ? 'sdr' : $('#exHdr').value;
     if ($('#exRate').value === 'custom' && !$('#exRate').disabled) plan.mbps = clamp(+$('#exMbps').value || 10, 0.5, 400);
     const { job } = await enqueue(plan, shapeOf(w, h)), same = { rate: plan.rate, light: plan.light, efps: plan.efps, hdr: plan.hdr, mbps: plan.mbps };
     S.exporting.job = job;
     for (const r of also) { // queued behind it; the dialog's own progress stays this one's
       exportUI(0, `Laying out ${r}…`);
-      await enqueue({ ...(await shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt)), ...same }, r);
+      await enqueue({ ...(await withWm(wm, () => shapePlan(r, res, plan.quality, `${name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, fmt))), ...same }, r);
     }
     for (;;) {
       await new Promise(r => setTimeout(r, 400));
@@ -5038,6 +5041,119 @@ async function runExport() { // the editor stays usable meanwhile: close the dia
     }
   } catch (e) { S.exporting = null; exportUI(0, `Export failed: ${esc(e.message)}`); tell(`Export failed: ${e.message}`); }
   finally { if (S.exporting) { S.exporting = null; exportUI(0); } }
+}
+
+// ---------- brand kit: one per library (/api/brand: <library>/brand/brand.json). Applied, it is plain clips (the intro first and
+// the outro last on the main track, the logo on a locked overlay track on top) plus brand text and caption presets, so the preview
+// and the export show it alike and History undoes it in one step. Its logo, intro and outro are library items ----------
+G.brand = {};
+const brandOn = () => !!(G.brand.logo || G.brand.intro || G.brand.outro || G.brand.colors?.length || G.brand.head?.font);
+const wmOf = (p = P) => p.overlay.find(c => c.brand === 'wm');
+function putFirst(o, add) { const rest = Object.entries(o).filter(([k]) => !k.startsWith('Brand')); for (const k of Object.keys(o)) delete o[k]; Object.assign(o, add, Object.fromEntries(rest)); }
+function brandPresets() { // the brand's text styles and caption style, first wherever presets are offered (tiles, inspector, MCP options)
+  const b = G.brand, c = b.colors || [], hf = b.head?.font, bf = b.body?.font || hf, on = brandOn();
+  const head = { ...(hf ? { font: hf } : {}), ...(b.head?.weight ? { weight: b.head.weight } : {}) }, body = { ...(bf ? { font: bf } : {}), ...(b.body?.weight ? { weight: b.body.weight } : {}) };
+  putFirst(TEXT_PRESETS, on ? { 'Brand title': { ...TEXT_PRESETS.Title, ...head, color: c[0] || '#ffffff' }, 'Brand text': { ...TEXT_PRESETS.Subtitle, ...body, color: c[1] || '#ffffff' },
+    'Brand label': { ...TEXT_PRESETS.Label, ...body, color: c[2] || '#ffffff', boxColor: c[0] || '#000000', boxAlpha: 1 } } : {});
+  const base = b.cap && b.cap !== 'Brand' && CAP_PRESETS[b.cap] ? b.cap : 'Clean';
+  putFirst(CAP_PRESETS, on ? { Brand: { ...CAP_PRESETS[base], ...head, ...(c[0] ? { hl: c[0] } : {}) } } : {});
+  $('#brandColours').replaceChildren(...c.map(x => Object.assign(document.createElement('option'), { value: x }))); // the colour pickers' suggestions
+}
+async function loadBrand() { G.brand = await api('/api/brand').catch(() => G.brand); brandPresets(); }
+async function brandSave(b) { // the whole brand; the server keeps the known fields
+  G.brand = await api('/api/brand', b);
+  brandPresets(); renderPane();
+  if (S.sel) renderInspector();
+  return G.brand;
+}
+function brandClip(id, extra) { const m = M.get(id); return m && { id: hex12(), media: id, start: 0, in: 0, out: m.kind === 'image' ? 3 : m.duration, speed: 1, volume: 1, fit: 'fit', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 }, ...extra }; }
+function brandWmInto() { // the logo in its corner on a new top overlay track, locked; size = its width as a share of the canvas width
+  const w = G.brand.wm || {}, m = M.get(G.brand.logo);
+  if (!m?.w) return null;
+  const c = brandClip(m.id, { brand: 'wm', volume: 0, opacity: w.opacity ?? 0.8 }), s0 = Math.min(P.w / m.w, P.h / m.h), gw = (w.size ?? 0.12) * P.w, gh = (gw * m.h) / m.w;
+  const pad = 0.04 * Math.min(P.w, P.h), cn = w.corner || 'br', n = P.overlay.length ? rows('overlay').n : 0;
+  Object.assign(c, { scale: gw / (m.w * s0), x: ((cn[1] === 'l' ? -1 : 1) * ((P.w - gw) / 2 - pad)) / P.w, y: ((cn[0] === 't' ? -1 : 1) * ((P.h - gh) / 2 - pad)) / P.h, track: n });
+  P.tracks[`overlay:${n}`] = { ...trk('overlay', n), lock: true };
+  P.overlay.push(c);
+  brandFit();
+  return c;
+}
+function brandFit() { // the watermark spans the whole edit, whatever the edit around it does (touched() calls this after every edit)
+  const w = wmOf();
+  if (!w) return;
+  packMain();
+  let t = 0;
+  for (const L of LANES) for (const c of P[L.key]) if (c !== w) t = Math.max(t, c.start + tdur(c, L.key));
+  if (t > 0 && Math.abs(w.out - w.in - t) > 1e-6) Object.assign(w, { start: 0, in: 0, out: t });
+}
+function brandInto() { // P branded: earlier brand clips out, then the intro, outro, watermark and caption style; a copy of the brand rides along (packages)
+  const b = G.brand;
+  for (const L of ['main', 'overlay']) P[L] = P[L].filter(c => { if (c.brand === 'wm') delete trk('overlay', c.track).lock; return !c.brand; });
+  const i = b.intro && brandClip(b.intro, { brand: 'intro' }), o = b.outro && brandClip(b.outro, { brand: 'outro' });
+  if (i) P.main.unshift(i);
+  if (o) P.main.push(o);
+  if (b.wm?.on) brandWmInto();
+  if (b.cap || b.head?.font || b.colors?.length) P.capStyle = capPreset('Brand');
+  P.brand = structuredClone(b);
+  S.sel = null;
+}
+function brandApply() {
+  if (!brandOn()) throw new Error('Set up the brand first (Text > Brand kit…)');
+  change(brandInto, 'Apply brand');
+  toast('Brand applied');
+}
+function newBranded(ratio, branded = G.brand.auto !== false && brandOn()) { // a new project from the user (not the smart tools' ones)
+  setProject(newProject(ratio));
+  if (branded) { brandInto(); renderAll(); }
+  scheduleSave();
+}
+async function withWm(on, fn) { // fn() with the watermark added to a copy of the project: for one export, the project stays as it is
+  if (!on || wmOf() || !M.get(G.brand.logo)) return fn();
+  const P0 = P;
+  S.hold = true; // (like shapePlan: the preview and autosave leave the borrowed project alone)
+  try { P = structuredClone(P0); brandWmInto(); return await fn(); } finally { P = P0; S.hold = false; S.dirty = true; }
+}
+function openBrand() {
+  const b = G.brand, w = b.wm || {}, cols = b.colors || [], ic = d => `<svg class="i" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+  const items = kinds => [...M.values()].filter(m => kinds.includes(m.kind));
+  const asset = (k, label, kinds, accept) => `<div class="row"><span>${label}</span><div class="bpick"><select data-bk="${k}" aria-label="${label}"><option value="">None</option>${items(kinds).map(m => `<option value="${m.id}"${m.id === b[k] ? ' selected' : ''} title="${esc(m.name)}">${esc(short(m.name, 30))}</option>`).join('')}</select>`
+    + `<label class="btn" title="Import a file from this Mac for the ${label.toLowerCase()}">Import…<input type="file" data-bin="${k}" hidden accept="${accept}"></label></div></div>`;
+  const mine = (G.fonts || []).map(f => f.family), mac = (G.sysFonts || []).filter(f => !FONTS.includes(f) && !mine.includes(f));
+  const font = (k, label) => { const v = b[k]?.font || ''; return `<div class="row"><span>${label}</span><div class="bpick"><select data-bf="${k}" aria-label="${label}"><option value="">The preset's own</option>${[['Cutroom', FONTS], ['Imported', mine], ['This Mac', mac]].filter(g => g[1].length).map(([g, fs]) => `<optgroup label="${g}">${fs.map(f => `<option value="${esc(f)}"${f === v ? ' selected' : ''}>${esc(f)}</option>`).join('')}</optgroup>`).join('')}</select>`
+    + `<label class="btn" title="Import a .ttf, .otf or .woff2 for the ${label.toLowerCase()}">Import…<input type="file" data-bfin="${k}" hidden accept=".ttf,.otf,.woff2"></label></div></div>`; };
+  modal(`<h2>Brand</h2><p class="hint">One brand for the library. Apply puts the intro first and the outro last on the main track and the logo on a locked overlay track, in one undo step; text and caption presets offer the brand's colours and fonts first.</p>
+    ${asset('logo', 'Logo', ['image'], 'image/*')}${asset('intro', 'Intro', ['video', 'image'], 'video/*,image/*')}${asset('outro', 'Outro', ['video', 'image'], 'video/*,image/*')}
+    <div class="row"><span>Colours</span><div class="bcols">${cols.map((x, i) => `<input type="color" data-bc="${i}" value="${x}" aria-label="Brand colour ${i + 1}">`).join('')}
+      ${cols.length < 5 ? `<button class="ghost" data-brand="cadd" title="Add a colour" aria-label="Add a colour">${ic('M12 5v14M5 12h14')}</button>` : ''}${cols.length ? `<button class="ghost" data-brand="cdel" title="Remove the last colour" aria-label="Remove the last colour">${ic('M5 12h14')}</button>` : ''}</div></div>
+    ${font('head', 'Heading font')}${font('body', 'Body font')}
+    <label class="row"><span>Caption style</span><select data-bcap><option value="">Clean</option>${Object.keys(CAP_PRESETS).filter(n => n !== 'Brand').map(n => `<option${n === b.cap ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+    <h4>Watermark</h4>${tick('wm.on', 'Logo as a watermark', w.on)}
+    ${segs('bcorner', 'Corner', w.corner || 'br', [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right']])}
+    ${slider('wm.size', 'Size', w.size ?? 0.12, 0.03, 0.5, 0.01, '%')}${slider('wm.opacity', 'Opacity', w.opacity ?? 0.8, 0.05, 1, 0.01, '%')}
+    ${tick('auto', 'New projects start branded', b.auto !== false)}
+    <p id="brandStatus" class="muted"></p>
+    <div class="actions"><button data-close>Close</button><button class="primary" data-brand="apply"${brandOn() ? '' : ' disabled'} title="Intro, outro, watermark and caption style on this project (one undo step)">Apply to this project</button></div>`);
+  const dlg = $('#modal .dialog'), say = sayIn('#brandStatus'), save = patch => { const n = structuredClone(G.brand); merge(n, patch); return brandSave(n).then(() => openBrand()).catch(err => say(err.message)); };
+  dlg.addEventListener('input', e => { const t = e.target; if (t.type === 'range') { fill(t); const o = t.parentElement.querySelector('output'); if (o) o.textContent = fmt(+t.value, t.dataset.unit); } });
+  dlg.addEventListener('change', e => {
+    const t = e.target, d = t.dataset;
+    if (d.bk) save({ [d.bk]: t.value || null });
+    else if (d.bf) save({ [d.bf]: { font: t.value || null } });
+    else if ('bcap' in d) save({ cap: t.value || null });
+    else if (d.bc) { const c = [...cols]; c[+d.bc] = t.value; save({ colors: c }); }
+    else if (d.k === 'auto') save({ auto: t.checked });
+    else if (d.k?.startsWith('wm.')) save({ wm: { [d.k.slice(3)]: t.type === 'checkbox' ? t.checked : +t.value } });
+    else if (d.bin && t.files[0]) { say(`Importing ${t.files[0].name}…`); uploadOne(t.files[0]).then(m => save({ [d.bin]: m.id })).catch(err => say(err.message)); }
+    else if (d.bfin && t.files[0]) importFont(t.files[0]).then(f => save({ [d.bfin]: { font: f.family } })).catch(err => say(err.message));
+  });
+  dlg.addEventListener('click', e => {
+    const x = e.target.closest('button');
+    if (!x) return;
+    if (x.dataset.bcorner) save({ wm: { corner: x.dataset.bcorner } });
+    else if (x.dataset.brand === 'cadd') save({ colors: [...cols, ['#f0b23e', '#ffffff', '#111111', '#4cc38a', '#5f93d0'][cols.length]] });
+    else if (x.dataset.brand === 'cdel') save({ colors: cols.slice(0, -1) });
+    else if (x.dataset.brand === 'apply') { try { brandApply(); closeModal(); } catch (err) { say(err.message); } }
+  });
 }
 
 // ---------- projects ----------
@@ -5499,6 +5615,7 @@ function wire() {
   $('#btnTemplates').addEventListener('click', openTemplates);
   $('#btnVersions').addEventListener('click', () => openVersions().catch(err => toast(err.message)));
   $('#btnHistory').addEventListener('click', openHistory);
+  $('#btnBrandText').addEventListener('click', openBrand);
   $('#heads').addEventListener('click', e => {
     const b = e.target.closest('[data-lt], [data-tk], [data-lk]');
     if (!b) return;
@@ -5929,6 +6046,7 @@ function wire() {
     else if (d.fit) change(() => { c.fit = d.fit; });
     else if (d.cappreset) change(() => { P.capStyle = capPreset(d.cappreset); });
     else if (d.textpreset) change(() => { c.style = { ...TEXT_PRESETS[d.textpreset] }; });
+    else if (d.brandc) change(() => { c.style ??= {}; c.style.color = d.brandc; });
     else if (d.act === 'split') split();
     else if (d.act === 'delete') del();
     else if (d.voice) quiet(setVoice(c, d.voice));
@@ -6027,8 +6145,8 @@ function wire() {
     if (!b) return;
     const d = b.dataset;
     if ('close' in d) closeModal();
-    else if (d.new) { setProject(newProject(d.new)); scheduleSave(); closeModal(); }
-    else if ('newsel' in d) { setProject(newProject($('#newRatio').value)); scheduleSave(); closeModal(); }
+    else if (d.new) { newBranded(d.new); closeModal(); }
+    else if ('newsel' in d) { newBranded($('#newRatio').value); closeModal(); }
     else if (d.open) { await openProject(d.open).catch(err => toast(err.message)); closeModal(); }
     else if (b.id === 'exGo') runExport();
     else if (b.id === 'exCancel' && S.exporting?.job) { b.disabled = true; api(`/api/jobs/${S.exporting.job}/cancel`, {}).catch(() => {}); }
@@ -6490,6 +6608,7 @@ function brief(c, lane) { // compact clip description: what an assistant needs t
   if (c.vkf?.length) o.volumePoints = c.vkf.length;
   if (c.duck) o.duck = c.duck;
   if (c.label) o.label = c.label;
+  if (c.brand) o.brand = c.brand; // intro | outro | wm (the watermark): put there by Apply brand
   return o;
 }
 const EDITABLE = new Set(['mb', 'beauty', 'glow', 'mkf', 'grade', 'lkf', 'track', 'au', 'vkf', 'speed', 'volume', 'fit', 'scale', 'x', 'y', 'rot', 'opacity', 'blend', 'fadeIn', 'fadeOut', 'flip', 'denoise', 'studio', 'pitch', 'ease', 'sndLead', 'sndTail',
@@ -6564,10 +6683,24 @@ const REMOTE = {
     const r = await packageOpened(await job('/api/package/open', { path: String(path) }, 'Opening the package', () => {}));
     return { ...r, now: await REMOTE.status() };
   },
-  async new_project({ ratio = '9:16', name }) {
+  async new_project({ ratio = '9:16', name, branded }) { // branded: default = the brand's "New projects start branded"
     if (!RATIOS[ratio]) throw new Error(`ratio must be one of ${Object.keys(RATIOS).join(', ')}`);
-    setProject(newProject(ratio)); if (name) P.name = name; scheduleSave(); renderAll();
-    return REMOTE.status();
+    newBranded(ratio, branded ?? undefined); if (name) P.name = name; scheduleSave(); renderAll();
+    return { ...(await REMOTE.status()), branded: !!P.brand };
+  },
+  async brand({ action = 'get', set } = {}) { // the library's brand kit: get | set (merged; null clears a field) | apply (to the open project, one undo step)
+    if (action === 'get') { await loadBrand(); return { ...G.brand, applied: !!P.brand, watermark: !!wmOf() }; }
+    if (action === 'set') {
+      if (!set || typeof set !== 'object') throw new Error('set: the fields to change, e.g. {colors: ["#f0b23e"], head: {font}, logo, intro, outro, cap, wm: {on, corner, size, opacity}, auto}');
+      const s = structuredClone(set);
+      for (const k of ['logo', 'intro', 'outro']) if (s[k] != null) s[k] = mediaBy(s[k]).id; // ids or names
+      if (s.cap != null && !CAP_PRESETS[s.cap]) throw new Error(`cap must be one of ${Object.keys(CAP_PRESETS).filter(n => n !== 'Brand').join(', ')}`);
+      const n = structuredClone(G.brand);
+      merge(n, s);
+      return brandSave(n);
+    }
+    if (action === 'apply') { brandApply(); const t = await REMOTE.timeline(); return { main: t.tracks.main, overlay: t.tracks.overlay }; }
+    throw new Error('action must be get, set or apply');
   },
   async set_project({ set = {} }) {
     change(() => {
@@ -6905,7 +7038,7 @@ const REMOTE = {
   async export(a) {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
     const pf = a.preset ? presetFields(a.preset) : {}; // a preset fills what the call leaves out
-    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [] } = a;
+    const { format = pf.fmt || 'mp4', resolution = pf.res || '1080p', quality = 'fast', bitrate = 1, mbps = pf.mbps || 0, fps = pf.fps || 0, name, loudness = pf.loud || false, light = false, at, show = false, also = [], watermark = false } = a;
     if (!Array.isArray(also) || also.some(r => !SHAPES.includes(r))) throw new Error(`also must be a list of shapes: ${SHAPES.join(', ')}`);
     if (fps && !EXPORT_FPS.includes(+fps)) throw new Error(`fps must be one of ${EXPORT_FPS.join(', ')} (or 0 = the project's)`);
     const sz = exportSizes().find(x => x[0] === resolution);
@@ -6916,10 +7049,11 @@ const REMOTE = {
     if (HAND_FMT.includes(format)) { const r = await handOff(name, format); return { file: r.file, path: `${plat('~/Movies/Cutroom/exports/')}${r.file}`, format, notes: r.notes, ...(r.text ? { text: r.text } : {}) }; }
     S.exporting = true;
     try {
-      const plan = await buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format); // true = -14 LUFS
+      if (watermark && !M.get(G.brand.logo)) throw new Error('watermark: the brand has no logo (brand action set, logo)');
+      const plan = await withWm(watermark, () => buildPlan(sz[1], sz[2], quality === 'best' ? 'best' : 'fast', name || P.name, [-14, -16, -23].includes(loudness) ? loudness : !!loudness, format)); // true = -14 LUFS
       plan.rate = +bitrate || 1; plan.light = !!light; plan.efps = +fps || 0; if (+mbps) plan.mbps = clamp(+mbps, 0.5, 400);
       const own = shapeOf(sz[1], sz[2]), rest = [...new Set(also)].filter(r => r !== own), q = await enqueue(plan, own), more = [];
-      for (const r of rest) more.push(await enqueue({ ...(await shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format)), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
+      for (const r of rest) more.push(await enqueue({ ...(await withWm(watermark, () => shapePlan(r, resolution, plan.quality, `${plan.name} ${r.replace(':', 'x')}`, plan.loud && plan.lufs, format))), rate: plan.rate, light: plan.light, efps: plan.efps, mbps: plan.mbps }, r));
       const jb = await q.done, js = await Promise.all(more.map(x => x.done));
       if (show) await api('/api/reveal', { file: jb.file, play: true }); // opens in QuickTime: a page can't open windows without a click
       return { file: jb.file, path: `${plat('~/Movies/Cutroom/exports/')}${jb.file}`, size: `${sz[1]}x${sz[2]}`, format, fps: +fps || P.fps, ...(+mbps ? { mbps: +mbps } : {}), shown: !!show, ...(jb.sdr ? { sdr: jb.sdr } : {}),
@@ -7077,6 +7211,7 @@ Object.assign(REMOTE, {
     await loadMedia();
     G.luts = await api('/api/luts').catch(() => []);
     await loadFonts();
+    await loadBrand();
     api('/api/fonts/system').then(l => { G.sysFonts = l; }).catch(() => {});
     const list = await api('/api/projects'), last = store.get('cutroom.last');
     const id = (list.find(p => p.id === last) || list[0])?.id;
