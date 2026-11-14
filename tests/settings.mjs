@@ -178,10 +178,11 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.click('[data-setdo="clearcache"]');
   await page.waitForFunction(() => /^Cleared/.test($('#toast').textContent), null, { timeout: 15000 });
   const after = { cache: list(`${HOME}/cache`), media: list(`${HOME}/media`).map(f => `${f}:${fs.statSync(`${HOME}/media/${f}`).size}`).filter(x => !x.includes('.json')), proj: list(`${HOME}/projects`) };
-  const keptOther = before.cache.filter(f => !REGEN.test(f)).every(f => after.cache.includes(f)), gone = before.cache.filter(f => REGEN.test(f) && ids.some(id => f.startsWith(id)));
+  const keptOther = before.cache.filter(f => !REGEN.test(f) && !/\.tmp\./.test(f)).every(f => after.cache.includes(f)), gone = before.cache.filter(f => REGEN.test(f) && ids.some(id => f.startsWith(id)));
   let rebuilt = false;
-  for (let i = 0; i < 120 && !rebuilt; i++) { await sleep(500); rebuilt = ids.every(id => ['grid.jpg', 'wave.png', 'peaks'].every(x => fs.existsSync(`${HOME}/cache/${id}.${x}`))) && (await api('/api/media')).every(m => m.ready); }
-  await page.waitForFunction(() => [...M.values()].every(m => m.ready), null, { timeout: 15000 }).catch(() => {});
+  // the test's clips (3 s: made first, shortest first); the rest of a full library keeps being made in the background (minutes for 4K)
+  for (let i = 0; i < 120 && !rebuilt; i++) { await sleep(500); rebuilt = ids.every(id => ['grid.jpg', 'wave.png', 'peaks'].every(x => fs.existsSync(`${HOME}/cache/${id}.${x}`))) && (await api('/api/media')).filter(m => ids.includes(m.id)).every(m => m.ready); }
+  await page.waitForFunction(ids => ids.every(id => M.get(id)?.ready), ids, { timeout: 15000 }).catch(() => {});
   const ui = await ev(ids => ids.every(id => M.get(id)?.grid && M.get(id)?.peaks), ids);
   check(`${rm}: Storage: sizes shown (${sizes.join(' · ')}); Clear preview cache takes only regenerable files (${gone.length} of the test clips'), media, projects and transcripts stay; the filmstrips and waveforms are made again`,
     /MB|GB/.test(sizes[0]) && gone.length >= 4 && keptOther && JSON.stringify(after.media) === JSON.stringify(before.media) && JSON.stringify(after.proj) === JSON.stringify(before.proj) && rebuilt && ui, JSON.stringify({ gone: gone.length, keptOther, rebuilt, ui }));

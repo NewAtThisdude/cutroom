@@ -900,7 +900,7 @@ function shortcuts(keep, focus) { // ? = a read-only quick view; Settings > Shor
     + (cf ? `<div class="keyconf" role="alert"><span>${esc(keyText(cf.k))} is already the key for ${esc(KEYDEF[cf.other][1].toLowerCase())}.</span><button data-keyswap>Swap them</button><button data-keykeep>Keep it there</button></div>` : '')
     + `<p id="keyMsg" class="hint" role="status">${esc(KC.msg)}</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
     + `<div class="actions"><button data-keyall${Object.keys(KEYOWN).length ? '' : ' disabled'}>Reset all</button></div>`
-    : `<h3>Keyboard shortcuts</h3><p class="hint">Ctrl works wherever ⌘ is shown. To change a shortcut, edit it in Settings.</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
+    : `<h3>Keyboard shortcuts</h3><p class="hint">${IS_MAC ? 'Ctrl works wherever ⌘ is shown. ' : ''}To change a shortcut, edit it in Settings.</p><table class="keys">${KEYMAP0.map(row).join('')}</table>`
     + '<div class="actions"><button data-settings>Edit in Settings</button><button data-setup>Setup questions</button><button data-tour>Take the tour</button><button data-close>Close</button></div>';
   if (host) host.replaceChildren(document.createRange().createContextualFragment(html)); else modal(html, 'keysheet'); // (every value in it went through esc)
   const dlg = host || $('#modal .dialog');
@@ -942,7 +942,7 @@ function renderMediaList() {
   const up = uploads.map(u => `<div class="mitem up"><div class="thumb"></div><div class="meta"><b>${esc(u.name)}</b><span>Uploading ${Math.round(u.pct * 100)}%</span></div></div>`).join('');
   const q = $('#mediaSearch')?.value.trim().toLowerCase(), used = G.mfilter === 'proj' && P ? new Set(LANES.flatMap(L => P[L.key].map(c => c.media))) : null; // null, not false: false?.has is undefined, and calling it threw
   const by = { name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }), dur: (a, b) => (b.duration || 0) - (a.duration || 0) }[$('#mediaSort')?.value]; // 'new': the server's order
-  const list = [...M.values()].filter(m => (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
+  const list = [...M.values()].filter(m => !m.slate && (G.mfilter === 'all' || m.kind === G.mfilter || used?.has(m.id)) && (!q || m.name.toLowerCase().includes(q)));
   if (by) list.sort(by);
   const items = list.map(m => { const r = srcRange(m.id); return `<div class="mitem${S.src?.id === m.id ? ' src' : ''}" draggable="true" data-media="${m.id}" title="${m.kind === 'video' ? 'Hover to skim · click to mark a range · drag onto a track' : 'Drag onto a track'}">
       <div class="thumb" style="${thumbStyle(m)}"><span>${m.kind}</span>${r ? `<i class="srng" style="left:${(r[0] / m.duration) * 100}%;width:${((r[1] - r[0]) / m.duration) * 100}%"></i>` : ''}</div>
@@ -951,7 +951,7 @@ function renderMediaList() {
   $('#mediaList').innerHTML = up + items || '<p class="hint">Nothing imported yet.</p>';
   if (!up && !items && M.size) $('#mediaList .hint').textContent = 'Nothing matches.';
   const sc = $('#scList'), picked = new Set([...(sc?.querySelectorAll('input:checked') || [])].map(x => x.value)), mu = $('#scMusic'), mkeep = mu?.value;
-  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video').map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
+  if (sc) sc.innerHTML = [...M.values()].filter(x => x.kind === 'video' && !x.slate).map(x => `<label class="row chk"><span title="${esc(x.name)}">${esc(x.name)}</span><small>${fmtDur(x.duration)}</small><input type="checkbox" value="${x.id}"${picked.has(x.id) ? ' checked' : ''}></label>`).join('') || '<p class="hint">Import some videos first.</p>';
   if (mu) { mu.innerHTML = '<option value="">No music</option>' + (G.ai?.music ? '<option value="ai">AI music, made to fit</option>' : '') + [...M.values()].filter(x => x.kind === 'audio').map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name))}</option>`).join(''); if (mkeep) mu.value = mkeep; }
   const hl = $('#hlSrc'), keep = hl?.value; // Shorts source: videos with sound
   if (hl) { hl.innerHTML = [...M.values()].filter(x => x.kind === 'video' && x.hasAudio).map(x => `<option value="${x.id}" title="${esc(x.name)}">${esc(short(x.name, 22))} · ${fmtDur(x.duration)}</option>`).join('') || '<option value="">Import a video with speech</option>'; if (keep) hl.value = keep; }
@@ -4606,17 +4606,20 @@ function capsFromWords(src, words, per) { // clips (on the timeline as it is now
 
 // ---------- import ----------
 async function loadMedia() {
-  const list = await api('/api/media');
+  const list = await api('/api/media'), noPct = m => JSON.stringify({ ...m, prep: 0 }), same = list.length === M.size && list.every(m => M.has(m.id) && noPct(M.get(m.id)) === noPct(m)); // (a poll while something prepares: only its % moved)
   for (const m of list) { // a proxy may exist now: make players reload
     const old = M.get(m.id);
     if (old && !old.ready && m.ready) for (const v of pool.values()) if (v.dataset.media === m.id) v.dataset.media = '';
   }
+  const slates = [...M.values()].filter(m => m.slate); // a template preview's placeholders: never listed, kept while it renders (this poll runs whenever anything is preparing)
   M.clear();
-  for (const m of list) M.set(m.id, m);
+  for (const m of [...list, ...slates]) M.set(m.id, m);
   renderMediaList();
-  renderTimeline();
-  if (G.tab === 'audio') renderAudio();
-  S.dirty = true;
+  if (!same) { // nothing redraws at rest: a 4K proxy can take minutes, and this polls every 1.5 s meanwhile
+    renderTimeline();
+    if (G.tab === 'audio') renderAudio();
+    S.dirty = true;
+  }
   clearTimeout(loadMedia.t);
   if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
 }
