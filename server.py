@@ -4019,7 +4019,7 @@ def clean_plan(p, claimed=False):  # claimed: a retried interrupted export, whos
     if target and out['format'] not in FIT_FORMATS:
         raise ValueError('Fit in needs a compressed video, GIF, MP3 or AAC format; choose one of those formats')
     if target and out['format'] != 'gif':
-        fit_budget(out)  # refuse impossible audio/minimum-picture budgets before rendering
+        fit_budget({**out, 'alpha': bool(p.get('alpha')) and out['format'] in ALPHA_FORMATS})  # refuse impossible audio/minimum-picture budgets before rendering (alpha: the 1.4x picture floor)
 
     def clip(c, timed):
         m = meta(c['media'])
@@ -5220,6 +5220,8 @@ def fit_floor(p, w, h):
 def fit_dimensions(p, bps):
     w, h = p['w'], p['h']
     for side in [min(w, h), *[s for s in (2160, 1440, 1080, 720, 540, 480, 360, 240, 144) if s < min(w, h)]]:
+        if side > p.get('fit_max', side):  # render_fitted: an encoder whose bytes stopped falling gets a smaller picture
+            continue
         size = [max(16, round(v * side / min(w, h) / 2) * 2) for v in (w, h)]
         if bps >= fit_floor(p, *size):
             return size
@@ -5238,10 +5240,12 @@ def fit_budget(p):
         # MP3 uses discrete bitrates, AAC can use a continuous rate.
         audio = min(256000, bps) if fmt == 'm4a' else max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= bps)
         return {'audio_bps': audio, 'overhead': overhead}
-    video = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, bps - fit_audio_bps(fmt))
+    # The sound takes at most a quarter of a tight budget, down to 48k (10 MB for 10 minutes fits at 48k + 80k picture)
+    audio = next((a for a in (fit_audio_bps(fmt), 128000, 96000, 64000) if a <= max(48000, bps // 4)), 48000)
+    video = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, bps - audio)
     if video < 80000:
         raise ValueError('This duration cannot fit even with the minimum picture and audio quality. Use a larger size or shorten the video')
-    return {'video_bps': video, 'audio_bps': fit_audio_bps(fmt), 'overhead': overhead, 'size': fit_dimensions(p, video)}
+    return {'video_bps': video, 'audio_bps': audio, 'overhead': overhead, 'size': fit_dimensions(p, video)}
 
 
 def hlg_to_pq(r, g, b):
@@ -5312,6 +5316,8 @@ def ffmpeg_cmd(p, td, out, intermediate=False):
     # same frames softer and different on every export (ring detail 0.31-0.76 over 4 runs, more so under load) and starts
     # soft (~10 frames of warm-up); -maxrate makes it far worse. prio_speed 0: never VT's speed mode (it varies run to run too)
     vt = lambda c: venc(min(98, round(VT_Q[c] + 4 * math.log2(p.get('rate', 1)))), br if mb else None, c, (W, H)) + (['-prio_speed', '0'] if VT else [])
+    if fitting and p.get('fit_soft'):  # render_fitted: the hardware encoder overshot the size; two-pass x264 / x265 instead
+        vt = lambda c: ['-c:v', 'libx264' if c == 'h264' else 'libx265', '-b:v', br, '-preset', 'medium' if c == 'h264' else 'fast']
     pf, cs = 'yuv420p', ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709']
     if hdr:
         cs = ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', HDR_TRC[hdr], '-color_range', 'tv']
@@ -5953,60 +5959,69 @@ def render_fitted(p, td, out, report, job):
         budget = fit_budget(p)
         p = {**p, 'fit_audio_bps': budget['audio_bps'], 'fit_bps': budget.get('video_bps', 0), 'fit_size': budget.get('size')}
         original_bps, original_size = p['fit_bps'], [p['w'], p['h']]
-        best = Path(td) / ('fit-best' + out.suffix)
-        best_plan = None
-        cmd = ffmpeg_cmd(p, td, out)
-        codec = cmd[cmd.index('-c:v') + 1] if '-c:v' in cmd else ''
-        software = ('libx264', 'libx265', 'libvpx-vp9', 'libvpx')
-        attempts, measurements = (3 if codec in software else 2), []  # hardware: exactly one possible corrected retry
-        for attempt in range(attempts):
+        best, best_plan, best_codec = Path(td) / ('fit-best' + out.suffix), None, ''
+        two_pass, tries, last, hw = ('libx264', 'libx265', 'libvpx-vp9', 'libvpx'), 8, None, 0
+        # Measured encodes, at most 8. The next request comes from the bytes per requested bps measured so far (a secant
+        # through the last two encodes on the same encoder and picture size: VideoToolbox overshot 1.25-2.6x, non-linearly).
+        # Hardware still over after 3 encodes, or not falling: two-pass x264 / x265. Two-pass / SVT bytes not falling
+        # (VP9 at 500 KB: 601, 570, 560 KB): the next smaller picture size.
+        for attempt in range(tries):
             if p.get('fit_size'):
-                p['fit_size'] = fit_dimensions(p, p['fit_bps'])
+                try:
+                    p['fit_size'] = fit_dimensions(p, p['fit_bps'])
+                except ValueError:  # below the smallest picture: keep what fitted, or refuse below
+                    break
             cmd = ffmpeg_cmd(p, td, out)
             codec = cmd[cmd.index('-c:v') + 1] if '-c:v' in cmd else ''
-            passes = (1, 2) if codec in software else (0,)
+            passes = (1, 2) if codec in two_pass else (0,)
             for i, pn in enumerate(passes):
                 st['note'] = f'Fitting file size: encode {attempt + 1}' + (f', pass {pn} of 2' if pn else '')
-                render({**p, 'fit_pass': pn}, td, out, lambda x, i=i: report((attempt + (i + x) / len(passes)) / attempts), job=job)
+                render({**p, 'fit_pass': pn}, td, out, lambda x, i=i: report(min(1, (attempt + (i + x) / len(passes)) / 4)), job=job)
             mux_subtitles(p, td, out, job)
             size = out.stat().st_size
             st.setdefault('encodeBytes', []).append(size)
             if size <= target:
                 if not best.exists() or size > best.stat().st_size:
                     shutil.copyfile(out, best)
-                    best_plan = dict(p)
+                    best_plan, best_codec = dict(p), codec
                 if size >= target * 0.95 or fmt in SOUND:
                     break
-            if attempt + 1 < attempts:
-                # Keep the actual audio/header bytes out of the video correction. Probe packet sizes, not nominal rates.
-                packets = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0' if fmt not in SOUND else 'a:0',
-                                         '-show_entries', 'packet=size', '-of', 'json', str(out)]).stdout)['packets']
-                payload = sum(int(x['size']) for x in packets)
-                fixed = size - payload
-                ratio = max(0, target * (0.955 if size < target else 0.97) - fixed) / max(1, payload)
-                if fmt in SOUND:
-                    p['fit_audio_bps'] = max(48000, int(p['fit_audio_bps'] * ratio))
-                    if fmt == 'mp3':
-                        p['fit_audio_bps'] = max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= p['fit_audio_bps'])
-                else:
-                    corrected = p['fit_bps'] * ratio
-                    if measurements and size < target * 0.95:
-                        old_bps, old_bytes, old_size = measurements[-1]
-                        if old_size == p['fit_size'] and p['fit_bps'] > old_bps and size > old_bytes:
-                            # Software ABR can undershoot nonlinearly at high quality; use its measured slope once.
-                            slope = (size - old_bytes) / (p['fit_bps'] - old_bps)
-                            corrected = min(p['fit_bps'] * 1.5, p['fit_bps'] + (target * 0.965 - size) / slope)
-                    measurements.append((p['fit_bps'], size, p['fit_size']))
-                    p['fit_bps'] = min(100000000 if fmt in ('av1', 'av1webm') else 400000000, int(corrected))
-                    if p['fit_bps'] < 80000:
-                        break
+            if attempt + 1 == tries:
+                break
+            # Keep the actual audio/header bytes out of the video correction. Probe packet sizes, not nominal rates.
+            packets = json.loads(sh(['ffprobe', '-v', 'error', '-select_streams', 'v:0' if fmt not in SOUND else 'a:0',
+                                     '-show_entries', 'packet=size', '-of', 'json', str(out)]).stdout)['packets']
+            payload = sum(int(x['size']) for x in packets)
+            fixed, aim = size - payload, target * (0.955 if size < target else 0.97)
+            if fmt in SOUND:
+                p['fit_audio_bps'] = max(48000, int(p['fit_audio_bps'] * max(0, aim - fixed) / max(1, payload)))
+                if fmt == 'mp3':
+                    p['fit_audio_bps'] = max(r * 1000 for r in (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if r * 1000 <= p['fit_audio_bps'])
+                continue
+            bps, want = p['fit_bps'], max(0, aim - fixed)
+            new = bps * want / max(1, payload)
+            same = last and last[:2] == (codec, p['fit_size']) and last[2] != bps
+            if same and (payload - last[3]) * (bps - last[2]) > 0:
+                new = bps + (want - payload) * (bps - last[2]) / (payload - last[3])
+            stuck = size > target and same and last[2] > bps and (last[3] - payload) / last[3] < 0.5 * (last[2] - bps) / last[2]
+            last = (codec, p['fit_size'], bps, payload)
+            new = min(new, bps * 0.95) if size > target else min(max(new, bps), bps * 1.5)
+            hw += codec.split('_')[-1] in HW_FAMILIES
+            if size > target and codec.split('_')[-1] in HW_FAMILIES and codec[:4] in ('h264', 'hevc') and (stuck or hw >= 3 or new < 80000):
+                p['fit_soft'] = True  # two-pass software reaches its requested rate: ask for the measured room directly
+                new = want * 8 / p['duration']
+            elif size > target and (stuck or new < 80000) and p.get('fit_size'):
+                p['fit_max'] = min(p['fit_size']) - 1
+            p['fit_bps'] = max(80000, min(100000000 if fmt in ('av1', 'av1webm') else 400000000, int(new)))
         if not best.exists():
-            raise ValueError('The encoder could not fit this size after a measured retry. Use a larger size or shorten the video; no oversized file was saved')
+            raise ValueError(f'The encoder could not fit this size in {attempt + 1} measured encodes. Use a larger size or shorten the video; no oversized file was saved')
         retry(best.replace, out)
         size = best_plan.get('fit_size')
         if size and size != original_size:
             notes.append(f'Resolution lowered from {original_size[0]}×{original_size[1]} to {size[0]}×{size[1]} to keep picture quality within the size limit')
-        st['fit'] = {**budget, 'targetBytes': target, 'size': size, 'audio_bps': best_plan['fit_audio_bps'], 'video_bps': best_plan['fit_bps'], 'initial_video_bps': original_bps, 'encodes': attempt + 1, 'encoder': codec}
+        if best_plan.get('fit_soft'):
+            notes.append('Encoded in software (two passes): the hardware encoder could not stay under the size limit')
+        st['fit'] = {**budget, 'targetBytes': target, 'size': size, 'audio_bps': best_plan['fit_audio_bps'], 'video_bps': best_plan['fit_bps'], 'initial_video_bps': original_bps, 'encodes': attempt + 1, 'encoder': best_codec}
     if out.stat().st_size < target * 0.95:
         notes.append('The file is below 95% of the limit; the encoder used fewer bits than requested at the available quality')
     st['notes'] = notes

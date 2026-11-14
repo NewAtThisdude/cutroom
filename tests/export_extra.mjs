@@ -2,7 +2,7 @@
 // Requires B and CUTROOM_HOME; seeds its own media, both motion modes, no personal library/4610.
 import { browser } from './browser.mjs';
 import { requireHome } from './runtime.mjs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -36,6 +36,10 @@ const srtCues = text => text.trim().replace(/\r/g, '').split(/\n\s*\n/).map(b =>
 const subText = (file, i) => ff('ffmpeg', ['-v', 'error', '-i', file, '-map', `0:s:${i}`, '-f', 'srt', '-']).toString();
 const pixels = (file, t = 1) => ff('ffmpeg', ['-v', 'error', '-ss', String(t), '-i', file, '-frames:v', '1', '-vf', 'scale=320:180', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
 const diff = (a, b) => { if (a.length !== b.length) return Infinity; let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
+// The direct server checks (fit with each encoder incl. the media engine, captions stored literally per container) run in the gate here.
+const direct = spawnSync('python3', ['-I', new URL('./export_extra_server.py', import.meta.url).pathname], { env: process.env, encoding: 'utf8', maxBuffer: 64 << 20 });
+for (const line of (direct.stdout || '').split('\n')) if (/^(PASS|FAIL) /.test(line)) check(`server: ${line.slice(5)}`, line.startsWith('PASS'));
+check('server: export_extra_server.py finished', direct.status === 0, (direct.stderr || '').slice(-1500));
 const b = await browser.launch({ headless: true });
 try {
   for (const motion of ['no-preference', 'reduce']) {
@@ -127,7 +131,7 @@ try {
     const sidecar = await ev(async () => { const file = await saveSRT('extra reference'); return { file, text: toSRT(), translation: subtitleText(subtitleTracks()[1].cues) }; });
     check(`${motion}: reference sidecar has original cue text/times`, JSON.stringify(srtCues(fs.readFileSync(path.join(HOME, 'exports', sidecar.file), 'utf8'))) === JSON.stringify(srtCues(SRT)));
     const files = {};
-    for (const [format, codec] of [['mp4', 'mov_text'], ['prores', 'mov_text'], ['webm', 'webvtt'], ['mkv', 'subrip']]) {
+    for (const [format, codec] of [['mp4', 'mov_text'], ['prores', 'mov_text'], ['webm', 'webvtt'], ['mkv', 'webvtt']]) {
       const r = await run({ format, name: format }); files[format] = r.file;
       const streams = r.info.streams.filter(s => s.codec_type === 'subtitle');
       check(`${motion}: ${format} has two ${codec} streams, tags and first default`, streams.length === 2 && streams.every(s => s.codec_name === codec) && streams.map(s => s.tags.language).join(',') === 'eng,spa' && streams.map(s => s.disposition.default).join(',') === '1,0');

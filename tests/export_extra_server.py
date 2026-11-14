@@ -1,5 +1,6 @@
 """Direct export checks; no browser or HTTP server. All artifacts stay under tests/out/."""
 import base64
+import html
 import importlib.util
 import json
 import os
@@ -9,7 +10,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'tests' / 'out' / 'export-extra-server'
+OUT = Path(os.environ['CUTROOM_HOME']) / 'export-extra-server' if os.environ.get('CUTROOM_HOME') else ROOT / 'tests' / 'out' / 'export-extra-server'
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -19,6 +20,21 @@ def ff(*args):
 
 def probe(file):
     return json.loads(ff('ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(file)))
+
+
+def packets(file, i):
+    """Subtitle stream i's packets as (start seconds, bytes), straight from the container."""
+    j = json.loads(ff('ffprobe', '-v', 'error', '-select_streams', f's:{i}', '-show_packets', '-show_data', '-of', 'json', str(file)))
+    return [(float(k['pts_time']), bytes.fromhex(''.join(line.split(':', 1)[1][:41].replace(' ', '') for line in k['data'].strip().split('\n'))))
+            for k in j['packets']]
+
+
+def cue_texts(file, i, codec):
+    """The text a player gets: mov_text = 2-byte length + UTF-8 (empty samples are gaps; a word joiner breaks markup-like
+    backslash sequences invisibly), WebVTT = entity-escaped payload."""
+    if codec == 'mov_text':
+        return [t for t in (d[2:2 + int.from_bytes(d[:2], 'big')].decode().replace('\u2060', '') for _, d in packets(file, i)) if t]
+    return [html.unescape(d.decode()) for _, d in packets(file, i)]
 
 
 def main():
@@ -60,7 +76,7 @@ def main():
                 print(f"PASS preset {mb} MB: {st['bytes']} bytes ({st['bytes'] / mb / 10000:.2f}%), {W}x{H}, {st['encodeBytes']}", flush=True)
             return
 
-        for fmt, codec in [('mp4', 'mov_text'), ('prores', 'mov_text'), ('webm', 'webvtt'), ('mkv', 'subrip')]:
+        for fmt, codec in [('mp4', 'mov_text'), ('prores', 'mov_text'), ('webm', 'webvtt'), ('mkv', 'webvtt')]:
             f, st, info = run(format=fmt, subtitles=tracks)
             subs = [x for x in info['streams'] if x['codec_type'] == 'subtitle']
             assert [x['codec_name'] for x in subs] == [codec, codec], subs
@@ -70,6 +86,29 @@ def main():
                 txt = ff('ffmpeg', '-v', 'error', '-i', str(f), '-map', f'0:s:{i}', '-f', 'srt', '-')
                 assert track['cues'][0]['text'] in txt and '00:00:00,500 --> 00:00:02,250' in txt and '00:00:03,000 --> 00:00:05,125' in txt, txt
             print(f'PASS subtitles {fmt}: {codec}, eng/spa, default 1/0, exact text and milliseconds', flush=True)
+
+        # Markup-like caption text is stored literally in every container (SRT input once turned 'a < b & c > d' into 'a  d').
+        tricky = ['Tom & Jerry', '5 < 6 and 7 > 3', 'I <3 you', 'R&amp;D', 'a < b & c > d', '<font color=red>x</font>', 'two\nlines --> here']
+        braces = ['{\\an8}x {y}', 'C:\\New \\h', '<b>{bold}</b>']
+        special = [{'language': 'eng', 'cues': [{'start': 100 + n * 700, 'end': 700 + n * 700, 'text': t} for n, t in enumerate(tricky[:4] + braces[:1])]},
+                   {'language': 'fra', 'cues': [{'start': 100 + n * 700, 'end': 700 + n * 700, 'text': t} for n, t in enumerate(tricky[4:] + braces[1:])]}]
+        for fmt, codec in [('mp4', 'mov_text'), ('webm', 'webvtt'), ('mkv', 'webvtt')]:
+            f, st, info = run(format=fmt, subtitles=special)
+            got = [cue_texts(f, i, codec) for i in range(2)]
+            assert got == [[c['text'] for c in t['cues']] for t in special], got
+            print(f'PASS literal captions {fmt} ({codec}): &, <, >, entities, braces, backslashes, line breaks', flush=True)
+        starts = [round(t, 3) for t, d in packets(f, 0)]  # the MKV's WebVTT keeps millisecond times
+        assert starts[:2] == [0.1, 0.8], starts
+        for bad in ([None], [{'language': 'eng', 'cues': [{'start': 0, 'end': 1}]}], [{'language': 'eng', 'cues': ['text']}], [{'language': 'eng', 'cues': [{'start': None, 'end': 1, 'text': 'x'}]}]):
+            try:
+                s.clean_plan({**base, 'subtitles': bad})
+                raise AssertionError(f'malformed subtitles accepted: {bad}')
+            except ValueError:
+                pass
+        print('PASS malformed subtitle entries refused in words', flush=True)
+        long = s.clean_plan({**base, 'duration': 600, 'targetBytes': 10000000, 'main': []})
+        assert s.fit_budget(long)['audio_bps'] <= 64000 and s.fit_budget(long)['video_bps'] >= 80000, s.fit_budget(long)
+        print(f"PASS 10 MB for 10 minutes: sound lowered to {s.fit_budget(long)['audio_bps'] // 1000}k instead of refusing", flush=True)
 
         for fmt in ('mp4', 'hevc', 'webm', 'mkv', 'av1', 'av1webm'):
             f, st, info = run(format=fmt, targetBytes=1_000_000, subtitles=tracks)
@@ -126,6 +165,17 @@ def main():
         v = next(x for x in info['streams'] if x['codec_type'] == 'video')
         assert v['pix_fmt'] == 'yuv420p10le' and v['color_transfer'] == 'arib-std-b67' and v['color_primaries'] == 'bt2020' and st['bytes'] <= 300000, (st, v)
         print(f"PASS HDR fit + soft subs: {st['bytes']} bytes, {v['pix_fmt']} {v['color_transfer']} {v['color_primaries']}", flush=True)
+
+        if s.VT:  # the Mac's media engine overshoots its requested bitrate 1.25-2.6x: fitted files must still stay under the target
+            for fmt in ('mp4', 'hevc'):
+                for tb in (500_000, 1_000_000, 2_000_000):
+                    f, st, info = run(format=fmt, quality='fast', targetBytes=tb, subtitles=tracks)
+                    assert tb * 0.9 <= st['bytes'] <= tb, st
+                    print(f"PASS hardware fit {fmt} {tb // 1000} KB: {st['bytes']} bytes ({st['bytes'] / tb:.3f}), encodes {st['encodeBytes']}, {st['fit']['encoder']}", flush=True)
+            for tb in (500_000,):
+                f, st, info = run(format='webm', targetBytes=tb, subtitles=tracks)
+                assert tb * 0.85 <= st['bytes'] <= tb, st
+                print(f"PASS VP9 fit {tb // 1000} KB: {st['bytes']} bytes, encodes {st['encodeBytes']}, {st['fit']['size']}", flush=True)
 
         keep_enc, keep_vt = s.ENC.copy(), s.VT
         try:
