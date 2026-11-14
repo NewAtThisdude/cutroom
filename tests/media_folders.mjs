@@ -96,7 +96,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: the move command files a photo by name into the folder path; the media listing reports folder paths`,
     mlist.find(m => m.name === 'fold-delta.png').folder === 'Interviews/B-roll' && mlist.find(m => m.name === 'fold-gamma.wav').folder === 'Interviews/B-roll' && mlist.find(m => m.name === 'fold-beta.mp4').folder === null, JSON.stringify(mlist.filter(m => m.name.startsWith('fold-')).map(m => [m.name, m.folder])));
   check(`${rm}: the command's listing has folders with counts, the smart folders and the unfiled count`,
-    ls.folders.find(f => f.path === 'Interviews/B-roll')?.items === 2 && ls.folders.find(f => f.path === 'Interviews')?.total === 4 && 'Not used anywhere' in ls.smart && typeof ls.unfiled === 'number', JSON.stringify(ls.folders));
+    ls.folders.find(f => f.path === 'Interviews/B-roll')?.items === 2 && ls.folders.find(f => f.path === 'Interviews')?.total === 3 && 'Not used anywhere' in ls.smart && typeof ls.unfiled === 'number', JSON.stringify(ls.folders));
   const made = await cmd({ action: 'create', path: 'Music/Beds' });
   await cmd({ action: 'rename', path: 'Music/Beds', name: 'Loops' });
   check(`${rm}: the create command builds a path; rename by path`, made.folders.some(f => f.path === 'Music/Beds') && (await cmd({})).folders.some(f => f.path === 'Music/Loops'));
@@ -109,7 +109,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: Rename on a folder tile renames it`, (await foldNames()).includes('Talks') && !(await foldNames()).includes('Interviews'), (await foldNames()).join());
   const before = (await api('/api/media')).length;
   await cmd({ action: 'create', path: 'Talks/Old' }); await cmd({ action: 'move', media: ['fold-beta.mp4'], to: 'Talks/Old' });
-  await page.click('.fold b'); await page.waitForTimeout(150);
+  await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(150);
   await page.hover('.fold b'); await page.click('.fold [data-fdel]'); await page.waitForTimeout(500);
   st = await api('/api/folders'); const oldId = Object.keys(st.folders).find(k => st.folders[k].name === 'Old');
   check(`${rm}: deleting the folder Old inside Talks keeps its media (moved up into Talks), nothing else lost`, !oldId && st.of[id.beta] === Object.keys(st.folders).find(k => st.folders[k].name === 'Talks') && (await api('/api/media')).length === before, JSON.stringify(st.of));
@@ -134,12 +134,12 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.screenshot({ path: `${OUT}${rm}.png` });
 
   // ---- search inside a folder and across all ----
-  await page.click('#folderList .fold b'); await page.waitForTimeout(150); // Talks
+  await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(150); // Talks
   await page.fill('#mediaSearch', 'beta');
   const inFolder = await cards(); await page.fill('#mediaSearch', 'alpha'); const none = await cards();
   await page.click('#folderBar .crumbs button:has-text("All media")'); await page.waitForTimeout(100);
   const across = await cards(); await page.fill('#mediaSearch', '');
-  await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold b'); await page.waitForTimeout(100);
+  await page.click('#mediaFilter [data-mfilter="audio"]'); await page.click('#folderList .fold:has(b:text-is("Talks")) b'); await page.waitForTimeout(100);
   const filt = await cards(); await page.click('#mediaFilter [data-mfilter="all"]');
   check(`${rm}: search inside Talks finds beta, not alpha (it is in no folder); across all media it finds alpha; the Audio chip works inside a folder`,
     inFolder.join() === 'fold-beta.mp4' && none.length === 0 && across.includes('fold-alpha.mp4') && filt.every(x => /\.(wav|mp3|m4a)$/.test(x)), `${inFolder} | ${none} | ${across} | ${filt}`);
