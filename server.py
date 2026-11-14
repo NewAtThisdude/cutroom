@@ -250,13 +250,15 @@ def sh(cmd, low=False):
 def meta(mid):
     if not ID.fullmatch(str(mid)):
         raise ValueError('bad media id')
-    return json.loads((MEDIA / f'{mid}.json').read_text())
+    return json.loads(retry((MEDIA / f'{mid}.json').read_text))  # (retry: Windows refuses to open it while save_meta replaces it)
 
 
 def save_meta(m):
     if m.get('file') and not (MEDIA / m['file']).exists():  # removed from the library while it was being prepared: don't bring back an empty entry
         return
-    (MEDIA / f"{m['id']}.json").write_text(json.dumps(m))
+    tmp = MEDIA / f".{m['id']}.{uuid.uuid4().hex[:6]}.tmp"  # whole or not there: a reader between write_text's truncate and its write saw an empty file (/api/media failed)
+    tmp.write_text(json.dumps(m))
+    retry(tmp.replace, MEDIA / f"{m['id']}.json")
 
 
 def gop(path):
@@ -300,7 +302,7 @@ def probe(path):
 def find_key(key):  # the library item made from this source key (a re-imported file, a rendered ramp), if its file is there
     for f in MEDIA.glob('*.json'):
         try:
-            m = json.loads(f.read_text())
+            m = json.loads(retry(f.read_text))
         except ValueError:
             continue
         if m.get('srckey') == key and (MEDIA / m.get('file', '')).is_file():
@@ -2206,7 +2208,7 @@ def sfx_file(sid):
 def sfx_media(sid):
     """The sound in the media library (imported once, then reused)."""
     for j in MEDIA.glob('*.json'):
-        m = json.loads(j.read_text())
+        m = json.loads(retry(j.read_text))
         if m.get('sfx') == sid and (MEDIA / m['file']).exists():
             return m
     f = sfx_file(sid)
@@ -2328,7 +2330,7 @@ def pack_media(pid):
     if not it:
         raise ValueError('no such sound in the library packs')
     for j in MEDIA.glob('*.json'):
-        m = json.loads(j.read_text())
+        m = json.loads(retry(j.read_text))
         if m.get('pack') == pid and (MEDIA / m['file']).exists():
             return m
     f = HOME / 'packs' / it['file']
@@ -3863,7 +3865,7 @@ def search(q, mids=None):
         if mids and mid not in mids:
             continue
         try:
-            m = json.loads(f.read_text())
+            m = json.loads(retry(f.read_text))
         except ValueError:
             continue
         if not m.get('file') or not (MEDIA / m['file']).exists():
@@ -6097,7 +6099,7 @@ def same_file(f, sha):  # a library item with exactly these bytes (only items of
     size = f.stat().st_size
     for j in MEDIA.glob('*.json'):
         try:
-            m = json.loads(j.read_text())
+            m = json.loads(retry(j.read_text))
             if (MEDIA / m['file']).stat().st_size != size:
                 continue
         except (OSError, ValueError, KeyError):
@@ -6659,7 +6661,7 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'ok': True, 'whisper': bool(shutil.which(WHISPER)) and Path(MODEL).exists()})
             if path == '/api/media':  # entries whose file is gone (an interrupted removal) are left out
                 return self.reply(sorted(({**m, 'prep': PREP_PCT[m['id']]} if m['id'] in PREP_PCT and not m.get('ready') else m
-                                          for m in (json.loads(f.read_text()) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file() and not m.get('slate')), key=lambda m: -m.get('added', 0)))  # (slate: a template preview's placeholder)
+                                          for m in (json.loads(retry(f.read_text)) for f in MEDIA.glob('*.json')) if (MEDIA / m.get('file', '')).is_file() and not m.get('slate')), key=lambda m: -m.get('added', 0)))  # (slate: a template preview's placeholder)
             if path == '/api/projects':
                 return self.reply(list_projects())
             if path == '/api/voices':

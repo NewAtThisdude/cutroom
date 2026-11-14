@@ -4711,7 +4711,10 @@ function capsFromWords(src, words, per) { // clips (on the timeline as it is now
 
 // ---------- import ----------
 async function loadMedia() {
-  const list = await api('/api/media'), noPct = m => JSON.stringify({ ...m, prep: 0 }), same = list.length === M.size && list.every(m => M.has(m.id) && noPct(M.get(m.id)) === noPct(m)); // (a poll while something prepares: only its % moved)
+  const list = await api('/api/media').catch(e => { // one failed poll must not end the polling: what was preparing would show as preparing for good
+    if ([...M.values()].some(m => !m.ready)) { clearTimeout(loadMedia.t); loadMedia.t = setTimeout(loadMedia.poll, 1500); }
+    throw e;
+  }), noPct = m => JSON.stringify({ ...m, prep: 0 }), same = list.length === M.size && list.every(m => M.has(m.id) && noPct(M.get(m.id)) === noPct(m)); // (a poll while something prepares: only its % moved)
   for (const m of list) { // a proxy may exist now: make players reload
     const old = M.get(m.id);
     if (old && !old.ready && m.ready) for (const v of pool.values()) if (v.dataset.media === m.id) v.dataset.media = '';
@@ -4726,8 +4729,9 @@ async function loadMedia() {
     S.dirty = true;
   }
   clearTimeout(loadMedia.t);
-  if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
+  if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia.poll, 1500);
 }
+loadMedia.poll = () => loadMedia().catch(() => {}); // (a background poll: a failure was rescheduled above)
 // ---------- subtitles: SRT / WebVTT in and out ----------
 const srtTime = t => { const ms = Math.max(0, Math.round(t * 1000)), p2 = (v, n = 2) => String(v).padStart(n, '0'); return `${p2(Math.floor(ms / 3600000))}:${p2(Math.floor(ms / 60000) % 60)}:${p2(Math.floor(ms / 1000) % 60)},${p2(ms % 1000, 3)}`; };
 function toSRT(kind = 'srt') { // the captions (or, with none, the text clips) as SubRip, WebVTT or a timed transcript (one "[a --> b] text" per cue)
