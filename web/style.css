@@ -532,6 +532,7 @@ select:disabled, input:disabled, button:disabled { opacity: .42; cursor: not-all
 .hits .hit b, .hits .hit small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hits .hit small { color: var(--muted); font-size: 11px; }
 .hits .hit em { font: 11px ui-monospace, monospace; color: var(--faint); font-style: normal; }
+.hits .hit.br { grid-template-columns: 48px minmax(0, 1fr) auto auto; gap: 6px; }
 .maccaps { display: grid; gap: 4px; }
 .maccaps .mc { display: grid; gap: 1px; padding: 5px 8px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); min-width: 0; }
 .maccaps .mc b { font-weight: 550; font-size: 12.5px; }

@@ -3894,6 +3894,75 @@ def search(q, mids=None):
     return {'results': [r for r in out if r['score'] >= max(0.45, top - 0.25)][:30], 'unindexed': unindexed, 'semantic': qv is not None}
 
 
+# ---------- B-roll: the library's own shots over what the main track says (the smart-search index, no new model) ----------
+BR_COMMON = set("i i'm i've we we're you you're he she they them us our your his her their it's that's just really very so then also like got get "
+                "go going went gone know think want did do does done have has had been being will would could should can about up down out over into "
+                "all more most much many which these those because but if not yes yeah okay ok well right now today time day thing things way lot little "
+                "actually kind sort maybe even back still make made take took look looked see saw come came say said tell told let let's gonna wanna".split())
+BR_MIN = 0.6  # embedding similarity a picture must reach (nomic-embed-text: related ~0.6-0.75, unrelated ~0.35-0.5); a shared word counts too
+
+
+def broll(phrases, skip=(), taken=()):
+    """Overlay picks that show what is said: phrases = the main track's sentences [{start, end, text}] in timeline seconds,
+    skip = media not to use (the main track's own), taken = [a, b] spans that already have an overlay (left alone).
+    Each sentence with a content word and 1 s+ gets the best-matching indexed picture moment of a library item it shares a
+    word with or is close to by embedding; best matches are placed first and each item is used once. Each pick lists that sentence's
+    best 5 matches, itself among them (Swap in the editor)."""
+    if 'captions' in AI_OFF:  # it reads the main track's speech: Settings › AI › auto captions off refuses it too
+        raise RuntimeError(f"{tier('captions')['what']} is turned off in Settings (AI and this computer)")
+    words = lambda t: {stem(w) for w in re.findall(r"[\w']+", t.lower()) if w not in STOP and w not in BR_COMMON and len(w) > 2}
+    items = {}  # media id -> (meta, its picture parts with their words)
+    for f in CACHE.glob('*.index.json'):
+        mid = f.name.split('.')[0]
+        try:
+            m, d = meta(mid), json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if mid not in skip and m.get('kind') in ('video', 'image') and m.get('file') and (MEDIA / m['file']).exists() and d.get('parts'):
+            items[mid] = (m, [(x, words(' '.join([x.get('desc', ''), *(x.get('things') or []), *(x.get('tags') or [])]))) for x in d['parts']])  # (not ptext's "no people")
+    unindexed = sum(1 for f in MEDIA.glob('*.json') if not (CACHE / f'{f.stem}.index.json').exists())
+    if not items:
+        return {'picks': [], 'unindexed': unindexed, 'msg': 'Nothing in the library has been looked inside yet: search the Media panel and press "Look inside", then try again.'
+                if unindexed or not any(MEDIA.glob('*.json')) else 'The library has no other videos or photos that smart search has described (the local vision model) to use as B-roll.'}
+    ph = []
+    for p in [p for p in phrases[:400] if isinstance(p, dict)]:
+        a, b, text = fnum(p.get('start', 0), 0, 86400), fnum(p.get('end', 0), 0, 86400), str(p.get('text', ''))[:400]
+        if b - a >= 1 and (w := words(text)) and not any(x < b and y > a for x, y in taken):
+            ph.append({'start': a, 'end': b, 'text': text, 'w': w})
+    if not ph:
+        return {'picks': [], 'unindexed': unindexed, 'msg': 'Nothing to illustrate: every sentence is under a second, has no words to match, or already has an overlay.'}
+    vec = any(x.get('v') for _, parts in items.values() for x, _ in parts)
+    qvs = (embed([p['text'] for p in ph], query=True) if vec else None) or [None] * len(ph)  # one call for every sentence; a stub/old index has no vectors
+    cands = []  # (score, phrase index, media id, part)
+    for i, (p, qv) in enumerate(zip(ph, qvs)):
+        for mid, (m, parts) in items.items():
+            best = None
+            for x, xw in parts:
+                cos = sum(u * v for u, v in zip(qv, x['v'])) if qv and x.get('v') else 0.0
+                have = len(p['w'] & xw) / len(p['w'])
+                if (cos >= BR_MIN or have) and (not best or cos + 0.3 * have > best[0]):
+                    best = (cos + 0.3 * have, x)
+            if best:
+                cands.append((round(best[0], 3), i, mid, best[1]))
+    cands.sort(key=lambda c: -c[0])
+
+    def place(p, mid, x, score):  # the moment centred on the matching part, as long as the sentence (1-6 s), within the file
+        m = items[mid][0]
+        d = min(max(1.0, p['end'] - p['start']), 6.0, m['duration'] if m['kind'] == 'video' else 6.0)
+        a = 0.0 if m['kind'] == 'image' else min(max(0.0, x['t'] - d / 2), max(0.0, m['duration'] - d))
+        return {'media': mid, 'name': m.get('name'), 'kind': m['kind'], 'in': round(a, 3), 'out': round(a + d, 3), 'dur': round(d, 3), 'score': score,
+                'shows': x.get('desc') or ', '.join(x.get('tags') or [])}
+    done, used = {}, set()
+    for score, i, mid, x in cands:  # ponytail: greedy best-first, not an optimal assignment; fine for tens of sentences
+        if i not in done and mid not in used:
+            done[i] = place(ph[i], mid, x, score)
+            used.add(mid)
+    picks = [{**done[i], 'start': round(ph[i]['start'], 3), 'said': ph[i]['text'],
+              'alts': [place(ph[i], mid, x, s) for s, j, mid, x in cands if j == i][:5]} for i in sorted(done)]
+    return {'picks': picks, 'unindexed': unindexed, 'checked': len(ph),
+            'msg': '' if picks else f"Nothing in the library matches what is said ({len(ph)} sentence{'s' * (len(ph) > 1)} checked against {len(items)} item{'s' * (len(items) > 1)})."}
+
+
 # ---------- render engine: validated plan -> one ffmpeg filtergraph ----------
 
 def fnum(v, lo, hi):
@@ -6692,6 +6761,9 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'job': run_job(index_many, body.get('media') or [])})
             if u.path == '/api/search':
                 return self.reply(search(body.get('q', ''), set(map(str, body['media'])) if body.get('media') else None))
+            if u.path == '/api/broll':  # B-roll: library moments that show the main track's sentences
+                return self.reply(broll(list(body.get('phrases') or []), set(map(str, body.get('skip') or [])),
+                                        [(fnum(a, 0, 86400), fnum(b, 0, 86400)) for a, b in (body.get('taken') or [])[:2000]]))
             if u.path == '/api/ai/clone':
                 return self.reply({'job': run_job(ai_clone, body['media'], body.get('t0', 0), body.get('t1', 0), body.get('name', ''), body.get('consent') is True)})
             if u.path == '/api/ai/dub':

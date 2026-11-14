@@ -585,6 +585,7 @@ function renderAll() {
   if (document.activeElement !== $('#projName')) $('#projName').value = P.name;
   $('#btnLink').classList.toggle('on', !P.unlinked);
   $('#btnRipple').classList.toggle('on', !!P.rippleAll);
+  if (G.broll) renderBroll(); // (an undo takes B-roll back off the list too)
   syncHistory();
 }
 
@@ -7487,7 +7488,49 @@ $('#mediaHits')?.addEventListener('click', async e => {
   try { await job('/api/index', {}, 'Looking inside', t => { b.textContent = t; }); await smartSearch(); }
   catch (err) { b.textContent = err.message; }
 });
+// ---------- B-roll (Smart tools): the library's own shots over what the main track says (server broll, on the smart-search index) ----------
+const brollClip = (p, start) => ({ id: hex12(), media: p.media, start, in: p.in, out: p.out, speed: 1, volume: 0, fit: 'fill', scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } });
+async function autoBroll({ lang, index = false, say = () => {} } = {}) {
+  if (index) await job('/api/index', {}, 'Looking inside', say);
+  say('Reading what is said on the main track…');
+  const { sentences } = await REMOTE.main_transcript({ lang }); // (auto captions off in Settings: refused there, and by the server)
+  if (!sentences.length) throw new Error('Nothing is said on the main track: B-roll follows the speech.');
+  packMain();
+  const r = await api('/api/broll', { phrases: sentences, skip: [...new Set([...P.main, ...P.overlay].map(c => c.media))], taken: P.overlay.map(c => [c.start, c.start + tdur(c, 'overlay')]) });
+  if (!r.picks.length) throw new Error(r.msg);
+  const made = r.picks.map(p => ({ c: brollClip(p, p.start), said: p.said, alts: p.alts }));
+  G.broll = made.map(x => ({ id: x.c.id, said: x.said, alts: x.alts })); // (the list is drawn by the render the change makes)
+  change(() => { for (const x of made) P.overlay.push(x.c); S.sel = { lane: 'overlay', id: made[0].c.id }; }, `B-roll (${made.length})`); // one undo step
+  return { placed: made.map((x, i) => ({ ...brief(x.c, 'overlay'), said: x.said, shows: r.picks[i].shows })), checked: r.checked, unindexed: r.unindexed };
+}
+function renderBroll() { // what was matched: the sentence, the shot; swap (the next match) or remove each
+  const box = $('#brList');
+  if (!box) return;
+  box.innerHTML = G.broll.filter(x => P.overlay.some(c => c.id === x.id)).map(x => { const c = P.overlay.find(y => y.id === x.id), m = M.get(c.media);
+    return `<div class="hit br" data-br="${x.id}"><i style="${m ? thumbStyle(m) : ''}"></i><span><b>${esc(m?.name || '')}</b><small>“${esc(x.said)}”</small></span>`
+      + `<button data-bract="swap" title="Use the next library match for this sentence"${x.alts.length > 1 ? '' : ' disabled'}>Swap</button><button data-bract="remove">Remove</button></div>`; }).join('');
+}
+function brollAct(id, act) {
+  const x = G.broll?.find(y => y.id === id), c = P.overlay.find(y => y.id === id);
+  if (!x || !c) return renderBroll();
+  if (act === 'remove') change(() => { P.overlay.splice(P.overlay.indexOf(c), 1); if (S.sel?.id === id) S.sel = null; }, 'Remove B-roll');
+  else {
+    const others = new Set(P.overlay.filter(y => y !== c).map(y => y.media)), i = x.alts.findIndex(a => a.media === c.media);
+    const n = [...x.alts.slice(i + 1), ...x.alts.slice(0, i + 1)].find(a => a.media !== c.media && !others.has(a.media));
+    if (!n) return toast('No other library shot matches this sentence');
+    change(() => { Object.assign(c, { media: n.media, in: n.in, out: n.out }); }, 'Swap B-roll');
+  }
+}
+$('#btnBroll')?.addEventListener('click', async () => {
+  const b = $('#btnBroll'), st = t => { $('#brStatus').textContent = t; };
+  b.disabled = true;
+  try { const r = await autoBroll({ say: st }); st(`${r.placed.length} shot${r.placed.length > 1 ? 's' : ''} placed over ${r.checked} sentence${r.checked > 1 ? 's' : ''} checked (⌘Z undoes them all).${r.unindexed ? ` ${r.unindexed} library item${r.unindexed > 1 ? 's are' : ' is'} not looked inside yet.` : ''}`); }
+  catch (e) { st(e.message); }
+  finally { b.disabled = false; }
+});
+$('#brList')?.addEventListener('click', e => { const a = e.target.closest('[data-bract]'); if (a) brollAct(a.closest('[data-br]').dataset.br, a.dataset.bract); });
 Object.assign(REMOTE, {
+  async auto_broll({ lang, index = false }) { return autoBroll({ lang, index }); },
   async pilot({ text, run = true }) {
     const plan = await api('/api/plan', { text: String(text || ''), ctx: await pilotCtx() });
     if (!run) return plan;

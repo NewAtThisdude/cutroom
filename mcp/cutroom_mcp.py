@@ -281,6 +281,11 @@ TOOLS = [
                      'Returns the best moment per item (media id, t seconds, why picture|speech, text), best first, and how many items are not indexed yet; '
                      'index=true first describes those with the local vision model (slow the first time, cached).',
      S({'q': txt, 'index': boo}, ['q']), 'search_media'),
+    ('auto_broll', 'Automatic B-roll from the user\'s own library: reads what the main track says and puts matching library shots (smart-search index: '
+                   'what each picture shows) on the overlay track over those sentences, muted, each item once, sized to the sentence (1-6 s), '
+                   'skipping spans that already have an overlay. One undo step. Returns each placed clip with the sentence it shows; a plain message when '
+                   'nothing matches or nothing is indexed yet. index=true first describes unindexed items with the local vision model (slow the first time).',
+     S({'lang': txt, 'index': boo}), 'auto_broll'),
     ('seek', 'Move the playhead (seconds).', S({'t': num}, ['t']), 'seek'),
     ('scopes', 'Read the levels of the frame the preview shows (at the playhead): luma low/median/high in IRE (1st, 50th, 99th percentile), '
                'the share of clipped black and white pixels (%) and the mean R, G, B (0-255). Use it to judge exposure and colour casts before and after a grade. '
@@ -380,7 +385,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'batch')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'auto_broll', 'batch')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':
