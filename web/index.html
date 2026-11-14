@@ -57,6 +57,9 @@
       <div class="mtools"><input id="sndSearch" type="search" placeholder="Search sounds and music" aria-label="Search sounds and music"></div>
       <div id="sndCats" class="chips"></div>
       <div id="sfxList" class="sfx snd"></div>
+      <h4>Audio visualizer</h4>
+      <p class="hint">Bars that move with the sound, in your brand colours. Worked out from the audio frame by frame, so the export matches the preview exactly.</p>
+      <div id="vizTiles" class="presets small"><button data-viz="bars">Bars</button><button data-viz="mirror">Mirrored bars</button><button data-viz="line">Line</button><button data-viz="circle">Circle</button></div>
       <h4>AI music</h4>
       <p class="hint">Describe it, or pick a style. Made on this Mac (MusicGen) in about the time it lasts; nothing is uploaded.</p>
       <div id="musicStyles" class="chips"></div>
@@ -328,6 +331,7 @@
 <datalist id="brandColours"></datalist>
 <script src="app.js"></script>
 <script src="layouts.js"></script>
+<script src="viz.js"></script>
 <script src="tour.js"></script>
 <script src="settings.js"></script>
 </body>
