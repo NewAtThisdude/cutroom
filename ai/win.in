@@ -1,0 +1,25 @@
+# The Windows AI pack's packages (ai/setup.ps1), beside torch / torchvision from PyTorch's own index (CUDA 13.2 or CPU build).
+# Locked with every file's SHA-256 into win-cuda.lock / win-cpu.lock (setup.ps1 installs with --require-hashes). Regenerate:
+#   uv pip compile ai/win.in <(echo 'torch==2.14.1+cu132'; echo 'torchvision==0.29.1+cu132') --python-platform x86_64-pc-windows-msvc \
+#     --python-version 3.12 --generate-hashes --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu132 \
+#     --index-strategy unsafe-best-match --exclude-newer 2026-10-30 --no-header -o ai/win-cuda.lock         (cpu: +cpu and /whl/cpu, -o ai/win-cpu.lock)
+numpy
+scipy
+opencv-python
+einops
+matplotlib
+imageio
+imageio-ffmpeg
+transformers
+accelerate
+huggingface_hub
+safetensors
+tqdm
+pillow
+demucs==4.1.0
+pyworld==0.3.5
+hydra-core
+iopath
+kokoro==0.9.4
+misaki[en]==0.9.4
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

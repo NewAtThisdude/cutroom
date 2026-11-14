@@ -25,47 +25,108 @@ Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardwa
 
 ## Install
 
-Needs an Apple Silicon Mac on macOS 14 or later, with [Homebrew](https://brew.sh).
+One line, on a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
+(`cutroom check`), says in plain words what it found, what it will install and why, and installs only the AI pack that
+computer can run. Every file it downloads is pinned to a version and checked by SHA-256 before use, and so is every Python
+package of the AI packs (uv lock files with each file's hash, installed with `--require-hashes`). Three exceptions, all on a
+Mac: Homebrew's `ffmpeg`, `whisper-cpp` and `python` are whatever version Homebrew has (Homebrew checks its own downloads);
+the MLX pack's image model, Z-Image-Turbo, is fetched at its current revision before the 4-bit copy is made; and when Ollama
+is installed, its search model `nomic-embed-text:v1.5` is pulled by tag (Ollama checks the download; the pack only warns
+when it is not the build it was tested with). Everything
+goes into your own folders, with no admin rights, no PATH change and nothing that starts at login.
 
-    brew install ffmpeg whisper-cpp python
-    xcode-select --install        # the Swift compiler, for the app and the Apple Vision helpers
-    git clone <this repository> && cd cutroom
-    ./install.sh                  # checks the tools, fetches the speech models (575 MB, checksummed), builds the app
+    curl -fsSL <url>/install.sh | sh          # Mac
+    irm <url>/install.ps1 | iex               # Windows (PowerShell)
 
-Then open **~/Applications/Cutroom.app**. `./cutroom` opens the same editor in a Chrome app window instead.
+The source is not published yet, so for now `<url>` is wherever the release sits, and the installer needs the source's
+address and hash: `CUTROOM_SRC=<the .tar.gz / .zip>` and `CUTROOM_SRC_SHA256=<its SHA-256>` (a release fills in the
+defaults at the top of both installers). From a copy of the source, `./install.sh` or
+`powershell -ExecutionPolicy Bypass -File install.ps1` does the same with that copy. Run either again at any time to update
+or repair: finished downloads are kept, and an update keeps the installed AI pack.
 
-### Windows 10 / 11 (new)
+**What `cutroom check` looks at, and the AI pack it picks** (`cutroom check` on a Mac, `cutroom.cmd check` on Windows, both
+in the source folder; the same as `python3 -I server.py --check`): the OS, chip and GPU, memory, the video encoder ffmpeg
+can use, the whisper.cpp build, and then:
+
+| This computer | AI pack | What it holds |
+|---|---|---|
+| Apple Silicon Mac | **MLX** (`ai/setup.sh`, ~45 GB to download, ~13 GB kept; the image model only from 12 GB of memory) | Kokoro voices, Chatterbox voice clone and dubbing, Z-Image, SAM 2 + ProPainter, Demucs, MusicGen, RIFE, Real-ESRGAN, Depth Anything, WavLM |
+| Windows PC with an NVIDIA GPU: GTX 16 / RTX 20 or newer, 6 GB+, driver 595+ (CUDA 13.2) | **CUDA** (`ai/setup.ps1 cuda`, ~6.5 GB to download, ~9 GB on disk) | PyTorch 2.14 for CUDA 13.2: Kokoro voices, SAM 2 + ProPainter, Demucs, MusicGen, RIFE, Real-ESRGAN, Depth Anything, WavLM, OpenCV |
+| Other Windows PC with 8 GB+ (or an NVIDIA GPU short of the line above) | **CPU** (`ai/setup.ps1 cpu`, ~1.3 GB to download, ~2.5 GB on disk) | PyTorch for the CPU: Kokoro voices, Demucs (slow), WavLM speaker labels, OpenCV tracking, voice characters |
+| Intel Mac, a PC under 8 GB, Linux | none, with the reason | the editor, captions and exports work without it |
+
+The check prints the reason for its pick ("its 4 GB of video memory is under the 6 GB the GPU models need", "its driver
+supports CUDA 12.4; update the NVIDIA driver ...") and, job by job, what each AI tool will run as on this computer or why
+it can't. **No Windows equivalent yet** (these say "unavailable on this computer yet" on a PC): Chatterbox voice clone and
+AI dubbing (its PyTorch package pins torch 2.6, which has no CUDA 13 build), Z-Image image generation (MLX only here), and
+the Apple Vision tools: remove background, find faces (blur faces, auto reframe), retouch, photo and sticker cut-outs. Also
+Mac-only: the effects pack on the GPU (Metal; a PC renders it with ffmpeg on the CPU) and Photos import. Lip sync, talking
+photo and AI video need ComfyUI and LatentSync on a 24 GB NVIDIA GPU (`ai/gpu_setup.ps1`), not part of any pack. The
+language-model tools (shorts, translation, hook titles, smart search) need [Ollama](https://ollama.com), installed separately.
+
+Settings, as environment variables (they work piped too):
+
+| | Mac | Windows |
+|---|---|---|
+| `CUTROOM_PREFIX`: the installed source, tools, AI pack | `~/.local/share/cutroom` | `%LOCALAPPDATA%\Cutroom` |
+| `CUTROOM_HOME`: the library (media, projects, exports, speech models) | `~/Movies/Cutroom` | `Videos\Cutroom` |
+| `CUTROOM_AI`: `auto`, a pack (`mlx`; `cuda` / `cpu`) or `none` | `auto` | `auto` |
+| `CUTROOM_APP` (Mac): where the app is built, or `none` | `~/Applications/Cutroom.app` | |
+| `CUTROOM_SHORTCUTS` (Windows): where the Start-menu shortcut goes | | the Start menu |
+| `CUTROOM_YES=1`: no questions (Homebrew / winget installs, the AI pack) | | |
+
+For example `curl -fsSL <url>/install.sh | CUTROOM_AI=none sh`, or in PowerShell `$env:CUTROOM_AI='none'; irm <url>/install.ps1 | iex`.
+
+### Mac
+
+Needs macOS 14 or later. The installer uses [Homebrew](https://brew.sh)'s `ffmpeg`, `whisper-cpp` and `python` and offers
+to install the missing ones (Homebrew's current versions, not pinned; Homebrew checks its own downloads); uv (for the AI
+pack's Python) is a pinned download into the prefix. The MLX pack's packages come from `ai/mac.lock` (made from `ai/mac.in`,
+every file's SHA-256, installed with `--require-hashes`); its voice, Demucs and MusicGen models are pinned by revision with
+the weight file checked. It fetches the speech models into the library (575 MB: Whisper large-v3-turbo and Silero VAD; a copy VoiceInk
+already has is used instead), runs the check, installs the MLX pack, and builds **~/Applications/Cutroom.app** when the Swift
+compiler is there (`xcode-select --install`, which the Apple Vision helpers need too). Without it, `cutroom` in the source
+folder opens the same editor in a Chrome app window.
+
+### Windows 10 / 11
 
 Needs Windows 10 1803 or later (for `curl.exe` and `tar.exe`) and Microsoft Edge (every Windows has it; Chrome is used if
-Edge is gone). In PowerShell:
-
-    git clone <this repository> cutroom; cd cutroom
-    powershell -ExecutionPolicy Bypass -File install.ps1
-
-`install.ps1` finds Python 3.10 or newer (and offers `winget install Python.Python.3.13` if there is none), then downloads
-into `%LOCALAPPDATA%\Cutroom\bin`, each file pinned and checked by SHA-256 before use:
+Edge is gone). The installer finds Python 3.10 or newer (and offers `winget install Python.Python.3.13 --scope user` if there
+is none), then downloads into `%LOCALAPPDATA%\Cutroom`, each file pinned and checked by SHA-256:
 - ffmpeg 9.0.2, the [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) "full" build (GPL, 258 MB zip);
 - whisper.cpp 1.9.5: the CUDA 12.4 build (685 MB) when `nvidia-smi` reports a driver for CUDA 12.4 or newer, else the CPU
   build with OpenBLAS (22 MB);
-- the speech models into the library (`Videos\Cutroom\models`): the same Whisper large-v3-turbo and Silero VAD files and
-  hashes as `install.sh`.
+- uv 0.13.6, which builds the AI pack's Python 3.12 environment (uv's own Python goes into the prefix too);
+- the speech models into the library: the same Whisper large-v3-turbo and Silero VAD files and hashes as on the Mac;
+- the AI pack (`ai/setup.ps1`): its packages from `ai/win-cuda.lock` / `ai/win-cpu.lock` (every package file's SHA-256,
+  installed with `--require-hashes`), source tarballs and weights by SHA-256, Hugging Face models at pinned revisions with
+  the weight file checked; into `<source>\ai\.venv`, `<source>\ai\vendor` and `%LOCALAPPDATA%\Cutroom\hf`.
 
-It writes `%LOCALAPPDATA%\Cutroom\cutroom.env` (Python, library, ffmpeg and whisper paths) and a **Cutroom** Start-menu
-shortcut. Nothing is installed system-wide and PATH is not changed: `cutroom.cmd` (or the shortcut) reads that file and
-hands the tools to the server process only, starts the server hidden if `/api/ping` doesn't answer (log:
-`Videos\Cutroom\server.log`), and opens the editor as an Edge app window with its own profile
-(`%LOCALAPPDATA%\Cutroom\edge`). Run `install.ps1` again at any time: finished downloads are kept. `-Prefix`, `-Library`
-and `-Shortcuts` put the tools, the library and the shortcut elsewhere.
+It writes `%LOCALAPPDATA%\Cutroom\cutroom.env` (Python, library, ffmpeg, whisper and model-cache paths) and a **Cutroom**
+Start-menu shortcut. `cutroom.cmd` (or the shortcut) reads that file and hands it to the server process only, starts the
+server hidden if `/api/ping` doesn't answer (log: `Videos\Cutroom\server.log`), and opens the editor as an Edge app window
+with its own profile (`%LOCALAPPDATA%\Cutroom\edge`).
 
-What works on Windows and what doesn't: see [This computer](#every-mac-ai-and-heavy-jobs) and [Limits](#limits-honest).
+What works on Windows and what doesn't: see [This computer](#this-computer-every-mac-and-windows-pcs) and [Limits](#limits-honest).
 
 Without the installer: put an ffmpeg **full** build's `bin` on PATH (the pinned one above) and run
 `python -X utf8 -I server.py`, then open http://127.0.0.1:4610 in Edge or Chrome.
 
+### Uninstall
 
-Optional: `ai/setup.sh` installs the on-device AI tools (voices, image generation, object removal, upscaling and
-more; several GB, each model pinned and checksummed). What each one is and its licence: [THIRD_PARTY.md](THIRD_PARTY.md).
-A few optional models are for non-commercial use only; they are marked there and can be left out.
+Quit Cutroom first. Your library (media, projects, exports) is a separate folder: keep it or delete it yourself.
+- **Mac:** delete the prefix `~/.local/share/cutroom` and `~/Applications/Cutroom.app` (a source copy you ran `./install.sh`
+  from keeps its AI pack in its own `ai/.venv` and `ai/vendor`). The MLX pack's models are in the Hugging Face cache,
+  `~/.cache/huggingface/hub`: the `models--mlx-community--Kokoro-82M-bf16`, `models--mlx-community--chatterbox-multilingual-v3`,
+  `models--mlx-community--S3TokenizerV2`, `models--facebook--musicgen-small`, `models--depth-anything--Depth-Anything-V2-Small-hf`,
+  `models--microsoft--wavlm-base-plus-sv` and `models--adefossez--HTDemucs` folders; the 4-bit image model is in the library
+  (`ai/z-image-turbo-4bit`). `brew uninstall ffmpeg whisper-cpp` if nothing else uses them.
+- **Windows:** delete `%LOCALAPPDATA%\Cutroom` (tools, source, AI pack, its Python and models, the Edge profile) and the
+  Start-menu shortcut: `Remove-Item -Recurse "$env:LOCALAPPDATA\Cutroom", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Cutroom.lnk"`.
+  The library is `Videos\Cutroom`. Python, if the installer added it with winget: Settings > Apps.
+
+The AI models, what each one is and its licence: [THIRD_PARTY.md](THIRD_PARTY.md). A few are for non-commercial use only;
+they are marked there.
 
 ## How it runs
 
@@ -163,10 +224,10 @@ GPU"). The AI tab's **This computer** panel lists the same (`/api/ai/caps`), and
 says roughly how long when it starts.
 
 - **On Windows / Linux PCs** the CUDA and CPU options are **estimates** from the models' published needs, marked so in
-  the panel; none has been measured yet (there is no Windows AI setup script yet, so no PyTorch tool is installed on a
-  PC). Models that run only on MLX (Kokoro voices, Chatterbox voice clone and dubbing, Z-Image image generation) and the
-  Apple Vision tools (remove background, find faces, retouch) say "unavailable on this computer yet" until a CUDA port
-  exists. Lip sync, talking photo and AI video need an NVIDIA GPU with 18-24 GB (ComfyUI / LatentSync installed on
+  the panel; their memory has not been measured yet. The installer's AI pack (`ai/setup.ps1`, see Install) puts the
+  PyTorch tools on a PC; Kokoro voices run there on PyTorch (CUDA or CPU) with the same voices. Models that run only on
+  MLX (Chatterbox voice clone and dubbing, Z-Image image generation) and the Apple Vision tools (remove background, find
+  faces, retouch) say "unavailable on this computer yet" until a port exists. Lip sync, talking photo and AI video need an NVIDIA GPU with 18-24 GB (ComfyUI / LatentSync installed on
   that PC); on a Mac they run only on a GPU PC you opt in to with `CUTROOM_GPU_HOST` (an `~/.ssh/config` alias; off by default).
 - **Simulated computers for tests:** `CUTROOM_PROFILE=mac:8`, `mac:16`, `win:cpu:16`, `win:cuda:12:32` (12 GB NVIDIA GPU,
   32 GB of memory), `win:cuda:24:64` make the server plan as that computer (AI choices, memory limits, the panel); the
@@ -458,10 +519,13 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - `app/Cutroom.swift`, `app/build.sh`: the native app.
 - `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
 - `templates/`: the starter templates (JSON; each one's poster and preview are made on this Mac the first time the gallery shows it).
-- `ai/setup.sh`: installs the on-device AI (venv in `ai/.venv`, gitignored). `ai/remove.py`: the object-removal
+- `ai/setup.sh`: installs the on-device AI on a Mac (venv in `ai/.venv`, gitignored; packages from `ai/mac.lock`, made from
+  `ai/mac.in`, with their hashes); `ai/setup.ps1` the Windows AI pack
+  (CUDA or CPU), its packages pinned with their hashes in `ai/win-cuda.lock` / `ai/win-cpu.lock` (made from `ai/win.in`). `ai/remove.py`: the object-removal
   engine (runs in that venv). `tools/lift.swift`: Vision subject lifting.
 - `cutroom`: the Chrome-window launcher on a Mac (also downloads the VAD model if missing).
-- `install.ps1`, `cutroom.ps1`, `cutroom.cmd`: the Windows installer and launcher (Edge app window).
+- `install.sh` / `install.ps1`: the one-line installers (Mac / Windows); `cutroom.ps1`, `cutroom.cmd`: the Windows launcher
+  (Edge app window). `cutroom check` / `cutroom.cmd check` = `server.py --check`.
 - `tests/browser.mjs`: the browser the UI tests drive (`BROWSER=webkit`, `chromium`, `msedge` or `chrome`; `PLATFORM=Win32`
   makes the page think it runs on Windows).
 
@@ -581,9 +645,14 @@ libass/freetype, and drawing text once in the browser also guarantees the export
   looks a little different than on a Mac; preview and export still match), export, fonts (from the registry), voiceover
   (SAPI voices), Show in Explorer / play, and `--selftest` (passes in about 2 minutes). `install.ps1` downloaded and
   verified every file, a second run downloaded nothing, and the CUDA whisper.cpp build transcribed a test sentence on
-  the GPU (2.9 s; the CPU build 11.6 s). The editor page passes `ui_smoke` and `ui_audit` in Edge there. Not on Windows
-  yet: a Windows AI setup (`ai/setup.ps1`), the Apple Vision tools (remove background, faces, retouch, photo and sticker
-  cut-out), the MLX models (Kokoro voices, Chatterbox clone and dubbing, Z-Image), the effects pack on the GPU (it
+  the GPU (2.9 s; the CPU build 11.6 s). The editor page passes `ui_smoke` and `ui_audit` in Edge there. The one-line
+  installer (`irm ... | iex`, from a local web server) installed into a scratch prefix there, picked the CUDA pack, and a
+  second run downloaded nothing again; after it, an AI voiceover (Kokoro on CUDA, 17 s with the model load), Isolate voice
+  on it (Demucs on CUDA, 6 s) and 4 s of AI music (MusicGen on CUDA, about 20 s) came out of the installed server. The other CUDA pack tools (object removal, cut-outs,
+  slow-mo, upscale, relight, speaker labels) are installed, every file checked, but were not run on footage
+  there; the CPU pack was installed and its voice checked on the same PC (an NVIDIA PC told to use it), not on a PC without
+  an NVIDIA GPU. Not on Windows yet: the Apple Vision tools (remove background, faces, retouch, photo and sticker
+  cut-out), Chatterbox clone and dubbing, Z-Image, the effects pack on the GPU (it
   renders with ffmpeg `geq` on the CPU, 25-150 s per 3 s of 1080p), the Mac app and its Photos import. HEIC photos
   convert with ffmpeg (7.1+), untested with real phone photos; Quick Sync and AMF settings are untested (NVENC was used);
   a GPU encoder refuses tiny frames (under 160 x 64), which go to x264. The wording off the Mac is rewritten by phrase

@@ -16,9 +16,11 @@ import json
 import os
 import select
 import sys
+import time
 from pathlib import Path
 
 KOKORO = 'mlx-community/Kokoro-82M-bf16'
+KOKORO_PT = 'hexgrad/Kokoro-82M'  # the same model and voices for PyTorch (Windows / Linux: ai/setup.ps1 pins it; Apache-2.0)
 out = os.fdopen(os.dup(1), 'w', buffering=1)
 os.dup2(2, 1)  # anything a library prints lands in the log, not in an answer
 sys.stdout = sys.stderr
@@ -72,8 +74,11 @@ def only(name):
 
 
 def voice(req):
-    from mlx_audio.tts.generate import generate_audio
-    from mlx_audio.tts.utils import load_model
+    try:
+        from mlx_audio.tts.generate import generate_audio
+        from mlx_audio.tts.utils import load_model
+    except ImportError:  # no MLX (a PC): Kokoro's PyTorch build
+        return voice_pt(req)
     only('kokoro')
     small_mlx()
     if 'kokoro' not in models:
@@ -83,6 +88,31 @@ def voice(req):
                    file_prefix=base, audio_format='wav', join_audio=True, verbose=False)
     if not os.path.exists(req['out']):  # generate_audio prints its errors instead of raising them
         raise RuntimeError('Kokoro made no audio')
+    return {}
+
+
+def voice_pt(req):
+    """Kokoro-82M on PyTorch (CUDA, else the CPU): the voice prefix picks the language pipeline (a = US English, b = UK...)."""
+    import wave
+    import numpy as np
+    import torch
+    from kokoro import KModel, KPipeline
+    only('kokoro')
+    if 'kokoro' not in models:
+        models['kokoro'] = KModel(repo_id=KOKORO_PT).to('cuda' if torch.cuda.is_available() else 'cpu').eval()
+    lang = req['voice'][0]
+    if models.get('kokoro-lang', ('',))[0] != lang:  # (the G2P only: model=False shares the one loaded above)
+        models['kokoro-lang'] = (lang, KPipeline(lang_code=lang, repo_id=KOKORO_PT, model=False))
+    pipe = models['kokoro-lang'][1]
+    with torch.no_grad():
+        parts = [r.audio.cpu().numpy() for r in pipe(req['text'], voice=req['voice'], speed=req['speed'], model=models['kokoro']) if r.audio is not None]
+    if not parts:
+        raise RuntimeError('Kokoro made no audio')
+    with wave.open(req['out'], 'wb') as w:  # 24 kHz mono, as the MLX build writes
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes((np.clip(np.concatenate(parts), -1, 1) * 32767).astype('<i2').tobytes())
     return {}
 
 
@@ -164,9 +194,28 @@ def relight(req):
 OPS = {'preview': lambda req: remove.preview(req['job']), 'voice': voice, 'clone': clone, 'embed': embed, 'relight': relight}
 
 
+def waiting(idle):
+    """A request (or the end) arrived on stdin within idle seconds. select() can't wait on a pipe on Windows, and a thread
+    blocked reading it there stalls whatever else touches that handle (the server waited 600 s for a voiceover), so Windows
+    peeks at the pipe instead (ponytail: a 50 ms poll while idle)."""
+    if os.name != 'nt':
+        return bool(select.select([sys.stdin], [], [], idle)[0])
+    import _winapi
+    import msvcrt
+    h, end = msvcrt.get_osfhandle(sys.stdin.fileno()), time.monotonic() + idle
+    while time.monotonic() < end:
+        try:
+            if _winapi.PeekNamedPipe(h, 0)[0]:
+                return True
+        except OSError:  # the server closed the pipe: readline() returns the end
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def main(idle):
     while True:
-        if idle and not select.select([sys.stdin], [], [], idle)[0]:
+        if idle and not waiting(idle):
             return
         line = sys.stdin.readline()
         if not line:

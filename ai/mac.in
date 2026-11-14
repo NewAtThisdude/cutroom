@@ -1,0 +1,29 @@
+# The Mac AI pack's packages (ai/setup.sh, Apple Silicon), at the versions of a working pack. Locked with every file's
+# SHA-256 into mac.lock (setup.sh installs with --require-hashes). Regenerate:
+#   MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile ai/mac.in --python-platform aarch64-apple-darwin --python-version 3.12 --generate-hashes \
+#     --exclude-newer 2026-11-08 --no-header -o ai/mac.lock
+mflux==0.24.0
+mlx-audio==0.6.4
+misaki[en]==0.9.4
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+opencv-python==5.0.0.93
+numpy==2.5.4
+torch==2.15.0
+torchvision==0.29.2
+einops==0.8.2
+matplotlib==3.11.2
+imageio==2.38.1
+imageio-ffmpeg==0.8.1
+demucs==4.1.0
+pyworld==0.3.5
+transformers==5.22.2
+accelerate==1.15.0
+huggingface_hub==1.33.0
+# SAM 2's own requirements (it is used from vendor/sam2 through a .pth file, so nothing is built at install time)
+hydra-core==1.3.8
+iopath==0.1.10
+tqdm==4.70.1
+pillow==13.0.0
+# the working pack's versions of two of Kokoro's dependencies
+miniaudio==1.71
+regex==2026.11.7

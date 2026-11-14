@@ -1,7 +1,9 @@
 # Third-party software, models and assets
 
 Cutroom's own code is licensed under the GNU General Public License v3.0 or later (see LICENSE). It ships very little that isn't its own; most of what is listed here is
-downloaded by `install.sh`, `ai/setup.sh` or the app on first use, each at a pinned version with a SHA-256 check.
+downloaded by `install.sh`, `ai/setup.sh` or the app on first use, each at a pinned version with a SHA-256 check (except
+Homebrew's tools, at Homebrew's current versions, Z-Image-Turbo, fetched at its current revision, and Ollama's
+nomic-embed-text:v1.5, pulled by tag).
 Nothing here is needed to cut, grade, caption-edit or export; the optional AI tools are what pull the models.
 
 ## In this repository
@@ -16,12 +18,23 @@ Nothing here is needed to cut, grade, caption-edit or export; the optional AI to
 
 ffmpeg (LGPL/GPL depending on the build), whisper.cpp (MIT), Ollama (MIT), Python.
 
-## Downloaded by `install.sh`
+## Downloaded by `install.sh` / `install.ps1`
 
-| Model | Licence |
+| Model or tool | Licence |
 |---|---|
 | Whisper large-v3-turbo, ggml q5 (OpenAI, via ggerganov/whisper.cpp) | MIT |
 | Silero VAD v5.1.2 (ggml-org/whisper-vad) | MIT |
+| uv 0.13.6 (Astral): builds the AI pack's Python environment | MIT or Apache-2.0 |
+| Windows only: ffmpeg 9.0.2 "full" build (gyan.dev) | GPL-3.0 |
+| Windows only: whisper.cpp 1.9.5 (CUDA or OpenBLAS build) | MIT |
+
+## Downloaded by `ai/setup.ps1` (the Windows AI pack)
+
+The same models as below, as PyTorch builds where the Mac uses MLX: Kokoro-82M (hexgrad/Kokoro-82M with the `kokoro` and
+`misaki` packages and spaCy's `en_core_web_sm`; Apache-2.0, MIT), Demucs htdemucs (adefossez/HTDemucs, MIT), WavLM Base Plus
+SV, and on the CUDA pack SAM 2.1, ProPainter (**non-commercial**), MusicGen small (**weights non-commercial**), RIFE 4.25,
+Real-ESRGAN and Depth Anything V2 Small, with PyTorch (BSD-3-Clause) and the packages pinned in `ai/win-cuda.lock` /
+`ai/win-cpu.lock`. Not on Windows: Chatterbox, S3TokenizerV2 and Z-Image.
 
 ## Downloaded by `ai/setup.sh` (optional on-device AI)
 

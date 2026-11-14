@@ -5,21 +5,47 @@
 # The language-model features (shorts, caption translation, hook titles) use Ollama: brew install ollama; then
 # ollama pull qwen3.5:9b (16 GB of memory or more) or qwen3.5:4b-q4_K_M (8-12 GB Macs: 3.4 GB loaded; plain qwen3.5:4b is
 # an nvfp4 MLX build that takes 4.2 GB). Cutroom picks the biggest that fits.
+# Pinned: the Python packages from mac.lock (each file's SHA-256, installed with --require-hashes; made from mac.in), the voice,
+# Demucs and MusicGen models at fixed Hugging Face revisions with the weight file checked, repos at fixed commits, weights by
+# SHA-256. Not pinned: Z-Image-Turbo (mflux-save fetches the current revision before it makes the 4-bit copy) and Ollama's
+# nomic-embed-text:v1.5 (pulled by tag; a warning below when it is not the tested build).
 set -eu
 cd "$(dirname "$0")"
-env -u PYTHONPATH uv venv --python 3.12 .venv
-env -u PYTHONPATH uv pip install --python .venv/bin/python mflux mlx-audio "misaki[en]" opencv-python numpy
-# voice model + spaCy's English model (misaki installs it through uv on first use, so the venv must be active)
+[ -x .venv/bin/python ] || env -u PYTHONPATH uv venv --python 3.12 .venv  # a re-run (update, retry) keeps it
+env -u PYTHONPATH uv pip install --python .venv/bin/python --require-hashes -r mac.lock
+# Hugging Face models at pinned revisions, the weight file checked; refs/main is set to that revision so the code that asks for
+# "main" (mlx-audio's Kokoro, Demucs, MusicGen) finds this copy offline (the server runs the AI with HF_HUB_OFFLINE=1)
+env -u PYTHONPATH .venv/bin/python -I -c "
+import hashlib, pathlib
+from huggingface_hub import constants, snapshot_download
+for repo, rev, pats, f, sha in [
+        ('mlx-community/Kokoro-82M-bf16', 'a71e4d38b236d968966a2002c4c895dbd12b1c3c', ['config.json', 'kokoro-v1_0.safetensors', 'voices/*'],
+         'kokoro-v1_0.safetensors', '4e9ecdf03b8b6cf906070390237feda473dc13327cb8d56a43deaa374c02acd8'),
+        ('adefossez/HTDemucs', 'cbc8a9b1a87023b7fd74e7b3412e6321c0eab003', ['htdemucs.yaml', '955717e8.safetensors'], '955717e8.safetensors',
+         'd9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd'),
+        ('facebook/musicgen-small', '4c8334b02c6ec4e8664a91979669a501ec497792', ['*.json', 'model.safetensors', 'spiece.model'], 'model.safetensors',
+         '1bdc99d43eb6c775967df24b65b0a9f847c0907e95664698d93b5a1c35f5090d')]:
+    d = snapshot_download(repo, revision=rev, allow_patterns=pats)
+    h = hashlib.sha256()
+    with open(f'{d}/{f}', 'rb') as fh:
+        for b in iter(lambda: fh.read(1 << 24), b''):
+            h.update(b)
+    assert h.hexdigest() == sha, (repo, f, h.hexdigest())
+    ref = pathlib.Path(constants.HF_HUB_CACHE) / ('models--' + repo.replace('/', '--')) / 'refs' / 'main'
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_text(rev)
+    print('ok', repo)"
+# the voice check (spaCy's English model is in mac.lock, so misaki has nothing to fetch)
 out=$(mktemp -d)
-env -u PYTHONPATH VIRTUAL_ENV="$PWD/.venv" PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -I -m mlx_audio.tts.generate \
+env -u PYTHONPATH HF_HUB_OFFLINE=1 VIRTUAL_ENV="$PWD/.venv" PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -I -m mlx_audio.tts.generate \
   --model mlx-community/Kokoro-82M-bf16 --text "Cutroom voices are ready." --voice af_heart --lang_code a \
   --output_path "$out" --file_prefix check --audio_format wav --join_audio
 # image model: quantize once to 4-bit (loading the full model every time swaps a 36 GB Mac), then drop the originals.
 # Skipped below 12 GB of memory: the 4-bit copy alone is 5.5 GB, and Cutroom refuses to run it there anyway.
 ram=$(( $(sysctl -n hw.memsize) / 1073741824 ))
 if [ "$ram" -ge 12 ]; then
-env -u PYTHONPATH .venv/bin/mflux-save --model z-image-turbo --quantize 4 --path "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit"
-test -f "$HOME/Movies/Cutroom/ai/z-image-turbo-4bit/mflux_model.json"
+env -u PYTHONPATH .venv/bin/mflux-save --model z-image-turbo --quantize 4 --path "${CUTROOM_HOME:-$HOME/Movies/Cutroom}/ai/z-image-turbo-4bit"
+test -f "${CUTROOM_HOME:-$HOME/Movies/Cutroom}/ai/z-image-turbo-4bit/mflux_model.json"
 env -u PYTHONPATH .venv/bin/python -I -c "
 from huggingface_hub import scan_cache_dir
 c = scan_cache_dir()
@@ -34,10 +60,10 @@ mkdir -p vendor
 git -C vendor/sam2 checkout -q 2b90b9f5ceec907a1c18123530e92e794ad901a4
 [ -d vendor/ProPainter ] || git clone -q https://github.com/sczhou/ProPainter.git vendor/ProPainter
 git -C vendor/ProPainter checkout -q 326782529a63d997cab80ab21439b92ed422b3d3
-env -u PYTHONPATH uv pip install --python .venv/bin/python torchvision einops matplotlib imageio imageio-ffmpeg demucs
-# voice characters elf / giant / monster / alien (ai/voicefx.py): WORLD vocoder, pyworld 0.3.5 (MIT; WORLD itself modified BSD)
-env -u PYTHONPATH uv pip install --python .venv/bin/python pyworld==0.3.5
-SAM2_BUILD_CUDA=0 SAM2_BUILD_ALLOW_ERRORS=1 env -u PYTHONPATH uv pip install --python .venv/bin/python -e vendor/sam2  # the PyPI "sam2" is a fork
+# Their Python packages are in mac.lock, with Demucs and pyworld 0.3.5 (the WORLD vocoder for the voice characters elf / giant /
+# monster / alien, ai/voicefx.py: MIT; WORLD itself modified BSD). SAM 2 is used from its folder through a .pth file (the PyPI
+# "sam2" is a fork): without its CUDA extension it is plain Python, so nothing is built
+echo "$PWD/vendor/sam2" > "$(env -u PYTHONPATH .venv/bin/python -I -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/cutroom-sam2.pth"
 fetch() { [ -f "$2" ] || curl -sSfL -o "$2" "$1"; echo "$3  $2" | shasum -a 256 -c -; }
 fetch https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt vendor/sam2/checkpoints/sam2.1_hiera_small.pt \
   6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38
@@ -45,13 +71,12 @@ PP=https://github.com/sczhou/ProPainter/releases/download/v0.1.0
 fetch $PP/ProPainter.pth vendor/ProPainter/weights/ProPainter.pth 12c070c4b48f374c91d8a2a17851140b85c159621080989f9e191bbc18bd6591
 fetch $PP/recurrent_flow_completion.pth vendor/ProPainter/weights/recurrent_flow_completion.pth 22939a1a7900da878dbe1ccd011d646b1bfb30b8290039d8ff0e0c2fefbfd283
 fetch $PP/raft-things.pth vendor/ProPainter/weights/raft-things.pth fcfa4125d6418f4de95d84aec20a3c5f4e205101715a79f193243c186ac9a7e1
-# Isolate / remove voice: Demucs (htdemucs) fetches its weights from Hugging Face on first use; do it now
+# Isolate / remove voice: Demucs (htdemucs, its weights pinned above), checked once on the GPU
 tmp=$(mktemp -d)
 env -u PYTHONPATH .venv/bin/python -I -c "import wave; w = wave.open('$tmp/s.wav', 'wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(bytes(4 * 44100)); w.close()"
-env -u PYTHONPATH PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
-# AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use), through transformers (already in the venv)
-env -u PYTHONPATH .venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/musicgen-small', allow_patterns=['*.json', 'model.safetensors', 'spiece.model'])"
-# ... and its half-precision copy (vendor/musicgen-small-fp16): music.py loads it straight onto the GPU, 2.4 GB peak instead of 4.2+
+env -u PYTHONPATH HF_HUB_OFFLINE=1 PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -I -m demucs --two-stems vocals -d mps -o "$tmp" "$tmp/s.wav" > /dev/null
+# AI music: MusicGen small (Meta; weights CC-BY-NC 4.0: personal use; pinned above), through transformers, and its half-precision
+# copy (vendor/musicgen-small-fp16): music.py loads it straight onto the GPU, 2.4 GB peak instead of 4.2+
 env -u PYTHONPATH HF_HUB_OFFLINE=1 .venv/bin/python -I -c "import sys; sys.path.insert(0, '.'); import music, torch; music.load(torch.device('mps'))"
 # AI enhance (ai/enhance.py, PyTorch on the GPU): RIFE 4.25 frame interpolation for Smooth slow-mo (Practical-RIFE by hzwer,
 # MIT; the model file from HolyWu's vs-rife, MIT, pinned commit; weights from its release), Real-ESRGAN general x4v3 + its

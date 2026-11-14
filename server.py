@@ -1777,8 +1777,8 @@ AI_RUN = [str(AI_PY), *(['-X', 'utf8'] if WIN else []), '-I']  # (-I ignores PYT
 MPS_CAP = max(0.5 * min(RAM_GB, 16), 0.45 * 0.78 * RAM_GB) / (0.78 * REAL_GB)
 AI_ENV = {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'VIRTUAL_ENV': str(AI_DIR / '.venv'), 'PATH': f"{AI_BIN}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
           **({'PYTORCH_MPS_HIGH_WATERMARK_RATIO': f'{MPS_CAP:.3f}', 'PYTORCH_MPS_LOW_WATERMARK_RATIO': f'{MPS_CAP * 0.78:.3f}'} if MAC else {})}
-KOKORO = 'mlx-community/Kokoro-82M-bf16'
-HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
+KOKORO = 'mlx-community/Kokoro-82M-bf16' if MAC else 'hexgrad/Kokoro-82M'  # MLX on a Mac, PyTorch elsewhere (ai/worker.py): same voices
+HUB = Path(os.environ['HF_HUB_CACHE']) if os.environ.get('HF_HUB_CACHE') else Path(os.environ.get('HF_HOME') or Path.home() / '.cache' / 'huggingface') / 'hub'
 # ---------- what every AI / heavy job needs, on every Apple Silicon Mac (8 to 36+ GB) and on Windows / Linux PCs: this one table ----------
 # kind: (what, unit of the time estimate, tiers best first). A tier: (what it needs, the size it runs at, budget GB, seconds per
 # unit, knobs the job reads). What it needs: a number = an Apple Silicon Mac with that much memory (MPS / MLX / Metal / Neural
@@ -1792,7 +1792,8 @@ HUB = Path.home() / '.cache' / 'huggingface' / 'hub'
 # are the ones its code expects on the RTX 4090 PC. Kinds in LIGHT skip the queue (CPU only, tiny).
 AI_BUDGET = {
     'image': ('Generate an image', 'image', [(12, 'Z-Image-Turbo 4-bit (MLX), up to 1024 px, 8 steps', 9.0, 48, {})]),  # MLX only: NOT_YET
-    'voice': ('AI voiceover', 's of speech', [(0, 'Kokoro-82M bf16 (MLX)', 2.0, 0.8, {})]),
+    'voice': ('AI voiceover', 's of speech', [(0, 'Kokoro-82M bf16 (MLX)', 2.0, 0.8, {}), (('cuda', 2, 8), 'Kokoro-82M (PyTorch, CUDA)', 2.0, 0.3, {}),
+                                              (('cpu', 0, 4), 'Kokoro-82M (PyTorch, CPU)', 2.0, 1.5, {})]),
     'clone': ('Voice clone, AI dubbing', 's of speech', [(17, 'Chatterbox multilingual (MLX, full precision) + WavLM check', 7.0, 1.0, {}),  # 6.3 GB measured at 36
                                                          (0, 'Chatterbox multilingual (MLX, bf16 copy) + WavLM check', 3.5, 1.0, {})]),
     'captions': ('Auto captions, transcript', 's of sound', [(0, 'whisper.cpp large-v3-turbo (Metal) + Silero VAD', 1.5, 0.2, {}),
@@ -1847,7 +1848,7 @@ AI_BUDGET = {
     'video': ('AI video (image to video)', 'clip', [(('cuda', 24, 32), 'Wan 2.2 I2V 14B fp8 + Lightning 4 steps, 720p, 5 s (ComfyUI)', 22.0, 150, {})]),
 }
 REMOTE = {'lipsync', 'talk', 'video'}  # kinds the GPU PC can run instead (opt-in: CUTROOM_GPU_HOST)
-NOT_YET = {'image': 'its model runs on MLX', 'voice': 'Kokoro runs on MLX', 'clone': 'Chatterbox runs on MLX',
+NOT_YET = {'image': 'its model runs on MLX', 'clone': 'Chatterbox runs on MLX',
            'matte': "it uses Apple's Vision framework", 'faces': "it uses Apple's Vision framework", 'retouch': "it uses Apple's Vision framework"}
 AI_ROOM = RAM_GB - 4  # what one AI job may peak at: macOS and the editor keep ~4 GB (tests/allmacs.mjs holds every job to it)
 LIGHT = {'beats', 'track', 'proxy4k'}  # CPU / media engine only: never queued (proxies have their own PREP limit)
@@ -2373,7 +2374,7 @@ def ai_music(st, prompt, dur=20, seed=None):
 
 
 def ai_voices():
-    return sorted({f.stem for f in (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').glob('*/voices/*.safetensors')})
+    return sorted({f.stem for f in (HUB / f"models--{KOKORO.replace('/', '--')}" / 'snapshots').glob('*/voices/*.*')})  # .safetensors (MLX) / .pt
 
 
 def ai_voice(st, text, voice='af_heart', speed=1.0):
@@ -3098,8 +3099,8 @@ def ollama_up():
     return False
 
 
-LLM_MAX_B = tier('llm')['knobs']['b']  # billions of parameters that fit beside the editor (AI_BUDGET): 9B takes 6.6 GB
-LLM_HINT = f"ollama pull qwen3.5:{tier('llm')['knobs'].get('tag', f'{LLM_MAX_B}b')}"
+LLM_MAX_B = tier('llm').get('knobs', {}).get('b', 0)  # billions of parameters that fit beside the editor (AI_BUDGET): 9B takes 6.6 GB; 0 = none
+LLM_HINT = f"ollama pull qwen3.5:{tier('llm').get('knobs', {}).get('tag', f'{LLM_MAX_B or 4}b')}"  # (a PC under 16 GB without a GPU: refused, it was a KeyError at start)
 
 
 def llm_model():
@@ -7153,7 +7154,7 @@ def check_profiles():
         ('mac:8', 'remove'): ('apple', 'SAM 2.1 small outline + aligned copy'), ('mac:16', 'remove'): ('apple', 'SAM 2.1 small + ProPainter 512 px'),
         ('mac:36', 'remove'): ('apple', 'SAM 2.1 small + ProPainter 720 px'), ('mac:16', 'llm'): ('apple', 'qwen3.5:9b (Ollama, Q4), unloaded at once'),
         ('mac:16', 'video'): 'AI video (image to video) needs an NVIDIA GPU with 24 GB',
-        ('win:cpu:16', 'voice'): 'AI voiceover needs Apple Silicon (Kokoro runs on MLX): unavailable on this computer yet, until a CUDA port exists',
+        ('win:cpu:16', 'voice'): ('cpu', 'Kokoro-82M (PyTorch, CPU)'), ('win:cuda:12:32', 'voice'): ('cuda', 'Kokoro-82M (PyTorch, CUDA)'),
         ('win:cpu:16', 'matte'): "Remove background needs Apple Silicon (it uses Apple's Vision framework): unavailable on this computer yet",
         ('win:cpu:16', 'remove'): 'Remove object (Best) needs Apple Silicon or an NVIDIA GPU',
         ('win:cpu:16', 'llm'): ('cpu', 'qwen3.5:4b-q4_K_M (Ollama) on the CPU'), ('win:cpu:16', 'captions'): ('cpu', 'whisper.cpp large-v3-turbo (CPU)'),
@@ -7182,6 +7183,93 @@ def check_profiles():
     far = profile_choices('mac:16', 'win4090')  # the GPU PC opted in: a Mac sends the big video models there, nothing else
     assert [k for k, t in far.items() if t.get('backend') == 'remote'] == ['lipsync', 'talk', 'video'], far
     print('profiles ok: every simulated computer gets its backend per job or the plain reason; the GPU PC only when opted in')
+    for spec, pack in (('mac:8', 'mlx'), ('win:cpu:16', 'cpu'), ('win:cpu:4', 'none'), ('win:cuda:4:16', 'cpu'), ('win:cuda:12:32', 'cuda')):
+        assert ai_pack(sim_profile(REAL, spec), '')[0] == pack, (spec, ai_pack(sim_profile(REAL, spec), ''))
+    print('ai packs ok: Apple Silicon gets MLX, an NVIDIA GPU with 6 GB+ CUDA, other PCs the CPU pack or none, with the reason')
+
+
+# what install.sh / install.ps1 put on a computer (ai_pack picks one): the script, its download size and what it holds
+AI_PACKS = {'mlx': ('ai/setup.sh', '~45 GB to download, ~13 GB kept', 'MLX and PyTorch on the Apple GPU: Kokoro voices, Chatterbox voice clone and '
+                    'dubbing, Z-Image image generation (12 GB+ Macs), SAM 2 + ProPainter object removal, Demucs, MusicGen, RIFE, Real-ESRGAN, '
+                    'Depth Anything, WavLM speaker labels, the CC0 sound library'),
+            'cuda': ('ai/setup.ps1 cuda', '~6.5 GB to download, ~9 GB on disk', 'PyTorch for CUDA: Kokoro voices, SAM 2 + ProPainter object removal and cut-outs, Demucs, MusicGen, '
+                     'RIFE slow-mo, Real-ESRGAN upscale, Depth Anything relight, WavLM speaker labels, OpenCV tracking, the CC0 sound library'),
+            'cpu': ('ai/setup.ps1 cpu', '~1.3 GB to download, ~2.5 GB on disk', 'PyTorch for the CPU: Kokoro voices, Demucs voice isolation (slow), WavLM speaker labels, OpenCV '
+                    'tracking, the voice characters, the CC0 sound library'),
+            'none': ('', '0', 'no AI pack')}
+
+
+def nvidia_cuda():
+    """The CUDA version the NVIDIA driver supports (13.2), from nvidia-smi's header; 0 without one."""
+    m = re.search(r'CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)', quiet(['nvidia-smi']))
+    return int(m[1]) + int(m[2]) / 10 if m else 0  # ponytail: minor < 10 (13.2 -> 13.2); CUDA has never had a 2-digit minor
+
+
+def ai_pack(P, want=None):
+    """(pack, reason): the AI pack this computer can run. Apple Silicon: MLX. An NVIDIA GPU (Turing or newer, 6 GB+, a driver for
+    CUDA 13.2: the PyTorch 2.14 build ai/setup.ps1 installs): CUDA. Another Windows PC with 8 GB+: the light CPU pack. CUTROOM_AI (want) overrides it
+    with a pack this OS has; 'none' always works."""
+    os_, g, ram = P['os'], P['gpu'], P['ram']
+    want = os.environ.get('CUTROOM_AI', '') if want is None else want
+    ok = {'mac': ('mlx', 'none'), 'win': ('cuda', 'cpu', 'none')}.get(os_, ('none',))
+    if want in ok:
+        return want, f'chosen with CUTROOM_AI={want}'
+    if g.get('vendor') == 'apple':
+        return 'mlx', f'Apple Silicon with {ram:.0f} GB: the MLX pack runs on its GPU and Neural Engine' + (
+            ' (without the image model: it needs 12 GB)' if ram < 12 else '')
+    if os_ != 'win':
+        return 'none', ('an Intel Mac: the AI pack needs Apple Silicon' if os_ == 'mac' else 'there is no AI pack for Linux yet')
+    if g.get('vendor') == 'nvidia':
+        vram, cc, drv = g.get('vram') or 0, float(g.get('cc') or 7.5), 99 if P['sim'] else nvidia_cuda()
+        why = ('' if vram >= 6 else f'its {vram:.0f} GB of video memory is under the 6 GB the GPU models need') or (
+            '' if cc >= 7.5 else f'it is older than Turing (compute {cc}): CUDA 13 needs a GTX 16 / RTX 20 or newer') or (
+            '' if drv >= 13.2 else f'its driver supports CUDA {drv or "?"}; update the NVIDIA driver (CUDA 13.2+, version 595 or newer) for the CUDA pack')
+        if not why:
+            return 'cuda', f"{g['name']} with {vram:.0f} GB (compute {cc}, driver for CUDA {'13.2+' if drv == 99 else drv}): the CUDA pack"
+        why = f"{g['name']}: {why}; "
+    else:
+        why = 'no NVIDIA GPU; '
+    return ('cpu', why + 'the light CPU pack (the GPU-only tools stay off)') if ram >= 8 else ('none', why + f'and {ram:.0f} GB of memory is too little for AI')
+
+
+def check():
+    """server.py --check (cutroom check; install.sh / install.ps1 run it): this computer in plain words, what the installer puts
+    on it and why, and what each AI tool will run as here. The last line, 'pack: <name>', is what the installers read."""
+    import platform
+    P = PROFILE
+    g, osname = P['gpu'], {'mac': f'macOS {platform.mac_ver()[0]}', 'win': f'Windows {platform.release()} (build {platform.version()})'}.get(P['os'], platform.platform())
+    if P['os'] != REAL['os']:
+        osname = {'mac': 'macOS', 'win': 'Windows'}.get(P['os'], P['os'])
+    fam = {'videotoolbox': 'the Apple media engine', 'nvenc': 'the NVIDIA encoder', 'qsv': 'Intel Quick Sync', 'amf': 'the AMD encoder'}
+    hw = next((v for k, v in fam.items() if ENC['h264'].endswith(k)), None)
+    wb = {'metal': 'Metal', 'cuda': 'CUDA', 'vulkan': 'Vulkan', 'cpu': 'CPU'}.get(whisper_build())
+    pack, why = ai_pack(P)
+    script, size, holds = AI_PACKS[pack]
+    keep = globals()['PROFILE']
+    globals()['PROFILE'] = {**P, 'backends': ['cpu']} if pack == 'cpu' else P  # the CPU pack has no CUDA PyTorch, whatever the GPU
+    try:
+        jobs = [tier(k) for k in AI_BUDGET]
+    finally:
+        globals()['PROFILE'] = keep
+    print('Cutroom check: this computer, and what the installer puts on it' + (f' (simulated: {P["sim"]})' if P['sim'] else ''))
+    print(f"  System    {osname}, {P['arch']}, {P['cores']} cores, {P['ram']:.0f} GB of memory")
+    print(f"  GPU       {g.get('name') or 'none found'}" + (f", {g['vram']:.0f} GB" if g.get('vram') else f", {g['cores']} GPU cores sharing the memory" if g.get('cores') else ''))
+    print('  Video     ' + ('ffmpeg is not installed yet' if not shutil.which('ffmpeg') else
+                          f"encodes on {hw} ({ENC['h264']}, {ENC['hevc']})" if hw else 'encodes on the CPU (x264 / x265): no hardware encoder answered')
+          + (f', decodes with {HWACCEL}' if HWACCEL else ''))
+    print('  Captions  ' + (f'whisper.cpp ({wb} build)' if wb else 'whisper.cpp is not installed yet')
+          + ('' if Path(MODEL).exists() else ', speech model not downloaded yet'))
+    print(f"  AI        {pack.upper() if pack != 'none' else 'no'} pack: {why}")
+    print('\nWhat gets installed, and why')
+    print('  - the editor (Python standard library), ffmpeg and whisper.cpp: needed for everything; the speech models (575 MB): auto captions')
+    print('  - AI pack: ' + (f'{script} ({size}): {holds}' if script else 'none, so the editor, captions and exports work and the AI tools stay off'))
+    print('  - not installed: Ollama (shorts, translation, hook titles, smart search): from ollama.com, if you want those')
+    if pack == 'cuda':
+        print('  - not installed: LatentSync and ComfyUI (lip sync, talking photo, AI video, 18-24 GB GPUs): ai/gpu_setup.ps1')
+    print('\nAI tools on this computer' + (' once the pack is installed' if script else ' with an AI pack (none is being installed)'))
+    for t in jobs:
+        print(f"  - {t['what']}: " + (f"no, {t['refused'][len(t['what']) + 1:]}" if 'refused' in t else t['size']))
+    print(f'pack: {pack}')
 
 
 def selftest():
@@ -8306,6 +8394,8 @@ def main():
         return selftest()
     if '--profiles' in sys.argv:  # what each simulated computer runs, job by job
         return check_profiles()
+    if '--check' in sys.argv:  # cutroom check: this computer in plain words and the AI pack the installers pick
+        return check()
     if '--packs' in sys.argv:  # ai/setup.sh: the CC0 sound and music library, downloaded once into this library
         r = install_packs({})
         print(f"{r['items']} sounds and tracks in {HOME / 'packs'}" + ''.join(f'\n  left out: {s}' for s in r['skipped']))
