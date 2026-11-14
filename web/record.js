@@ -181,8 +181,9 @@ async function rcRun(r) {
   r.recs = [];
   if (r.screen) r.recs.push({ kind: 'screen', rec: rcRecorder(r.screen, 10e6) });
   if (cam) r.recs.push({ kind: 'camera', rec: rcRecorder(cam, 4e6) });
-  r.T0 = performance.now();
+  r.T0 = performance.now(); r.wall0 = Date.now();
   for (const x of r.recs) x.rec.mr.start(1000);
+  if (r.screen && o.screen !== 'window') r.cur = api('/api/cursor', { on: true, t0: r.wall0 }).catch(() => null); // auto zoom's data (a window's place on the screen isn't known)
   r.ts = A.getOutputTimestamp();
   r.phase = 'rec';
   r.screen?.getVideoTracks()[0]?.addEventListener('ended', () => rcStop(r)); // "Stop sharing" in the system's bar
@@ -207,6 +208,7 @@ function rcEnd(r, msg) { // let go of every device; the Mac app shows its window
   for (const s of [r.screen, r.user]) s?.getTracks().forEach(t => t.stop());
   r.mic?.src.disconnect(); r.mic?.node.disconnect();
   clearInterval(r.timer);
+  if (r.cur) { r.cur = null; api('/api/cursor', { on: false }).catch(() => {}); }
   RC_APP()?.postMessage(false);
   if (RC === r) RC = null;
   if (msg) { closeModal(); toast(msg); }
@@ -227,6 +229,8 @@ async function rcStop(r) {
       parts.push({ media: m.id, kind: x.kind, lead: m.lead || 0, dur: m.duration, w: m.w, h: m.h });
     }
     if (r.mic) parts.push(await rcMicTake(r, `${name} mic`));
+    const sp = parts.find(p => p.kind === 'screen');
+    if (r.cur && sp) await rcCursorSave(r, sp).catch(() => {}); // (a recording without it still lands, without auto zoom)
     await loadMedia();
     rcStop.last = { ...rcStop.last, T0: r.T0, O: rcPlace(parts, r.crop) }; // (for tests: the timeline time of the recorders' start)
     rcEnd(r);
@@ -286,6 +290,93 @@ function rcPlace(parts, crop) { // one undo step: the screen (else the camera) a
   renderAll();
   return rcPlace.O;
 }
+async function rcCursorSave(r, sp) { // the pointer during the take (server.py cursor_poll) -> the screen file's cursor track, in its time and frame (0..1)
+  r.cur = null;
+  const c = await api('/api/cursor', { on: false }), st = r.screen.getVideoTracks()[0]?.getSettings() || {}, a = (st.width || 16) / (st.height || 9);
+  const s = (c.screens || []).reduce((b, q) => (!b || Math.abs(q[2] / q[3] - a) < Math.abs(b[2] / b[3] - a) - 1e-3 ? q : b), null); // the recorded screen: the first of its shape
+  if (!s || !c.pts?.length) return; // ponytail: two screens of one shape -> the main one; the picker doesn't say which was picked
+  const at = (t, x, y) => [+(t - sp.lead).toFixed(4), +((x - s[0]) / s[2]).toFixed(5), +((y - s[1]) / s[3]).toFixed(5)];
+  await api(`/api/cursor/${sp.media}`, { track: { pts: c.pts.map(p => at(...p)), ev: c.ev.map(([t, k, x, y]) => { const [T, u, v] = at(t, x, y); return [T, k, u, v]; }) } });
+}
+// ---------- auto zoom: a screen recording zooms in toward clicks and typing, follows the cursor, zooms out when it rests or leaves ----------
+// The result is plain keyframes on the clip (scale, x, y): editable, one undo step, drawn by the transform every clip uses (preview == export).
+const AZ = () => { try { return { amount: 2, smooth: 0.5, ...JSON.parse(store.get('cutroom.az') || '{}') }; } catch { return { amount: 2, smooth: 0.5 }; } };
+function azPanel(c) { // the inspector's section, for a screen recording with a cursor track
+  const o = AZ(), r = (id, v, min, max, st, out) => `<input id="${id}" type="range" min="${min}" max="${max}" step="${st}" value="${v}" style="--p:${((v - min) / (max - min)) * 100}%"><output>${out}</output>`;
+  return `<h4>Auto zoom</h4><p class="hint">Zooms in toward clicks and typing, follows the cursor, and zooms out when it rests or moves away. Makes keyframes you can edit.</p>
+    <label class="row"><span>Zoom</span>${r('azAmt', o.amount, 1.25, 3, 0.05, `${o.amount}×`)}</label>
+    <label class="row"><span>Smoothness</span>${r('azSmooth', o.smooth, 0, 1, 0.05, `${Math.round(o.smooth * 100)}%`)}</label>
+    <div class="actions"><button data-act="autozoom">Auto zoom</button></div>`;
+}
+function azKeyframes(c, m, tr, amount = 2, smooth = 0.5) { // the clip's cursor track -> { kf, zooms }; amount 1.25-3, smooth 0-1
+  const cr = c.crop || {}, fx = 1 - (cr.l || 0) - (cr.r || 0), fy = 1 - (cr.t || 0) - (cr.b || 0), sp = c.speed || 1, D = (c.out - c.in) / sp;
+  const loc = (t, u, v) => [(t - c.in) / sp, (u - (cr.l || 0)) / fx, (v - (cr.t || 0)) / fy]; // file time and frame -> clip time and the clip's (cropped) picture
+  const pts = tr.pts.map(p => loc(...p)).sort((a, b) => a[0] - b[0]);
+  const ev = tr.ev.map(([t, , u, v]) => loc(t, u, v)).filter(e => e[0] >= 0 && e[0] <= D && e[1] >= 0 && e[1] <= 1 && e[2] >= 0 && e[2] <= 1).sort((a, b) => a[0] - b[0]);
+  if (!ev.length || pts.length < 2) return { kf: null, zooms: [] };
+  const R = 0.35 + 0.9 * smooth, SIG = 0.1 + 0.5 * smooth, IDLE = 1.2, FAR = 0.6 / amount, ss = u => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+  const end = (T, u, v) => { // a zoom lasts until the cursor rests IDLE s, or leaves the view around the event
+    let moved = T, prev = null;
+    for (const p of pts) {
+      if (p[0] <= T) { prev = p; continue; }
+      if (prev && Math.hypot(p[1] - prev[1], p[2] - prev[2]) > 0.002) moved = p[0];
+      if (p[0] - moved >= IDLE || Math.abs(p[1] - u) > FAR || Math.abs(p[2] - v) > FAR) return Math.min(D, p[0]);
+      prev = p;
+    }
+    return D;
+  };
+  const zooms = [];
+  for (const [T, u, v] of ev) {
+    const z = zooms.at(-1);
+    if (z && T <= z.b + 2 * R) z.b = Math.max(z.b, end(T, u, v)); // close after the last one: stays in and pans
+    else zooms.push({ a: T, u, v, b: end(T, u, v) });
+  }
+  const sm = T => { // the cursor, smoothed both ways in time (no lag): what the view follows
+    let su = 0, sv = 0, sw = 0;
+    for (const p of pts) { const d = p[0] - T; if (d < -3 * SIG) continue; if (d > 3 * SIG) break; const w = Math.exp(-(d * d) / (2 * SIG * SIG)); su += w * p[1]; sv += w * p[2]; sw += w; }
+    if (sw) return [su / sw, sv / sw];
+    const p = pts.reduce((b, q) => (Math.abs(q[0] - T) < Math.abs(b[0] - T) ? q : b));
+    return [p[1], p[2]];
+  };
+  const W = P.w, H = P.h, mw = m.w * fx, mh = m.h * fy, s1 = (c.fit === 'fill' ? Math.max : Math.min)(W / mw, H / mh), bs = c.scale ?? 1, bx = c.x ?? 0, by = c.y ?? 0;
+  const wb = mw * s1 * bs, hb = mh * s1 * bs, xb = (W - wb) / 2 + bx * W, yb = (H - hb) / 2 + by * H;
+  const props = (t, k, [u, v]) => { // zoom k on picture point u, v: that point to the middle of the clip's own frame, the frame kept covered
+    const w = wb * k, h = hb * k, X = clamp(xb + wb / 2 - u * w, xb + wb - w, xb), Y = clamp(yb + hb / 2 - v * h, yb + hb - h, yb);
+    return { t: +t.toFixed(4), scale: +(bs * k).toFixed(5), x: +((X - (W - w) / 2) / W).toFixed(5), y: +((Y - (H - h) / 2) / H).toFixed(5), opacity: c.opacity ?? 1, rot: c.rot ?? 0, ease: false };
+  };
+  const kf = [props(0, 1, [0.5, 0.5])];
+  for (const z of zooms) {
+    const a0 = Math.max(0, z.a - R), b1 = Math.min(D, z.b + R), at = T => (T <= z.a ? [z.u, z.v] : T < z.a + R ? (([u, v], k) => [z.u + (u - z.u) * k, z.v + (v - z.v) * k])(sm(T), ss((T - z.a) / R)) : sm(T));
+    const k = T => 1 + (amount - 1) * (T < z.a ? (z.a > a0 ? ss((T - a0) / (z.a - a0)) : 1) : T <= z.b ? 1 : ss(1 - (T - z.b) / R));
+    const ts = new Set([a0, z.a, Math.min(z.b, D), b1]);
+    for (let T = a0; T < b1; T += 1 / 15) ts.add(T);
+    for (const T of [...ts].sort((x, y) => x - y)) if (T > kf.at(-1).t + 1e-4) kf.push(props(T, k(T), at(T)));
+  }
+  if (kf.at(-1).t < D - 1e-4) kf.push(props(D, 1, [0.5, 0.5]));
+  return { kf, zooms };
+}
+async function autoZoom(c, { amount, smooth } = {}) {
+  const m = M.get(c?.media), o = AZ();
+  amount = clamp(+(amount ?? o.amount) || 2, 1.25, 3); smooth = clamp(+(smooth ?? o.smooth) || 0, 0, 1);
+  if (!m || m.kind !== 'video' || !m.cursor) throw new Error('Auto zoom works on screen recordings made in Cutroom (the whole screen or an area): it follows the cursor recorded with them');
+  const tr = await api(`/api/cursor/${m.id}`, {}), { kf, zooms } = azKeyframes(c, m, tr, amount, smooth);
+  if (!kf) throw new Error('No clicks or typing in this clip: nothing to zoom in on');
+  change(() => { c.kf = kf; }, `Auto zoom ${stepClip(...cfind(c.id))}`);
+  toast(`Auto zoom: ${zooms.length} zoom${zooms.length === 1 ? '' : 's'} as keyframes on the clip (they replace its position and size keyframes)`);
+  return { zooms: zooms.map(z => ({ at: +(c.start + z.a).toFixed(3), until: +(c.start + z.b).toFixed(3) })), keyframes: kf.length };
+}
+REMOTE.auto_zoom = async ({ id, amount, smooth } = {}) => autoZoom(id ? cfind(id)[0] : selClip(), { amount, smooth });
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t.id !== 'azAmt' && t.id !== 'azSmooth') return;
+  fill(t);
+  t.nextElementSibling.textContent = t.id === 'azAmt' ? `${+t.value}×` : `${Math.round(t.value * 100)}%`;
+  store.set('cutroom.az', JSON.stringify({ amount: +$('#azAmt').value, smooth: +$('#azSmooth').value }));
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest?.('#inspector [data-act="autozoom"]')) return;
+  autoZoom(selClip(), { amount: +$('#azAmt').value, smooth: +$('#azSmooth').value }).catch(err => toast(err.message));
+});
 addEventListener('keydown', e => { // while recording: Space pauses the teleprompter, the arrows change its speed, Esc stops (before the editor's keys)
   const r = RC;
   if (!r || r.phase === 'open' || r.phase === 'saving') return;

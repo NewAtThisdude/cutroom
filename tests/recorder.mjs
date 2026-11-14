@@ -43,6 +43,17 @@ for (const rm of ['no-preference', 'reduce']) {
   const page = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
   const errs = []; page.on('pageerror', e => errs.push(e.message));
   await page.route(u => u.pathname === '/api/remote/next', async r => { await new Promise(z => setTimeout(z, 15000)); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); }); // (not the MCP's editor)
+  // the cursor poll (server.py cursor_poll reads the real pointer): synthetic here. Recorder time t (s); screens in points, the
+  // recorded one (16:9, like the fake screen) second: the cursor rests, moves to (1180, 640) by 1 s, clicks at 1.3, types at 1.6, rests
+  const CURPOS = t => (t < 0.6 ? [300, 250] : t < 1 ? [300 + ((t - 0.6) / 0.4) * 880, 250 + ((t - 0.6) / 0.4) * 390] : [1180, 640]);
+  const CUR = { on: 0, off: 0, t0: 0 };
+  await page.route(u => u.pathname === '/api/cursor', async q => {
+    const body = JSON.parse(q.request().postData() || '{}');
+    if (body.on) { CUR.on++; CUR.t0 = body.t0; return q.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true }) }); }
+    CUR.off++;
+    const pts = Array.from({ length: 30 * 9 }, (_, i) => [i / 30, ...CURPOS(i / 30).map(v => v + 0)]).map(([t, x, y]) => [t, x, y]);
+    q.fulfill({ contentType: 'application/json', body: JSON.stringify({ pts, ev: [[1.3, 'c', 1180, 640], [1.6, 'k', 1180, 640]], screens: [[-1920, 0, 1920, 1200], [0, 0, 1600, 900]] }) });
+  });
   await page.goto(`${B}/`, { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && M.size > 0 && typeof openRecorder === 'function', null, { timeout: 20000 });
   const ev = (fn, a) => page.evaluate(fn, a);
@@ -54,7 +65,13 @@ for (const rm of ['no-preference', 'reduce']) {
     const canvas = (w, h, bg) => {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
       const x = c.getContext('2d');
-      setInterval(() => { const now = performance.now(), on = FLASH.some(t => now >= t && now < t + 150); x.fillStyle = on ? '#fff' : bg; x.fillRect(0, 0, w, h); }, 5);
+      setInterval(() => { // a dark grid with a few blocks (zooming shows), white during a flash
+        const now = performance.now(), on = FLASH.some(t => now >= t && now < t + 150);
+        x.fillStyle = on ? '#fff' : bg; x.fillRect(0, 0, w, h);
+        if (on) return;
+        x.fillStyle = '#4a4a4a'; for (let i = 0; i < w; i += 40) x.fillRect(i, 0, 2, h); for (let j = 0; j < h; j += 40) x.fillRect(0, j, w, 2);
+        x.fillStyle = '#7a2a2a'; x.fillRect(w * 0.7, h * 0.65, w * 0.08, h * 0.1); x.fillStyle = '#2a6a3a'; x.fillRect(w * 0.15, h * 0.2, w * 0.1, h * 0.12);
+      }, 5);
       return c.captureStream();
     };
     window.DEV = { fail: {} };
@@ -112,14 +129,14 @@ for (const rm of ['no-preference', 'reduce']) {
   const sp0 = await ev(() => RC.speed); await page.keyboard.press('ArrowUp'); const sp1 = await ev(() => [RC.speed, +$('.rcspeed input').value]);
   await page.waitForTimeout(500); const s2 = await sc();
   check(`${rm}: the teleprompter scrolls (${(s1 - s0).toFixed(0)} px in 0.7 s), Space pauses it ("${pausedLabel}") and resumes, ↑ speeds it up`, s1 - s0 > 8 && Math.abs(p1 - p0) < 0.5 && pausedLabel === 'Resume text' && s2 > p1 + 5 && sp1[0] === sp0 + 1 && sp1[1] === sp0 + 1, JSON.stringify({ s0, s1, p0, p1, s2, sp0, sp1 }));
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2600);
   const timeText = await ev(() => $('.rctime').textContent);
   const before = await ev(() => ({ main: P.main.length, overlay: P.overlay.length, audio: P.audio.length, undo: undo.length, media: M.size }));
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !RC && $('#modal').hidden, null, { timeout: 60000 });
   const after = await ev(() => ({ main: P.main.length, overlay: P.overlay.length, audio: P.audio.length, undo: undo.length, media: M.size, app: APP.slice(), last: rcStop.last, toast: $('#toast').textContent,
     ended: [...DEV.user.getTracks(), ...DEV.screen.getTracks()].every(t => t.readyState === 'ended') }));
-  check(`${rm}: the time runs (${timeText}); Esc stops: the app shows its window again, the devices are let go`, timeText === '0:03' && after.app.length === 2 && after.app[1][0] === false && after.ended, JSON.stringify({ timeText, app: after.app, ended: after.ended }));
+  check(`${rm}: the time runs (${timeText}); Esc stops: the app shows its window again, the devices are let go`, /^0:0[3-5]$/.test(timeText) && after.app.length === 2 && after.app[1][0] === false && after.ended, JSON.stringify({ timeText, app: after.app, ended: after.ended }));
   const cl = await ev(() => { const g = (l, c) => ({ ...c, kind: M.get(c.media).kind, name: M.get(c.media).name, file: M.get(c.media).file, w: M.get(c.media).w, h: M.get(c.media).h, rect: l === 'overlay' ? geom(M.get(c.media), c, P.w, P.h) : null });
     return { main: P.main.map(c => g('main', c)), ov: g('overlay', P.overlay.at(-1)), au: g('audio', P.audio.at(-1)), W: P.w, H: P.h }; });
   const scr = cl.main[1], cam = cl.ov, mic = cl.au;
@@ -157,6 +174,54 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.waitForFunction(id => typeof P !== 'undefined' && P?.id === id, made.p.at(-1), { timeout: 20000 }).catch(() => {});
   const back = await ev(ids => ({ id: P.id, ok: P.main.some(c => c.media === ids[0]) && P.overlay.some(c => c.media === ids[1] && c.scale < 0.6) && P.audio.some(c => c.media === ids[2]) }), [scr.media, cam.media, mic.media]);
   check(`${rm}: the recording's clips come back after a reload`, back.id === made.p.at(-1) && back.ok, JSON.stringify(back));
+
+  // ---- auto zoom: from the cursor track recorded with the screen ----
+  await install();
+  const track = await api(`/api/cursor/${scr.media}`, {});
+  check(`${rm}: the screen file got its cursor track: on the recorded screen (the second, 16:9), in the file's time and frame`, CUR.on >= 1 && Math.abs(CUR.t0 - Date.now()) < 120000 && track.pts?.length > 200 && Math.abs(track.pts[0][1] - 300 / 1600) < 1e-3 && track.ev.length === 2 && Math.abs(track.ev[0][2] - 1180 / 1600) < 1e-3 && Math.abs(track.ev[0][3] - 640 / 900) < 1e-3,
+    JSON.stringify({ on: CUR.on, pts: track.pts?.length, first: track.pts?.[0], ev: track.ev }));
+  await ev(id => { S.sel = { lane: 'main', id }; S.t = 0; renderAll(); }, scr.id);
+  await page.click('#inspector [data-itab="Tools"]');
+  const azShown = await page.isVisible('#azAmt');
+  await ev(() => { for (const [id, v] of [['azAmt', 2], ['azSmooth', 0.5]]) { const x = $(`#${id}`); x.value = v; x.dispatchEvent(new Event('input', { bubbles: true })); } });
+  const u0 = await ev(() => undo.length);
+  await page.click('#inspector [data-act="autozoom"]');
+  await page.waitForFunction(id => P.main.find(c => c.id === id)?.kf?.length > 4, scr.id, { timeout: 10000 });
+  const R = 0.35 + 0.9 * 0.5, Wd = await ev(() => [P.w, P.h]);
+  const zs = await ev(([id, O, Rr]) => {
+    const c = P.main.find(x => x.id === id), m = M.get(c.media), ct = t => O + t - c.start; // recorder time -> clip time
+    const at = (t, u, v) => { const g = geom(m, c, P.w, P.h, propsAt(c, ct(t))); return { scale: propsAt(c, ct(t)).scale, px: Math.hypot(g.x + u * g.w - P.w / 2, g.y + v * g.h - P.h / 2) }; };
+    return { n: c.kf.length, undo: undo.length, before: at(1.3 - Rr - 0.05, 0, 0).scale, ramp: at(1.3 - Rr / 2, 0, 0).scale, click: at(1.3, 1180 / 1600, 640 / 900), key: at(1.6, 1180 / 1600, 640 / 900), held: at(2.7, 0, 0).scale, out: at(2.8 + Rr + 0.05, 0, 0).scale, t: ct(1.5) + c.start, cc: ct(1.3) };
+  }, [scr.id, after.last.O, R]);
+  check(`${rm}: Auto zoom (Tools): fully in (2×) by the click and centred on it (${zs.click.px.toFixed(1)} px), on the typing (${zs.key.px.toFixed(1)} px); 1× before the ramp; one undo step`,
+    azShown && zs.undo === u0 + 1 && Math.abs(zs.before - 1) < 1e-3 && zs.ramp > 1.05 && zs.ramp < 1.95 && Math.abs(zs.click.scale - 2) < 1e-3 && zs.click.px <= 4 && zs.key.px <= 12, JSON.stringify(zs));
+  check(`${rm}: Auto zoom: still in while the cursor has rested under 1.2 s, back out after it rests`, Math.abs(zs.held - 2) < 1e-3 && Math.abs(zs.out - 1) < 1e-3, JSON.stringify({ held: zs.held, out: zs.out }));
+  const far = await ev(id => { // the same clicks, but the cursor leaves for the far corner at 2.0 s: out sooner than resting
+    const c = P.main.find(x => x.id === id), m = M.get(c.media);
+    return api(`/api/cursor/${m.id}`, {}).then(tr => {
+      const rest = azKeyframes(c, m, tr, 2, 0.5).zooms, leave = azKeyframes(c, m, { ...tr, pts: tr.pts.map(([t, u, v]) => (t > 2.0 ? [t, Math.max(0.05, u - (t - 2.0) * 3), Math.max(0.05, v - (t - 2.0) * 3)] : [t, u, v])) }, 2, 0.5).zooms;
+      const smooth0 = azKeyframes(c, m, tr, 2.5, 0).kf, big = smooth0.reduce((b, f) => Math.max(b, f.scale), 0);
+      return { rest, leave, big, first: smooth0.find(f => f.scale > 1.001)?.t };
+    });
+  }, scr.id);
+  check(`${rm}: Auto zoom: leaving the view zooms out at once (${far.leave[0]?.b.toFixed(2)} s, resting: ${far.rest[0]?.b.toFixed(2)} s); Zoom 2.5× and Smoothness 0 give 2.5× and a later, shorter ramp`,
+    far.rest.length === 1 && far.leave.length === 1 && far.leave[0].b < 2.3 && far.rest[0].b > 2.5 && Math.abs(far.big - 2.5) < 1e-3 && far.first > zs.cc - R + 0.2 && far.first < zs.cc, JSON.stringify(far));
+  const pe = await ev(async T => {
+    S.sel = null; renderAll();
+    const grab = async (t, preview) => { const s = await REMOTE.snapshot({ t, max: 640, preview }); const im = await createImageBitmap(await (await fetch(`data:image/png;base64,${s.image}`)).blob()), c = new OffscreenCanvas(160, 90), g = c.getContext('2d'); g.drawImage(im, 0, 0, 160, 90); return g.getImageData(0, 0, 160, 90).data; };
+    const [a, b, z0] = [await grab(T, false), await grab(T, true), await grab(T - 1.1, false)];
+    let sum = 0, worst = 0, moved = 0;
+    for (let by = 0; by < 90; by += 10) for (let bx = 0; bx < 160; bx += 10) { let s = 0; for (let y = by; y < by + 10; y++) for (let x = bx; x < bx + 10; x++) for (let k = 0; k < 3; k++) { const i = (y * 160 + x) * 4 + k; s += Math.abs(a[i] - b[i]); moved += Math.abs(a[i] - z0[i]); } sum += s; worst = Math.max(worst, s / 300); }
+    return { mean: sum / (160 * 90 * 3), worst, moved: moved / (160 * 90 * 3) };
+  }, zs.t);
+  check(`${rm}: Auto zoom: preview == export while zoomed (mean ${pe.mean.toFixed(2)}, worst block ${pe.worst.toFixed(1)}); the zoom shows (vs 1×: ${pe.moved.toFixed(1)})`, pe.mean <= 4 && pe.worst <= 28 && pe.moved > 6, JSON.stringify(pe));
+  await ev(() => restore(undo, redo));
+  const az0 = await ev(id => !P.main.find(c => c.id === id).kf, scr.id);
+  check(`${rm}: Auto zoom undoes in one step`, az0);
+  const rz = await ev(id => REMOTE.auto_zoom({ id, amount: 1.5 }).catch(e => ({ error: e.message })), scr.id);
+  const nz = await ev(id => P.main.find(c => c.id === id)?.kf?.reduce((b, f) => Math.max(b, f.scale), 0), scr.id).catch(() => 0);
+  const bad = await ev(id => REMOTE.auto_zoom({ id }).then(() => 'no error', e => e.message), cl.main[0].id);
+  check(`${rm}: REMOTE auto_zoom (the MCP's) zooms 1.5×; a clip without a cursor track is refused in words`, Math.abs(nz - 1.5) < 1e-3 && /screen recordings made in Cutroom/.test(bad), JSON.stringify({ rz, nz, bad }));
 
   // ---- area mode: a crop on the clip; Esc in the countdown records nothing ----
   await install();

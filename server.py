@@ -256,6 +256,10 @@ def meta(mid):
 def save_meta(m):
     if m.get('file') and not (MEDIA / m['file']).exists():  # removed from the library while it was being prepared: don't bring back an empty entry
         return
+    if (MEDIA / f"{m['id']}.cursor").exists():  # a screen recording's cursor track (cursor_track): kept whoever saves (prepare() holds an older copy)
+        m['cursor'] = True
+    if (MEDIA / f"{m['id']}.cursor").exists():  # a screen recording's cursor track (cursor_track): kept by writers holding an older copy (prepare)
+        m['cursor'] = True
     tmp = MEDIA / f".{m['id']}.{uuid.uuid4().hex[:6]}.tmp"  # whole or not there: a reader between write_text's truncate and its write saw an empty file (/api/media failed)
     tmp.write_text(json.dumps(m))
     retry(tmp.replace, MEDIA / f"{m['id']}.json")
@@ -385,6 +389,114 @@ def record_part(rid, ext, stream, length, q):
     finally:
         part.unlink(missing_ok=True)
         fixed.unlink(missing_ok=True)
+
+
+CURSOR = {}  # the cursor poll of the recording under way (cursor_poll)
+
+
+def cursor_reader():
+    """This computer's pointer, read without any permission: read() -> (x, y, seconds since the last click, since the last
+    key press) in global screen points, and the screens' rectangles [x, y, w, h] in the same space. None where unknown."""
+    import ctypes
+    if MAC:
+        cg = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+
+        class Pt(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double)]
+
+        class Rect(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double), ('w', ctypes.c_double), ('h', ctypes.c_double)]
+        cg.CGEventCreate.restype, cg.CGEventCreate.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        cg.CGEventGetLocation.restype, cg.CGEventGetLocation.argtypes = Pt, [ctypes.c_void_p]
+        cg.CFRelease.argtypes = [ctypes.c_void_p]
+        cg.CGEventSourceSecondsSinceLastEventType.restype, cg.CGEventSourceSecondsSinceLastEventType.argtypes = ctypes.c_double, [ctypes.c_int, ctypes.c_uint32]
+        cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+        cg.CGDisplayBounds.restype, cg.CGDisplayBounds.argtypes = Rect, [ctypes.c_uint32]
+        ids, n = (ctypes.c_uint32 * 16)(), ctypes.c_uint32()
+        cg.CGGetActiveDisplayList(16, ids, ctypes.byref(n))
+        screens = [[r.x, r.y, r.w, r.h] for r in (cg.CGDisplayBounds(ids[i]) for i in range(n.value))]  # the main display first
+
+        def read():
+            e = cg.CGEventCreate(None)
+            p = cg.CGEventGetLocation(e)
+            cg.CFRelease(e)
+            return p.x, p.y, cg.CGEventSourceSecondsSinceLastEventType(0, 1), cg.CGEventSourceSecondsSinceLastEventType(0, 10)  # left mouse down, key down
+        return read, screens
+    if WIN:
+        u = ctypes.windll.user32
+        u.SetProcessDPIAware()  # pixels, as the screen capture has them
+
+        class Pt(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+        class Last(ctypes.Structure):
+            _fields_ = [('size', ctypes.c_uint), ('t', ctypes.c_uint)]
+        pt, li, st = Pt(), Last(8, 0), {'down': False, 'in': 0, 'pos': None, 'c': 0.0, 'k': 0.0}
+
+        def read():  # a click: the left button going down; a key: input with the pointer still and no button (GetLastInputInfo)
+            now = time.time()
+            u.GetCursorPos(ctypes.byref(pt))
+            down = bool(u.GetAsyncKeyState(1) & 0x8000)
+            u.GetLastInputInfo(ctypes.byref(li))
+            if down and not st['down']:
+                st['c'] = now
+            elif li.t != st['in'] and not down and st['pos'] == (pt.x, pt.y):
+                st['k'] = now
+            st.update(down=down, pos=(pt.x, pt.y))
+            st['in'] = li.t
+            return pt.x, pt.y, now - st['c'], now - st['k']
+        return read, [[0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)]]  # ponytail: the primary screen; EnumDisplayMonitors for others
+    return None
+
+
+def cursor_poll(on, t0=0.0):
+    """The recorder's cursor track (auto zoom): from on=True until on=False, the pointer 30 times a second and each click and
+    key press, timed from t0 (the page's clock at the recorders' start, ms since the epoch). Off -> what was recorded."""
+    old = CURSOR.pop('run', None)
+    if old:
+        old['stop'].set()
+        old['thread'].join(2)
+    if not on:
+        return {k: old[k] for k in ('pts', 'ev', 'screens')} if old else {'pts': [], 'ev': [], 'screens': []}
+    rd = cursor_reader()
+    if not rd:
+        return {'ok': False, 'why': 'the cursor is not followed on this system'}
+    read, screens = rd
+    run = {'stop': threading.Event(), 'pts': [], 'ev': [], 'screens': screens}
+    base = float(t0) / 1000
+
+    def go():
+        last = None
+        while not run['stop'].wait(1 / 30) and len(run['pts']) < 30 * 3600 * 4:
+            now = time.time()
+            x, y, sc, sk = read()
+            run['pts'].append([round(now - base, 4), round(x, 1), round(y, 1)])
+            if last:  # the time since a click (key) went down: it happened now - that
+                for kind, since, before in (('c', sc, last[0]), ('k', sk, last[1])):
+                    if since < before:
+                        run['ev'].append([round(now - since - base, 4), kind, round(x, 1), round(y, 1)])
+            last = (sc, sk)
+    run['thread'] = threading.Thread(target=go, daemon=True)
+    run['thread'].start()
+    CURSOR['run'] = run
+    return {'ok': True, 'screens': screens}
+
+
+def cursor_track(mid, track=None):
+    """A screen recording's cursor track, kept next to its file (<id>.cursor): [t, u, v] in its own time and frame
+    (0..1), and the clicks and keys [t, 'c'|'k', u, v]. With track: save it."""
+    m = meta(mid)
+    f = MEDIA / f"{m['id']}.cursor"  # (not .json: the trash's restore looks for <id>*.json; it stays here while the file is in the trash)
+    if track is None:
+        if not f.exists():
+            raise ValueError('this clip has no cursor track: auto zoom works on screen recordings made in Cutroom')
+        return json.loads(f.read_text())
+    pts = [[float(a), float(b), float(c)] for a, b, c in track.get('pts', [])[:30 * 3600 * 4]]
+    ev = [[float(a), 'k' if k == 'k' else 'c', float(b), float(c)] for a, k, b, c in track.get('ev', [])[:100000]]
+    f.write_text(json.dumps({'pts': pts, 'ev': ev}, separators=(',', ':')))
+    m['cursor'] = True
+    save_meta(m)
+    return {'ok': True, 'pts': len(pts), 'ev': len(ev)}
 
 
 def photo_copy(m, size):
@@ -7014,6 +7126,10 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({'sentences': sentences(transcribe(body['media'], body.get('lang', 'auto')))})
             if u.path == '/api/fillers':
                 return self.reply({'fillers': fillers(body['media'], body.get('lang', 'auto'), (body.get('ranges') or [])[:500])})
+            if u.path == '/api/cursor':  # the recorder's cursor poll: on (t0) / off -> the samples
+                return self.reply(cursor_poll(bool(body.get('on')), float(body.get('t0') or 0)))
+            if m := re.fullmatch(r'/api/cursor/([0-9a-f]{12})', u.path):  # a screen recording's cursor track: read, or save (track)
+                return self.reply(cursor_track(m[1], body.get('track')))
             if u.path == '/api/sync':
                 return self.reply(sync_media([str(x) for x in body.get('media') or []]))
             if u.path == '/api/scenes':
