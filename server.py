@@ -1158,7 +1158,7 @@ def follow(st, mid, t0, t1, box, t=None):
 
 
 def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=None):
-    """CapCut's "Remove object" for video, on this Mac: Vision follows the box both ways from t, then every frame of
+    """CapCut's "Remove object" for video: Vision (a PC: OpenCV corners) follows the box both ways from t, then every frame of
     [t0, t1] gets the background filled in (ai/remove.py; best = SAM 2 outline + ProPainter when installed)
     -> a new library item covering just that range."""
     m = meta(mid)
@@ -1180,10 +1180,17 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
     with ai_slot(kind, st, t1 - t0) if kind else contextlib.nullcontext({'knobs': {}}) as size, tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         if mode in ('cutout', 'mask'):  # SAM 2 follows the subject itself
             pass
+        elif not MAC:  # no Vision on a PC: OpenCV corners (ai/track.py) follow the box both ways from t; a box with too little
+            try:       # detail to follow holds where it was drawn (as where Vision loses it)
+                r = follow(st, mid, t0, t1, b, t)
+                pts, lost = [{k: p[k] for k in ('t', 'x', 'y', 'w', 'h')} for p in r['points']], r['lost']
+            except RuntimeError as e:
+                if 'need a Mac' not in str(e):
+                    raise
         elif t1 - t > 1 / fps:
             r = track(st, mid, t, t1, b, span=(0.0, 0.15))
             pts, lost = pts + r['points'], r['lost']
-        if mode not in ('cutout', 'mask') and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
+        if MAC and mode not in ('cutout', 'mask') and t - t0 > 1 / fps:  # Vision only tracks forward: track a reversed proxy of [t0, t]
             rev = Path(td) / 'rev.mp4'
             if sh(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t0:.6f}', '-t', f'{t - t0 + 1 / fps:.6f}', '-i', src, '-vf', 'scale=-2:480,reverse', '-an',
                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', str(rev)]).returncode:
