@@ -2864,8 +2864,8 @@ function frameThumb(W, H, clips) { // the frame at the playhead as rendered (no 
   const C = scratch(W, H, 'thumb'), x = C.getContext('2d'), cv = $('#cv');
   if (total() <= 0 || !cv.width) { x.drawImage(sampleScene(W, H, 0), 0, 0); return C; }
   const sel = S.sel, saved = clips.map(c => c.look);
-  S.sel = null; clips.forEach(c => delete c.look);
-  try { paint(); } finally { S.sel = sel; clips.forEach((c, i) => { if (saved[i]) c.look = saved[i]; }); S.dirty = true; }
+  S.sel = null; S.noCmp = true; clips.forEach(c => delete c.look); // tiles show the finished picture, never a before / after frame
+  try { paint(); } finally { S.noCmp = false; S.sel = sel; clips.forEach((c, i) => { if (saved[i]) c.look = saved[i]; }); S.dirty = true; }
   const s = Math.max(W / cv.width, H / cv.height);
   x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
   x.drawImage(cv, (W - cv.width * s) / 2, (H - cv.height * s) / 2, cv.width * s, cv.height * s);
