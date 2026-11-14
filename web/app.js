@@ -7691,6 +7691,7 @@ function merge(o, patch) { // deep merge; null deletes
     else if (v && typeof v === 'object' && !Array.isArray(v) && o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) merge(o[k], v);
     else o[k] = structuredClone(v);
   }
+  return o; // add_text passes merge(clone of preset, style) straight to addText
 }
 async function waitFrame() { // the preview shows the frame at S.t: every element at its time, then painted
   paint(); // issues the seeks now: WebKit stops requestAnimationFrame for a covered window, so don't wait for the loop
