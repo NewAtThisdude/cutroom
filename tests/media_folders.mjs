@@ -34,7 +34,7 @@ const b = await browser.launch();
 for (const rm of ['no-preference', 'reduce']) {
   console.log(`--- reducedMotion: ${rm}`);
   await reset();
-  const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];
+  const ctx = await b.newContext({ viewport: { width: 1517, height: 1500 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];
   page.on('pageerror', e => errs.push(e.message));
   await page.route(u => u.pathname === '/api/remote/next', async r => { await sleep(15000); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
   const ev = (f, a) => page.evaluate(f, a);
@@ -157,7 +157,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: a second project sees the same folders`, (await snap(page)) === s1 && (await foldNames()).includes('Talks'));
   await smartOpen('Not used anywhere'); const un2 = await cards(); await smartOpen('Not used anywhere');
   check(`${rm}: in the second project "Not used anywhere" still leaves out what project A uses (saved)`, !un2.includes('fold-alpha.mp4') && un2.includes('fold-gamma.wav'), un2.join());
-  const page2 = await (await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm })).newPage();
+  const page2 = await (await b.newContext({ viewport: { width: 1517, height: 1500 }, reducedMotion: rm })).newPage();
   page2.on('pageerror', e => errs.push(e.message));
   await page2.route(u => u.pathname === '/api/remote/next', async r => { await sleep(15000); r.fulfill({ contentType: 'application/json', body: '{}' }).catch(() => {}); });
   await open(page2);
