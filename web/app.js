@@ -3563,15 +3563,14 @@ async function removeFillers() { // um / uh / er / hmm from the on-device transc
   } catch (e) { toast(e.message); throw e; }
   finally { btn.disabled = false; }
 }
+async function silenceMap(ids, min) { const sil = new Map(); for (const id of ids) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min })).silences); return sil; } // media id -> its pauses (also the batch's Trim silences)
 async function removePauses(minSec) { // CapCut's "remove pauses": silencedetect, then split main clips around the gaps
   const ids = [...new Set(P.main.filter(c => M.get(c.media)?.hasAudio).map(c => c.media))];
   if (!ids.length) return toast('Remove pauses works on main-track clips with sound');
   const min = typeof minSec === 'number' ? minSec : +$('#pauseLen').value, pad = 0.1, btn = $('#btnPauses');
   btn.disabled = true;
   try {
-    const sil = new Map();
-    for (const id of ids) sil.set(id, (await api('/api/silences', { media: id, noise: -35, min })).silences);
-    const next = cutMain(sil, pad);
+    const next = cutMain(await silenceMap(ids, min), pad);
     const before = packMain();
     if (JSON.stringify(next) === JSON.stringify(P.main)) return toast(`No pauses longer than ${min} s`);
     change(() => { P.main = next; });
@@ -4548,40 +4547,44 @@ async function autoCaptions(force) { // words come back in source time; map them
     // placed on the timeline as it is NOW (edits while it listened move the words with them), in the project it was asked in
     if (P.id !== pid) throw new Error('Another project is open now: open that one again and press Captions (the words are kept, so it is quick)');
     packMain(); src = speech().filter(c => words.has(c.media));
-    const all = [];
-    for (const c of src) {
-      for (const w of words.get(c.media)) {
-        if (w.e <= c.in || w.s >= c.out) continue;
-        const a = c.start + (Math.max(w.s, c.in) - c.in) / c.speed, b = c.start + (Math.min(w.e, c.out) - c.in) / c.speed;
-        if (b - a > 0.02) all.push({ w: w.w, s: a, e: b });
-      }
-    }
-    all.sort((x, y) => x.s - y.s);
-    const caps = [];
-    let cur = [];
-    const flush = () => {
-      if (!cur.length) return;
-      const s = cur[0].s, e = cur.at(-1).e;
-      caps.push({ id: hex12(), start: s, dur: Math.max(0.2, e - s), text: cur.map(w => w.w).join(' '), words: cur.map(w => ({ w: w.w, s: w.s - s, e: w.e - s })) });
-      cur = [];
-    };
-    for (const w of all) {
-      const prev = cur.at(-1);
-      if (prev && (cur.length >= per || w.s - prev.e > 0.6 || /[.?!]$/.test(prev.w))) flush();
-      cur.push(w);
-    }
-    flush();
-    for (let i = 0; i + 1 < caps.length; i++) { // hold each caption until the next one so they don't flicker
-      const gap = caps[i + 1].start - (caps[i].start + caps[i].dur);
-      if (gap > 0 && gap < 0.5) caps[i].dur += gap;
-      else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
-    }
+    const caps = capsFromWords(src, words, per), nw = caps.reduce((n, c) => n + c.words.length, 0);
     const EXTRA = ['style', 'tr', 'kw', 'emoji', 'spk'], kept = new Map(P.captions.filter(c => EXTRA.some(k => c[k] !== undefined)).map(c => [c.text, c])); // a restyled (translated, labelled...) caption keeps that when captions are re-made after a cut
     for (const c of caps) if (kept.has(c.text)) for (const k of EXTRA) if (kept.get(c.text)[k] !== undefined) c[k] = structuredClone(kept.get(c.text)[k]);
     change(() => { P.captions = caps; S.sel = null; });
-    status.textContent = caps.length ? `${caps.length} captions from ${all.length} words. Click one to edit it.` : 'No speech found.';
+    status.textContent = caps.length ? `${caps.length} captions from ${nw} words. Click one to edit it.` : 'No speech found.';
   } catch (e) { status.textContent = e.message; throw e; }
   finally { btn.disabled = false; }
+}
+function capsFromWords(src, words, per) { // clips (on the timeline as it is now) + media id -> words in source time: caption clips of up to per words (also the batch's captions)
+  const all = [];
+  for (const c of src) {
+    for (const w of words.get(c.media)) {
+      if (w.e <= c.in || w.s >= c.out) continue;
+      const a = c.start + (Math.max(w.s, c.in) - c.in) / c.speed, b = c.start + (Math.min(w.e, c.out) - c.in) / c.speed;
+      if (b - a > 0.02) all.push({ w: w.w, s: a, e: b });
+    }
+  }
+  all.sort((x, y) => x.s - y.s);
+  const caps = [];
+  let cur = [];
+  const flush = () => {
+    if (!cur.length) return;
+    const s = cur[0].s, e = cur.at(-1).e;
+    caps.push({ id: hex12(), start: s, dur: Math.max(0.2, e - s), text: cur.map(w => w.w).join(' '), words: cur.map(w => ({ w: w.w, s: w.s - s, e: w.e - s })) });
+    cur = [];
+  };
+  for (const w of all) {
+    const prev = cur.at(-1);
+    if (prev && (cur.length >= per || w.s - prev.e > 0.6 || /[.?!]$/.test(prev.w))) flush();
+    cur.push(w);
+  }
+  flush();
+  for (let i = 0; i + 1 < caps.length; i++) { // hold each caption until the next one so they don't flicker
+    const gap = caps[i + 1].start - (caps[i].start + caps[i].dur);
+    if (gap > 0 && gap < 0.5) caps[i].dur += gap;
+    else if (gap < 0) caps[i].dur = Math.max(0.1, caps[i + 1].start - caps[i].start);
+  }
+  return caps;
 }
 
 // ---------- import ----------
@@ -5154,6 +5157,262 @@ function openBrand() {
     else if (x.dataset.brand === 'cdel') save({ colors: cols.slice(0, -1) });
     else if (x.dataset.brand === 'apply') { try { brandApply(); closeModal(); } catch (err) { say(err.message); } }
   });
+// ---------- batch editing: one recipe over many library videos ----------
+// Each video gets its own project (named after it): the recipe's steps in order, then every shape's export into the one
+// queue above (the Exports panel; the server renders one at a time). A recipe: { name, steps: [{ step, ...its options }],
+// shapes: ['9:16', ...], fit, preset, res }. Steps are plugins: BATCH_STEPS[k] = { name, avail() -> '' or why not, run(ctx, s)
+// -> a note or { skip: why } }, ctx = { p: the video's project, m: the video, lufs }. A step that isn't available here is
+// skipped with its reason; a step or export that fails fails that video only, the rest carry on. The plans are built in this
+// page from the same code as the dialog's, so preview == export holds for every one.
+const BATCH_STEPS = {
+  template: { name: 'Template', avail: () => '', async run(ctx, s) { // first whatever the order: it is the edit the other steps work on
+    const t = (tplCache = await api('/api/templates')).find(x => x.id === s.id || x.name === s.id);
+    if (!t) throw new Error(`no template "${s.id || ''}"`);
+    const q = migrate({ ...structuredClone(t.project), id: ctx.p.id, name: ctx.p.name }), m = ctx.m;
+    let gone = 0;
+    for (const L of LANES) q[L.key] = (q[L.key] || []).filter(c => { // the template's video and photo slots all take this video; a sound slot has nothing to take
+      if (typeof c.media !== 'string' || !c.media.startsWith('slot:')) return true;
+      if (t.slots[+c.media.slice(5)]?.kind === 'audio') { gone++; return false; }
+      c.media = m.id; c.out = Math.min(c.out, m.duration); c.in = Math.min(c.in, Math.max(0, c.out - 0.1)); delete c.beats;
+      return true;
+    });
+    ctx.p = q;
+    return `${t.name}${gone ? ` (${gone} sound clip${gone === 1 ? '' : 's'} left out)` : ''}`;
+  } },
+  pauses: { name: 'Trim silences', avail: () => '', async run(ctx, s) { // Remove pauses' own path: silencedetect, then cutMain with its 0.1 s of air
+    if (!ctx.m.hasAudio) return { skip: 'no sound' };
+    const min = clamp(+s.min || 0.5, 0.1, 5), sil = await silenceMap([ctx.m.id], min);
+    const cut = onP(ctx.p, () => { const d0 = packMain(); P.main = cutMain(sil, 0.1); return d0 - packMain(); });
+    return cut > 0.05 ? `${cut.toFixed(1)} s cut` : `no pauses over ${min} s`;
+  } },
+  captions: { name: 'Auto captions', avail: () => '', async run(ctx, s) { // whisper through the server's queue (one heavy job at a time), then the Captions tab's grouping
+    if (!ctx.m.hasAudio) return { skip: 'no sound' };
+    const lang = s.lang || 'auto', m = ctx.m, spans = onP(ctx.p, () => usedSpans(m.id, P.main));
+    const words = new Map([[m.id, await fetchWords(m.id, lang, spans)]]);
+    const n = onP(ctx.p, () => { packMain(); P.captions = capsFromWords(P.main.filter(c => c.media === m.id && c.volume > 0), words, clamp(+s.per || 3, 1, 6)); if (CAP_PRESETS[s.style]) P.capStyle = capPreset(s.style); return P.captions.length; });
+    return n ? `${n} captions` : 'no speech found';
+  } },
+  loudness: { name: 'Loudness', avail: () => '', run(ctx, s) { ctx.lufs = [-14, -16, -23].includes(+s.lufs) ? +s.lufs : -14; return `${ctx.lufs} LUFS on export`; } },
+  brand: { name: 'Brand kit', avail: () => (typeof applyBrand === 'function' ? '' : 'no brand kit in this version'), // the brand kit feature defines applyBrand(project, options)
+    async run(ctx, s) { const r = await onPAsync(ctx.p, () => applyBrand(ctx.p, s)); return typeof r === 'string' ? r : 'applied'; } },
+};
+const BATCH_ORDER = ['template', 'pauses', 'captions', 'loudness', 'brand'];
+const BATCH_FMTS = ['mp4', 'hevc', 'av1', 'webm', 'prores'];
+function onP(p, fn) { const P0 = P; P = p; try { return fn(); } finally { P = P0; } } // synchronous: nothing else runs while it is borrowed
+async function onPAsync(p, fn) { // across awaits (a plan's text layer): the preview and autosave leave the borrowed project alone
+  const P0 = P;
+  S.hold = true; P = p; // ponytail: like shapePlan, an edit made in these seconds lands on the batch's project
+  try { return await fn(); } finally { P = P0; S.hold = false; S.dirty = true; }
+}
+const BATCH = { items: [], running: false, recipes: [] };
+function batchRecipe(r) { // checked and in the run order; throws a sentence
+  if (!r || typeof r !== 'object') throw new Error('recipe must be an object (or a saved recipe\'s name)');
+  const steps = (r.steps || []).map(s => (typeof s === 'string' ? { step: s } : s));
+  for (const s of steps) if (!BATCH_STEPS[s?.step]) throw new Error(`steps must be of ${BATCH_ORDER.join(', ')}`);
+  const shapes = [...new Set(r.shapes || [])];
+  if (shapes.some(x => !SHAPES.includes(x))) throw new Error(`shapes must be of ${SHAPES.join(', ')}`);
+  if (r.preset && !EX_PRESETS[r.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);
+  if (r.res && !['720p', '1080p', '1440p', '4K'].includes(r.res)) throw new Error('res must be 720p, 1080p, 1440p or 4K');
+  if (r.fmt && !BATCH_FMTS.includes(r.fmt)) throw new Error(`fmt must be one of ${BATCH_FMTS.join(', ')}`);
+  return { ...r, steps: steps.sort((a, b) => BATCH_ORDER.indexOf(a.step) - BATCH_ORDER.indexOf(b.step)), shapes, fit: ['fit', 'fill', 'blur'].includes(r.fit) ? r.fit : 'fill' };
+}
+function batchProject(m, r) { // the video alone on the main track, on the recipe's first shape (else its own)
+  const own = shapeOf(m.w || 1920, m.h || 1080), shape = r.shapes[0] || (RATIOS[own] ? own : (m.h > m.w ? '9:16' : '16:9'));
+  const p = newProject(shape);
+  p.name = m.name.replace(/\.[^.]+$/, '');
+  if (m.fps > 1 && m.fps <= 120) p.fps = m.fps;
+  p.main = [{ id: hex12(), media: m.id, start: 0, in: 0, out: m.duration, speed: 1, volume: 1, fit: r.fit, scale: 1, x: 0, y: 0, opacity: 1, fadeIn: 0, fadeOut: 0, adj: { b: 1, c: 1, s: 1 } }];
+  return p;
+}
+async function batchPrep(it, r) { // steps, the project saved, every shape queued -> a promise of the exports' end
+  const m = M.get(it.media), ctx = { m, lufs: null };
+  const stop = () => { if (it.cancel) throw Object.assign(new Error('Cancelled'), { cancelled: true }); };
+  it.state = 'running';
+  try {
+    if (m?.kind !== 'video' || !m.duration) throw new Error('not a video in the library');
+    ctx.p = batchProject(m, r);
+    for (const st of it.steps.filter(x => x.kind === 'step')) {
+      stop();
+      const d = BATCH_STEPS[st.step], why = d.avail();
+      if (why) { st.state = 'skipped'; st.note = why; bDraw(); continue; }
+      st.state = 'running'; bDraw();
+      try { const out = await d.run(ctx, st.opts); if (out?.skip) { st.state = 'skipped'; st.note = out.skip; } else { st.state = 'done'; st.note = out || ''; } }
+      catch (e) { st.state = 'failed'; st.note = e.message; throw new Error(`${d.name}: ${e.message}`); }
+      bDraw();
+    }
+    stop();
+    const p = ctx.p;
+    await api(`/api/projects/${p.id}`, p, 'PUT'); it.project = p.id; it.pname = p.name;
+    const pf = r.preset ? onP(p, () => presetFields(r.preset)) : {}, res = r.res || pf.res || '1080p', fmt = pf.fmt || r.fmt || 'mp4';
+    const lufs = ctx.lufs ?? (pf.loud ? -14 : false);
+    for (const st of it.steps.filter(x => x.kind === 'export')) {
+      stop();
+      st.state = 'running'; st.note = 'laying out'; bDraw();
+      try {
+        const plan = await onPAsync(p, () => shapePlan(st.shape, res, 'fast', `${p.name} ${st.shape.replace(':', 'x')}`, lufs, fmt));
+        Object.assign(plan, { rate: 1, light: false, efps: pf.fps || 0, ...(pf.mbps ? { mbps: pf.mbps } : {}) });
+        st.q = await enqueue(plan, st.shape); st.note = '';
+      } catch (e) { st.state = 'failed'; st.note = e.message; throw new Error(`Export ${st.shape}: ${e.message}`); }
+      if (it.cancel) api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+    }
+    return { end: Promise.allSettled(it.steps.filter(x => x.q).map(x => x.q.done)).then(() => batchEnd(it)) }; // (wrapped: an async function's returned promise would be waited for)
+  } catch (e) {
+    for (const st of it.steps) if (!st.q && (st.state === 'waiting' || st.state === 'running')) { st.state = e.cancelled ? 'cancelled' : 'skipped'; st.note = ''; }
+    for (const st of it.steps) if (st.q?.st.state === 'running') api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+    if (it.steps.some(x => x.q)) await Promise.allSettled(it.steps.filter(x => x.q).map(x => x.q.done)); // what it had queued is over before it reports
+    for (const st of it.steps) if (st.q) bExportState(st);
+    it.state = e.cancelled ? 'cancelled' : 'failed'; it.error = e.cancelled ? '' : e.message; bDraw();
+  }
+}
+function bExportState(st) { const j = st.q?.st || {}; st.state = j.state === 'done' ? 'done' : j.state === 'cancelled' ? 'cancelled' : 'failed'; st.note = j.state === 'done' ? j.file : j.state === 'cancelled' ? '' : j.error || 'the export failed'; }
+function batchEnd(it) { // every export of the video is over: saved, cancelled or failed
+  const xs = it.steps.filter(x => x.kind === 'export');
+  for (const st of xs) bExportState(st);
+  const bad = xs.find(x => x.state === 'failed');
+  it.state = bad ? 'failed' : xs.some(x => x.state === 'cancelled') || it.cancel ? 'cancelled' : 'done';
+  if (bad) it.error = `Export ${bad.shape}: ${bad.note}`;
+  bDraw();
+}
+async function runBatch(ids, recipe) { // -> per video { media, name, project, state, steps, files, error }
+  if (BATCH.running) throw new Error('A batch is already running: cancel it or let it finish');
+  const r = batchRecipe(recipe), ms = ids.map(q => mediaBy(q));
+  if (!ms.length) throw new Error('pick one or more videos');
+  BATCH.running = true; BATCH.recipe = r;
+  BATCH.items = ms.map(m => ({ media: m.id, name: m.name, state: 'waiting', steps: [...r.steps.map(s => ({ kind: 'step', step: s.step, name: BATCH_STEPS[s.step].name, opts: s, state: 'waiting', note: '' })),
+    ...r.shapes.map(x => ({ kind: 'export', shape: x, name: `Export ${x}`, state: 'waiting', note: '' }))] }));
+  busy(1); bDraw();
+  BATCH.tick = setInterval(bDraw, 500); // only while a batch runs: the export rows' progress
+  try {
+    const ends = [];
+    for (const it of BATCH.items) ends.push(it.cancel ? (it.state = 'cancelled', null) : (await batchPrep(it, r))?.end); // one video's steps at a time; its exports render while the next one is prepared
+    await Promise.all(ends);
+    for (const it of BATCH.items) if (it.state === 'cancelled') for (const st of it.steps) if (st.state === 'waiting') st.state = 'cancelled';
+  } finally { BATCH.running = false; clearInterval(BATCH.tick); busy(-1); bDraw(); }
+  const ok = BATCH.items.filter(x => x.state === 'done').length;
+  toast(`Batch: ${ok} of ${BATCH.items.length} video${BATCH.items.length === 1 ? '' : 's'} done`);
+  return BATCH.items.map(it => ({ media: it.media, name: it.name, project: it.project || null, state: it.state, ...(it.error ? { error: it.error } : {}),
+    steps: it.steps.map(st => ({ step: st.kind === 'export' ? `export ${st.shape}` : st.step, state: st.state, ...(st.note ? { note: st.note } : {}) })),
+    files: it.steps.filter(x => x.state === 'done' && x.kind === 'export').map(x => ({ shape: x.shape, file: x.q.st.file, size: `${x.q.w}x${x.q.h}` })) }));
+}
+function batchCancel(i) { // one video (i) or all: steps not reached are skipped, its queued and rendering exports cancelled
+  for (const [k, it] of BATCH.items.entries()) {
+    if (i != null && k !== i) continue;
+    if (['done', 'failed', 'cancelled'].includes(it.state)) continue;
+    it.cancel = true;
+    for (const st of it.steps) if (st.q?.st.state === 'running') api(`/api/jobs/${st.q.job}/cancel`, {}).catch(() => {});
+  }
+  bDraw();
+}
+const B_SAY = { waiting: 'Waiting', running: 'Working', done: 'Done', failed: 'Failed', cancelled: 'Cancelled', skipped: 'Skipped' };
+function bDraw() { // the Batch window's progress list, while it is open (rows are kept: a click on Cancel is never redrawn away)
+  const box = $('#bRun');
+  if (!box) return;
+  for (const [i, it] of BATCH.items.entries()) {
+    if (!it.el || it.el.parentElement !== box) {
+      it.el = node('div', 'brun', box); const top = node('div', 'qtop', it.el);
+      node('b', '', top, it.name.replace(/\.[^.]+$/, '')); it.sayEl = node('small', '', top);
+      it.cancelEl = node('button', 'ghost', top, 'Cancel'); it.cancelEl.dataset.bcancel = i;
+      it.stepsEl = node('div', 'bsteps', it.el);
+      for (const st of it.steps) st.el = node('span', '', it.stepsEl);
+    }
+    it.el.dataset.state = it.state;
+    it.sayEl.textContent = it.state === 'failed' ? `Failed: ${it.error}` : it.state === 'done' && it.pname ? `Done · project "${it.pname}"` : B_SAY[it.state];
+    it.sayEl.title = it.error || '';
+    it.cancelEl.hidden = ['done', 'failed', 'cancelled'].includes(it.state) || !!it.cancel;
+    for (const st of it.steps) {
+      const j = st.q?.st, live = st.state === 'running' && j?.state === 'running';
+      const say = live ? (j.started ? `${Math.round((j.progress || 0) * 100)}%` : 'in the queue') : st.note;
+      st.el.dataset.state = st.state;
+      st.el.textContent = `${st.name} · ${say || B_SAY[st.state].toLowerCase()}`;
+      st.el.title = st.note || '';
+    }
+  }
+  if ($('#bGo')) { $('#bGo').disabled = BATCH.running; $('#bCancelAll').hidden = !BATCH.running; }
+}
+function bForm() { // the window's recipe
+  return { name: $('#bName').value.trim(), steps: BATCH_ORDER.filter(k => $(`#bs_${k}`).checked && !$(`#bs_${k}`).disabled).map(k => ({ step: k,
+    ...{ template: { id: $('#bTpl').value }, pauses: { min: +$('#bMin').value }, captions: { style: $('#bCap').value, lang: $('#bLang').value }, loudness: { lufs: +$('#bLufs').value }, brand: {} }[k] })),
+    shapes: $$('#bShapes input:checked').map(x => x.value), fit: $('#bFit').value, preset: $('#bPreset').value || undefined, res: $('#bRes').value };
+}
+function bFill(r) {
+  const on = new Map((r.steps || []).map(s => [s.step, s]));
+  for (const k of BATCH_ORDER) if (!$(`#bs_${k}`).disabled) $(`#bs_${k}`).checked = on.has(k);
+  const s = k => on.get(k) || {}, set = (sel, v) => { if (v != null && [...$(sel).options].some(o => o.value === String(v))) $(sel).value = String(v); };
+  set('#bTpl', s('template').id); set('#bMin', s('pauses').min); set('#bCap', s('captions').style); set('#bLang', s('captions').lang); set('#bLufs', s('loudness').lufs);
+  for (const x of $$('#bShapes input')) x.checked = (r.shapes || []).includes(x.value);
+  set('#bFit', r.fit || 'fill'); $('#bPreset').value = r.preset || ''; set('#bRes', r.res || '1080p'); $('#bName').value = r.name || '';
+}
+const bRecipeOpts = sel => { $('#bRecipe').replaceChildren(new Option('New recipe', ''), ...BATCH.recipes.map(x => new Option(x.name, x.id, false, x.id === sel))); $('#bDel').hidden = !$('#bRecipe').value; };
+function importGroups() { // the library's videos by import, newest first: one import = files added within 2 minutes of each other
+  const groups = [];
+  for (const m of [...M.values()].filter(m => m.kind === 'video').sort((a, b) => (b.added || 0) - (a.added || 0))) { const g = groups.at(-1); if (g && (g.at(-1).added || 0) - (m.added || 0) < 120) g.push(m); else groups.push([m]); }
+  return groups;
+}
+async function openBatch() {
+  const groups = importGroups(), vids = groups.flat();
+  [BATCH.recipes, tplCache] = await Promise.all([api('/api/batch/recipes').catch(() => []), api('/api/templates').catch(() => tplCache)]);
+  const when = t => (t ? new Date(t * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Earlier');
+  const opt = (v, n, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(n)}</option>`, brandWhy = BATCH_STEPS.brand.avail();
+  modal(`<h2>Batch edit</h2>
+    <p class="hint">One recipe over many videos. Each video gets its own project, named after it; its exports join the Exports panel and render one after another.</p>
+    <div class="bgrid"><div>
+      <h4 class="bhead"><span>Videos</span><small id="bCount"></small></h4>
+      <div class="blist" id="bList">${groups.map((g, i) => `<div class="bgrp"><span>${when(g[0].added)} · ${g.length} video${g.length === 1 ? '' : 's'}</span><button class="ghost" data-bimport="${i}" title="Tick every video from this import">Select this import</button></div>`
+        + g.map(m => `<label class="bvid"><input type="checkbox" value="${m.id}" data-g="${i}"><span>${esc(m.name)}</span><small>${fmtDur(m.duration)}</small></label>`).join('')).join('') || '<p class="hint">Import some videos first.</p>'}</div>
+    </div><div>
+      <h4>Recipe</h4>
+      <label class="row"><span>Saved recipes</span><select id="bRecipe"></select><button id="bDel" class="ghost" title="Delete this saved recipe">Delete</button></label>
+      <label class="row chk" title="${tplCache.length ? 'Starts each project from a template; its video slots take the video' : 'No templates saved yet (Templates, top bar)'}"><span>Start from a template</span><input type="checkbox" id="bs_template"${tplCache.length ? '' : ' disabled'}></label>
+      <label class="row"><span>Template</span><select id="bTpl"${tplCache.length ? '' : ' disabled'}>${tplCache.map(t => opt(t.id, t.name)).join('') || opt('', 'None saved')}</select></label>
+      <label class="row chk"><span>Trim silences</span><input type="checkbox" id="bs_pauses" checked></label>
+      <label class="row"><span>Longer than</span><select id="bMin">${[0.3, 0.5, 1, 2].map(v => opt(v, `${v} s`, v === 0.5)).join('')}</select></label>
+      <label class="row chk" title="On-device speech to text, one video at a time"><span>Auto captions</span><input type="checkbox" id="bs_captions"></label>
+      <label class="row"><span>Caption style</span><select id="bCap">${Object.keys(CAP_PRESETS).map(k => opt(k, k)).join('')}</select></label>
+      <label class="row"><span>Language</span><select id="bLang">${$$('#capLang option').map(o => opt(o.value, o.textContent, o.value === $('#capLang').value)).join('')}</select></label>
+      <label class="row chk"><span>Loudness</span><input type="checkbox" id="bs_loudness" checked></label>
+      <label class="row"><span>Target</span><select id="bLufs">${opt(-14, '−14 LUFS · social')}${opt(-16, '−16 LUFS · podcast')}${opt(-23, '−23 LUFS · broadcast (EBU)')}</select></label>
+      <label class="row chk" title="${esc(brandWhy || 'Your logo, colours and fonts on every video')}"><span>Brand kit${brandWhy ? ' (not set up)' : ''}</span><input type="checkbox" id="bs_brand"${brandWhy ? ' disabled' : ''}></label>
+      <h4>Export</h4>
+      <div class="row" id="bShapes"><span>Shapes</span><div class="exalso">${SHAPES.map(r => `<label title="${RATIO_NAMES[r]}"><input type="checkbox" value="${r}"${r === '9:16' ? ' checked' : ''}>${r}</label>`).join('')}</div></div>
+      <label class="row"><span>Fit</span><select id="bFit">${opt('fill', 'Fill (crop to the shape)')}${opt('fit', 'Fit (bars)')}${opt('blur', 'Blurred background')}</select></label>
+      <label class="row"><span>Preset</span><select id="bPreset">${opt('', 'None')}${Object.entries(EX_PRESETS).filter(([k]) => k !== 'master').map(([k, x]) => opt(k, x.name)).join('')}</select></label>
+      <label class="row"><span>Resolution</span><select id="bRes">${['720p', '1080p', '1440p', '4K'].map(v => opt(v, v, v === '1080p')).join('')}</select></label>
+      <div class="row"><span>Save as</span><input id="bName" placeholder="Recipe name"><button id="bSave">Save recipe</button></div>
+    </div></div>
+    <div id="bRun"></div><p class="muted" id="bStatus"></p>
+    <div class="actions"><button data-close>Close</button><button id="bCancelAll" hidden>Cancel all</button><button id="bGo" class="primary">Run batch</button></div>`, 'wide');
+  bRecipeOpts('');
+  const count = () => { $('#bCount').textContent = `${$$('#bList input:checked').length} of ${vids.length} selected`; };
+  $('#bList').addEventListener('change', count);
+  $('#bRecipe').addEventListener('change', e => { const r = BATCH.recipes.find(x => x.id === e.target.value); if (r) bFill(r); $('#bDel').hidden = !r; });
+  $('#modal .dialog').addEventListener('click', async e => {
+    const b = e.target.closest('button'), say = msg => { $('#bStatus').textContent = msg; };
+    if (!b) return;
+    if (b.dataset.bimport) { const xs = $$(`#bList input[data-g="${b.dataset.bimport}"]`), all = xs.every(x => x.checked); for (const x of xs) x.checked = !all; count(); }
+    else if (b.dataset.bcancel != null) { b.hidden = true; batchCancel(+b.dataset.bcancel); }
+    else if (b.id === 'bCancelAll') batchCancel();
+    else if (b.id === 'bSave') {
+      const r = bForm();
+      if (!r.name) return say('Give the recipe a name first');
+      try { const s = await api('/api/batch/recipes', { ...r, id: BATCH.recipes.find(x => x.id === $('#bRecipe').value && x.name === r.name)?.id }); BATCH.recipes = await api('/api/batch/recipes'); bRecipeOpts(s.id); say(`Saved "${s.name}"`); }
+      catch (err) { say(err.message); }
+    } else if (b.id === 'bDel') {
+      const id = $('#bRecipe').value, r = BATCH.recipes.find(x => x.id === id);
+      if (!r || !confirm(`Delete the recipe "${r.name}"?`)) return;
+      await api(`/api/batch/recipes/${id}/delete`, {}); BATCH.recipes = BATCH.recipes.filter(x => x.id !== id); bRecipeOpts(''); say(`Deleted "${r.name}"`);
+    } else if (b.id === 'bGo') {
+      const ids = $$('#bList input:checked').map(x => x.value);
+      if (!ids.length) return say('Tick one or more videos first');
+      say('');
+      $('#bRun').replaceChildren();
+      runBatch(ids, bForm()).then(rs => say(`${rs.filter(x => x.state === 'done').length} of ${rs.length} done${rs.some(x => x.state === 'failed') ? `; ${rs.filter(x => x.state === 'failed').length} failed (see each video)` : ''}`)).catch(err => say(err.message));
+    }
+  });
+  const cur = BATCH.running ? BATCH.recipe : BATCH.recipes[0]; // the running batch's recipe, else the first saved one
+  if (cur) { bRecipeOpts(BATCH.recipes.some(x => x.id === cur.id) ? cur.id : ''); bFill(cur); }
+  for (const it of BATCH.items) if (it.el) $('#bRun').append(it.el); // the last run, as it stands (it may still be going)
+  if (BATCH.items.length) { const sel = new Set(BATCH.items.map(x => x.media)); for (const x of $$('#bList input')) x.checked = sel.has(x.value); }
+  count(); bDraw();
 }
 
 // ---------- projects ----------
@@ -5613,6 +5872,7 @@ function wire() {
     await api(`/api/ai/clones/${o.value}/trash`, {}); await loadAI(); $('#dubStatus').textContent = 'Voice moved to the Trash.';
   });
   $('#btnTemplates').addEventListener('click', openTemplates);
+  $('#btnBatch').addEventListener('click', () => openBatch().catch(err => toast(err.message)));
   $('#btnVersions').addEventListener('click', () => openVersions().catch(err => toast(err.message)));
   $('#btnHistory').addEventListener('click', openHistory);
   $('#btnBrandText').addEventListener('click', openBrand);
@@ -7034,6 +7294,17 @@ const REMOTE = {
     const r1 = x => (x > -100 ? Math.round(x * 10) / 10 : null);
     return { shown: MTR.on, listening: !!MTR.node && actx?.state === 'running', momentary: r1(MTR.M), shortTerm: r1(MTR.S), integrated: r1(MTR.I),
       peak: { left: r1(MTR.hold[0]), right: r1(MTR.hold[1]) }, clipped: MTR.clip, target: MTR.target };
+  },
+  async batch({ media, recipe, save } = {}) { // the Batch window's run: one project per video, every export in the queue -> per video results
+    if (media == null && recipe == null) return { recipes: await api('/api/batch/recipes'), shapes: SHAPES, presets: Object.keys(EX_PRESETS), lastImport: (importGroups()[0] || []).map(m => m.name),
+      steps: Object.fromEntries(BATCH_ORDER.map(k => [k, BATCH_STEPS[k].avail() ? `${BATCH_STEPS[k].name} (unavailable: ${BATCH_STEPS[k].avail()})` : BATCH_STEPS[k].name])) };
+    let r = recipe;
+    if (typeof r === 'string') { const q = r.toLowerCase(); r = (await api('/api/batch/recipes')).find(x => x.id === recipe || x.name.toLowerCase() === q); if (!r) throw new Error(`no saved recipe "${recipe}" (batch with no arguments lists them)`); }
+    batchRecipe(r);
+    if (save) await api('/api/batch/recipes', { ...r, id: undefined, name: String(save) });
+    const ids = media === 'last import' ? (importGroups()[0] || []).map(m => m.id) : Array.isArray(media) ? media : [media];
+    const videos = await runBatch(ids, r);
+    return { done: videos.filter(x => x.state === 'done').length, failed: videos.filter(x => x.state === 'failed').length, cancelled: videos.filter(x => x.state === 'cancelled').length, videos };
   },
   async export(a) {
     if (a.preset && !EX_PRESETS[a.preset]) throw new Error(`preset must be one of ${Object.keys(EX_PRESETS).join(', ')}`);

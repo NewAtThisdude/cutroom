@@ -316,6 +316,15 @@ TOOLS = [
     ('snapshot', 'Look at the video: returns the frame at time t (default: playhead) as an image, rendered by the export engine (exactly what the export will show). '
                  'preview=true returns the live editor canvas instead (faster, but blank video while the window is hidden).',
      S({'t': num, 'max': {'type': 'integer', 'description': 'longest side in px (default 720)'}, 'preview': boo}), 'snapshot'),
+    ('batch', 'Batch editing: one recipe over many library videos. Each video gets its own project (named after it): the recipe\'s steps in this order, '
+              'template (start from a saved template: {step: "template", id: template id or name}; its video slots take the video), '
+              'pauses (trim silences: {step: "pauses", min: seconds, default 0.5}), captions (on-device speech to text: {step: "captions", style: a caption preset, lang, per: words each}), '
+              'loudness ({step: "loudness", lufs: -14|-16|-23}, applied on export), brand (the brand kit, skipped when this version has none); '
+              'then one export per shape in recipe.shapes (9:16|16:9|1:1|4:5, laid out like export also), queued in the editor\'s Exports panel and rendered one after another. '
+              'recipe = {steps: [...], shapes: [...], fit: fill|fit|blur (default fill), preset: tiktok|reels|shorts|yt1080|yt4k, res: 720p|1080p|1440p|4K (default 1080p)} or a saved recipe\'s name; '
+              'save = a name to keep the recipe for later. media = list of ids or names, or "last import". A video that fails is reported and the rest carry on. '
+              'No arguments: the saved recipes, the steps (and which are unavailable) and the last import. Returns per video: project id, state, each step\'s result, files with sizes.',
+     S({'media': {'type': ['array', 'string'], 'items': txt, 'description': 'media ids or names, or "last import"'}, 'recipe': {'type': ['object', 'string']}, 'save': txt}), 'batch'),
     ('export', 'Render the project. format mp4|hevc|av1 (AV1 in MP4)|av1webm|webm (VP9 + Opus)|prores|gif|mp3|m4a (AAC 256k)|wav|png|srt|vtt|txt|fcpxml|edl|chapters '
                '(png = still at `at`; srt/vtt = the captions, or the text clips, as subtitles; txt = one "[start --> end] text" line per caption; '
                'fcpxml = the whole timeline for Final Cut Pro / DaVinci Resolve; edl = a CMX3600 EDL of the main track; '
@@ -366,7 +375,7 @@ def call_tool(name, args):
         path = os.path.expanduser(args['path'])
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
-    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media')
+    long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'batch')
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':
