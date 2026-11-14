@@ -309,17 +309,20 @@ def photo_depth(x):
 
 
 def camera(kind, amt, u):
-    """The camera at u (0..1 through the clip): nearness L (0 far .. 1 near) -> (zoom, dx, dy), offsets in frame widths. Near things zoom and
-    slide more than far ones; the base zoom grows with the slide, so the frame's edges are never reached."""
+    """The camera at u (0..1 through the clip): nearness L (0 far .. 1 near) -> (zoom, dx, dy), dx in frame widths, dy in frame heights. Near things zoom
+    and slide more than far ones; the base zoom grows with the slide (1 / (1 - the largest offset, in the grid's half-frames)), so no
+    sampled place is ever outside the photo, at any frame shape."""
     e = u * u * (3 - 2 * u)
     if kind in ('in', 'out'):
         k = e if kind == 'in' else 1 - e
         return lambda L: (1 + k * amt * 0.22 * (0.35 + L), 0.0, 0.0)
     if kind == 'orbit':
-        a, s = 2 * math.pi * u, math.sin(math.pi * u)
-        return lambda L: (1 + 0.12 * amt * s, amt * 0.05 * (L - 0.25) * math.sin(a), amt * 0.05 * (L - 0.25) * (1 - math.cos(a)) / 2)
+        a = 2 * math.pi * u
+        fx, fy = math.sin(a), (1 - math.cos(a)) / 2
+        z = 1 / (1 - 0.075 * amt * max(abs(fx), fy) * 1.02)  # 0.075 = 2 * 0.05 * 0.75: the largest |offset| in half-frames
+        return lambda L: (z, amt * 0.05 * (L - 0.25) * fx, amt * 0.05 * (L - 0.25) * fy)
     sg = 1 if kind == 'right' else -1
-    return lambda L: (1 + 0.1 * amt * e, sg * amt * 0.05 * (L - 0.25) * e, 0.0)  # the far background barely moves, the near moves most
+    return lambda L: (1 / (1 - 0.075 * amt * e * 1.02), sg * amt * 0.05 * (L - 0.25) * e, 0.0)  # the far background barely moves, the near moves most
 
 
 class Parallax:
@@ -352,7 +355,7 @@ class Parallax:
         if not torch.is_tensor(L):
             L = torch.full((1, 1, self.h, self.w), float(L), device=DEV)
         z, dx, dy = (a + (b - a) * L[0, 0][None, ..., None] for a, b in ((z0, z1), (x0, x1), (y0, y1)))
-        return self.g / z + torch.cat([2 * dx, 2 * dy * self.w / self.h], -1)
+        return self.g / z + torch.cat([2 * dx, 2 * dy], -1)
 
     def sample(self, t, g):
         return F.grid_sample(t, g, mode='bilinear', padding_mode='border', align_corners=True)
@@ -379,8 +382,8 @@ class Parallax:
 def zoom3d(job):
     w, h = job['w'], job['h']
     x = photo(job)
-    P = Parallax(x, photo_depth(x), job['dir'], float(job['amount']))
-    n = max(2, round(job['dur'] * job['fps']))
+    P = Parallax(x, torch.full_like(x[:, :1], 0.5) if job.get('flat') else photo_depth(x), job['dir'], float(job['amount']))  # flat: one depth everywhere (the test's no-parallax control)
+    n = max(2, math.ceil(job['dur'] * job['fps'] - 1e-6))  # the copy is never shorter than the clip (round() made 2.5 s at 25 fps 62 frames)
     enc = encoder(job, w, h, job['fps'])
     with torch.inference_mode():
         for i in range(n):

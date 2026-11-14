@@ -3951,7 +3951,7 @@ async function zoom3dPhoto(c, o = {}) { // the photo (the original, each time) r
     const j = await job('/api/zoom3d', { media: src, direction: dir, amount, dur, fps: P.fps }, '3D zoom');
     await loadMedia();
     c = live(c, pid, was);
-    change(() => { c.media = j.media; c.in = 0; c.out = dur; c.z3 = { src, copy: j.media, dir, amount, dur }; }, `3D zoom ${dir}`);
+    change(() => { c.media = j.media; c.in = 0; c.out = dur; c.speed = 1; c.z3 = { src, copy: j.media, dir, amount, dur }; }, `3D zoom ${dir}`);
     toast('3D zoom: the clip plays the rendered copy (Remove 3D zoom or undo goes back to the photo)');
     return c;
   } catch (e) { setStatus(e.message); throw e; }
