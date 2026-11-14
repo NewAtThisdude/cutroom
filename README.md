@@ -14,6 +14,12 @@ no subscription. Captions, voice, cut-outs and the other AI tools run on your Ma
 - **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms; every shape (9:16, 16:9, 1:1, 4:5) in one go, rendered one after another in an Exports panel.
 - **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
   and the editor uses almost no CPU when you are not touching it.
+- **Settings** (the gear, ⌘, or Ctrl+,): new-project shape, frame rate and name; how many versions autosave keeps; snapping,
+  default photo / text / transition lengths, caption style and language; preview quality, proxies, loop, motion; the export
+  preset, folder, file name, loudness and what happens when it finishes; every shortcut; each AI feature on or off (an off one
+  loses its buttons and the MCP refuses it) next to what this computer runs it as; cache and trash sizes with Clear / Empty.
+  Each choice applies at once and says where it is kept: this computer, or this library (`settings.json`, for what the server
+  needs: versions, export folder, proxies, the local model). The MCP's `settings` tool reads and changes them.
 - **Scriptable:** an MCP server (`mcp/cutroom_mcp.py`) lets an AI assistant drive the open editor.
 
 ## Install
@@ -51,6 +57,7 @@ Data lives in `~/Movies/Cutroom/`:
 - `packs/`: the CC0 sound and music library (`index.json`: each file's source URL, licence and SHA-256)
 - `models/`: Silero VAD
 - `trash/`: deleted projects and media, recoverable
+- `settings.json`: the Settings that travel with the library (version history, export folder, proxies, local model)
 - `server.log`
 
 ## Heavy footage and smaller Macs

@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Settings window (settings.js): sections on the left, options on the right, search on top */
+.dialog.settings { width: min(880px, calc(100vw - 32px)); height: min(640px, 86vh); max-height: none; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 18px 20px 16px; }
+.sethead { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.sethead h2 { margin: 0; flex: 1; }
+.sethead input { width: 240px; }
+.setbody { display: grid; grid-template-columns: 188px minmax(0, 1fr); gap: 16px; min-height: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.setnav { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; overflow: auto; }
+.setnav button { justify-content: flex-start; background: transparent; border-color: transparent; color: var(--muted); padding: 6px 10px; }
+.setnav button:hover { color: var(--text); }
+.setnav button.on { background: var(--raised); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.setmain { overflow: auto; padding: 4px 4px 12px 0; }
+.setsec[hidden], .setrow[hidden], .keys tr[hidden] { display: none; }
+.setsec h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.setrow { display: flex; align-items: center; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--line); min-height: 44px; }
+.setrow.tall { align-items: flex-start; }
+.setl { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.setl b { font-weight: 500; }
+.setl small { color: var(--faint); font-size: 12px; line-height: 1.35; }
+.setl small.path { font: 12px ui-monospace, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.setl small.setcap { color: var(--muted); }
+.setl small.setcap.off { color: var(--hot); }
+.setl small.setnum { color: var(--text); font-variant-numeric: tabular-nums; }
+.setc { display: flex; align-items: center; gap: 8px; flex: none; max-width: 58%; }
+.setc select { max-width: 280px; }
+.setc input[type=text] { width: 220px; }
+.where { color: var(--faint); font-size: 11px; width: 84px; text-align: right; white-space: nowrap; }
+.setchecks { display: flex; gap: 10px; }
+.setchecks label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.setrow.wide { flex-wrap: wrap; gap: 8px 16px; }
+.setrow.wide .setc { flex-basis: 100%; max-width: none; }
+.setfolder { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 0; }
+.setfolder input[type=text] { flex: 1; min-width: 0; width: auto; }
+.setthird { white-space: pre-wrap; font: 11.5px/1.45 ui-monospace, monospace; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 280px; overflow: auto; -webkit-user-select: text; user-select: text; }
+#setKeys .keys { width: 100%; }
+.dialog.settings > .actions { margin-top: 12px; align-items: center; }
+#exDir .exdir { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+#exDir .path { flex: 1; min-width: 0; color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) { .setbody { grid-template-columns: 1fr; } .setnav { flex-direction: row; overflow-x: auto; padding: 8px 0; } .setc { max-width: none; } .setrow { flex-wrap: wrap; } }

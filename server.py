@@ -519,7 +519,7 @@ def prepare_(m):
                                  '-crf', '32', '-deadline', 'realtime', '-cpu-used', '8', '-an', str(tmp)], low=True).returncode
             if m['proxy']:
                 tmp.replace(CACHE / f'{mid}.proxy.webm')
-        elif (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
+        elif (pol := proxy_pref(m)) == 'always' or pol == 'auto' and (m.get('codec') not in PREVIEW_CODECS or Path(m['file']).suffix.lower() not in PREVIEW_EXT or heavy(m) or not hw_pix(m)  # e.g. ProRes, MKV, 4K60
               or m.setdefault('gop', gop(src)) > 2):  # a keyframe only every few seconds: seeks decode all of it
             out = CACHE / f'{mid}.proxy.mp4'
             m['proxy'] = proxy(m, src, out) or proxy(m, src, out, sw=True)
@@ -5692,6 +5692,8 @@ class App(BaseHTTPRequestHandler):
                 return self.reply({**ai_status(), 'voices': ai_voices(), 'clones': clones(), 'cloneReady': clone_ready(), 'dubLangs': CLONE_LANGS, 'gpu': gpu_status()})
             if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
                 return self.reply(caps())
+            if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
+                return self.reply(settings_api(path))
             if path == '/api/remote/status':
                 return self.reply({'connected': time.time() - REMOTE_SEEN[0] < 30})
             if path == '/api/ping':
@@ -5827,6 +5829,8 @@ class App(BaseHTTPRequestHandler):
                     raise ValueError('the upload was cut off')
                 return self.reply({'job': run_job(open_package, f, True)})
             body = self.body()
+            if u.path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
+                return self.reply(settings_api(u.path, body))
             if u.path == '/api/package/open':  # the MCP server: a package on this Mac by its path
                 f = Path(os.path.expanduser(str(body.get('path', '')))).resolve()
                 if not f.is_file():
@@ -7033,7 +7037,7 @@ def resume_prepare():
                                                        '-of', 'csv=p=0', str(wk)]).stdout:
             wk.unlink()  # from before its container was relabelled too (WebKit showed it lifted): remade on the next request
         if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file() and (
-                not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
+                not m.get('ready') or ((heavy(m) or m.get('gop', 0) > 2) and proxy_pref(m) != 'never' and not (CACHE / f"{m['id']}.proxy.mp4").exists())):
             m['ready'] = False  # the page polls until it's ready again, then reloads its players onto the proxy
             save_meta(m)
             prepare(m)
@@ -7045,6 +7049,157 @@ def resume_prepare():
             with PREP:  # the zoomable filmstrip and waveform, once, for items from before them
                 if timeline_assets(m):
                     save_meta(m)
+
+
+# ---------- settings that live with the library: <library>/settings.json (the page's Settings window; the rest are per
+# computer, in the page's localStorage). Each one sets a value the code above already reads at call time. ----------
+LIB_SETTINGS = HOME / 'settings.json'
+LIBSET = {}
+_SET0 = {'keep': VERSION_KEEP, 'gap': VERSION_GAP, 'llm': os.environ.get('CUTROOM_LLM')}
+REGEN = ('.proxy.mp4', '.proxy.webm', '.wk.mov', '.strip.jpg', '.grid.jpg', '.wave.png', '.peaks', '.320.jpg', '.320.png', '.2560.jpg', '.2560.png')  # made again from the media
+
+
+def lib_settings_apply():
+    global VERSION_KEEP, VERSION_GAP, EXPORTS
+    VERSION_KEEP = LIBSET.get('versionsKeep', _SET0['keep'])
+    VERSION_GAP = LIBSET['versionsGap'] * 60 if 'versionsGap' in LIBSET and not os.environ.get('CUTROOM_VERSION_GAP') else _SET0['gap']  # (tests set the env)
+    d = LIBSET.get('exportDir')
+    EXPORTS = Path(d) if d and Path(d).is_dir() else HOME / 'exports'  # a chosen folder that went away (a drive unplugged): the library's
+    if LIBSET.get('llm'):
+        os.environ['CUTROOM_LLM'] = LIBSET['llm']  # llm_model() picks it when Ollama has it
+    elif _SET0['llm']:
+        os.environ['CUTROOM_LLM'] = _SET0['llm']
+    else:
+        os.environ.pop('CUTROOM_LLM', None)
+
+
+def lib_settings_set(body):
+    new = dict(LIBSET)
+    for k, v in body.items():
+        if v is None:
+            new.pop(k, None)
+        elif k == 'versionsKeep':
+            new[k] = int(fnum(v, 5, 500))
+        elif k == 'versionsGap':
+            new[k] = fnum(v, 1, 60)
+        elif k == 'proxy':
+            if v not in ('auto', 'always', 'never'):
+                raise ValueError('proxy: auto, always or never')
+            new[k] = v
+        elif k == 'exportDir':
+            p = Path(os.path.expanduser(str(v))).resolve() if v else None
+            if p and not (p.is_dir() and os.access(p, os.W_OK)):
+                raise ValueError(f'not a folder this computer can write to: {p}')
+            new[k] = str(p) if p else ''
+        elif k == 'llm':
+            if not re.fullmatch(r'[\w.:/-]{0,80}', str(v)):
+                raise ValueError('llm: an Ollama model name')
+            new[k] = str(v)
+        else:
+            raise ValueError(f'no library setting {k}')
+    tmp = LIB_SETTINGS.with_suffix('.tmp')
+    tmp.write_text(json.dumps(new, indent=1))
+    tmp.replace(LIB_SETTINGS)
+    LIBSET.clear()
+    LIBSET.update(new)
+    lib_settings_apply()
+    return LIBSET
+
+
+def proxy_pref(m):
+    """The proxy policy for this file: 'always' (every video), 'never' (4K and other heavy SDR files WebKit plays as they
+    are: the preview reads the original), else 'auto' (prepare_'s own rules). HDR, ProRes, MKV, 4:2:2 always get one."""
+    p = LIBSET.get('proxy', 'auto')
+    plays = (m.get('codec') in PREVIEW_CODECS and Path(m.get('file', '')).suffix.lower() in PREVIEW_EXT and hw_pix(m)
+             and not m.get('hdr') and not (m.get('alpha') or m.get('trans')))
+    return 'auto' if p == 'never' and not plays else p
+
+
+def du(p, match=None):
+    n = 0
+    for root, _, files in os.walk(p):
+        for f in files:
+            if match is None or f.endswith(match):
+                try:
+                    n += os.lstat(os.path.join(root, f)).st_size
+                except OSError:
+                    pass
+    return n
+
+
+def clear_preview_cache():
+    """Proxies, filmstrips, waveforms and photo thumbnails only (never media, projects, transcripts or the AI's caches),
+    then every library item is prepared again in the background, one at a time like an import."""
+    removed = size = 0
+    for f in CACHE.iterdir():
+        if f.is_file() and f.name.endswith(REGEN):
+            size += f.stat().st_size
+            f.unlink(missing_ok=True)
+            removed += 1
+    again = []
+    for f in MEDIA.glob('*.json'):
+        try:
+            m = json.loads(f.read_text())
+        except ValueError:
+            continue
+        if m.get('kind') in ('video', 'audio') and m.get('file') and (MEDIA / m['file']).is_file():
+            for k in ('grid', 'peaks', 'stripN', 'wave', 'proxy'):
+                m.pop(k, None)
+            m['ready'] = False  # the page polls until it is ready again and reloads its players
+            save_meta(m)
+            again.append(m)
+    threading.Thread(target=lambda: [prepare(m) for m in again], daemon=True).start()
+    return {'removed': removed, 'bytes': size, 'rebuilding': len(again)}
+
+
+def reveal_path(p):
+    p = str(p)
+    cmd = ['open', '-R', p] if sys.platform == 'darwin' else ['explorer', f'/select,{p}'] if os.name == 'nt' else ['xdg-open', os.path.dirname(p)]
+    subprocess.Popen(cmd)
+
+
+def settings_api(path, body=None):
+    if body is None:  # GET
+        if path == '/api/settings':
+            git = sh(['git', '-C', str(Path(__file__).resolve().parent), 'rev-parse', '--short', 'HEAD']).stdout.strip()
+            return {'lib': LIBSET, 'home': str(HOME), 'exports': str(EXPORTS), 'libExports': str(HOME / 'exports'), 'log': str(HOME / 'server.log'),
+                    'version': '1.0', 'commit': git, 'pickFolder': sys.platform == 'darwin', 'gpuHost': bool(os.environ.get('CUTROOM_GPU_HOST'))}
+        if path == '/api/settings/storage':
+            return {'cache': sum(du(CACHE, x) for x in REGEN), 'cacheAll': du(CACHE), 'trash': du(HOME / 'trash')}
+        if path == '/api/settings/llm':  # the installed models that fit this computer, and the one used now
+            try:
+                names = [m['name'] for m in json.loads(urllib.request.urlopen(LLM_URL + '/api/tags', timeout=2).read()).get('models', [])]
+                size = lambda n: float(b[1]) if (b := re.search(r':(\d+(?:\.\d+)?)b', n)) else 0
+                return {'models': [n for n in names if size(n) <= LLM_MAX_B and 'embed' not in n], 'pick': llm_model()}
+            except (OSError, ValueError):
+                return {'models': [], 'pick': None, 'why': 'Ollama is not running'}
+        if path == '/api/settings/thirdparty':
+            return {'text': (Path(__file__).resolve().parent / 'THIRD_PARTY.md').read_text()}
+    else:
+        if path == '/api/settings':
+            return {'lib': lib_settings_set(body)}
+        if path == '/api/settings/clear-cache':
+            return clear_preview_cache()
+        if path == '/api/settings/empty-trash':
+            n = du(HOME / 'trash')
+            shutil.rmtree(HOME / 'trash', ignore_errors=True)
+            (HOME / 'trash').mkdir(exist_ok=True)
+            return {'bytes': n}
+        if path == '/api/settings/reveal':
+            reveal_path({'log': HOME / 'server.log', 'exports': EXPORTS}.get(body.get('what'), HOME))
+            return {'ok': True}
+        if path == '/api/settings/pick-folder':  # the Mac's own folder chooser (elsewhere the page asks for a path)
+            r = sh(['osascript', '-e', 'POSIX path of (choose folder with prompt "Exports go to")'])
+            return {'path': r.stdout.strip().rstrip('/') or None}
+    raise KeyError(path)
+
+
+try:
+    LIBSET.update(json.loads(LIB_SETTINGS.read_text()))
+except (OSError, ValueError):
+    pass
+lib_settings_apply()
+# ---------- end of library settings ----------
 
 
 def main():
