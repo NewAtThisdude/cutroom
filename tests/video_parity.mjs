@@ -10,6 +10,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B || 'http://127.0.0.1:4610', OUT = fileURLToPath(new URL('./out/parity/', import.meta.url)), only = process.argv[2];
 fs.mkdirSync(OUT, { recursive: true });
+// Chrome / Edge (Skia) place a scaled, moving clip's fractional edges and resampling phase a little differently from WebKit: the
+// Ken Burns out / pulse frames measure worst block 30.3 / 29.6 there (WebKit 26.0), the same on a Mac's Chromium and on Windows'
+// Edge, on the right frame (one frame either way: 45-55) and unchanged by drawing through a canvas at high smoothing quality
+const SKIA = (process.env.BROWSER || 'webkit') !== 'webkit', SKIA_BLOCK = /^motion /;
 const MEAN = 4, BLOCK = 28, NOISY = /transition dissolve|effect (vhs|oldfilm|grain|oldtv|nightvision|halftone)/; // grain, and halftone's dots (a few pixels, shrunk to 160 px: moiré): by block averages // 28: a scaled or turning clip's edges land a pixel apart
 const APPROX = /effect (blur|pixelate|motionblur|zoomblur|handheld|beatshake|posterize|halftone)|transition (pixelize|whip|zoomblur)|blur bg|clip blur|beauty|glow/; // camera moves: sub-pixel offsets land a pixel apart; posterize: a level apart in the source can flip a band; halftone: dots sized at each side's own resolution // WebKit has no ctx.filter: the preview's blur and block grid are close, not exact // levels; tight enough to catch a wrong formula, a shifted frame or a misplaced box
 const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-parity-`);
@@ -128,7 +132,7 @@ for (const [name, code] of SC) {
   try { r = await shoot(code); } catch (e) { console.log(`ERR  ${name}: ${String(e.message).split('\n')[0]}`); res.push(false); continue; }
   pids.push(r.pid);
   const noisy = NOISY.test(name), [mn, wb] = noisy ? [r.cmean, r.cworst] : [r.mean, r.worst];
-  const approx = APPROX.test(name), ok = mn <= (approx ? 2.5 : 1) * MEAN && wb <= (approx ? 2.5 : 1) * BLOCK;
+  const approx = APPROX.test(name), ok = mn <= (approx ? 2.5 : 1) * MEAN && wb <= (approx ? 2.5 : 1) * (SKIA && SKIA_BLOCK.test(name) ? 32 : BLOCK);
   res.push(ok);
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name.padEnd(30)} mean ${mn.toFixed(2).padStart(5)}  worst block ${wb.toFixed(1).padStart(5)}  @${r.t}s${noisy ? '  (random grain: block averages)' : approx ? '  (approximate in the WebKit preview)' : ''}`);
   if (!ok || process.env.SAVE) { const f = `${OUT}${name.replace(/[^a-z0-9]+/gi, '_')}`; fs.writeFileSync(`${f}_export.png`, Buffer.from(r.ex, 'base64')); fs.writeFileSync(`${f}_preview.png`, Buffer.from(r.pv, 'base64')); }

@@ -1422,10 +1422,13 @@ function drawRamp(c, hot = -1) { // the draft curve (not in P until Apply), the 
   if (L) L.textContent = `${len(c).toFixed(2)} s → ${after.toFixed(2)} s${hot >= 0 ? ` · ${pts[hot][1].toFixed(2)}×` : on ? ' · ramp applied' : ''}`;
   for (const b of $$('#inspector [data-rampp]')) b.classList.toggle('on', JSON.stringify(rampPts(b.dataset.rampp)) === JSON.stringify(pts));
 }
+let curveTap = null; // the last press on a curve editor: Chromium leaves pointerdown's detail at 0, so the double-click is timed here
 function curvePts(e, pts, pos, r) { // a curve editor's points ([x, y] fractions, y up): double-click removes one (null), else the dragged one's setter (a click off the points adds one)
   const [u, v] = pos(e), d = q => Math.hypot((q[0] - u) * r.width, (1 - q[1] - v) * r.height);
   let i = pts.findIndex(q => d(q) < 14);
-  if (e.detail === 2 && i > 0 && i < pts.length - 1) { pts.splice(i, 1); return null; }
+  const dbl = curveTap && e.timeStamp - curveTap.t < 500 && Math.hypot(e.clientX - curveTap.x, e.clientY - curveTap.y) < 6;
+  curveTap = dbl ? null : { t: e.timeStamp, x: e.clientX, y: e.clientY }; // (a third press starts over, as detail 3 did)
+  if (dbl && i > 0 && i < pts.length - 1) { pts.splice(i, 1); return null; }
   if (i < 0) { const nu = +clamp(u, 0.01, 0.99).toFixed(3); if (pts.some(q => Math.abs(q[0] - nu) < 0.01)) return Object.assign(() => {}, { i: -1 }); pts.push([nu, +(1 - v).toFixed(3)]); pts.sort((a, b) => a[0] - b[0]); i = pts.findIndex(q => q[0] === nu); }
   const lo = i ? pts[i - 1][0] + 0.01 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 0.01 : 1, ends = i === 0 || i === pts.length - 1;
   const set = ev => { const [x, y] = pos(ev); pts[i] = [ends ? pts[i][0] : +clamp(x, lo, hi).toFixed(3), +(1 - y).toFixed(3)]; };
@@ -2139,6 +2142,8 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
     glowDraw(ctx, c, fgr ? h : 0, () => ctx.drawImage(el, (cr.l || 0) * vw, (cr.t || 0) * vh, fx * vw, fy * vh, x, y, w, h));
     ctx.restore();
   };
+  const out = ctx, burn = lane === 'overlay' && c.blend === 'color-burn'; // engines disagree on a black clip over white (W3C: white, WebKit: black): drawn on a layer and burnt in by hand, the export's way
+  if (burn) ctx = burnLayer(out);
   ctx.save();
   if (lane === 'main' && c.fit === 'blur') {
     const mw = m.w * fx, mh = m.h * fy, s = Math.max(P.w / mw, P.h / mh) * 1.08, r = (P.w / 40) * k;
@@ -2155,14 +2160,39 @@ function drawMedia(ctx, lane, c, m, el, lt, k, cap) {
     }
   }
   ctx.filter = gpu() || graded ? 'none' : filt || 'none'; // the GPU pass (or offscreen) has done the colour
-  if (lane === 'overlay') { ctx.globalAlpha = pr.opacity * f; if (c.blend && c.blend !== 'normal') ctx.globalCompositeOperation = c.blend; }
+  if (lane === 'overlay') { ctx.globalAlpha = pr.opacity * f; if (c.blend && c.blend !== 'normal' && !burn) ctx.globalCompositeOperation = c.blend; }
   else if (pr.opacity < 1) ctx.globalAlpha = pr.opacity; // main clips fade over the canvas colour, as in the export
   draw(g.x * k, g.y * k, g.w * k, g.h * k);
   ctx.restore();
+  if (burn) { burnOnto(out, ctx.canvas); ctx = out; }
   if (lane === 'main' && f < 1) { ctx.fillStyle = `rgba(0,0,0,${1 - f})`; ctx.fillRect(0, 0, P.w * k, P.h * k); } // ffmpeg fade = to black
   hits.push({ lane, id: c.id, x0: g.x * k, y0: g.y * k, x1: (g.x + g.w) * k, y1: (g.y + g.h) * k, rot: pr.rot || 0 });
 }
-const blurCv = document.createElement('canvas');
+const blurCv = document.createElement('canvas'), burnCv = document.createElement('canvas');
+function burnLayer(out) { // a clear canvas the size of out, same transform: the colour-burn clip is drawn here first
+  if (burnCv.width !== out.canvas.width || burnCv.height !== out.canvas.height) { burnCv.width = out.canvas.width; burnCv.height = out.canvas.height; }
+  const x = burnCv.getContext('2d', { willReadFrequently: true });
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.filter = 'none'; x.clearRect(0, 0, burnCv.width, burnCv.height); x.setTransform(out.getTransform());
+  return x;
+}
+function burnOnto(out, L) { // L (the clip, its opacity in its alpha) colour-burnt onto out: the export's lut2 (if(eq(y,0),0,255-min(255,(255-x)*255/y))), mixed by alpha
+  const W = L.width, H = L.height, s = L.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+  let x0 = W, y0 = H, x1 = -1, y1 = -1; // only where the clip drew
+  for (let y = 0, i = 3; y < H; y++) for (let x = 0; x < W; x++, i += 4) if (s[i]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; y1 = y; }
+  if (x1 < 0) return;
+  const w = x1 - x0 + 1, h = y1 - y0 + 1, img = out.getImageData(x0, y0, w, h), d = img.data;
+  for (let y = 0; y < h; y++) for (let x = 0, j = y * w * 4, i = ((y + y0) * W + x0) * 4; x < w; x++, i += 4, j += 4) {
+    const a = s[i + 3] / 255, ab = d[j + 3] / 255;
+    if (!a) continue;
+    const ao = a + ab * (1 - a);
+    for (let k = 0; k < 3; k++) {
+      const cs = s[i + k], cb = d[j + k], bl = cs ? Math.floor(255 - Math.min(255, (255 - cb) * 255 / cs) + 0.5) : 0;
+      d[j + k] = (a * ((1 - ab) * cs + ab * bl) + ab * cb * (1 - a)) / ao; // W3C compositing (opaque below: cb + a * (bl - cb))
+    }
+    d[j + 3] = ao * 255;
+  }
+  out.putImageData(img, x0, y0);
+}
 function glowDraw(ctx, c, h, draw) { // a cutout's glow: canvas shadow (a Gaussian of its alpha, sigma = shadowBlur / 2), like the export's gblur
   if (!c.glow || !h) return draw();
   ctx.shadowColor = c.glow.color; ctx.shadowBlur = 2 * c.glow.size * 0.04 * h; ctx.shadowOffsetX = ctx.shadowOffsetY = 0;

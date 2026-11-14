@@ -6613,7 +6613,7 @@ class App(BaseHTTPRequestHandler):
                 stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(body.get('name') or 'subtitles')).strip(' .')[:120] or 'subtitles'
                 EXPORTS.mkdir(parents=True, exist_ok=True)
                 f = unique(EXPORTS / f"{stem}.{body.get('ext') if body.get('ext') in ('vtt', 'txt') else 'srt'}")
-                f.write_text(text, encoding='utf-8')
+                f.write_text(text, encoding='utf-8', newline='\n')  # (Windows would write CRLF)
                 return self.reply({'file': f.name})
             if u.path == '/api/interchange':  # the timeline for other editors, or YouTube chapters, into the exports folder
                 if body.get('format') not in HANDOFF:
@@ -6626,7 +6626,7 @@ class App(BaseHTTPRequestHandler):
                 stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(body.get('name') or p.get('name') or 'Cutroom')).strip(' .')[:120] or 'Cutroom'
                 EXPORTS.mkdir(parents=True, exist_ok=True)
                 f = unique(EXPORTS / f"{stem}{HANDOFF[body['format']]}")
-                f.write_text(text, encoding='utf-8')
+                f.write_text(text, encoding='utf-8', newline='\n')
                 return self.reply({'file': f.name, 'notes': notes, **({'text': text} if body['format'] == 'chapters' else {})})
             if u.path == '/api/sfx/add':  # a sound effect into the library (made on first use)
                 return self.reply(sfx_media(str(body.get('id', ''))))
@@ -6959,19 +6959,20 @@ def selftest():
             break
         time.sleep(0.01)
     assert JOBS[lj].get('note', '').startswith('Waiting for Smart search (2 ahead)'), JOBS[lj]
-    AI_OFF.add('voice')  # Settings › AI: an off kind is refused, but a job's own inner step of that kind runs under the job's switch
+    job, step = ('clone', 'voice') if not any('refused' in tier(k) for k in ('clone', 'voice')) else ('relight', 'cutout')  # (a PC refuses the MLX voices)
+    AI_OFF.add(step)  # Settings › AI: an off kind is refused, but a job's own inner step of that kind runs under the job's switch
     try:
-        with ai_slot('clone'):
-            with ai_slot('voice'):  # cloning's Kokoro comparison voices, voiceover off
+        with ai_slot(job):
+            with ai_slot(step):  # cloning's Kokoro comparison voices, voiceover off
                 pass
         try:
-            with ai_slot('voice'):
+            with ai_slot(step):
                 pass
-            raise AssertionError('voiceover turned off but its job ran')
+            raise AssertionError(f'{step} turned off but its job ran')
         except RuntimeError as e:
             assert 'turned off in Settings' in str(e), e
     finally:
-        AI_OFF.discard('voice')
+        AI_OFF.discard(step)
     go.set()
     ta.join(5)
     tb.join(5)
@@ -7459,7 +7460,7 @@ def selftest():
     gen('-f', 'lavfi', '-i', 'color=c=black:s=320x320', '-vf', "format=gray,geq=lum='if(lt(hypot(X-160,Y-160),110),255,0)'", '-frames:v', '1', str(HOME / 'circle.png'))
     out = one('mask', {'media': B['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(B), 'mask': png('circle')})
     assert pixel(out, 1, 135, 240)[2] > 200 and max(pixel(out, 1, 8, 112)) < 40, 'mask: centre kept, corner cut'
-    # the default MP4 (VideoToolbox) is the same every time and sharp from its first frame: a fine-grained moving picture under a
+    # the default MP4 (VideoToolbox; a PC's NVENC / QSV / AMF / x264) is the same every time and sharp from its first frame: a fine-grained moving picture under a
     # masked, blurred copy of itself (follow-blur), exported twice, each frame's PSNR-Y vs a ProRes render of the same plan
     gen('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=2,noise=alls=14', '-c:v', 'libx264', '-crf', '12', str(HOME / 'grain.mp4'))
     G, gg = imp('grain.mp4'), {'x': 0, 'y': 0, 'w': 1280, 'h': 720}
@@ -7470,8 +7471,8 @@ def selftest():
     q1, q2 = per(render(vplan_, 60)), per(render(vplan_, 60))
     m1, m2 = sum(q1) / 60, sum(q2) / 60
     # (the old -b:v: 38.5 dB with a frame at 37.4 = 1.1 under its mean; quality 0.82 on an M4 Max: 39.6, every frame within 0.15)
-    assert len(q1) == len(q2) == 60 and m1 > 39 and abs(m1 - m2) < 0.1 and min(q1 + q2) > min(m1, m2) - 0.5, ('VideoToolbox export: soft, uneven or a soft start', m1, m2, min(q1), min(q2))
-    print(f'default MP4 (VideoToolbox) twice on a masked blur: {m1:.2f} / {m2:.2f} dB vs ProRes, worst frame {min(q1 + q2):.2f} dB')
+    assert len(q1) == len(q2) == 60 and m1 > 39 and abs(m1 - m2) < 0.1 and min(q1 + q2) > min(m1, m2) - 0.5, (f"{ENC['h264']} export: soft, uneven or a soft start", m1, m2, min(q1), min(q2))
+    print(f'default MP4 ({ENC["h264"]}) twice on a masked blur: {m1:.2f} / {m2:.2f} dB vs ProRes, worst frame {min(q1 + q2):.2f} dB')
     ease_kf = [{'t': 0, 'w': 135, 'x': 67.5, 'y': 172.5, 'op': 1, 'e': 1}, {'t': 2, 'w': 270, 'x': 0, 'y': 105, 'op': 1}]
     out = one('ease', {'media': I['id'], 'in': 0, 'out': 2, 'frames': 60, 'geom': geom(I), 'kf': ease_kf})
     assert max(pixel(out, 0.5, 54, 240)) < 40 and pixel(out, 0.5, 70, 240)[0] > 200, 'easing: at u=.25 the eased edge (57 px) must lag linear (51 px)'
@@ -7721,10 +7722,23 @@ def selftest():
     sc = scenes(imp('cuts.mp4')['id'])
     assert len(sc) == 2 and abs(sc[0] - 1) < 0.05 and abs(sc[1] - 2) < 0.05, ('scene detection', sc)
     print(f'scene detection ok: {sc}')
-    if shutil.which(WHISPER) and Path(MODEL).exists() and shutil.which('say'):
-        subprocess.run(['say', '-o', str(HOME / 'speech.aiff'), 'Cutroom makes captions automatically. [[slnc 1300]] Right on your Mac.'], check=True)
-        with open(HOME / 'speech.aiff', 'rb') as fh:
-            sp = import_file('speech.aiff', fh, (HOME / 'speech.aiff').stat().st_size, background=False)
+    def speak(name, *parts):  # a spoken fixture, its parts 1.3 s apart: the Mac's say, or Windows' SAPI voice (the voiceover's)
+        if WIN:
+            f, q = HOME / f'{name}.wav', lambda x: "'" + str(x).replace("'", "''") + "'"
+            r = powershell(SAPI + '$p = New-Object System.Speech.Synthesis.PromptBuilder; ' + '; $p.AppendBreak([TimeSpan]::FromMilliseconds(1300)); '.join(
+                f'$p.AppendText({q(t)})' for t in parts) + f'; $s.SetOutputToWaveFile({q(f)}); $s.Speak($p); $s.Dispose()')
+            assert not r.returncode and f.exists(), ('SAPI speech', r.stderr)
+        else:
+            f = HOME / f'{name}.aiff'
+            subprocess.run(['say', '-o', str(f), ' [[slnc 1300]] '.join(parts)], check=True)
+        return f
+
+    no_cap = [n for n, ok in (('whisper-cli', shutil.which(WHISPER)), (f'the speech model ({MODEL})', Path(MODEL).exists()),
+                              ('a system voice for the test speech', vs if WIN else shutil.which('say'))) if not ok]
+    if not no_cap:
+        sf = speak('speech', 'Cutroom makes captions automatically.', 'Right on your Mac.')
+        with open(sf, 'rb') as fh:
+            sp = import_file(sf.name, fh, sf.stat().st_size, background=False)
         d = sp['duration']  # first only the last words in use: whisper hears that span + 1 s, then the rest when all is asked for
         part, have = transcribe(sp['id'], 'en', [[d - 0.6, d]]), json.loads((CACHE / f"{sp['id']}.en.words.json").read_text())['have']
         assert part and not any('caption' in w['w'].lower() for w in part) and len(have) == 1 and abs(have[0][0] - (d - 1.6)) < 0.01, (part, have)
@@ -7738,12 +7752,11 @@ def selftest():
             junk = transcribe(A['id'], 'en')
             assert junk == [], ('hallucinated captions on music', junk)
         print(f'captions ok (max {smear:.2f}s into a pause):', ' '.join(f"{w['w']}@{w['s']:.2f}" for w in words))
-        subprocess.run(['say', '-o', str(HOME / 'fill.aiff'), 'So, um, I think, uh, we should, um, start the video now.'], check=True)
-        fl = fillers(imp('fill.aiff')['id'], 'en')
+        fl = fillers(imp(speak('fill', 'So, um, I think, uh, we should, um, start the video now.').name)['id'], 'en')
         assert len(fl) >= 2 and all(f['e'] - f['s'] > 0.15 for f in fl), ('filler words', fl)
         print('filler words ok:', ' '.join(f"{f['w']}@{f['s']:.2f}-{f['e']:.2f}" for f in fl))
     else:
-        print('captions skipped (whisper-cli or model missing)')
+        print(f"captions skipped ({', '.join(no_cap)} missing)")
     # the app's preview copy: same decoded pixels, only the colour labels change (sRGB transfer: WebKit shows them unlifted)
     gen('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(HOME / 'hd.mp4'))
     hd = imp('hd.mp4')
@@ -7792,8 +7805,7 @@ def selftest():
                 print(f"outline preview ok ({purpose}, {time.monotonic() - t0_:.2f} s): {pv['area']:.4f} of the frame, all of the square")
         if AI_PY.exists() and subprocess.run([*AI_RUN, '-c', 'import demucs'], capture_output=True).returncode == 0:
             # isolate voice: speech over a loud 55 Hz hum + 220 Hz tone; the voice track must lose the music
-            subprocess.run(['say', '-o', str(HOME / 'talk.aiff'), 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.'], check=True)
-            gen('-i', str(HOME / 'talk.aiff'), '-f', 'lavfi', '-i', 'aevalsrc=0.3*sin(2*PI*55*t)+0.2*sin(2*PI*220*t):s=44100:d=6', '-filter_complex',
+            gen('-i', str(speak('talk', 'Cutroom keeps the voice and drops the music underneath it, all on this Mac.')), '-f', 'lavfi', '-i', 'aevalsrc=0.3*sin(2*PI*55*t)+0.2*sin(2*PI*220*t):s=44100:d=6', '-filter_complex',
                 '[0]aresample=44100,apad[a];[a][1]amix=inputs=2:normalize=0:duration=shortest', '-c:a', 'aac', str(HOME / 'noisy.m4a'))
             vo = isolate({}, imp('noisy.m4a')['id'], 'voice')
 

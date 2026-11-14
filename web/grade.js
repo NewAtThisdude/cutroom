@@ -210,6 +210,20 @@ void main() {
     return gl;
   } catch (e) { GPU.failed = true; console.warn('GPU colour pass off:', e.message); return null; }
 }
+// Edge/Chrome on Windows hand WebGL a hardware-decoded <video> frame through their own D3D11 copy, which comes out softer
+// than drawImage shows the same frame (1:1, 640x360 noise: variance 308 vs 387, 4.7 levels apart on average); so a clip
+// went soft the moment a colour setting or Smooth skin moved it onto the GPU. There the frame goes through a 2D canvas
+// first (drawImage's own conversion, at the size the pass needs: ~4 ms a 1080p frame). Elsewhere both ways agree.
+const VID_VIA_2D = /Windows/.test(navigator.userAgent), vid2d = document.createElement('canvas');
+function texSource(gl, el, s = 1) { // texImage2D(el) into the bound texture; s <= 1: the largest scale the pass samples it at
+  if (VID_VIA_2D && el.tagName === 'VIDEO') {
+    const w = Math.max(1, Math.ceil(el.videoWidth * Math.min(1, s))), h = Math.max(1, Math.ceil(el.videoHeight * Math.min(1, s)));
+    if (vid2d.width !== w || vid2d.height !== h) { vid2d.width = w; vid2d.height = h; }
+    vid2d.getContext('2d').drawImage(el, 0, 0, w, h);
+    el = vid2d;
+  }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el);
+}
 const satM = s => [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s];
 const colMajor = m => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
 function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, coloured, keyed, vignetted, masked (offscreen()'s CPU work); returns [canvas, y of the result] or null
@@ -220,7 +234,7 @@ function gpuPass(el, src, W, H, c, opt = {}) { // el's src rect -> W x H, colour
   if (cv.width < W || cv.height < H) { cv.width = Math.max(cv.width, W); cv.height = Math.max(cv.height, H); }
   gl.useProgram(GPU.pg); gl.viewport(0, 0, W, H); // (the motion-blur mix has its own program)
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GPU.srcT);
-  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { return null; }
+  try { texSource(gl, el, Math.max(W / src[2], H / src[3])); } catch { return null; }
   gl.uniform4f(U.crop, src[0] / vw, src[1] / vh, (src[0] + src[2]) / vw, (src[1] + src[3]) / vh);
   gl.uniform1i(U.flip, c.flip ? 1 : 0);
   const a = c.adj || {}, T = toneLUT(c), L = lookMatrix(c), G = gradeLUT(c);
@@ -371,7 +385,7 @@ function trGPU(ctx, sides, type, P1, bg) {
     for (const [j, s] of sides.entries()) {
       const vw = s.el.videoWidth || s.el.naturalWidth || s.el.width, vh = s.el.videoHeight || s.el.naturalHeight || s.el.height;
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, Q.vid);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.el);
+      texSource(gl, s.el, Math.max(s.dst[2] / s.src[2], s.dst[3] / s.src[3]));
       gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, Q.t[j]);
       if (Q.sz !== sz) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       gl.bindFramebuffer(gl.FRAMEBUFFER, Q.fb[j]); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, Q.t[j], 0);
@@ -591,7 +605,7 @@ function fxGPU(src, W, H, steps) {
   if (src.cap) { // the picture itself goes up (a video frame is a GPU copy; a 2D canvas upload cost 6-8 ms a frame), laid in its box in texture 0
     const { el, src: sr, dst } = src.cap, vw = el.videoWidth || el.naturalWidth, vh = el.videoHeight || el.naturalHeight;
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, FXG.vidT ??= (() => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v); return t; })());
-    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { gl.activeTexture(gl.TEXTURE0); return null; }
+    try { texSource(gl, el, Math.max(dst[2] / sr[2], dst[3] / sr[3])); } catch { gl.activeTexture(gl.TEXTURE0); return null; }
     gl.activeTexture(gl.TEXTURE0);
     target(0, W, H); gl.bindTexture(gl.TEXTURE_2D, tex[1]);
     gl.uniform1i(U.mode, 8); gl.uniform2i(U.size, W, H); gl.uniform1i(U.flipOut, 0); gl.uniform4f(U.box, ...dst); gl.uniform4f(U.crop, sr[0] / vw, sr[1] / vh, sr[2] / vw, sr[3] / vh); gl.uniform3f(U.bgc, ...hexRgb(src.bg));
