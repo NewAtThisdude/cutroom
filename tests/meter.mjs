@@ -27,7 +27,8 @@ const b = await browser.launch();
 let pid, ref;
 for (const rm of ['reduce', 'no-preference']) {
   const ctx = await b.newContext({ viewport: { width: 1517, height: 904 }, reducedMotion: rm }), page = await ctx.newPage(), errs = [];
-  page.on('pageerror', e => errs.push(e.message));
+  let reloading = false; // WebKit reports a fetch cut off by our own reload as a page error ('... due to access control checks')
+  page.on('pageerror', e => { if (!(reloading && /access control checks/.test(e.message))) errs.push(e.message); });
   const ev = (fn, a) => page.evaluate(fn, a);
   await page.goto(B + '/', { waitUntil: 'load' });
   await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof M !== 'undefined', null, { timeout: 30000 });
@@ -42,10 +43,9 @@ for (const rm of ['reduce', 'no-preference']) {
   await page.click('#btnMeter');
   await page.waitForFunction(() => MTR.node, null, { timeout: 10000 }).catch(() => {});
   check(`${rm}: the button shows it and taps the master bus`, await ev(() => !$('#meter').hidden && !!MTR.node && actx.bus.gain.value === 1 && $('#btnMeter').getAttribute('aria-pressed') === 'true'));
-  // a fresh library makes the clip's PCM on first request (seconds): reloading mid-fetch makes WebKit report the cancelled
-  // fetch as a page error ("due to access control checks"), so let the sound chunks land first
-  await page.waitForFunction(() => pcmBusy === 0, null, { timeout: 30000 }).catch(() => {});
+  reloading = true;
   await page.reload({ waitUntil: 'load' });
+  reloading = false;
   await page.waitForFunction(() => typeof P !== 'undefined' && P && typeof M !== 'undefined', null, { timeout: 30000 });
   check(`${rm}: shown again after a reload (remembered)`, await ev(() => !$('#meter').hidden));
   await ev(async id => { await openProject(id); S.t = 0; S.dirty = true; }, pid);
