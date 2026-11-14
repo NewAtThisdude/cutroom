@@ -1,10 +1,11 @@
 // Export size caps + embedded subtitles. Run through run_all outside the restricted sandbox.
 // Requires B and CUTROOM_HOME; seeds its own media, both motion modes, no personal library/4610.
 import { browser } from './browser.mjs';
-import { requireHome } from './runtime.mjs';
+import { PYTHON, requireHome } from './runtime.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const B = process.env.B, HOME = requireHome();
 if (!B || new URL(B).port === '4610') throw new Error('B must name a scratch server, never port 4610');
@@ -37,7 +38,7 @@ const subText = (file, i) => ff('ffmpeg', ['-v', 'error', '-i', file, '-map', `0
 const pixels = (file, t = 1) => ff('ffmpeg', ['-v', 'error', '-ss', String(t), '-i', file, '-frames:v', '1', '-vf', 'scale=320:180', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
 const diff = (a, b) => { if (a.length !== b.length) return Infinity; let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
 // The direct server checks (fit with each encoder incl. the media engine, captions stored literally per container) run in the gate here.
-const direct = spawnSync('python3', ['-I', new URL('./export_extra_server.py', import.meta.url).pathname], { env: process.env, encoding: 'utf8', maxBuffer: 64 << 20 });
+const direct = spawnSync(PYTHON, ['-X', 'utf8', '-I', fileURLToPath(new URL('./export_extra_server.py', import.meta.url))], { env: process.env, encoding: 'utf8', maxBuffer: 64 << 20 });
 for (const line of (direct.stdout || '').split('\n')) if (/^(PASS|FAIL) /.test(line)) check(`server: ${line.slice(5)}`, line.startsWith('PASS'));
 check('server: export_extra_server.py finished', direct.status === 0, (direct.stderr || '').slice(-1500));
 const b = await browser.launch({ headless: true });

@@ -24,9 +24,9 @@ const CLIP = 'quick-tools.mp4', PIC = 'quick-tools-pic.png';
 if (!fs.existsSync(OUT + CLIP)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
   '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-shortest', OUT + CLIP]);
 if (!fs.existsSync(OUT + PIC)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x2255aa:s=800x800', '-frames:v', '1', OUT + PIC]);
-for (const [k, trc] of [['hlg', 'arib-std-b67'], ['pq', 'smpte2084']]) { // real HDR sources (10-bit HEVC tagged BT.2020 HLG / PQ)
+for (const [k, trc] of [['hlg', 'arib-std-b67'], ['pq', 'smpte2084']]) { // real HDR sources (10-bit HEVC tagged BT.2020 HLG / PQ; libx265: on every OS)
   if (!fs.existsSync(`${OUT}hdr-${k}.mp4`)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-    '-vf', `format=p010le,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${trc}:range=tv`, '-c:v', 'hevc_videotoolbox', '-profile:v', 'main10', '-tag:v', 'hvc1', '-c:a', 'aac', '-shortest', `${OUT}hdr-${k}.mp4`]);
+    '-vf', `format=p010le,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${trc}:range=tv`, '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', 'log-level=error', '-pix_fmt', 'yuv420p10le', '-color_primaries', 'bt2020', '-color_trc', trc, '-colorspace', 'bt2020nc', '-tag:v', 'hvc1', '-c:a', 'aac', '-shortest', `${OUT}hdr-${k}.mp4`]);
   if (!(await api('/api/media')).some(m => m.name === `hdr-${k}.mp4`)) await fetch(`${B}/api/import?name=hdr-${k}.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${OUT}hdr-${k}.mp4`) });
 }
 for (const n of [CLIP, PIC]) if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${n}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
