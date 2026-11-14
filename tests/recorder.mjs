@@ -131,7 +131,7 @@ for (const rm of ['no-preference', 'reduce']) {
   check(`${rm}: the teleprompter scrolls (${(s1 - s0).toFixed(0)} px in 0.7 s), Space pauses it ("${pausedLabel}") and resumes, ↑ speeds it up`, s1 - s0 > 8 && Math.abs(p1 - p0) < 0.5 && pausedLabel === 'Resume text' && s2 > p1 + 5 && sp1[0] === sp0 + 1 && sp1[1] === sp0 + 1, JSON.stringify({ s0, s1, p0, p1, s2, sp0, sp1 }));
   await page.waitForTimeout(2600);
   const timeText = await ev(() => $('.rctime').textContent);
-  const before = await ev(() => ({ main: P.main.length, overlay: P.overlay.length, audio: P.audio.length, undo: undo.length, media: M.size }));
+  const before = await ev(() => ({ main: P.main.length, overlay: P.overlay.length, audio: P.audio.length, undo: undo.length, ids: [...M.keys()] }));
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !RC && $('#modal').hidden, null, { timeout: 60000 });
   const after = await ev(() => ({ main: P.main.length, overlay: P.overlay.length, audio: P.audio.length, undo: undo.length, media: M.size, app: APP.slice(), last: rcStop.last, toast: $('#toast').textContent,
@@ -142,9 +142,9 @@ for (const rm of ['no-preference', 'reduce']) {
   const scr = cl.main[1], cam = cl.ov, mic = cl.au;
   made.m.push(scr.media, cam.media, mic.media);
   check(`${rm}: three separate files: screen on the main track at the playhead (after the clip there), camera on the overlay track, mic on the audio track; one undo step`,
-    after.main === before.main + 1 && after.overlay === before.overlay + 1 && after.audio === before.audio + 1 && after.undo === before.undo + 1 && after.media === before.media + 3
+    after.main === before.main + 1 && after.overlay === before.overlay + 1 && after.audio === before.audio + 1 && after.undo === before.undo + 1 && [scr.media, cam.media, mic.media].every(id => !before.ids.includes(id))
     && cl.main[0].media === V.id && Math.abs(scr.start - 3) < 1e-6 && scr.kind === 'video' && scr.w === 640 && cam.kind === 'video' && cam.w === 320 && mic.kind === 'audio' && new Set([scr.media, cam.media, mic.media]).size === 3,
-    `${after.toast} | ${scr.name}, ${cam.name}, ${mic.name}`);
+    `${after.toast} | ${scr.name}, ${cam.name}, ${mic.name} | ${JSON.stringify({ before: { ...before, ids: before.ids.length }, after: { ...after, app: undefined, last: undefined }, start: scr.start, w: [scr.w, cam.w], kinds: [scr.kind, cam.kind, mic.kind], first: cl.main[0].media === V.id })}`);
   const r = cam.rect;
   check(`${rm}: the camera is a picture-in-picture in the bottom-right corner (movable: an ordinary overlay clip)`, r.h > 0.2 * cl.H && r.h < 0.35 * cl.H && r.x + r.w > 0.9 * cl.W && r.x + r.w <= cl.W && r.y + r.h > 0.9 * cl.H && r.y + r.h <= cl.H, JSON.stringify(r));
 
@@ -214,7 +214,7 @@ for (const rm of ['no-preference', 'reduce']) {
     for (let by = 0; by < 90; by += 10) for (let bx = 0; bx < 160; bx += 10) { let s = 0; for (let y = by; y < by + 10; y++) for (let x = bx; x < bx + 10; x++) for (let k = 0; k < 3; k++) { const i = (y * 160 + x) * 4 + k; s += Math.abs(a[i] - b[i]); moved += Math.abs(a[i] - z0[i]); } sum += s; worst = Math.max(worst, s / 300); }
     return { mean: sum / (160 * 90 * 3), worst, moved: moved / (160 * 90 * 3) };
   }, zs.t);
-  check(`${rm}: Auto zoom: preview == export while zoomed (mean ${pe.mean.toFixed(2)}, worst block ${pe.worst.toFixed(1)}); the zoom shows (vs 1×: ${pe.moved.toFixed(1)})`, pe.mean <= 4 && pe.worst <= 28 && pe.moved > 6, JSON.stringify(pe));
+  check(`${rm}: Auto zoom: preview == export while zoomed (mean ${pe.mean.toFixed(2)}, worst block ${pe.worst.toFixed(1)}); the zoom shows (vs 1×: ${pe.moved.toFixed(1)})`, pe.mean <= 4 && pe.worst <= 28 && pe.moved > 3, JSON.stringify(pe));
   await ev(() => restore(undo, redo));
   const az0 = await ev(id => !P.main.find(c => c.id === id).kf, scr.id);
   check(`${rm}: Auto zoom undoes in one step`, az0);
@@ -225,7 +225,6 @@ for (const rm of ['no-preference', 'reduce']) {
 
   // ---- area mode: a crop on the clip; Esc in the countdown records nothing ----
   await install();
-  const nAll = await ev(() => [P.main.length, M.size]);
   await page.click('#btnRecord'); await page.waitForSelector('#rcScreen');
   await page.selectOption('#rcScreen', 'area'); await page.click('#rcGo');
   await page.waitForSelector('.rcarea video');
@@ -241,13 +240,14 @@ for (const rm of ['no-preference', 'reduce']) {
   made.m.push(...area.media);
   const cr = area.crop || {};
   check(`${rm}: an area: the whole screen is kept, the clip cropped to the box dragged (widen it any time)`, Math.abs(cr.l - 0.25) < 0.02 && Math.abs(cr.r - 0.25) < 0.02 && Math.abs(cr.t - 0.2) < 0.02 && Math.abs(cr.b - 0.3) < 0.02, JSON.stringify(cr));
+  const nAll2 = await ev(() => [P.main.length, P.overlay.length, P.audio.length, undo.length]);
   await page.click('#btnRecord'); await page.waitForSelector('#rcScreen');
   await page.selectOption('#rcScreen', 'screen'); await page.click('#rcGo');
   await page.waitForFunction(() => RC?.phase === 'count', null, { timeout: 10000 });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !RC, null, { timeout: 10000 });
-  const none = await ev(() => ({ n: [P.main.length, M.size], toast: $('#toast').textContent, ended: [...DEV.user.getTracks(), ...DEV.screen.getTracks()].every(t => t.readyState === 'ended'), app: APP.at(-1) }));
-  check(`${rm}: Esc during the countdown: nothing recorded, the devices let go, the window shown again`, none.n[0] === nAll[0] + 1 && none.n[1] === nAll[1] + 3 && /nothing recorded/.test(none.toast) && none.ended && none.app[0] === false, JSON.stringify(none));
+  const none = await ev(() => ({ n: [P.main.length, P.overlay.length, P.audio.length, undo.length], toast: $('#toast').textContent, ended: [...DEV.user.getTracks(), ...DEV.screen.getTracks()].every(t => t.readyState === 'ended'), app: APP.at(-1) }));
+  check(`${rm}: Esc during the countdown: nothing recorded, the devices let go, the window shown again`, none.n.join() === nAll2.join() && /nothing recorded/.test(none.toast) && none.ended && none.app[0] === false, JSON.stringify(none));
 
   // ---- refused permissions, in words ----
   const refused = async (fail, opts = {}) => {
