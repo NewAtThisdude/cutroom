@@ -89,6 +89,7 @@ Windows PC. It is licensed GPL v3 or later.
 - Platform presets, and "also export as" 9:16, 16:9, 1:1 and 4:5 in one go, with an export queue
 - Captions as SRT, VTT or plain text
 - A Light export option for quick plain-cut exports
+- Titles, captions and drawn effects render in background workers that draw every frame the same way each time, so long or busy exports no longer drop back to the slower in-page renderer
 - Fit exports within a chosen file size, never over it: sharing presets, measured bitrate correction (two-pass software encoding when the hardware encoder overshoots), lower sound and then resolution only when needed, an embedded cover counted in the size, and a final byte count; GIF adapts its palette, size and frame rate.
 - Cover image: pick the frame at the playhead or a library picture, add a title in any text style; it is saved as a JPG or PNG next to the video and embedded as the MP4's cover (Finder, Explorer and players show it). Remembered per project
 
