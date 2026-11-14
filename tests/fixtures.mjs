@@ -276,7 +276,7 @@ export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
     await pause(250);
   }
   for (const k of Object.keys(out)) if (out[k]) out[k] = lib.find(m => m.id === out[k].id);
-  const res = { podcast: out.podcast, fox: out.fox, plate: out.plate, realFox: files.fox === real[0] };
+  const res = { podcast: out.podcast, fox: out.fox, plate: out.plate, realFox: !!files.fox && files.fox === real[0] };
   if (names.includes('drive')) {
     res.drive = [0, 1, 2].map(i => out[`drive${i}`]);
     if (res.drive.every(Boolean) && res.podcast) {

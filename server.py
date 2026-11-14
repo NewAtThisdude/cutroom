@@ -1127,7 +1127,7 @@ def track(st, mid, t0, t1, box, path=None, span=(0.0, 1.0)):
     return {'points': pts, 'lost': lost}
 
 
-def follow(st, mid, t0, t1, box, t=None):
+def follow(st, mid, t0, t1, box, t=None, span=(0.0, 1.0)):
     """Motion tracking for attaching things and blurring: position, scale and rotation (ai/track.py, OpenCV corners), both
     ways from the picked frame t. Points {t, cx, cy, x, y, w, h, s, r}: s and r (clockwise degrees) relative to that frame.
     Without the AI tools (or with too little detail in the box) Vision follows the box forward: scale = its width, no turn."""
@@ -1142,7 +1142,7 @@ def follow(st, mid, t0, t1, box, t=None):
         for line in proc.stdout:
             d = json.loads(line)
             if 'p' in d:
-                st['progress'] = d['p']
+                st['progress'] = span[0] + (span[1] - span[0]) * d['p']
             elif 'lost' in d:
                 lost = d['lost']
             else:
@@ -1182,7 +1182,7 @@ def remove_object(st, mid, t, t0, t1, box, quality='best', mode='remove', seed=N
             pass
         elif not MAC:  # no Vision on a PC: OpenCV corners (ai/track.py) follow the box both ways from t; a box with too little
             try:       # detail to follow holds where it was drawn (as where Vision loses it)
-                r = follow(st, mid, t0, t1, b, t)
+                r = follow(st, mid, t0, t1, b, t, span=(0.0, 0.3))  # the bar's first part, as Vision's two passes on a Mac
                 pts, lost = [{k: p[k] for k in ('t', 'x', 'y', 'w', 'h')} for p in r['points']], r['lost']
             except RuntimeError as e:
                 if 'need a Mac' not in str(e):

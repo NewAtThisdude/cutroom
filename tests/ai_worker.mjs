@@ -21,7 +21,7 @@ const BOX = { x: 0.21, y: 0.62, w: 0.16, h: 0.26 }; // the fox at 1 s, ~2 % marg
 const LOOSE = { x: 0.18, y: 0.596, w: 0.2258, h: 0.3167 }; // 5 % margin round it: SAM 2's box-only candidates hold no fox (the real shot)
 const EMPTY = { x: 0.6, y: 0.3, w: 0.15, h: 0.25 }; // bare ground in the stand-in: nothing for SAM 2 to be sure of
 const want = process.argv.slice(2), run = n => !want.length || want.includes(n);
-const F = await aiFootage([...(run('api') || run('remove') ? ['fox'] : []), ...(run('ui') || run('captions') || run('pauses') ? ['drive'] : [])]);
+const F = await aiFootage([...(run('api') || run('remove') || run('ui') ? ['fox'] : []), ...(run('ui') || run('captions') || run('pauses') ? ['drive'] : [])]);
 if (F.drive && !F.driveProject) { console.log('SKIP ai_worker: no speech service on this computer for the night-drive footage'); await exitAfterFetch(0); }
 const FOX = F.fox?.id, foxFile = m => path.join(HOME, 'media', m.file), DRIVE = F.driveProject, dji0 = F.drive?.[0].id;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cutroom-ai38-'));
@@ -53,9 +53,9 @@ if (run('api') || run('remove')) {
   const [loose] = await ask({ box: LOOSE });
   fs.writeFileSync(path.join(tmp, 'loose.png'), Buffer.from(loose.mask, 'base64'));
   const tl = truth('mask', foxFile(F.fox), foxFile(F.plate), '1', path.join(tmp, 'loose.png'));
-  if (F.realFox) check('a 5 %-margin box: the centre point still finds the fox, and it is flagged unsure', tl.fox >= 0.95 && loose.unsure,
-    `covers ${(tl.fox * 100).toFixed(1)} % of the fox (+${tl.extra_px} px), unsure ${loose.unsure}, scores ${loose.scores}`);
-  else console.log(`SKIP a 5 %-margin box flagged unsure: needs the real fox-walk.mp4 + talk-with-music.mp4 in PHOTOS (SAM 2 is sure of the stand-in's flat fox: covers ${(tl.fox * 100).toFixed(1)} %, scores ${loose.scores})`);
+  check('a 5 %-margin box: the centre point still finds the fox', tl.fox >= 0.95, `covers ${(tl.fox * 100).toFixed(1)} % of the fox (+${tl.extra_px} px), scores ${loose.scores}`);
+  if (F.realFox) check('...and it is flagged unsure', loose.unsure, `unsure ${loose.unsure}, scores ${loose.scores}`);
+  else console.log(`SKIP ...and it is flagged unsure: needs the real fox-walk.mp4 + talk-with-music.mp4 in PHOTOS (SAM 2 is sure of the stand-in's flat fox: scores ${loose.scores})`);
 }
 if (run('remove')) {
   const { job } = await api('/api/remove_object', { media: FOX, t: 1, t0: 0, t1: 4, box: BOX, quality: 'best', mode: 'remove', seed: outline.mask });
