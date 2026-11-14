@@ -12,10 +12,13 @@
 //     the film-look tiles show the selected clip's own frame through their table.
 //  4. what the export pays: seconds for a 1080p30 export with the heaviest new transitions / effects vs a dissolve.
 //   CUTROOM_HOME=<scratch lib> B=http://127.0.0.1:<port> node fx_pack.mjs [exact|parity|perf|tiles|export ...]   (never 4610)
-// The HLG footage: $CUTROOM_SCRATCH/photos/IMG_0324.MOV (a real iPhone clip) when there, else the synthetic 4K60 HLG HEVC
-// source (fixtures ensurePhoneFixture), else those looks are left out with a SKIP line.
+// The HLG footage: $CUTROOM_SCRATCH/photos/IMG_0324.MOV (a real iPhone clip) when there, else a synthetic 4K60 HLG HEVC
+// clip with a camera's detail (the test pattern drawn at 960x540 and scaled up), else those looks are left out with a SKIP
+// line. Not the sharp 4K pattern of fixtures ensurePhoneFixture: its per-pixel random-colour patch, averaged by the 720p
+// proxy (preview) and by the 4K export's own scaling, differs by 33 levels in one 10x10 block with NO look at all (24 for
+// the same pattern in SDR); the drawn-at-960 version: 16.6 (2026-11-14). Real footage has no per-pixel noise at 4K.
 import { browser } from './browser.mjs';
-import { ensurePhoneFixture } from './fixtures.mjs';
+import { cachedMedia } from './fixtures.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,8 +27,15 @@ const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/js
 const parts = process.argv.slice(2).length ? process.argv.slice(2) : ['exact', 'parity', 'perf', 'tiles', 'export'];
 if (!B || /:4610\b/.test(B)) throw new Error('set B to a scratch server (never 4610)');
 const PHONE = `${process.env.CUTROOM_SCRATCH || os.tmpdir()}/photos/IMG_0324.MOV`;
-const REAL = parts.includes('parity') ? (fs.existsSync(PHONE) ? PHONE : ensurePhoneFixture()) : null; // read-only: uploaded as a copy
-if (parts.includes('parity')) console.log(REAL ? `HLG footage: ${REAL}` : 'SKIP film looks on HLG footage: no iPhone clip and no HEVC encoder for the synthetic one');
+const hlgStandIn = () => {
+  try {
+    return cachedMedia('fxpack-hlg-4k60-soft-v1.mov', ['-f', 'lavfi', '-i', 'testsrc2=s=960x540:r=60:d=5', '-vf', 'scale=3840:2160:flags=bicubic,format=p010le,'
+      + 'setparams=range=limited:color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc', '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '22',
+      '-x265-params', 'pools=4:frame-threads=2:log-level=error', '-pix_fmt', 'yuv420p10le', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc', '-tag:v', 'hvc1']);
+  } catch (e) { console.log(`SKIP film looks on HLG footage: no iPhone clip, and libx265 could not make the stand-in (${String(e.stderr || e.message).trim().slice(-200)})`); return null; }
+};
+const REAL = parts.includes('parity') ? (fs.existsSync(PHONE) ? PHONE : hlgStandIn()) : null; // read-only: uploaded as a copy
+if (REAL) console.log(`HLG footage: ${REAL}`);
 const OUT = fileURLToPath(new URL('./out/fx_pack/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const NEW_TR = ['blurfade', 'whipup', 'whipdown', 'flashwhite', 'flashblack', 'lightleak', 'filmburn', 'cube', 'flip', 'punchin', 'zoomout', 'spin', 'glitchcut', 'rgbsplit',

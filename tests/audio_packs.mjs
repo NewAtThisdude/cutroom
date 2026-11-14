@@ -120,8 +120,11 @@ const open = async rm => {
 };
 const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
 // the talk clips: a voice that stops at 10.4 s (the cave's tail is read after it), one over music, a 22 s podcast over room noise
+// The music sits 10 dB under where it first was: the voice ~19 dB over it in the speech band, a vlog's music bed. At ~10 dB
+// over it (music nearly as loud as the voice) Studio voice measured -2.8 dB: its compressor narrows speech vs a bed the
+// expander can't tell from the voice (sweep 2026-11-14: bed 0 / -6 / -10 / -15 / -20 dB -> -2.85 / +1.7 / +8.6 / +12.0 / +14.5 dB).
 const SAY = 'We drove up the coast at sunset. [[slnc 900]] Then we ate dinner at a little cafe by the harbour. [[slnc 900]] The mountain trail was steep and the snow was deep.';
-const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000';
+const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000,volume=-10dB';
 const clips = { 'talk.mp4': [SAY, { lead: 0.5, dur: 12 }], 'talk-with-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC }],
   'podcast-episode.mp4': [`${SAY} [[slnc 900]] Back at the beach we talked about the drive home. [[slnc 900]] Next week we try the desert road, early, before the heat.`,
     { lead: 0.4, dur: 22, bed: 'anoisesrc=c=pink:r=48000:seed=9:amplitude=0.02' }] };
