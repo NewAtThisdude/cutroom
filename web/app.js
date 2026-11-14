@@ -1769,7 +1769,7 @@ function audioTick(wall) { // while playing: (re)anchor timeline to audio clock,
   // (scheduling on currentTime alone put it outputLatency late, 40-75 ms behind the picture)
   const ts = actx.getOutputTimestamp(), out = ts.performanceTime ? ts.contextTime + (wall - ts.performanceTime) / 1000 : actx.currentTime, now = actx.currentTime;
   rec?.offs.push(S.t - out); // a voiceover take: timeline time minus the audio-clock time heard now (toggleRecord)
-  if (S.aA0 === undefined || Math.abs(S.aT0 + (out - S.aA0) - S.t) > 0.04) { audioStop(); S.aA0 = out; S.aT0 = S.t; } // a hold, a seek or clock drift
+  if (S.aA0 === undefined || Math.abs(S.aT0 + (out - S.aA0) - S.t) > AUDIO_TOL) { audioStop(); S.aA0 = out; S.aT0 = S.t; } // a hold, a seek or clock drift
   const seen = new Set(), t1 = S.t + 1;
   packMain();
   for (const [lane, list] of [['main', P.main], ['overlay', shown('overlay')], ['audio', shown('audio')], ['jl', jlParts()]]) for (const c of list) {
@@ -3336,6 +3336,15 @@ function addTemplate(name) {
   toast(`${name} added: click a line to change its words`);
 }
 
+// How far the clock may drift from the lead video before it re-anchors, and the sound from the clock before it re-syncs.
+// WebKit's element clock jumps (AVPlayer), so it gets slack. Chromium's currentTime is smooth (under 1 ms of jitter) but stalls
+// ~40 ms just after its first move (its time source starting): the clock, anchored at that first move, then ran 40-50 ms
+// ahead of the picture for the whole clip, which slack never corrected, and the sound, scheduled from the clock, played that
+// much early (Edge -25 ms, Mac Chromium -39, the 2x clip -50 with atempo). The next cut's prerolled element starts with the
+// same stall, so there the clock steps back ~50 ms just after the cut and the sound re-syncs once (steering that element
+// by playbackRate was tried: Chromium's picture then drifted from its currentTime). The sound's 20 ms: Edge's
+// getOutputTimestamp() wanders ~10 ms for the first frames after the audio device starts.
+const SMOOTH_CLOCK = /Chrome\//.test(navigator.userAgent), CLOCK_TOL = SMOOTH_CLOCK ? 0.012 : 0.06, AUDIO_TOL = SMOOTH_CLOCK ? 0.02 : 0.04;
 function frame(now) {
   rafId = 0;
   if (!P) return;
@@ -3344,14 +3353,18 @@ function frame(now) {
     // load while still reporting HAVE_ENOUGH_DATA): a clock that ran on left it behind, re-seeked it and stalled it again, every
     // 0.7 s (a 1080p30 clip showed 18 of 30 frames/s). At most 1.5 s per stall, so a video that never moves can't stop playback.
     // A video that has started but not moved yet doesn't count: the clock picks up where the picture really is once it
-    // moves (and when it drifts 60 ms off), because the sound is scheduled from the clock: picture and sound start together.
+    // moves (and when it drifts CLOCK_TOL off), because the sound is scheduled from the clock: picture and sound start together.
     const v = S.lead, dt = now - (S.last ?? now), was = S.stuck;
     S.last = now;
-    if (v !== S.vEl) { S.vEl = v; S.vt = v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; }
+    if (v !== S.vEl) { S.vEl = v; S.vt = v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; }
     const moved = v && v.currentTime !== S.vt;
+    // Chromium's currentTime jumps on play() and then holds ~40 ms while its time source starts: there the first move is
+    // the second frame in a row it runs at speed (else the clock re-anchored, and the sound re-synced, three times in 40 ms)
+    if (SMOOTH_CLOCK && !S.vMoved) S.vRun = moved && (v.currentTime - S.vt) * 1000 >= (dt * v.playbackRate) / 2 ? S.vRun + 1 : 0;
+    const going = moved && (!SMOOTH_CLOCK || S.vMoved || S.vRun >= 2);
     if (moved) { S.vt = v.currentTime; S.vAt = now; }
-    const first = moved && !S.vMoved;
-    if (moved) S.vMoved = true;
+    const first = going && !S.vMoved;
+    if (going) S.vMoved = true;
     const stuck = v && !v.ended && (!S.vMoved || v.paused || v.seeking || v.readyState < 3 || now - S.vAt > 80);
     if (stuck && (S.held += dt) < 1500) S.wall0 += dt; else if (!stuck) S.held = 0;
     S.stuck = stuck && S.held < 1500; // the other tracks wait too (sync), instead of running ahead and being seeked back
@@ -3359,7 +3372,7 @@ function frame(now) {
     const lc = S.leadClip;
     if (moved && !S.stuck && lc && M.get(lc.media)?.kind !== 'image') {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
-      if ((first || was || Math.abs(tl - S.t) > 0.06 * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
+      if ((first || was || Math.abs(tl - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
     }
     if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
