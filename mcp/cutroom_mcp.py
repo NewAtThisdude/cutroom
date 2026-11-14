@@ -142,10 +142,28 @@ TOOLS = [
      S({'lane': txt, 'track': {'type': 'integer'}, 'hidden': boo, 'locked': boo}, ['lane']), 'set_track'),
     ('delete_clip', 'Delete a clip (main-track clips close the gap).', S({'id': txt}, ['id']), 'delete_clip'),
     ('duplicate_clip', 'Duplicate a clip (placed right after it).', S({'id': txt}, ['id']), 'duplicate_clip'),
+    ('paste_attributes', 'Paste chosen attributes of one clip onto others in one undo step. categories (default: all): adjust, look, grade, curves, hsl, effects, masks, transform, speed, audio, anim, trans, kf. keyframes: scale (retime to each clip\'s length, default) or abs (keep the same times). Categories a clip cannot carry are skipped and named in the result.',
+     S({'from': txt, 'to': {'type': 'array', 'items': txt}, 'categories': {'type': 'array', 'items': txt}, 'keyframes': {'type': 'string', 'enum': ['scale', 'abs']}}, ['from', 'to']), 'paste_attributes'),
     ('move_clip', 'Move a clip: main-track order (index), start time (other tracks), or between the main and overlay tracks (lane).',
      S({'id': txt, 'start': num, 'index': {'type': 'integer'}, 'lane': {'type': 'string', 'enum': ['main', 'overlay']}}, ['id']), 'move_clip'),
     ('add_text', 'Add a text clip. Presets: Title, Subtitle, Label, Outline, Headline, Typewriter, Sticker. style takes the text style keys listed in update_clip.',
      S({'text': txt, 'preset': txt, 'start': num, 'duration': num, 'x': num, 'y': num, 'curve': num, 'style': obj}, ['text']), 'add_text'),
+    ('layout', 'Split-screen layout on the overlay track. Without id/clip: makes one (one undo step) from media (library ids or names, '
+               'new clips) and/or clips (existing video/picture clip ids, moved in), type 2h (side by side) | 2v (stacked) | 3 (one big, two small) | 4 (grid) | '
+               'react (reaction: 60/40) | pip (picture in picture), start (default: playhead), duration, gap (share of the short side, 0-0.15), color ("#rrggbb" '
+               'gap colour, null: the gaps show what is under), corners (rounding, share of the short side, 0-0.2), corner (pip: tl|tr|bl|br). With id (or clip = '
+               'any of its clips): changes type/gap/color/corners/corner (the cells re-flow, clips without a cell are kept aside), put = media into cell `cell`, '
+               'media = a list into cells from `cell` on, zoom (1-6) / pan [x, y] (-1..1) inside cell `cell`, leave = a clip id taken out as a plain overlay. '
+               'Returns the cells (rects in canvas pixels, clip ids). The cells are ordinary overlay clips: trim, fade, animate them with update_clip.',
+     S({'id': txt, 'clip': txt, 'type': {'type': 'string', 'enum': ['2h', '2v', '3', '4', 'react', 'pip']}, 'media': {'type': 'array', 'items': txt}, 'clips': {'type': 'array', 'items': txt},
+        'start': num, 'duration': num, 'gap': num, 'color': {'type': ['string', 'null']}, 'corners': num, 'corner': {'type': 'string', 'enum': ['tl', 'tr', 'bl', 'br']},
+        'cell': {'type': 'integer'}, 'put': txt, 'zoom': num, 'pan': {'type': 'array', 'items': num}, 'leave': txt}), 'layout'),
+    ('visualizer', 'Audio visualizer on the text track (one undo step): style bars | mirror | line | circle, source "mix" (default: every audible clip) or a clip id, '
+                   'start, duration, bars (4-64), smoothing (0-0.95), sensitivity (0.25-4), colors (one or two "#rrggbb"; default: the brand colours), '
+                   'x, y (centre, 0-1), w, h (box, shares of the canvas width / height). With id: changes those of an existing one. Levels are computed from '
+                   'the audio per frame, so the export draws exactly what the preview shows.',
+     S({'id': txt, 'style': {'type': 'string', 'enum': ['bars', 'mirror', 'line', 'circle']}, 'source': txt, 'start': num, 'duration': num, 'bars': num, 'smoothing': num,
+        'sensitivity': num, 'colors': {'type': 'array', 'items': txt}, 'x': num, 'y': num, 'w': num, 'h': num}), 'visualizer'),
     ('set_transition', 'Transition at the cut after main-track clip `after` (or every cut with all=true). type none removes it.',
      S({'after': txt, 'type': txt, 'duration': num, 'all': boo}, ['type']), 'set_transition'),
     ('add_effect', 'Add a video effect on the effects track at `start` (default: playhead) for `duration` seconds; it changes everything under it, text stays on top. '
@@ -173,21 +191,32 @@ TOOLS = [
                   'fast = ffmpeg minterpolate), detach_audio, split_scenes, deflicker (even out brightness pumping), ai_upscale (scale 2|4, Real-ESRGAN), '
                   'relight (preset light|subject|background, x, y 0..1 where the light is on the frame, color "#rrggbb", strength 0..1; depth from Depth Anything; '
                   'these four render a copy of the clip range on this Mac that the clip then plays), '
+                  'zoom_3d (a photo clip becomes a clip where the camera pushes in/out, slides left/right or orbits and near things move more than far ones: direction in|out|left|right|orbit, amount 0.05-1, duration seconds; depth from Depth Anything; the photo comes back with undo), '
                   'auto_duck (depth: 0.5 = -6 dB, 0.25 = -12 dB), isolate_voice (keep only speech, Demucs on this Mac), remove_voice (keep music/ambience), split_stems (vocals, drums, bass, other: four audio clips in sync), '
                   'body_blur, body_mono, body_dim (background blurred / black and white / darker, the person cut out above it), body_glow, body_neon (a glow / neon line around the person), '
                   'detect_beats, beat_sync (every: beats per cut), speed_ramp (ramp: a preset name, or curve: 2-12 [u, speed] points, u 0..1 through the clip, speed 0.1-10; rendered into a silent copy the clip plays, one clip), auto_adjust (exposure, contrast, white balance from the picture; '
                   'ref = another clip id to match its colours instead), slip (by seconds: new in/out, same place and length), slide (by: a main clip moves between its neighbours), '
                   'roll (by: moves the cut at the clip\'s side end|start). slip/slide/roll keep the rest of the timeline as it is. deflicker, ai_upscale (scale 2|4), relight (preset light|subject|background, x, y, color, strength).',
      S({'id': txt, 'action': txt, 'depth': num, 'every': {'type': 'integer'}, 'ramp': txt, 'curve': {'type': 'array', 'items': {'type': 'array', 'items': num}}, 'at': num, 'ref': txt, 'by': num, 'side': txt,
-        'engine': txt, 'scale': {'type': 'integer'}, 'preset': txt, 'x': num, 'y': num, 'color': txt, 'strength': num}, ['id', 'action']), 'clip_tool'),
+        'engine': txt, 'scale': {'type': 'integer'}, 'preset': txt, 'x': num, 'y': num, 'color': txt, 'strength': num, 'direction': txt, 'amount': num, 'duration': num}, ['id', 'action']), 'clip_tool'),
     ('track_motion', 'Motion tracking: an overlay, sticker or text clip (id) follows what is inside box on the main-track video at time t, '
                      'moving, growing and turning with it (keyframes for x, y, scale, rot). box = {x, y, w, h} fractions of the canvas (look with snapshot first). '
                      'scale / rotate false: follow position only.',
      S({'id': txt, 'box': obj, 't': num, 'scale': boo, 'rotate': boo}, ['id', 'box']), 'track_motion'),
+    ('auto_zoom', 'Auto zoom a screen recording made in Cutroom (main-track clip id; default the selected clip): zooms in toward its clicks and typing, '
+                  'follows the cursor, zooms out when it rests or moves away. amount 1.25-3 (default 2), smooth 0-1 (default 0.5). '
+                  'Writes keyframes (scale, x, y) on the clip, replacing its position and size keyframes; one undo step.',
+     S({'id': txt, 'amount': num, 'smooth': num}, []), 'auto_zoom'),
     ('blur_region', 'Blur (or mosaic) a moving region of a video clip: a number plate, a face, a logo. box = {x, y, w, h} canvas fractions at time t; '
                     'it is tracked both ways through the clip and a blurred copy of the clip, masked to it, goes on the overlay track. '
                     'shape rect|circle, style blur|mosaic, amount 0.05-1.',
      S({'id': txt, 'box': obj, 't': num, 'shape': txt, 'style': txt, 'amount': num}, ['id', 'box']), 'blur_region'),
+    ('grade_mask', 'Grade only the subject or one area (masked colour). id = a video/picture clip: its mask then limits its own adjust, filter and colour '
+                   '(the picture stays whole); box = {x, y, w, h} canvas fractions at time t makes an AI subject mask (SAM 2) first, shape (circle|rect|linear|mirror|heart|star|polygon|pen) '
+                   'with box puts that shape there. id = an adjustment layer (add_effect type adjust): it gets a mask of its own: no box = the AI subject mask of the video under it '
+                   '(box = box the subject), shape = that area, follow true + box = the mask tracks what box holds. invert true = everything but the mask; feather 0-0.3; off true removes it. '
+                   'Stack several adjustment layers for several areas.',
+     S({'id': txt, 'box': obj, 't': num, 'shape': txt, 'follow': boo, 'invert': boo, 'feather': num, 'off': boo}, ['id']), 'grade_mask'),
     ('blur_faces', 'Blur (or mosaic) every face in a video clip (Apple Vision): each face gets its own tracked blur on the overlay track. style blur|mosaic, amount 0.05-1.',
      S({'id': txt, 'style': txt, 'amount': num}, ['id']), 'blur_faces'),
     ('auto_reframe', 'Auto reframe a video clip for another shape: keeps the largest face, or with none the main subject (Vision saliency), in frame with a smooth camera path. '
@@ -243,6 +272,9 @@ TOOLS = [
     ('make_shorts', 'Long video -> shorts on this Mac: a local language model picks the best moments; each becomes a new 9:16 project with captions, face reframing and a hook title. '
                     'min/max = length range in seconds.',
      S({'media': txt, 'count': {'type': 'integer'}, 'min': num, 'max': num, 'captions': boo, 'reframe': boo, 'title': boo, 'lang': txt}, ['media']), 'make_shorts'),
+    ('caption_find_replace', 'Find (and replace) text in the captions of the open project: the first line and the second-language line. Without replace it lists the matches '
+                             '(count, first 20); with replace (may be empty) every match is replaced in one undo step. line: both | text | second.',
+     S({'find': txt, 'replace': txt, 'matchCase': boo, 'wholeWord': boo, 'line': txt}, ['find']), 'caption_find_replace'),
     ('translate_captions', 'Translate the captions on the timeline into another language (local model). Word highlight keeps working. '
                            'bilingual=true keeps the original and adds the translation as a second line under each caption.', S({'to': txt, 'bilingual': boo}, ['to']), 'translate_captions'),
     ('caption_extras', 'Smart caption layers, made on this Mac: keywords=true (the local model picks 1-2 key words per caption, drawn in the highlight colour), '
@@ -392,6 +424,7 @@ def call_tool(name, args):
         with open(path, encoding='utf-8-sig', errors='replace') as f:
             args = {'srt': f.read(), 'name': os.path.basename(path)}
     long = name in ('generate_video', 'multicam', 'compound_clip', 'export', 'package_project', 'open_package', 'use_template', 'generate_music', 'auto_captions', 'main_transcript', 'preview_object', 'cut_timeline', 'remove_fillers', 'clip_tool', 'clone_voice', 'dub_video', 'lip_sync', 'talking_photo', 'caption_extras', 'retouch', 'voiceover', 'remove_pauses', 'generate_image', 'ai_voiceover', 'make_shorts', 'translate_captions', 'hook_titles', 'transcript', 'remove_object', 'smart_combine', 'cut_out_object', 'track_motion', 'blur_region', 'blur_faces', 'auto_reframe', 'pilot', 'search_media', 'auto_broll', 'batch')
+    long = long or name == 'grade_mask'  # SAM 2 / tracking
     r = remote(CMD[name], args, timeout=3600 if long else 120)
     res, log = r.get('result'), r.get('log') or []
     if name == 'snapshot':

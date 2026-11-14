@@ -1,9 +1,11 @@
 // The Media panel's "Photos" button (import from Apple Photos): shown only inside the Mac app, where the page has the app's
 // `photos` message handler, and a click posts 'pick' to it (the app then opens the system Photos picker as a sheet).
 // Headless WebKit with window.webkit.messageHandlers stubbed; the real picker is native and not exercised here. Both motion modes.
-//   node photos_button.mjs     (server on 127.0.0.1:4610, or B=...)
+//   CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> node photos_button.mjs     (never 4610)
 import { browser, macOnly } from './browser.mjs';
 macOnly('photos_button: the Mac app\'s Photos picker');
+const B = process.env.B;
+if (!B || /:4610\b/.test(B) || !process.env.CUTROOM_HOME) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port> (never 4610)');
 const res = [];
 const check = (name, ok, detail = '') => { res.push(!!ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `  [${detail}]` : ''}`); };
 const b = await browser.launch();
@@ -13,7 +15,7 @@ for (const rm of ['no-preference', 'reduce']) {
     if (app) await ctx.addInitScript(() => { window.__posted = []; window.webkit = { messageHandlers: { photos: { postMessage(m) { window.__posted.push(m); } } } }; });
     const page = await ctx.newPage();
     const errs = []; page.on('pageerror', e => errs.push(e.message));
-    await page.goto((process.env.B || 'http://127.0.0.1:4610') + '/', { waitUntil: 'load' });
+    await page.goto(B + '/', { waitUntil: 'load' });
     await page.waitForFunction(() => typeof P !== 'undefined' && P, null, { timeout: 20000 });
     const where = app ? 'in the app' : 'in a browser';
     const btn = page.locator('#btnPhotos');

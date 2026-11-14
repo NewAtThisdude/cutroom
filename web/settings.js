@@ -22,6 +22,7 @@ const SET = (() => {
     ['matte', 'Remove background', '[data-aitool="matte"], [data-act="matte"]', ['clip_tool:remove_background']],
     ['isolate', 'Isolate voice, stems', '[data-aitool="isovoice"], [data-aitool="novoice"], [data-act="isovoice"], [data-act="novoice"], [data-act="stems"]', ['clip_tool:isolate_voice', 'clip_tool:remove_voice', 'clip_tool:split_stems']],
     ['upscale', 'AI upscale', '[data-act="upscale"]', ['clip_tool:ai_upscale']],
+    ['zoom3d', '3D zoom', '[data-act="zoom3d"]', ['clip_tool:zoom_3d']],
     ['relight', 'Relight', '[data-act="relight"]', ['clip_tool:relight']],
     ['llm', 'Local language model: shorts, hooks, translation, caption keywords and emoji, Ask', '#btnShorts, #btnHooks, #btnTranslate, #btnAsk, #btnCombine, #btnIndex, label:has(#capKw), label:has(#capEmoji), label:has(#trBi)',
       ['make_shorts', 'hook_titles', 'translate_captions', 'pilot', 'smart_combine', 'search_media:?index', 'auto_broll:?index', 'caption_extras:?keywords|emoji|bilingual']],
