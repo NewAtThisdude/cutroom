@@ -5,7 +5,7 @@
 // WebKit in both motion modes, plus REMOTE.retouch (the MCP tool). Before/after PNGs go to tests/out.
 //   CUTROOM_HOME=<library> B=http://127.0.0.1:4755 [PHOTOS=<dir with talk-with-music.mp4, IMG_4700.MOV>] node tests/retouch.mjs
 import { browser } from './browser.mjs';
-import { requireHome } from './runtime.mjs';
+import { requireHome, exitAfterFetch } from './runtime.mjs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ const pv = async (media, t, p, png) => { const r = await post('/api/retouch_prev
 
 // Retouch is Apple Vision (landmarks, pose): a PC refuses it by design (server.py NOT_YET), and says so
 const off = (await get('/api/ai/caps')).jobs.find(j => j.kind === 'retouch')?.refused;
-if (/needs Apple Silicon/.test(off || '')) { console.log(`SKIP retouch: ${off}`); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(0); }
+if (/needs Apple Silicon/.test(off || '')) { console.log(`SKIP retouch: ${off}`); fs.rmSync(tmp, { recursive: true, force: true }); await exitAfterFetch(0); }
 // the test footage: a real face talking (no stand-in has the landmarks, teeth and skin these numbers are about); from PHOTOS if not in the library
 let media = await get('/api/media');
 if (!media.some(m => m.name === 'talk-with-music.mp4') && process.env.PHOTOS && fs.existsSync(`${process.env.PHOTOS}/talk-with-music.mp4`)) {
@@ -44,7 +44,7 @@ if (!media.some(m => m.name === 'talk-with-music.mp4') && process.env.PHOTOS && 
   for (let i = 0; i < 600 && !(media = await get('/api/media')).find(m => m.name === 'talk-with-music.mp4')?.ready; i++) await new Promise(z => setTimeout(z, 500));
 }
 const TWM = media.find(m => m.name === 'talk-with-music.mp4' && m.kind === 'video');
-if (!TWM) { console.log(`SKIP retouch: real footage missing: talk-with-music.mp4 (a face talking) is not in this library or in PHOTOS (${process.env.PHOTOS || 'unset'})`); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(0); }
+if (!TWM) { console.log(`SKIP retouch: real footage missing: talk-with-music.mp4 (a face talking) is not in this library or in PHOTOS (${process.env.PHOTOS || 'unset'})`); fs.rmSync(tmp, { recursive: true, force: true }); await exitAfterFetch(0); }
 const fps = TWM.fps || 30;
 
 // 1. landmarks on every frame (the Swift tool the job runs)

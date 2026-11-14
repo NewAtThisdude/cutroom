@@ -2449,8 +2449,8 @@ def ai_clone(st, media, t0, t1, name='', consent=False):
     """A voice from a clip's speech (3-15 s of it; ~10 s clones best) -> voices/<id>.wav, checked against the stock voices."""
     if consent is not True:
         raise ValueError(CONSENT)
-    if not clone_ready():
-        raise RuntimeError('the voice-clone model is not installed (README: On-device AI, ai/setup.sh)')
+    if not clone_ready():  # a PC: why (Chatterbox is MLX), not "install it"
+        raise RuntimeError(tier('clone').get('refused') or 'the voice-clone model is not installed (README: On-device AI, ai/setup.sh)')
     m = meta(media)
     if not m.get('hasAudio'):
         raise ValueError(f"{m['name']} has no sound to clone a voice from")

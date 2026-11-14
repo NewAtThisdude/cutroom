@@ -282,7 +282,9 @@ if (GPU_ON && voice && run('lip')) {
 }
 
 // ---------- the 4090 unreachable: a second server pointed at a host that does not exist, its own tunnel port ----------
-if (run('offline')) {
+// (a computer with its own big NVIDIA GPU runs them itself, by design: there is no GPU PC to be off, and the job would start a ComfyUI here)
+if (run('offline') && GPU.local) skip('the GPU PC unreachable', `${GPU.host} runs lip sync and talking photo itself (no GPU PC to be off)`);
+else if (run('offline')) {
   let img = PORTRAIT?.id || (await get('/api/media')).find(m => m.kind === 'image')?.id;
   if (!img) { // a fresh library has no picture (the portrait is only made with the PC on): any still will do, the job must refuse before using it
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=512x512', '-frames:v', '1', `${tmp}/still.png`]);

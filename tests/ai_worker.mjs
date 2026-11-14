@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { aiFootage } from './fixtures.mjs';
+import { exitAfterFetch } from './runtime.mjs';
 const B = process.env.B || 'http://127.0.0.1:4610', HOME = process.env.CUTROOM_HOME;
 if (!HOME || /4610$/.test(B)) throw new Error('run on a scratch server: CUTROOM_HOME=<scratch library> B=http://127.0.0.1:<port>');
 const PY = path.join(import.meta.dirname, '..', 'ai', '.venv', ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'])), TRUTH = path.join(import.meta.dirname, 'fox_truth.py');
@@ -20,7 +21,7 @@ const BOX = { x: 0.21, y: 0.62, w: 0.16, h: 0.26 }; // the fox at 1 s, ~2 % marg
 const LOOSE = { x: 0.18, y: 0.596, w: 0.2258, h: 0.3167 }; // 5 % margin round it: SAM 2's box-only candidates hold no fox
 const want = process.argv.slice(2), run = n => !want.length || want.includes(n);
 const F = await aiFootage([...(run('api') || run('remove') ? ['fox'] : []), ...(run('ui') || run('captions') || run('pauses') ? ['drive'] : [])]);
-if (F.drive && !F.driveProject) { console.log('SKIP ai_worker: no speech service on this computer for the night-drive footage'); process.exit(0); }
+if (F.drive && !F.driveProject) { console.log('SKIP ai_worker: no speech service on this computer for the night-drive footage'); await exitAfterFetch(0); }
 const FOX = F.fox?.id, foxFile = m => path.join(HOME, 'media', m.file), DRIVE = F.driveProject, dji0 = F.drive?.[0].id;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cutroom-ai38-'));
 const res = [];
