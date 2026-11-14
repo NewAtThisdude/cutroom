@@ -8441,7 +8441,10 @@ def main():
     # On Windows SO_REUSEADDR (HTTPServer's default) lets a second server bind a port that is already listening, and the two
     # then split the connections: there a second Cutroom on the same port must fail to start, as it does on the Mac
     ThreadingHTTPServer.allow_reuse_address = not WIN
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
+    try:
+        srv = ThreadingHTTPServer(('127.0.0.1', PORT), App)
+    except OSError as e:  # port taken (Errno 48 on a Mac, WinError 10048 on Windows): say what to do, not a traceback
+        sys.exit(f'Cutroom could not start: port {PORT} is already in use ({e.strerror or e}). Another Cutroom may be running: quit it, or set CUTROOM_PORT to a free port.')
     print(f'Cutroom on http://127.0.0.1:{PORT}  (data: {HOME})', flush=True)
     print(f"This computer: {PROFILE['os']}, {CORES} cores, {RAM_GB:.0f} GB, GPU {PROFILE['gpu'].get('name') or 'none'}; AI on {'/'.join(PROFILE['backends'])}; "
           f"video {ENC['h264']} / {ENC['hevc']}, decode {HWACCEL or 'CPU'}" + (f"; simulated: {PROFILE['sim']}" if PROFILE['sim'] else '') + f" (probed in {REAL['probe_s']} s)", flush=True)
