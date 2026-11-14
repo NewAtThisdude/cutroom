@@ -82,7 +82,7 @@ const filePx = (f, t, u, v, W, H) => { // a frame of an exported file at t, samp
 
 const pa = await open('reduce');
 // ===================================== layouts =====================================
-await R(pa, 'new_project', { ratio: '16:9', name: 'Layouts test', branded: false });
+const P1 = (await R(pa, 'new_project', { ratio: '16:9', name: 'Layouts test', branded: false })).id ?? await pa.evaluate(() => P.id);
 const info = await R(pa, 'layout', { type: '4', media: [MD.red, MD.green, MD.blue, MD.yellow], gap: 0.03, color: '#ffffff', corners: 0.03, start: 0 });
 const COLS = [RED, GREEN, BLUE, YEL], g = 0.03 * 1080, cw = 0.5 * (1920 - g) - g, ch = 0.5 * (1080 - g) - g;
 check('a grid of four: four cells (one clip each) and the gap colour under them', info.cells.length === 4 && info.cells.every(c => c.clips.length === 1) && info.bg && info.color === '#ffffff'
@@ -193,7 +193,7 @@ check('the gap slider re-flows the cells', await pa.evaluate(() => Math.abs(layo
 await pa.screenshot({ path: `${FX}/layouts-reduce.png` });
 
 // undo / redo the whole layout, then reload
-await R(pa, 'open_project', { project: 'Layouts test' });
+await R(pa, 'open_project', { project: P1 });
 const nU = await pa.evaluate(() => undo.length);
 await R(pa, 'new_project', { ratio: '16:9', name: 'Layouts undo test', branded: false });
 await R(pa, 'layout', { type: 'pip', media: [MD.red, MD.blue], corners: 0.04, corner: 'tl', start: 0 });
@@ -205,7 +205,7 @@ await R(pa, 'history', { action: 'undo' });
 check('undo removes the layout and its clips in one step', await pa.evaluate(() => !P.layouts?.length && !P.overlay.length));
 await R(pa, 'history', { action: 'redo' });
 check('redo brings them back', await pa.evaluate(() => P.layouts.length === 1 && P.overlay.length === 2));
-await R(pa, 'open_project', { project: 'Layouts test' });
+await R(pa, 'open_project', { project: P1 });
 await pa.evaluate(() => flushSave());
 await sleep(500);
 
@@ -213,6 +213,7 @@ await sleep(500);
 await api('/api/brand', { ...brand0, colors: ['#ff8800', '#0088ff'] });
 await pa.evaluate(() => loadBrand());
 await R(pa, 'new_project', { ratio: '16:9', name: 'Visualizer test', branded: false });
+const P2 = await pa.evaluate(() => P.id);
 const beeps = await R(pa, 'add_clip', { media: MD.beeps, lane: 'audio', start: 0 });
 const vz = await R(pa, 'visualizer', { style: 'bars', bars: 16, smoothing: 0, start: 0, duration: 4, x: 0.5, y: 0.5, w: 0.8, h: 0.5 });
 check('a visualizer takes the brand colours by default', vz.viz.c1 === '#ff8800' && vz.viz.c2 === '#0088ff', JSON.stringify(vz.viz));
@@ -261,8 +262,9 @@ check('source = the whole mix: the 500 Hz tone shows at 1.5 s; source = the beep
 for (const style of ['mirror', 'line', 'circle']) {
   await R(pa, 'visualizer', { id: vz.id, style });
   [pv, ex] = await both(pa, 0.75);
-  const lit1 = Math.max(...at(pv, 0.5, 0.5, 40)) > 20;
-  check(`${style}: drawn, and preview == export`, lit1 && diff(pv, ex) < 4, `${lit1} ${diff(pv, ex).toFixed(2)}`);
+  let ink = 0;
+  for (let j = 0; j < 64; j++) for (let i = 0; i < 64; i++) if (Math.max(...at(pv, (i + 0.5) / 64, (j + 0.5) / 64, 0)) > 60) ink++;
+  check(`${style}: drawn, and preview == export`, ink > 8 && diff(pv, ex) < 4, `${ink} points lit, diff ${diff(pv, ex).toFixed(2)}`);
 }
 await R(pa, 'visualizer', { id: vz.id, style: 'bars' });
 const levSaved = await pa.evaluate(id => [...vizLevels(P.text.find(x => x.id === id)).lv], vz.id);
@@ -283,14 +285,14 @@ await sleep(500);
 
 // ===================================== reload (the other motion mode) =====================================
 const pb = await open('no-preference');
-await R(pb, 'open_project', { project: 'Visualizer test' });
+await R(pb, 'open_project', { project: P2 });
 await pb.evaluate(() => vizReady());
 const rl = await pb.evaluate(() => { const it = P.text.find(x => x.viz); return { viz: it.viz, lv: [...vizLevels(it).lv] }; });
 check('reload: the visualizer is there with its settings', rl.viz.src === beeps.id && rl.viz.n === 16 && rl.viz.style === 'bars' && rl.viz.c1 === '#ff8800', JSON.stringify(rl.viz));
 [pv, ex] = await both(pb, 0.75);
 check('reload: it draws the same in the preview and the export', lit(pv, barOf(1000), 0.45) && lit(ex, barOf(1000), 0.45) && diff(pv, ex) < 4, diff(pv, ex).toFixed(2));
 check('reload: the same numbers as before the reload', rl.lv.length === levSaved.length && rl.lv.every((x, i) => x === levSaved[i]));
-await R(pb, 'open_project', { project: 'Layouts test' });
+await R(pb, 'open_project', { project: P1 });
 const back = await R(pb, 'layout', { id: info.id });
 [pv, ex] = await both(pb, 1);
 check('reload: the layout and its four cells are back, preview and export', back.cells.every(c => c.clips.length === 1) && !cellsOk(pv, back, COLS, 1920, 1080).length && !cellsOk(ex, back, COLS, 1920, 1080).length,
