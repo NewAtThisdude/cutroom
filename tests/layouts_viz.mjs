@@ -262,9 +262,9 @@ check('source = the whole mix: the 500 Hz tone shows at 1.5 s; source = the beep
 for (const style of ['mirror', 'line', 'circle']) {
   await R(pa, 'visualizer', { id: vz.id, style });
   [pv, ex] = await both(pa, 0.75);
-  let ink = 0;
-  for (let j = 0; j < 64; j++) for (let i = 0; i < 64; i++) if (Math.max(...at(pv, (i + 0.5) / 64, (j + 0.5) / 64, 0)) > 60) ink++;
-  check(`${style}: drawn, and preview == export`, ink > 8 && diff(pv, ex) < 4, `${ink} points lit, diff ${diff(pv, ex).toFixed(2)}`);
+  let ink = 0; // pixels drawn in the visualizer's box
+  for (let y = Math.round(0.25 * pv.h); y < 0.75 * pv.h; y++) for (let x = Math.round(0.1 * pv.w); x < 0.9 * pv.w; x++) { const i = (y * pv.w + x) * 4; if (Math.max(pv.d[i], pv.d[i + 1], pv.d[i + 2]) > 100) ink++; }
+  check(`${style}: drawn, and preview == export`, ink > 200 && diff(pv, ex) < 4, `${ink} px lit, diff ${diff(pv, ex).toFixed(2)}`);
 }
 await R(pa, 'visualizer', { id: vz.id, style: 'bars' });
 const levSaved = await pa.evaluate(id => [...vizLevels(P.text.find(x => x.id === id)).lv], vz.id);
