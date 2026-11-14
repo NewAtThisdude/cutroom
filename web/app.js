@@ -4606,7 +4606,7 @@ function capsFromWords(src, words, per) { // clips (on the timeline as it is now
 
 // ---------- import ----------
 async function loadMedia() {
-  const list = await api('/api/media');
+  const list = await api('/api/media'), noPct = m => JSON.stringify({ ...m, prep: 0 }), same = list.length === M.size && list.every(m => M.has(m.id) && noPct(M.get(m.id)) === noPct(m)); // (a poll while something prepares: only its % moved)
   for (const m of list) { // a proxy may exist now: make players reload
     const old = M.get(m.id);
     if (old && !old.ready && m.ready) for (const v of pool.values()) if (v.dataset.media === m.id) v.dataset.media = '';
@@ -4615,9 +4615,11 @@ async function loadMedia() {
   M.clear();
   for (const m of [...list, ...slates]) M.set(m.id, m);
   renderMediaList();
-  renderTimeline();
-  if (G.tab === 'audio') renderAudio();
-  S.dirty = true;
+  if (!same) { // nothing redraws at rest: a 4K proxy can take minutes, and this polls every 1.5 s meanwhile
+    renderTimeline();
+    if (G.tab === 'audio') renderAudio();
+    S.dirty = true;
+  }
   clearTimeout(loadMedia.t);
   if (list.some(m => !m.ready)) loadMedia.t = setTimeout(loadMedia, 1500);
 }
