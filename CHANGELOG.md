@@ -17,6 +17,7 @@ Windows PC. It is licensed GPL v3 or later.
 - An undo history panel where you can jump to any step
 - Project versions: automatic snapshots, named versions and restore in place
 - Library source viewer with hover skim, In and Out points and Replace clip
+- Library folders: nested bins you create, rename and delete (media is never deleted), drag one or several cards in and out, a breadcrumb, counts, and smart folders that fill themselves (videos, audio, photos, used in this project, not used anywhere, added today or this week); shared by every project and reachable by the MCP tools
 - Command bar (Cmd-K / Ctrl-K) that plans edits with a local model, one undo step per command
 - Import from Photos (Mac app), Open With and drag to the Dock icon
 - Package project: one `.cutroom` file with the project and every file it uses
