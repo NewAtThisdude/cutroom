@@ -731,7 +731,10 @@ def fx_pcm(m, fx, tmp, st=None):
         return False
     raw_in = lambda f, fmt='s16le': ['-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f)]
     def run(af, src, dst, fmt='s16le'):
-        r = sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)])
+        for _ in range(3):  # Windows' ffmpeg crashed now and then in arnndn (0xC0000005, 1 run in ~4): a crash is tried again, an error isn't
+            r = sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)])
+            if r.returncode not in (3221225477, -11):
+                break
         if r.returncode:  # said in the server log: the page only hears "processing its sound failed"
             print(f"sound processing {fx} of {m['id']}: ffmpeg exited {r.returncode}: {r.stderr.strip()[-400:]}", file=sys.stderr, flush=True)
         return not r.returncode

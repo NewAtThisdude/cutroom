@@ -165,7 +165,8 @@ for (const rm of ['no-preference', 'reduce']) {
   const truth = wall.map(W => after.last.O + (W - after.last.T0) / 1000), err = [S1, C1, A1].map(x => x.map((t, i) => ((t - truth[i]) * 1000).toFixed(1)).join(' '));
   check(`${rm}: in sync on the timeline: camera and mic within one frame of the screen at each of the 3 flashes`, S1.length === 3 && C1.length === 3 && A1.length === 3 && w1 <= FRAME,
     `vs when it happened (ms): screen ${err[0]}, camera ${err[1]}, mic ${err[2]}; camera, mic - screen (ms): ${d1.map(x => x.map(v => (v * 1000).toFixed(1)).join(' / ')).join(', ')}; mic delay ${(after.last.lat * 1000).toFixed(1)} ms heard ${after.last.heard}; leads ${[scr, cam, mic].map(c => `${c.start.toFixed(3)}@${c.in.toFixed(3)}`).join(' ')}`);
-  check(`${rm}: the teleprompter is not in the recorded screen (only the fake screen's two levels in its frames)`, fs1.dark.every(y => Math.abs(y - fs1.dark[0]) < 3), `${fs1.dark.length} dark frames, levels ${Math.min(...fs1.dark)}-${Math.max(...fs1.dark)}, first ${fs1.dark[0]}, off by 3+: ${fs1.dark.filter(y => Math.abs(y - fs1.dark[0]) >= 3).length}`);
+  check(`${rm}: the teleprompter is not in the recorded screen (only the fake screen's two levels in its frames)`, // against the steady level (the median), past the first 2 frames: the PC's hardware encoder starts its file 8 levels off for 2 frames
+    ...(lv => [fs1.dark.length > 100 && fs1.dark.slice(2).every(y => Math.abs(y - lv) < 3), `${fs1.dark.length} dark frames at ${lv.toFixed(1)}, levels ${Math.min(...fs1.dark).toFixed(1)}-${Math.max(...fs1.dark).toFixed(1)}, off by 3+ after the first 2: ${fs1.dark.slice(2).filter(y => Math.abs(y - lv) >= 3).length}`])([...fs1.dark].sort((a, b) => a - b)[fs1.dark.length >> 1]));
 
   // ---- the same in an export ----
   const ex = await ev(async () => (await REMOTE.export({ format: 'mp4', resolution: '720p', name: `recorder-${Date.now()}` })));

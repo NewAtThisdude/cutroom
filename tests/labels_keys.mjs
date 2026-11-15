@@ -177,10 +177,12 @@ for (const rm of ['no-preference', 'reduce']) {
     return out.filter(s => /[⌘⌥⇧⌫]|\b(this|This) Mac\b|Finder|Mac voices/.test(s));
   });
   check(`${rm}, Windows: no ⌘ ⌥ ⇧, "this Mac" or Finder left in the page`, left.length === 0, left.slice(0, 4).join(' | '));
-  const tour = [];
-  for (const i of [0, 4, 6]) { await ev(i => tourShow(i), i); tour.push(await page.textContent('#tour .td')); }
+  const tour = [], n = await ev(() => (tourShow(0), TOUR.length)); // every step this computer shows (no Ask without the local model)
+  for (let i = 0; i < n; i++) { await ev(i => tourShow(i), i); tour.push([await ev(i => TOUR[i].el, i), await page.textContent('#tour .td')]); }
+  const ask = tour.find(([el]) => el === '#btnAsk'), asks = await ev(() => $('#btnAsk').offsetParent != null);
   await ev(() => tourGo('skip'));
-  check(`${rm}, Windows: the tour says this computer, Ctrl+Z, Ctrl+K`, /runs on this computer/.test(tour[0]) && /Ctrl\+Z undoes/.test(tour[1]) && /^Ctrl\+K:/.test(tour[2]), tour.join(' | ').slice(0, 300));
+  check(`${rm}, Windows: the tour says this computer, Ctrl+Z, Ctrl+K (when Ask is shown)`, /runs on this computer/.test(tour[0][1]) && tour.some(([, t]) => /Ctrl\+Z undoes/.test(t)) && (asks ? /^Ctrl\+K:/.test(ask?.[1]) : !ask),
+    `Ask ${asks ? 'shown' : 'hidden'}: ` + tour.map(([, t]) => t).join(' | ').slice(0, 300));
   check(`${rm}, Windows: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
   await ev(async id => { await api(`/api/projects/${id}/trash`, {}); }, pid);
   await ctx.close();
