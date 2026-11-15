@@ -3858,7 +3858,7 @@ function frame(now) {
     S.last = now; if (dt > 0) S.fdt = dt / 1000; // the display's frame time (paint: a first-frame cut's start)
     // a new lead that sync() just started (a cut onto a clip's first frame): measured from where play() left it, so a clean
     // start that has already moved by this frame counts now, not a frame later (that frame's hold was a 33 ms gap)
-    if (v !== S.vEl) { S.vEl = v; S.vt = v?._clean && !v._run && !v.paused ? v._ct ?? v.currentTime : v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; }
+    if (v !== S.vEl) { S.vEl = v; S.vt = v?._clean && !v._run && !v.paused ? v._ct ?? v.currentTime : v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; S.vNew = v?._clean ? 2 : 0; }
     const moved = v && v.currentTime !== S.vt;
     // Chromium's currentTime jumps on play() and then holds ~40 ms while its audio renderer starts: for a file with sound
     // the first move is the second frame in a row it runs at speed (else the clock re-anchored, and the sound re-synced,
@@ -3878,8 +3878,11 @@ function frame(now) {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
       // never before where play() started (S.t0): an animation tile plays its span from its start, and a picture that reports
       // a moment earlier waits there instead of showing what's before it
+      // and a new lead that starts clean takes the clock on its first two moves inside its clip (S.vNew; the first one still
+      // carries a few ms of its start), the sound following when that moves it: a prerolled one runs a few ms behind its target,
+      // under CLOCK_TOL, and the clock stayed that far ahead of its picture (av_sync on Mac Chromium: sound 20-30 ms early)
       const to = Math.max(tl, S.t0);
-      if ((first || was || Math.abs(to - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((to - S.t) * 1000) / S.rate; S.t = Math.min(to, S.end); }
+      if ((first || was || S.vNew || Math.abs(to - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { if (S.vNew && Math.abs(to - S.t) > 0.004) S.aA0 = undefined; S.wall0 -= ((to - S.t) * 1000) / S.rate; S.t = Math.min(to, S.end); S.vNew = Math.max(0, (S.vNew || 0) - 1); }
     }
     if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
