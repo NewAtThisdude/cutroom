@@ -105,7 +105,7 @@ for (const dir of ['in', 'out', 'left', 'right', 'orbit']) {
 }
 
 // ---- the control: one depth everywhere (no parallax) must FAIL the check, or the check proves nothing ----
-const AIPY = `${process.cwd()}/ai/.venv/bin/python`, cleanEnv = { ...process.env, HF_HUB_OFFLINE: '1' }; delete cleanEnv.PYTHONPATH;
+const AIPY = `${process.cwd()}/ai/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, cleanEnv = { ...process.env, HF_HUB_OFFLINE: '1' }; delete cleanEnv.PYTHONPATH;
 for (const dir of ['right', 'in']) {
   const jf = `${OUT}flat_${dir}.json`, out = `${OUT}flat_${dir}.mp4`;
   fs.writeFileSync(jf, JSON.stringify({ op: 'zoom3d', src: PHOTO, out, dur: 2, fps: 30, w: W, h: HH, silent: true, flat: true, dir, amount: AMT, t0: 0,
