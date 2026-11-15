@@ -9,43 +9,59 @@ import statistics
 import sys
 import threading
 
+SERVE = sys.argv[1:] == ['--serve']  # server.py keeps one of these running: Python + numpy cost ~0.2 s to start on Windows
 # read while numpy loads: a pipe holds 64 KB, so the writer would otherwise wait out the import
 raw = []
-rd = threading.Thread(target=lambda: raw.append(sys.stdin.buffer.read()))
+rd = threading.Thread(target=lambda: None if SERVE else raw.append(sys.stdin.buffer.read()))
 rd.start()
 import numpy as np  # noqa: E402
 rd.join()
-sr, hop = 8000, 128
-x = np.frombuffer(raw[0][:len(raw[0]) // 2 * 2], dtype='<i2')
-n, fps = len(x) // hop, sr / hop
-if n < fps * 4:
-    print(json.dumps({'error': 'need at least 4 seconds of audio'}))
-    sys.exit()
-e = x[:n * hop].astype(np.int64).reshape(n, hop)
-env = [math.log1p(v / hop / 1e4) for v in (e * e).sum(1).tolist()]  # int sums, exact; the scalar log1p
-on = [0.0] + [max(0.0, b - a) for a, b in zip(env, env[1:])]
-sd = statistics.pstdev(on) or 1.0
-on = np.array(on) / sd
-prior = lambda L: math.exp(-0.5 * math.log2(60 * fps / L / 120) ** 2)
-lags = range(int(60 * fps / 180), int(60 * fps / 60) + 1)
-ac = [prior(L) * float(np.dot(on[L:], on[:n - L])) for L in lags]
-period = lags[ac.index(max(ac))]  # the first maximum, as max(key=) kept
-P, h = 2 * period, period // 2
-W = P - h  # candidates t - P .. t - h - 1
-pen = np.array([100 * math.log(d / period) ** 2 for d in range(P, h, -1)])
-score = np.concatenate([np.full(P, -np.inf), on])  # score[P + i] is frame i; -inf before the song never wins
-back = np.full(n, -1)
-win = np.lib.stride_tricks.sliding_window_view(score, W)  # a view: rows see the scores written below
-for b in range(h + 1, n, h):  # frames <= h have no previous beat
-    t = np.arange(b, min(b + h, n))
-    v = win[t] - pen  # row for frame t starts at score index t, i.e. frame t - P
-    k = v.argmax(1)  # the first maximum, as the strict > kept
-    score[P + t] = on[t] + v.max(1)
-    back[t] = t - P + k
-s = max(0, n - period)
-t = s + int(score[P + s:].argmax())
-grid = []
-while t >= 0:
-    grid.append(t)
-    t = int(back[t])
-print(json.dumps({'bpm': round(60 * fps / period, 1), 'beats': [round(i / fps, 3) for i in reversed(grid)]}))
+
+def grid_of(buf):
+    sr, hop = 8000, 128
+    x = np.frombuffer(buf[:len(buf) // 2 * 2], dtype='<i2')
+    n, fps = len(x) // hop, sr / hop
+    if n < fps * 4:
+        return {'error': 'need at least 4 seconds of audio'}
+    e = x[:n * hop].astype(np.int64).reshape(n, hop)
+    env = [math.log1p(v / hop / 1e4) for v in (e * e).sum(1).tolist()]  # int sums, exact; the scalar log1p
+    on = [0.0] + [max(0.0, b - a) for a, b in zip(env, env[1:])]
+    sd = statistics.pstdev(on) or 1.0
+    on = np.array(on) / sd
+    prior = lambda L: math.exp(-0.5 * math.log2(60 * fps / L / 120) ** 2)
+    lags = range(int(60 * fps / 180), int(60 * fps / 60) + 1)
+    ac = [prior(L) * float(np.dot(on[L:], on[:n - L])) for L in lags]
+    period = lags[ac.index(max(ac))]  # the first maximum, as max(key=) kept
+    P, h = 2 * period, period // 2
+    W = P - h  # candidates t - P .. t - h - 1
+    pen = np.array([100 * math.log(d / period) ** 2 for d in range(P, h, -1)])
+    score = np.concatenate([np.full(P, -np.inf), on])  # score[P + i] is frame i; -inf before the song never wins
+    back = np.full(n, -1)
+    win = np.lib.stride_tricks.sliding_window_view(score, W)  # a view: rows see the scores written below
+    for b in range(h + 1, n, h):  # frames <= h have no previous beat
+        t = np.arange(b, min(b + h, n))
+        v = win[t] - pen  # row for frame t starts at score index t, i.e. frame t - P
+        k = v.argmax(1)  # the first maximum, as the strict > kept
+        score[P + t] = on[t] + v.max(1)
+        back[t] = t - P + k
+    s = max(0, n - period)
+    t = s + int(score[P + s:].argmax())
+    grid = []
+    while t >= 0:
+        grid.append(t)
+        t = int(back[t])
+    return {'bpm': round(60 * fps / period, 1), 'beats': [round(i / fps, 3) for i in reversed(grid)]}
+
+
+if not SERVE:
+    print(json.dumps(grid_of(raw[0])))
+else:  # requests: 8-byte little-endian length + the samples; answers: one JSON line each. stdin closed = the server is gone
+    inp, out = sys.stdin.buffer, sys.stdout
+    while len(hd := inp.read(8)) == 8:
+        buf = inp.read(int.from_bytes(hd, 'little'))
+        try:
+            r = grid_of(buf)
+        except Exception:  # noqa: BLE001 (one bad request must not end the helper: null = the server's stdlib loops)
+            r = None
+        out.write(json.dumps(r) + '\n')
+        out.flush()

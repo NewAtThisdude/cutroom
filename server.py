@@ -1161,6 +1161,32 @@ def tts(text, voice, rate):
             return import_file(f"Voiceover - {' '.join(text.split()[:5])}{out.suffix}", fh, out.stat().st_size)
 
 
+BEATS_HELPER = {'p': None, 'lock': threading.Lock()}
+
+
+def beats_helper(raw=None):
+    """The running ai/beats.py --serve (started on first use; it ends when the server's end of its stdin closes). With raw:
+    that song's beat grid, or None when the helper can't answer (it is restarted on the next call)."""
+    with BEATS_HELPER['lock']:
+        p = BEATS_HELPER['p']
+        if p is None or p.poll() is not None:
+            try:
+                p = BEATS_HELPER['p'] = subprocess.Popen([*AI_RUN, str(AI_DIR / 'beats.py'), '--serve'], stdin=subprocess.PIPE,
+                                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
+            except OSError:
+                return None
+        if raw is None:
+            return None
+        try:
+            p.stdin.write(len(raw).to_bytes(8, 'little') + raw)
+            p.stdin.flush()
+            return json.loads(p.stdout.readline())
+        except (OSError, ValueError):
+            p.kill()
+            BEATS_HELPER['p'] = None
+            return None
+
+
 def beats(mid):
     """Beat grid for a music file (CapCut's 'Beats'): onset envelope -> tempo (autocorrelation, 120 BPM prior)
     -> dynamic-programming beat tracking (Ellis 2007), so the grid follows small tempo drifts."""
@@ -1172,15 +1198,14 @@ def beats(mid):
     # Same BPM on all 22 pack songs; 2 of them had 2 beats each 2-3 frames off the grid read from the file itself
     f = CACHE / f'{mid}.pcm'
     src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
-    # numpy in the AI venv (ai/beats.py, the same grid) starts first: Python and numpy load while ffmpeg decodes, then ~8 ms
-    fast = None if os.environ.get('CUTROOM_BEATS_STDLIB') or not AI_PY.exists() else subprocess.Popen(
-        [*AI_RUN, str(AI_DIR / 'beats.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AI_ENV)
+    # numpy in the AI venv (ai/beats.py, the same grid): one helper kept running, started while ffmpeg decodes the first time
+    # (Python + numpy take ~0.2 s to start on Windows, longer than the whole computation), then ~8 ms per song
+    fast = not os.environ.get('CUTROOM_BEATS_STDLIB') and AI_PY.exists()
+    if fast:
+        beats_helper()
     raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
     if fast:
-        try:
-            out = json.loads(fast.communicate(raw)[0])
-        except (ValueError, OSError):
-            out = None  # a broken venv: the stdlib loops below
+        out = beats_helper(raw)  # None: a broken venv or a failed request, the stdlib loops below
         if out and out.get('error'):
             raise ValueError(out['error'])
         if out:
