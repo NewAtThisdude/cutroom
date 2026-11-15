@@ -302,7 +302,7 @@ def main():
     buf = bytearray(n)
     view = memoryview(buf)
     threads = max(1, min(32, os.cpu_count() or 1))
-    rows = max(1, min(H, 262144 // max(W, 1)))  # bands of ~256 K pixels (1 MB a float32 array: the lets stay in cache)
+    rows = max(1, min(H, 98304 // max(W, 1)))  # bands of ~100 K pixels: 93 ms a 4K kaleido frame on 32 threads (Windows; 256 K: 277, 16 K: 540)
     bands = [(y, min(H, y + rows)) for y in range(0, H, rows)]
     pool = None
     if B.name == 'numpy' and threads > 1:

@@ -5714,7 +5714,7 @@ FXGPU = []  # the effects tool, found once: (backend, command) - ('metal', [fxgp
 FX_PY = TOOLS / '.venv' / ('Scripts/python.exe' if WIN else 'bin/python')  # install.ps1: NumPy alone (tools/fx.lock)
 FXW = []  # fx_worker(): found once
 FX_USED = {}  # backend -> stages run since the server started, and 'fallback' -> stages that failed over to geq (GET /api/fx/backend)
-FX_SMALL = 3e8  # pixels: a job below this runs on NumPy even beside CUDA (PyTorch takes ~2 s to load; see fx_cmd)
+FX_SMALL = 5e8  # pixels (60 4K frames): a job below this runs on NumPy even beside CUDA: PyTorch takes ~2.5 s to load, NumPy ~0.1 s a 4K frame
 
 
 def fx_worker():
