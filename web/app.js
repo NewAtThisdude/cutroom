@@ -175,7 +175,9 @@ const WEIGHTS = { Montserrat: [400, 500, 600, 700, 800, 900], Poppins: [800, 900
 const WEIGHT_NAMES = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold', 900: 'Black' };
 const CANVAS_FILTER = 'filter' in CanvasRenderingContext2D.prototype; // WebKit (the Mac app) has no ctx.filter: filters and feathering are done by hand
 const ALPHA_Q = navigator.vendor.startsWith('Apple') ? '?alpha=hevc' : ''; // WebKit plays VP9 alpha opaque; the server hands it an HEVC-alpha copy
-const WK_Q = navigator.vendor.startsWith('Apple') ? '?wk=1' : ''; // WebKit colour-manages video (BT.709 mid-tones lifted): a re-labelled copy shows it as exported
+// WebKit colour-manages video (BT.709 mid-tones lifted): a re-labelled copy shows it as exported. Chromium: the picture alone
+// (server.py mute_copy): a file with sound starts its audio renderer, which held the picture 40-60 ms at every play()
+const WK_Q = navigator.vendor.startsWith('Apple') ? '?wk=1' : '?an=1';
 const RAMPS = { // CapCut's curve presets: speeds at the middles of 8 equal parts of the clip (rampPts makes them a smooth curve)
   montage: [1, 1.6, 0.5, 2, 1, 0.5, 1.8, 1], hero: [1, 1, 0.5, 0.25, 0.25, 0.5, 1, 1], bullet: [2, 2, 0.35, 0.2, 0.35, 2, 2, 2],
   jumpcut: [1, 1, 3, 3, 1, 1, 3, 3], flashin: [4, 3, 2, 1.5, 1, 1, 1, 1], flashout: [1, 1, 1, 1, 1.5, 2, 3, 4],
@@ -1817,7 +1819,10 @@ function vidFor(key, m) {
       old.pause(); old.removeAttribute('src'); old.load(); old.remove(); pool.delete(k2);
     }
   }
-  if (v.dataset.media !== m.id) { v.dataset.media = m.id; v._t0 = undefined; v.src = `/media/${m.id}${m.alpha || m.trans ? ALPHA_Q : m.hdr && !m.proxy ? '' : WK_Q}`; }
+  if (v.dataset.media !== m.id) {
+    const q = m.alpha || m.trans ? ALPHA_Q : m.hdr && !m.proxy ? '' : WK_Q;
+    v.dataset.media = m.id; v._t0 = undefined; v._clean = SMOOTH_CLOCK && (!m.hasAudio || q === '?an=1'); v.src = `/media/${m.id}${q}`; // no sound track: Chromium starts it at once (frame)
+  }
   return v;
 }
 function imgFor(m) {
@@ -2251,8 +2256,11 @@ function paint() {
     if (!live.has(v)) {
       live.add(v);
       // playing: the next cut's element starts PRE early (unseen), so at the cut it's already running in step and the
-      // clock needn't wait for it to start (that wait was a gap in the sound at every cut)
-      if (S.playing && lead <= PRE && nx.in - lead * nx.speed >= 0) sync(v, nx.in - lead * nx.speed, nx.speed);
+      // clock needn't wait for it to start (that wait was a gap in the sound at every cut). A clip from its file's first
+      // frame has nothing before it to run through: it starts from that frame within a display frame of its cut (started
+      // at the cut, it ran a frame behind the clock, which stepped back to it: its first frame showed twice)
+      const from = nx.in - lead * nx.speed;
+      if (S.playing && lead <= PRE && (from >= 0 || lead <= (S.fdt || 1 / 60) * S.rate)) sync(v, Math.max(0, from), nx.speed);
       else {
         const at = S.playing ? Math.max(0, nx.in - PRE * nx.speed) : nx.in;
         if (!v.paused) v.pause();
@@ -3830,7 +3838,9 @@ function addTemplate(name) {
 // much early (Edge -25 ms, Mac Chromium -39, the 2x clip -50 with atempo). The next cut's prerolled element starts with the
 // same stall, so there the clock steps back ~50 ms just after the cut and the sound re-syncs once (steering that element
 // by playbackRate was tried: Chromium's picture then drifted from its currentTime). The sound's 20 ms: Edge's
-// getOutputTimestamp() wanders ~10 ms for the first frames after the audio device starts.
+// getOutputTimestamp() wanders ~10 ms for the first frames after the audio device starts. (2026-11-15: that stall is the
+// element's audio renderer starting, muted or not. Chromium's players now get the picture alone (vidFor, ?an=1), which starts
+// within a frame; the two-frame wait below stays for a file still played with its sound.)
 const SMOOTH_CLOCK = /Chrome\//.test(navigator.userAgent), CLOCK_TOL = SMOOTH_CLOCK ? 0.012 : 0.06, AUDIO_TOL = SMOOTH_CLOCK ? 0.02 : 0.04;
 function frame(now) {
   rafId = 0;
@@ -3842,13 +3852,20 @@ function frame(now) {
     // A video that has started but not moved yet doesn't count: the clock picks up where the picture really is once it
     // moves (and when it drifts CLOCK_TOL off), because the sound is scheduled from the clock: picture and sound start together.
     const v = S.lead, dt = now - (S.last ?? now), was = S.stuck;
-    S.last = now;
-    if (v !== S.vEl) { S.vEl = v; S.vt = v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; }
+    // the clock starts on its first frame, on the frames' own time base: anchored at play()'s performance.now(), a frame stamped
+    // before it ran the clock back (Edge: a Pop tile's play from 1.0 showed 0.975, a frame and a half before its span)
+    if (S.last === undefined) S.wall0 = now;
+    S.last = now; if (dt > 0) S.fdt = dt / 1000; // the display's frame time (paint: a first-frame cut's start)
+    // a new lead that sync() just started (a cut onto a clip's first frame): measured from where play() left it, so a clean
+    // start that has already moved by this frame counts now, not a frame later (that frame's hold was a 33 ms gap)
+    if (v !== S.vEl) { S.vEl = v; S.vt = v?._clean && !v._run && !v.paused ? v._ct ?? v.currentTime : v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; S.vNew = v?._clean ? 2 : 0; }
     const moved = v && v.currentTime !== S.vt;
-    // Chromium's currentTime jumps on play() and then holds ~40 ms while its time source starts: there the first move is
-    // the second frame in a row it runs at speed (else the clock re-anchored, and the sound re-synced, three times in 40 ms)
+    // Chromium's currentTime jumps on play() and then holds ~40 ms while its audio renderer starts: for a file with sound
+    // the first move is the second frame in a row it runs at speed (else the clock re-anchored, and the sound re-synced,
+    // three times in 40 ms). Its players get the picture alone (vidFor, ?an=1): that starts within a frame, and waiting
+    // two frames for it was a 50 ms hold of the picture at every start and every cut onto a clip's first frame
     if (SMOOTH_CLOCK && !S.vMoved) S.vRun = moved && (v.currentTime - S.vt) * 1000 >= (dt * v.playbackRate) / 2 ? S.vRun + 1 : 0;
-    const going = moved && (!SMOOTH_CLOCK || S.vMoved || S.vRun >= 2);
+    const going = moved && (!SMOOTH_CLOCK || S.vMoved || v._clean || S.vRun >= 2);
     if (moved) { S.vt = v.currentTime; S.vAt = now; }
     const first = going && !S.vMoved;
     if (going) S.vMoved = true;
@@ -3859,7 +3876,13 @@ function frame(now) {
     const lc = S.leadClip;
     if (moved && !S.stuck && lc && M.get(lc.media)?.kind !== 'image') {
       const tl = lc.start + (v.currentTime - lc.in) / lc.speed;
-      if ((first || was || Math.abs(tl - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { S.wall0 -= ((tl - S.t) * 1000) / S.rate; S.t = Math.min(tl, S.end); }
+      // never before where play() started (S.t0): an animation tile plays its span from its start, and a picture that reports
+      // a moment earlier waits there instead of showing what's before it
+      // and a new lead that starts clean takes the clock on its first two moves inside its clip (S.vNew; the first one still
+      // carries a few ms of its start), the sound following when that moves it: a prerolled one runs a few ms behind its target,
+      // under CLOCK_TOL, and the clock stayed that far ahead of its picture (av_sync on Mac Chromium: sound 20-30 ms early)
+      const to = Math.max(tl, S.t0);
+      if ((first || was || S.vNew || Math.abs(to - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { if (S.vNew && Math.abs(to - S.t) > 0.004) S.aA0 = undefined; S.wall0 -= ((to - S.t) * 1000) / S.rate; S.t = Math.min(to, S.end); S.vNew = Math.max(0, (S.vNew || 0) - 1); }
     }
     if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh

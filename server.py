@@ -588,6 +588,23 @@ def wk_copy(m):
     return out if out.exists() else src
 
 
+def mute_copy(mid, src):
+    """The picture alone, for Chromium's players (Edge, Chrome; ?an=1): the same video stream with the audio left out. The page
+    plays every element muted (the sound comes from Web Audio), but a file with sound starts Chromium's audio renderer, which
+    holds the picture 40-60 ms at every play(): measured 2026-11-15 on Mac Chromium, the first move came 1-10 ms after play()
+    without sound, 38-59 ms with it (720p and 4K, cold, warmed, or started at rate 0), a stall at every cut onto a clip that
+    starts at its file's 0 s (Edge's 44-51 ms gap in ramp_play went with it). Remade when its source is newer (a proxy arriving)."""
+    out = CACHE / f'{mid}.an.mp4'
+    with WK_LOCK:
+        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+            tmp = out.with_suffix('.tmp.mp4')
+            if sh(['ffmpeg', '-v', 'error', '-y', '-i', str(src), '-map', '0:v:0', '-c', 'copy', '-an', '-movflags', '+faststart', str(tmp)]).returncode == 0:
+                retry(tmp.replace, out)
+            else:
+                tmp.unlink(missing_ok=True)
+    return out if out.exists() and out.stat().st_mtime >= src.stat().st_mtime else src
+
+
 def hw_pix(m):
     """Pixel formats the Mac's media engine plays: 8-bit 4:2:0, and 10-bit 4:2:0 for HEVC. Camera 4:2:2 (Sony XAVC S-I,
     Canon, Panasonic 10-bit) either fails in WebKit (HEVC 4:2:2) or decodes on the CPU there (H.264 4:2:2): proxied."""
@@ -7349,6 +7366,8 @@ class App(BaseHTTPRequestHandler):
                 if q.get('wk') and mm.get('kind') == 'video' and not (mm.get('alpha') or mm.get('trans')):
                     return self.file(wk_copy(mm))  # the app's preview: colour labels WebKit shows as decoded
                 proxy = next((f for f in (CACHE / f'{m[1]}.proxy.mp4', CACHE / f'{m[1]}.proxy.webm') if f.exists()), None)
+                if q.get('an') and mm.get('kind') == 'video' and mm.get('hasAudio') and not (mm.get('alpha') or mm.get('trans')):
+                    return self.file(mute_copy(m[1], proxy or MEDIA / mm['file']))  # Chromium's players: the picture alone (mute_copy)
                 return self.file(proxy or MEDIA / meta(m[1])['file'])
             if path == '/api/sfx':
                 return self.reply([{'id': k, 'name': v[0], 'dur': v[1]} for k, v in SFX.items()])
@@ -7693,7 +7712,7 @@ class App(BaseHTTPRequestHandler):
             if m := re.fullmatch(r'/api/media/([a-f0-9]{12})/trash', u.path):  # reversible: file + metadata move to trash/media
                 info = meta(m[1])
                 (HOME / 'trash' / 'media').mkdir(parents=True, exist_ok=True)
-                for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov'):
+                for f in (MEDIA / info['file'], MEDIA / f'{m[1]}.json', CACHE / f'{m[1]}.wk.mov', CACHE / f'{m[1]}.an.mp4'):
                     if f.exists():
                         retry(shutil.move, str(f), str(unique(HOME / 'trash' / 'media' / f.name)))
                 if (MEDIA / f'{m[1]}.cursor').exists():  # a screen recording's cursor track (auto zoom) goes with it; emptying the trash purges it
@@ -8887,7 +8906,7 @@ def resume_prepare():
                                                               '-of', 'csv=p=0', str(px)]).stdout:
             # an HDR proxy from before 2026-11-09: BT.709 pixels labelled BT.2020, and upright pixels that still carried the
             # phone's rotation (portrait clips previewed sideways). Remade below with its filmstrip and WebKit copy
-            for f in (px, CACHE / f"{m['id']}.wk.mov"):
+            for f in (px, CACHE / f"{m['id']}.wk.mov", CACHE / f"{m['id']}.an.mp4"):
                 f.unlink(missing_ok=True)
             m.pop('grid', None)
         wk = CACHE / f"{m.get('id')}.wk.mov"
@@ -9018,7 +9037,7 @@ def folders_op(b):
 LIB_SETTINGS = HOME / 'settings.json'
 LIBSET = {}
 _SET0 = {'keep': VERSION_KEEP, 'gap': VERSION_GAP, 'llm': os.environ.get('CUTROOM_LLM')}
-REGEN = ('.proxy.mp4', '.proxy.webm', '.wk.mov', '.strip.jpg', '.grid.jpg', '.wave.png', '.peaks', '.320.jpg', '.320.png', '.2560.jpg', '.2560.png')  # made again from the media
+REGEN = ('.proxy.mp4', '.proxy.webm', '.wk.mov', '.an.mp4', '.strip.jpg', '.grid.jpg', '.wave.png', '.peaks', '.320.jpg', '.320.png', '.2560.jpg', '.2560.png')  # made again from the media
 
 
 def lib_settings_apply():
