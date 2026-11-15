@@ -1,6 +1,7 @@
 # Cutroom on Windows 10/11, one line in PowerShell:      irm <url>/install.ps1 | iex
 # or from a copy of the source:                          powershell -ExecutionPolicy Bypass -File install.ps1
-# Finds Python (offers winget), downloads ffmpeg, whisper.cpp, uv and the two speech models, runs `cutroom check` and installs
+# Finds Python (offers winget), downloads ffmpeg, whisper.cpp, uv and the two speech models, puts NumPy for effects exports in
+# tools\.venv (tools\fx.lock), runs `cutroom check` and installs
 # the AI pack this PC can run (ai\setup.ps1: CUDA on an NVIDIA GPU with 6 GB+, a light CPU pack otherwise, or none, with the
 # reason). Every download is pinned and checked by SHA-256. Everything goes into the prefix (and the library); nothing is
 # installed system-wide and PATH is not changed: the launcher hands the tools to the Cutroom server process only. Safe to run
@@ -58,6 +59,7 @@ function Find-Python { # the real python.exe of a 3.10+ install (the Microsoft S
 function Confirm-Step($q) { $Yes -or ((Read-Host "$q [Y/n]") -notmatch '^[nN]') }
 
 # 1. the source: this copy, or the release zip (pinned) unpacked into <prefix>\src; an update keeps the AI pack (ai\.venv, ai\vendor)
+#    and the effects' NumPy (tools\.venv)
 if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'server.py'))) { $src = $PSScriptRoot } else {
   $url = if ($env:CUTROOM_SRC) { $env:CUTROOM_SRC } else { $SrcUrl }
   $sha = if ($env:CUTROOM_SRC_SHA256) { $env:CUTROOM_SRC_SHA256 } else { $SrcSha }
@@ -68,7 +70,7 @@ if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'server.py'))) { $src
   New-Item -ItemType Directory $new | Out-Null
   & "$env:SystemRoot\System32\tar.exe" -xf "$new.zip" -C $new --strip-components 1  # (a GitHub zip holds one folder)
   if ($LASTEXITCODE -or -not (Test-Path "$new\server.py")) { throw "$url is not a Cutroom source zip" }
-  foreach ($d in 'ai\.venv', 'ai\vendor') { if (Test-Path "$src\$d") { Move-Item "$src\$d" "$new\$d" } }
+  foreach ($d in 'ai\.venv', 'ai\vendor', 'tools\.venv') { if (Test-Path "$src\$d") { Move-Item "$src\$d" "$new\$d" } }
   if (Test-Path $src) { Remove-Item -Recurse -Force $src }
   Move-Item $new $src
   Remove-Item "$new.zip"
@@ -131,6 +133,14 @@ try {
   $env:UV_PYTHON_INSTALL_DIR = Join-Path $Prefix 'python'  # uv's own Python for the AI pack (when this PC has no 3.12) and
   $env:UV_CACHE_DIR = Join-Path $Prefix 'uv-cache'          # its cache stay in the prefix too
   $ErrorActionPreference = 'Continue'
+  # NumPy for the effects-pack expressions in exports (tools\fxexpr.py; ~13 MB), whatever the AI pack: without it geq does
+  # them, minutes per second of video. Hash-locked wheels only (tools\fx.lock), Python 3.12 as the AI pack (uv's own when
+  # this PC has none). A failure here is a warning: exports still work, just slowly.
+  $fxVenv = Join-Path $src 'tools\.venv'
+  if (-not (Test-Path "$fxVenv\Scripts\python.exe")) { & $uv venv --python 3.12 $fxVenv }
+  & $uv pip install --python "$fxVenv\Scripts\python.exe" --require-hashes --only-binary ':all:' --no-cache --link-mode copy `
+    -r (Join-Path $src 'tools\fx.lock') --index-url https://pypi.org/simple
+  if ($LASTEXITCODE) { Write-Warning 'NumPy for effects exports did not install: effects-pack exports will be slow (geq). Run the installer again to retry.' }
   $report = & $py -X utf8 -I (Join-Path $src 'server.py') --check
   $ErrorActionPreference = 'Stop'
   if ($LASTEXITCODE -or -not ($report -match '^pack: ')) { throw "cutroom check failed: $($report -join "`n")" }

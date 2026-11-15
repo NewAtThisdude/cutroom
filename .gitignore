@@ -12,3 +12,4 @@ tools/fonts
 tools/retouch
 .claude/
 tools/fxgpu
+tools/.venv

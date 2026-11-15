@@ -31,9 +31,9 @@ const cpu = checkOut({ CUTROOM_PROFILE: 'win:cpu:16' }).stdout;
 check('a CPU PC: Kokoro voices run, the Mac-only tools say why', cpu.includes('AI voiceover: Kokoro-82M (PyTorch, CPU)') && cpu.includes('Remove background: no, needs Apple Silicon'), cpu);
 check('CUTROOM_AI overrides the pick', checkOut({ CUTROOM_AI: 'none' }).stdout.includes('chosen with CUTROOM_AI=none\n'), '');
 // every package the AI packs install comes from a lock with each file's hash (the MLX pack too, ai/mac.lock)
-const pipLines = ['setup.sh', 'setup.ps1'].flatMap((f) => readFileSync(join(repo, 'ai', f), 'utf8').split('\n').filter((l) => /uv\b.*\bpip install/.test(l)));
-const lockReqs = ['mac.lock', 'win-cuda.lock', 'win-cpu.lock'].flatMap((f) => readFileSync(join(repo, 'ai', f), 'utf8').split(/\n(?=\S)/).filter((b) => !b.startsWith('#')));
-check('the AI packs install only hash-locked packages', pipLines.length >= 2 && pipLines.every((l) => l.includes('--require-hashes'))
+const pipLines = ['ai/setup.sh', 'ai/setup.ps1', 'install.ps1'].flatMap((f) => readFileSync(join(repo, f), 'utf8').split('\n').filter((l) => /uv\b.*\bpip install/.test(l)));
+const lockReqs = ['ai/mac.lock', 'ai/win-cuda.lock', 'ai/win-cpu.lock', 'tools/fx.lock'].flatMap((f) => readFileSync(join(repo, f), 'utf8').split(/\n(?=\S)/).filter((b) => !b.startsWith('#')));
+check('the AI packs and the effects\' NumPy install only hash-locked packages', pipLines.length >= 3 && pipLines.every((l) => l.includes('--require-hashes'))
   && lockReqs.length > 100 && lockReqs.every((b) => b.includes('--hash=sha256:')), pipLines.join('\n'));
 
 // 2. install.sh piped from a local web server: a tarball of this working tree (tracked files, as they are now)
