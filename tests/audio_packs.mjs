@@ -121,11 +121,9 @@ const open = async rm => {
 const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
 // the talk clips: a voice that stops ~9.4 s in (the cave's tail is read just after it), one over music, a 22 s podcast over room noise
 // The music sits 10 dB under where it first was: the voice ~19 dB over it in the speech band, a vlog's music bed.
-// KNOWN LIMIT (open, to be fixed as its own piece): Studio voice alone makes the voice LESS clear when the music is within
-// ~6-10 dB of it. The expander can't tell that music from the voice and the compressor presses the voice towards it.
-// Speech-band speech/gap change by bed level (2026-11-14 sweep, OS speech over this music): bed 0 dB (voice ~9.5 dB over
-// it) -2.85 dB, -2 dB -2.17, -4 dB -0.22, -6 dB +1.72, -8 dB +5.08, -10 dB +8.61, -15 dB +12.0, -20 dB +14.45 dB.
-// Studio + remove music (Demucs) is the tool for such a mix.
+// Studio voice over this music at other levels: the sweep in section 2 (it made the voice LESS clear with the music within
+// ~6-10 dB of it until 2026-11-15: bed 0 dB -2.85 dB speech/gap, -2 dB -2.17, -4 dB -0.22). Studio + remove music (Demucs)
+// is the tool for such a mix.
 const SAY = 'We drove up the coast at sunset. [[slnc 900]] Then we ate dinner at a little cafe by the harbour. [[slnc 900]] The mountain trail was steep and the snow was deep.';
 const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000,volume=-10dB';
 // talk.mp4 in a female voice on Windows too, like macOS's default (Samantha, f0 ~176 Hz; Zira ~182 Hz): over Windows' default
@@ -276,6 +274,73 @@ if (run('studio')) {
   const o1 = onsets(x), d = o1.map(o => lagAt(x, y, o));
   check('Studio voice: every burst starts within 2 ms of the input (no look-ahead)', o1.length >= 5 && d.every(v => Math.abs(v) <= 96), `${o1.length} bursts at ${o1.map(o => (o / SR).toFixed(2)).join(', ')} s; shift of each burst's first 50 ms: ${d.join(', ')} samples`);
   await post(`/api/media/${burst.id}/trash`, {});
+  // Studio voice never makes the speech worse than it came in. The voice is mixed here over beds at known levels, so its speech
+  // regions are known (speechClip's) and the clean voice is the reference. Every documented bed level of the 2026-11-14 sweep
+  // (OS speech over MUSIC with its volume at 0 dB = the voice ~9.5 dB over it), denser points around where it went wrong
+  // (0 to -8 dB), louder music, other beds (drums + bass + lead, pink noise), clean speech (a -70 dB floor), one breath of
+  // continuous speech, two voices, and no speech at all. Per mix: the speech-band speech/gap change (>= 0: zero measured
+  // degradation), the speech kept (speech/gap alone rewards a gate that eats quiet syllables: the share of voiced 20 ms frames
+  // whose clean-voice component, <y,s>^2/|s|^2, fell 10 dB below the typical one), the length, the lag and the true peak.
+  {
+    const ffmix = (out, ins, graph) => execFileSync('ffmpeg', ['-v', 'error', '-y', ...ins.flatMap(i => i.startsWith('aevalsrc') || i.startsWith('anoisesrc') ? ['-f', 'lavfi', '-i', i] : ['-i', i]),
+      '-filter_complex', graph, '-ac', '2', '-ar', `${SR}`, '-c:a', 'pcm_s16le', '-t', '12', out]);
+    const CONT = 'We drove up the coast at sunset and then we ate dinner at a little cafe by the harbour while the boats came in';
+    const SAY2 = 'Did you see the lighthouse? [[slnc 1500]] I think the road was closed after the storm.';
+    const v1 = speechClip('sv-voice.wav', SAY, { lead: 0.8, dur: 12, video: false });
+    const vc = speechClip('sv-voice-cont.wav', CONT, { lead: 0.8, dur: 12, video: false });
+    const v2 = speechClip('sv-voice2.wav', SAY2, { lead: 2.6, dur: 12, video: false, voice: process.platform === 'win32' ? 'Microsoft David Desktop' : 'Daniel' });
+    const tmp2 = fs.mkdtempSync(`${os.tmpdir()}/cutroom-svsweep-`);
+    const BED = { music: L => MUSIC.replace('volume=-10dB', `volume=${L}dB`),
+      drums: L => `aevalsrc=0.3*(random(0)-0.5)*exp(-25*mod(t\\,0.25))+0.25*sin(2*PI*55*t)*exp(-6*mod(t\\,0.5))+0.04*sin(2*PI*(440+220*gt(mod(t\\,1)\\,0.5))*t):s=48000,volume=${L}dB`,
+      pink: L => `anoisesrc=c=pink:r=48000:seed=5:amplitude=0.05,volume=${L}dB`, floor: () => 'anoisesrc=c=pink:r=48000:seed=7:amplitude=0.0006' };
+    const mix = (voices, bed, L) => [[...voices.map(v => v.file), BED[bed](L)], voices.map((_, i) => `[${i}:a]aformat=sample_rates=48000:channel_layouts=stereo[v${i}]`).join(';') +
+      `;[${voices.length}:a]aformat=sample_rates=48000:channel_layouts=stereo[b];${voices.map((_, i) => `[v${i}]`).join('')}[b]amix=inputs=${voices.length + 1}:normalize=0:duration=first`];
+    const cases = [...[6, 3, 0, -1, -2, -3, -4, -5, -6, -7, -8, -10, -15, -20].map(L => [`music ${L} dB`, [v1], 'music', L]),
+      ['drums 0 dB', [v1], 'drums', 0], ['drums -6 dB', [v1], 'drums', -6], ['pink noise +6 dB', [v1], 'pink', 6], ['pink noise -6 dB', [v1], 'pink', -6],
+      ['clean speech', [v1], 'floor'], ['continuous speech, music -4 dB', [vc], 'music', -4], ['two voices, music 0 dB', [v1, v2], 'music', 0], ['two voices, drums -3 dB', [v1, v2], 'drums', -3]];
+    const keptLost = (y, s, sp) => { // % of voiced frames (clean voice within 20 dB of its median) whose voice component fell 10 dB under the typical one
+      const Y = band(y, 300, 3400), S = band(s, 300, 3400), es = frames(S), idx = es.map((v, i) => i).filter(i => sp.some(([a, b]) => (i + 0.5) * 0.02 > a && (i + 0.5) * 0.02 < b));
+      const med = median(idx.map(i => es[i])), use = idx.filter(i => es[i] > med / 100), r = use.map(i => { let p = 0; for (let k = i * 960; k < (i + 1) * 960; k++) p += Y[k] * S[k]; return p * p / (es[i] * 960) / 960 / es[i]; });
+      const G = median(r); return 100 * r.filter(v => v < G / 10).length / Math.max(1, r.length);
+    };
+    const tpOf = async (id, fx) => { const f = `${tmp2}/tp.raw`; fs.writeFileSync(f, Buffer.from(await (await fetch(`${B}/media/${id}?pcm=1&fx=${fx}`)).arrayBuffer())); const r = spawnSync('ffmpeg', ['-v', 'info', '-f', 's16le', '-ar', `${SR}`, '-ac', '2', '-i', f, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'], { encoding: 'utf8' }).stderr; return +JSON.parse(r.slice(r.lastIndexOf('{'), r.lastIndexOf('}') + 1)).input_tp; };
+    const rows = [];
+    for (const [name, voices, bed, L] of cases) {
+      const f = `${tmp2}/sv-${rows.length}.wav`, [ins, graph] = mix(voices, bed, L);
+      ffmix(f, ins, graph);
+      const s = voices.length === 1 ? fileMono(voices[0].file) : (ffmix(`${f}.clean.wav`, voices.map(v => v.file), `${graph.split(';[' + voices.length)[0]};${voices.map((_, i) => `[v${i}]`).join('')}amix=inputs=${voices.length}:normalize=0:duration=first`), fileMono(`${f}.clean.wav`));
+      const sp = voices.flatMap(v => v.speech);
+      const m = await (await fetch(`${B}/api/import?name=sv-sweep-${rows.length}.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+      const x = await pcmOf(m.id);
+      // a stale result where an earlier Studio voice kept its processed sound (1x, a speed's span, a character on top): zeros
+      // the length of the sound. The cache key carries the processing's version, so none of them may come back
+      if (!rows.length) for (const k of ['sv', 'sv.1.5.0-12', 'sv+cave']) fs.writeFileSync(`${LIB}/cache/${m.id}.${k}.pcm`, Buffer.alloc(x.length * 4));
+      const y = await pcmOf(m.id, 'sv'), g0 = speechGap(x, sp), g1 = speechGap(y, sp);
+      if (!rows.length) {
+        const sped = mono(Buffer.from(await (await fetch(`${B}/media/${m.id}?pcm=1.5&a=0&b=12&fx=sv`)).arrayBuffer())), cave = await pcmOf(m.id, 'sv+cave'), live = a => a.length > SR && a.some(v => v !== 0);
+        check('a Studio voice result cached before this version is not reused (1x, at 1.5x, with a character on top)', live(y) && live(sped) && live(cave), `samples ${y.length} / ${sped.length} / ${cave.length}`);
+      }
+      rows.push({ name, gain: g1.db - g0.db, raw: g0.db, lost0: keptLost(x, s, sp), lost: keptLost(y, s, sp), len: x.length === y.length, lag: xlag(x, y), tp: await tpOf(m.id, 'sv'), same: x.every((v, i) => v === y[i]) });
+      await post(`/api/media/${m.id}/trash`, {});
+    }
+    const show = r => `${r.name} ${r.raw.toFixed(1)}${r.gain >= 0 ? '+' : ''}${r.gain.toFixed(2)}`;
+    console.log(`     Studio voice sweep (speech/gap in, change; speech lost in -> out; lag; dBTP${''}):\n       ` + rows.map(r => `${show(r)} lost ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}% lag ${r.lag} tp ${r.tp.toFixed(1)}${r.same ? ' (left as it was)' : ''}`).join('\n       '));
+    check(`Studio voice never lowers the speech-band speech/gap (${rows.length} mixes: music +6 to -20 dB, drums, pink noise, clean, continuous, two voices)`, rows.every(r => r.gain >= -0.01), rows.filter(r => r.gain < -0.01).map(show).join('; ') || `worst ${show(rows.reduce((a, r) => r.gain < a.gain ? r : a))}`);
+    check('Studio voice keeps the speech: voiced frames lost <= input + 2 points in every mix', rows.every(r => r.lost <= r.lost0 + 2), rows.map(r => `${r.name} ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}`).join('; '));
+    check('Studio voice sweep: sample-exact length, lag within 2 ms, true peak <= -1.4 dBTP', rows.every(r => r.len && Math.abs(r.lag) <= 96 && r.tp <= -1.4), rows.filter(r => !r.len || Math.abs(r.lag) > 96 || r.tp > -1.4).map(r => `${r.name} len ${r.len} lag ${r.lag} tp ${r.tp}`).join('; '));
+    // no speech at all (room noise; digital silence): nothing to make clearer, so the sound comes back as it was
+    const quiet = [];
+    for (const [name, src] of [['room noise', 'anoisesrc=c=pink:r=48000:seed=3:amplitude=0.02'], ['digital silence', 'anullsrc=r=48000:cl=stereo']]) {
+      const f = `${tmp2}/none-${quiet.length}.wav`;
+      execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', src, '-ac', '2', '-ar', `${SR}`, '-c:a', 'pcm_s16le', '-t', '6', f]);
+      const m = await (await fetch(`${B}/api/import?name=sv-none-${quiet.length}.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+      const x = await pcmOf(m.id), y = await pcmOf(m.id, 'sv');
+      quiet.push([name, x.length === y.length && x.every((v, i) => v === y[i]), dB(energy(y)) - dB(energy(x))]);
+      await post(`/api/media/${m.id}/trash`, {});
+    }
+    check('no speech (room noise, digital silence): Studio voice leaves the sound exactly as it was', quiet.every(q => q[1]), quiet.map(([n, same, d]) => `${n}: ${same ? 'unchanged' : `changed, ${d.toFixed(1)} dB`}`).join('; '));
+    fs.rmSync(tmp2, { recursive: true, force: true });
+  }
   // preview == export, through the inspector's button
   await fresh('Studio voice parity');
   await ev(id => { addMedia(id, 'main', 0); const c = P.main[0]; c.out = Math.min(c.out, 20); renderAll(); }, POD.id);
