@@ -295,7 +295,7 @@ if (run('studio')) {
       pink: L => `anoisesrc=c=pink:r=48000:seed=5:amplitude=0.05,volume=${L}dB`, floor: () => 'anoisesrc=c=pink:r=48000:seed=7:amplitude=0.0006' };
     const mix = (voices, bed, L) => [[...voices.map(v => v.file), BED[bed](L)], voices.map((_, i) => `[${i}:a]aformat=sample_rates=48000:channel_layouts=stereo[v${i}]`).join(';') +
       `;[${voices.length}:a]aformat=sample_rates=48000:channel_layouts=stereo[b];${voices.map((_, i) => `[v${i}]`).join('')}[b]amix=inputs=${voices.length + 1}:normalize=0:duration=first`];
-    const cases = [...[6, 3, 0, -1, -2, -3, -4, -5, -6, -7, -8, -10, -15, -20].map(L => [`music ${L} dB`, [v1], 'music', L]),
+    const cases = [...[15, 6, 3, 0, -1, -2, -3, -4, -5, -6, -7, -8, -10, -15, -20].map(L => [`music ${L} dB`, [v1], 'music', L]), ['drums +12 dB', [v1], 'drums', 12],
       ['drums 0 dB', [v1], 'drums', 0], ['drums -6 dB', [v1], 'drums', -6], ['pink noise +6 dB', [v1], 'pink', 6], ['pink noise -6 dB', [v1], 'pink', -6],
       ['clean speech', [v1], 'floor'], ['continuous speech, music -4 dB', [vc], 'music', -4], ['two voices, music 0 dB', [v1, v2], 'music', 0], ['two voices, drums -3 dB', [v1, v2], 'drums', -3]];
     const keptLost = (y, s, sp) => { // % of voiced frames (clean voice within 20 dB of its median) whose voice component fell 10 dB under the typical one
@@ -304,6 +304,10 @@ if (run('studio')) {
       const G = median(r); return 100 * r.filter(v => v < G / 10).length / Math.max(1, r.length);
     };
     const tpOf = async (id, fx) => { const f = `${tmp2}/tp.raw`; fs.writeFileSync(f, Buffer.from(await (await fetch(`${B}/media/${id}?pcm=1&fx=${fx}`)).arrayBuffer())); const r = spawnSync('ffmpeg', ['-v', 'info', '-f', 's16le', '-ar', `${SR}`, '-ac', '2', '-i', f, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'], { encoding: 'utf8' }).stderr; return +JSON.parse(r.slice(r.lastIndexOf('{'), r.lastIndexOf('}') + 1)).input_tp; };
+    const asIs = (x, y) => { // y is x times one gain (to 40 dB SNR): the sound as it was, at most lowered for its peak
+      let xy = 0, xx = 0; for (let i = 0; i < x.length; i++) { xy += x[i] * y[i]; xx += x[i] * x[i]; }
+      const k = xx / Math.max(1e-20, xy); return x.length === y.length && snr(x, y.map(v => v * k), 0, x.length) > 40;
+    };
     const rows = [];
     for (const [name, voices, bed, L] of cases) {
       const f = `${tmp2}/sv-${rows.length}.wav`, [ins, graph] = mix(voices, bed, L);
@@ -320,13 +324,26 @@ if (run('studio')) {
         const sped = mono(Buffer.from(await (await fetch(`${B}/media/${m.id}?pcm=1.5&a=0&b=12&fx=sv`)).arrayBuffer())), cave = await pcmOf(m.id, 'sv+cave'), live = a => a.length > SR && a.some(v => v !== 0);
         check('a Studio voice result cached before this version is not reused (1x, at 1.5x, with a character on top)', live(y) && live(sped) && live(cave), `samples ${y.length} / ${sped.length} / ${cave.length}`);
       }
-      rows.push({ name, gain: g1.db - g0.db, raw: g0.db, lost0: keptLost(x, s, sp), lost: keptLost(y, s, sp), len: x.length === y.length, lag: xlag(x, y), tp: await tpOf(m.id, 'sv'), same: x.every((v, i) => v === y[i]) });
+      // the gate test: a hard gate on the mix (its quietest half of 20 ms speech-band frames zeroed) wins speech/gap and loses speech
+      if (name === 'music -10 dB') {
+        const e = frames(band(x, 300, 3400)), cut = median(e), gx = x.map((v, i) => e[Math.floor(i / 960)] < cut ? 0 : v);
+        check('speech kept catches what speech/gap rewards: a hard gate on the music -10 dB mix', speechGap(gx, sp).db > g0.db + 3 && keptLost(gx, s, sp) > keptLost(x, s, sp) + 1, // (+1: the speech-kept tolerance below: that gate would fail it)
+          `speech/gap ${g0.db.toFixed(1)} -> ${speechGap(gx, sp).db.toFixed(1)} dB; voiced frames lost ${keptLost(x, s, sp).toFixed(1)} -> ${keptLost(gx, s, sp).toFixed(1)} %`);
+      }
+      rows.push({ name, gain: g1.db - g0.db, raw: g0.db, lost0: keptLost(x, s, sp), lost: keptLost(y, s, sp), lostDn: keptLost(await pcmOf(m.id, 'dn'), s, sp), len: x.length === y.length, lag: xlag(x, y), tp: await tpOf(m.id, 'sv'), same: asIs(x, y) });
       await post(`/api/media/${m.id}/trash`, {});
     }
     const show = r => `${r.name} ${r.raw.toFixed(1)}${r.gain >= 0 ? '+' : ''}${r.gain.toFixed(2)}`;
-    console.log(`     Studio voice sweep (speech/gap in, change; speech lost in -> out; lag; dBTP${''}):\n       ` + rows.map(r => `${show(r)} lost ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}% lag ${r.lag} tp ${r.tp.toFixed(1)}${r.same ? ' (left as it was)' : ''}`).join('\n       '));
-    check(`Studio voice never lowers the speech-band speech/gap (${rows.length} mixes: music +6 to -20 dB, drums, pink noise, clean, continuous, two voices)`, rows.every(r => r.gain >= -0.01), rows.filter(r => r.gain < -0.01).map(show).join('; ') || `worst ${show(rows.reduce((a, r) => r.gain < a.gain ? r : a))}`);
-    check('Studio voice keeps the speech: voiced frames lost <= input + 2 points in every mix', rows.every(r => r.lost <= r.lost0 + 2), rows.map(r => `${r.name} ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}`).join('; '));
+    console.log(`     Studio voice sweep (speech/gap in, change; voiced frames lost in -> out, Reduce noise; lag; dBTP):\n       ` + rows.map(r => `${show(r)} lost ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}% (dn ${r.lostDn.toFixed(1)}) lag ${r.lag} tp ${r.tp.toFixed(1)}${r.same ? ' (as it was)' : ''}`).join('\n       '));
+    check(`Studio voice never lowers the speech-band speech/gap (${rows.length} mixes: music +15 to -20 dB, drums, pink noise, clean, continuous, two voices)`, rows.every(r => r.gain >= -0.01), rows.filter(r => r.gain < -0.01).map(show).join('; ') || `worst ${show(rows.reduce((a, r) => r.gain < a.gain ? r : a))}`);
+    // where it can't make the voice clearer (music 15 dB or drums 12 dB over where they started: the voice 0-5 dB over them), the
+    // sound comes back as it was (only lowered to keep the true peak under -1.5 dBTP)
+    const kept = rows.filter(r => /^(music 15|drums \+12) dB/.test(r.name));
+    check('Studio voice leaves a mix it would not make clearer as it was (music +15 dB, drums +12 dB)', kept.length === 2 && kept.every(r => r.same), kept.map(r => `${r.name}: ${r.same ? 'as it was' : `processed, ${r.gain.toFixed(2)} dB`}`).join('; '));
+    // RNNoise (its first stage, = Reduce noise) takes some masked syllables under loud music down >10 dB (2-4 % of voiced frames,
+    // as before 2026-11-15); what Studio voice adds on top of it (expander, EQ, de-esser) must take no more than 1 point more
+    check('Studio voice keeps the speech: voiced frames lost <= Reduce noise alone (or the input) + 1 point in every mix', rows.every(r => r.lost <= Math.max(r.lostDn, r.lost0) + 1),
+      rows.filter(r => r.lost > Math.max(r.lostDn, r.lost0) + 1).map(r => `${r.name} in ${r.lost0.toFixed(1)} dn ${r.lostDn.toFixed(1)} sv ${r.lost.toFixed(1)}`).join('; ') || `worst sv - max(dn, in): ${Math.max(...rows.map(r => r.lost - Math.max(r.lostDn, r.lost0))).toFixed(1)} points`);
     check('Studio voice sweep: sample-exact length, lag within 2 ms, true peak <= -1.4 dBTP', rows.every(r => r.len && Math.abs(r.lag) <= 96 && r.tp <= -1.4), rows.filter(r => !r.len || Math.abs(r.lag) > 96 || r.tp > -1.4).map(r => `${r.name} len ${r.len} lag ${r.lag} tp ${r.tp}`).join('; '));
     // no speech at all (room noise; digital silence): nothing to make clearer, so the sound comes back as it was
     const quiet = [];

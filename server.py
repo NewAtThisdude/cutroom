@@ -652,12 +652,17 @@ FF_CHARS = {  # voice characters as ffmpeg filters (n: the length in samples, fo
                        f"[cw][ci]afir=irnorm=-1:gtype=none,lowpass=f=3000[cx];[cd][cx]amix=inputs=2:normalize=0:weights=0.8 1,atrim=end_sample={n}"),
     'underwater': lambda n: 'lowpass=f=500:p=2,lowpass=f=500:p=2,aphaser=type=t:speed=0.6:decay=0.5,chorus=0.7:0.9:55|70:0.4|0.32:0.25|0.4:2|1.3,tremolo=f=5:d=0.25'}
 VOICE_CHARS = (*AI_CHARS, *FF_CHARS)
-# Studio voice after RNNoise: rumble cut, less mud, de-ess, a downward expander for the gaps (at most -14 dB), a gentle
-# compressor, presence and air, then one gain to -16 LUFS
-# (podcast loudness). None of these looks ahead: the voice is not delayed (the onset stays within 2 ms)
+# Studio voice after RNNoise: rumble cut, less mud, de-ess, a downward expander for the gaps (at most -14 dB), presence and
+# air, then one gain to -16 LUFS (podcast loudness); the same without the expander when that one would make the speech less
+# clear (studio_pcm). None of these looks ahead: the voice is not delayed (the onset stays within 2 ms). No compressor: it
+# pressed the voice towards the music under it and cost 3-4 dB of speech-band speech/gap at every bed level measured
+# (2026-11-15, OS speech over music +6 to -20 dB and pink noise): over music within ~10 dB the voice came out LESS clear.
 STUDIO = ('highpass=f=80:p=2,equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,agate=threshold=0.025:ratio=2:range=0.2:attack=3:release=250,'
-          'acompressor=threshold=0.1:ratio=3:attack=5:release=150:makeup=2,'
           'equalizer=f=3500:t=q:w=1.2:g=3,equalizer=f=10000:t=q:w=1:g=1.5')
+STUDIO_LIGHT = re.sub(r'agate=[^,]*,', '', STUDIO)
+# the processed PCM files' cache key carries this: a result cached by an older Studio voice (or anything built on it: a
+# character on top, a speed's span) is made again, not reused
+FX_VER = 2
 
 
 def fx_ok(fx):
@@ -708,11 +713,13 @@ def fx_pcm(m, fx, tmp, st=None):
     rnn = f"apad=whole_len={n + RNN_LAG},arnndn=m='{fpath(rnn_model())}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
     if step == 'dn':  # (afftdn was 25 ms late and took only 1-5 dB)
         return run(rnn, raw_in(base), tmp)
-    mid, i0 = tmp.with_suffix('.f32'), pcm_lufs(base)[0]
+    mid, (i0, tp0) = tmp.with_suffix('.f32'), pcm_lufs(base)
+    if step in NOISE_FX:  # first to -20 LUFS: RNNoise and the expander's threshold then see a known level
+        pre = f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn}'
+        return studio_pcm(base, tmp, lambda chain: level(run, raw_in, base, mid, tmp, f'{pre},{chain}', -16),
+                          lambda: bool(shutil.copyfile(base, tmp)) if tp0 <= -1.5 else run(f'volume={-1.5 - tp0:.3f}dB', raw_in(base), tmp))
     try:
-        if step in NOISE_FX:  # first to -20 LUFS: RNNoise and the expander's threshold then see a known level
-            ok, want = run(f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn},{STUDIO}', raw_in(base), mid, 'f32le'), -16
-        elif step in FF_CHARS:
+        if step in FF_CHARS:
             ok, want = run(f'aformat=sample_fmts=flt,{FF_CHARS[step](n)},apad=whole_len={n},atrim=end_sample={n}', raw_in(base), mid, 'f32le'), i0
         else:
             if not AI_PY.exists():
@@ -721,13 +728,55 @@ def fx_pcm(m, fx, tmp, st=None):
             if r.returncode:
                 raise RuntimeError(f'the {step} voice failed: ' + (r.stderr.strip().splitlines() or ['no output'])[-1][-300:])
             ok, want = True, i0
-        if not ok:
+        return ok and level(run, raw_in, base, mid, tmp, None, want)
+    finally:
+        mid.unlink(missing_ok=True)
+
+
+def level(run, raw_in, base, mid, tmp, af, want):
+    """fx_pcm's last stage: base through af (None: mid is already made) in float, then ONE gain to `want` LUFS with the
+    true peak under -1.5 dBTP, into tmp (16-bit)."""
+    try:
+        if af is not None and not run(af, raw_in(base), mid, 'f32le'):
             return False
         i, tp = pcm_lufs(mid, 'f32le')
         g = min(want - i if i > -70 and want > -70 else 0.0, -1.5 - tp)
         return run(f'volume={g:.3f}dB', raw_in(mid, 'f32le'), tmp)
     finally:
         mid.unlink(missing_ok=True)
+
+
+def band_energy(f):
+    """Speech-band (300-3400 Hz) energy of each 20 ms of a raw 16-bit 48 kHz stereo PCM file."""
+    r = subprocess.run(['ffmpeg', '-v', 'error', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f), '-af', 'highpass=f=300:p=2,highpass=f=300:p=2,lowpass=f=3400:p=2,lowpass=f=3400:p=2',
+                        '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'], capture_output=True)
+    x = array('f')
+    x.frombytes(r.stdout[:len(r.stdout) // 4 * 4])
+    from operator import mul
+    return [sum(map(mul, b, b)) / 160 for b in (x[i:i + 160] for i in range(0, len(x) - 159, 160))]
+
+
+def studio_pcm(base, tmp, make, keep):
+    """Studio voice that never makes the speech less clear than it came in, measured: the speech-band energy of the input's
+    loudest 40 % of 20 ms frames (the voice) over its quietest 30 % (the gaps), the same frames in each candidate's final
+    16-bit file. The full chain (make(STUDIO)) when it raises that by >= 1 dB, else the one without the expander, else the
+    input as it was (keep(): only lowered when its true peak is over -1.5 dBTP). No speech to go by (under 0.5 s, or
+    loud and quiet frames within 3 dB: steady noise, silence): the input as it was."""
+    e0 = band_energy(base)
+    o = sorted(range(len(e0)), key=e0.__getitem__)
+    hi, lo = o[len(o) * 6 // 10:], o[:len(o) * 3 // 10]
+
+    def con(e):  # dB, at most 120 (gaps of digital silence)
+        v, g = sum(e[i] for i in hi) / max(1, len(hi)), sum(e[i] for i in lo) / max(1, len(lo))
+        return 10 * math.log10(max(v, 1e-30) / max(g, v * 1e-12, 1e-30))
+    c0 = con(e0)
+    if len(e0) >= 25 and c0 >= 3:
+        for chain in (STUDIO, STUDIO_LIGHT):
+            if not make(chain):
+                return False
+            if len(e := band_energy(tmp)) == len(e0) and con(e) - c0 >= 1:
+                return True
+    return keep()
 
 
 def sound_prep(st, mid, fx):
@@ -749,7 +798,8 @@ def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
     if not fx_ok(fx):
         raise ValueError(f'unknown sound processing {fx!r}')
     one = abs(tempo - 1) < 1e-6
-    out = CACHE / (f"{m['id']}{'.' + fx if fx else ''}.pcm" if one else f"{m['id']}{'.' + fx if fx else ''}.{tempo:g}.{a}-{b}.pcm")
+    tag = f'.{fx}~{FX_VER}' if fx else ''
+    out = CACHE / (f"{m['id']}{tag}.pcm" if one else f"{m['id']}{tag}.{tempo:g}.{a}-{b}.pcm")
     with PCM_LOCKS_LOCK:
         lock = PCM_LOCKS.setdefault(out.name, threading.Lock())
     with lock:
