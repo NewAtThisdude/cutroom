@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-15)
 
 The first public release. Cutroom is a free video editor that runs entirely on your own computer, on a Mac or a
 Windows PC. It is licensed GPL v3 or later.

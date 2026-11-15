@@ -1,28 +1,67 @@
-# Cutroom
+<p align="center"><img src="docs/banner.svg" alt="Cutroom: a timeline of coloured clips under the title" width="100%"></p>
 
-A free video editor for Mac and Windows, in the spirit of CapCut, that runs entirely on your own computer. Editing,
-exports and the AI tools (captions, voices, cut-outs, object removal, music) all run locally: no account, no uploads, no
-watermark, no subscription. Each AI tool runs on that computer's own hardware (Apple Silicon, an NVIDIA GPU or the CPU),
-or says plainly why it can't.
+<p align="center">
+  <a href="#install-in-one-line"><img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon-8b5cf6?logo=apple&logoColor=white"></a>
+  <a href="#install-in-one-line"><img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%7C%2011-22d3ee?logo=windows&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPL%20v3-f472b6"></a>
+  <a href="#how-its-tested"><img alt="Tested on Mac and Windows" src="https://img.shields.io/badge/checks-1%2C717%20Mac%20%C2%B7%201%2C849%20Windows-22c55e"></a>
+  <a href="#let-your-ai-assistant-edit-mcp"><img alt="MCP server" src="https://img.shields.io/badge/MCP-any%20AI%20assistant-f59e0b"></a>
+  <img alt="No account, no upload" src="https://img.shields.io/badge/cloud-none-64748b">
+</p>
+
+<p align="center"><b>A free video editor for Mac and Windows, in the spirit of CapCut, that runs entirely on your own computer.</b><br>
+Editing, exports and the AI tools (captions, voices, cut-outs, object removal, music) all run locally:<br>
+no account, no uploads, no watermark, no subscription.</p>
+
+## Install in one line
+
+**🍎 Mac** · paste into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.sh | sh
+```
+
+**🪟 Windows 10 / 11** · paste into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.ps1 | iex
+```
+
+Then open **Cutroom** from `~/Applications` on a Mac, or from the Start menu on Windows.
+
+What the installer does, in order:
+
+1. 🔎 **Looks at your computer first** (chip, GPU, memory, video encoder) and says in plain words what it found and what it will install.
+2. 🧰 **Offers the tools it needs** (ffmpeg, whisper.cpp; on a Mac through Homebrew) and asks before installing anything.
+3. 🧠 **Picks the one AI pack this computer can run**: MLX on Apple Silicon, CUDA on an NVIDIA PC, CPU elsewhere, or none, with the reason.
+4. 🔒 **Pins and checks its downloads** by SHA-256 (the few exceptions are listed [below](#install-in-detail)). No admin rights,
+   no PATH change, nothing that starts at login.
+
+Run the same line again to update or repair. Prefer a copy of the source? `git clone https://github.com/NewAtThisdude/cutroom`,
+then `./install.sh` (Mac) or `powershell -ExecutionPolicy Bypass -File install.ps1` (Windows) inside it.
+[Install, in detail](#install-in-detail) has the settings and the [uninstall](#uninstall) steps.
 
 ![The Cutroom editor: library, preview, inspector and timeline](docs/screenshot.png)
 
-- **Edit:** a magnetic main track plus overlay, audio, text, caption and effect tracks; trims, splits, slip / slide / roll,
+## What it does
+
+- 🎬 **Edit:** a magnetic main track plus overlay, audio, text, caption and effect tracks; trims, splits, slip / slide / roll,
   ripple across all tracks, keyframes with easing curves, speed ramps, masks, chroma key, multicam, compound clips.
-- **What you see is what exports:** the preview and the export share their maths, and a test suite compares them frame by frame.
-- **Captions and sound:** auto captions in 18 languages with 22 styles, translation, edit-by-script, noise reduction,
+- 🎯 **What you see is what exports:** the preview and the export share their maths, and a test suite compares them frame by frame.
+- 💬 **Captions and sound:** auto captions in 18 languages with 22 styles, translation, edit-by-script, noise reduction,
   voice isolation, auto-duck, a free CC0 sound and music library.
-- **Colour and effects:** wheels, curves, HSL, LUTs, scopes, adjustment layers, 57 transitions, 47 effects, 47 looks.
-- **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms; every shape (9:16, 16:9, 1:1, 4:5) in one go, rendered one after another in an Exports panel.
-- **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
+- 🎨 **Colour and effects:** wheels, curves, HSL, LUTs, scopes, adjustment layers, 57 transitions, 47 effects, 47 looks.
+- 📦 **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms; every shape (9:16, 16:9, 1:1, 4:5) in one go, rendered one after another in an Exports panel.
+- 🪶 **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
   and the editor uses almost no CPU when you are not touching it.
-- **Settings** (the gear, ⌘, or Ctrl+,): new-project shape, frame rate and name; how many versions autosave keeps; snapping,
+- ⚙️ **Settings** (the gear, ⌘, or Ctrl+,): new-project shape, frame rate and name; how many versions autosave keeps; snapping,
   default photo / text / transition lengths, caption style and language; preview quality, proxies, loop, motion; the export
   preset, folder, file name, loudness and what happens when it finishes; every shortcut; each AI feature on or off (an off one
   loses its buttons and the MCP refuses it) next to what this computer runs it as; cache and trash sizes with Clear / Empty.
   Each choice applies at once and says where it is kept: this computer, or this library (`settings.json`, for what the server
   needs: versions, export folder, proxies, the local model). The MCP's `settings` tool reads and changes them.
-- **Scriptable:** an MCP server (`mcp/cutroom_mcp.py`) lets an AI assistant drive the open editor.
+- 🤖 **Works with your AI assistant:** an MCP server (`mcp/cutroom_mcp.py`) lets Claude, Cursor, VS Code Copilot, Codex or any
+  other MCP client drive the open editor: [set it up](#let-your-ai-assistant-edit-mcp).
 
 ## How it's tested
 
@@ -48,7 +87,7 @@ the AI suites (61 tests, 1,970 checks). Skips are listed by name in each run's
 summary: real phone footage that is not in the repository, Mac-only features on the PC. [tests/README.md](tests/README.md)
 explains how to run it.
 
-## Install
+## Install, in detail
 
 On a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
 (`cutroom check`), says in plain words what it found, what it will install and why, and installs only the AI pack that
@@ -60,13 +99,15 @@ is installed, its search model `nomic-embed-text:v1.5` is pulled by tag (Ollama 
 when it is not the build it was tested with). Everything
 goes into your own folders, with no admin rights, no PATH change and nothing that starts at login.
 
+The one-line installs (above) fetch the source of the latest release, pinned by its SHA-256 at the top of each installer,
+into the prefix below. From a copy of the source instead:
+
     git clone https://github.com/NewAtThisdude/cutroom && cd cutroom
     ./install.sh                                              # Mac (Terminal)
     powershell -ExecutionPolicy Bypass -File install.ps1      # Windows (PowerShell, in the cutroom folder)
 
-Run it again at any time to update or repair: finished downloads are kept, and an update keeps the installed AI pack. A
-one-line `curl ... | sh` / `irm ... | iex` install comes with the first tagged release (the installers then fetch that
-release's source by its SHA-256, filled in at the top of both: `CUTROOM_SRC` and `CUTROOM_SRC_SHA256` set them by hand).
+Run it again at any time to update or repair: finished downloads are kept, and an update keeps the installed AI pack.
+`CUTROOM_SRC` and `CUTROOM_SRC_SHA256` point a piped install at another source archive.
 
 **What `cutroom check` looks at, and the AI pack it picks** (`cutroom check` on a Mac, `cutroom.cmd check` on Windows, both
 in the source folder; the same as `python3 -I server.py --check`): the OS, chip and GPU, memory, the video encoder ffmpeg
@@ -392,22 +433,46 @@ mirror, rotate, remove pauses and fillers, fit) below.
 | | Subtitles: import SRT / WebVTT onto the captions track, export SRT; **relink** clips whose file left the library (restore from trash, another file, or a library item) | |
 | | **Smart combine**: tick several clips and get one edit | Every scene of every clip is scored 4× a second for sharpness and exposure (ffmpeg `blurdetect`, `signalstats`), and the local vision model describes its best frame. Cutroom keeps the best window of each scene, orders the shots (a story from what they show, or as filmed), fits them to the length, snaps the cuts to the music's beats and picks each transition from what changes: a hard cut inside one take, a dip to black or white on a big brightness jump, the style's transition between places. Shots of another shape fill the canvas with face reframing. Styles: balanced, energetic, calm, cinematic |
 | | **Long video → Shorts**, caption translation, hook titles | A local language model (Ollama, qwen3.5:9b) reads the on-device transcript. Shorts: its picks snap to sentence edges, and each becomes a 9:16 project with face reframing, captions and a hook title. Translation works on whole sentences, then re-cuts them into captions over the same time (by character for Chinese and Japanese) |
-| Claude Code control | Tell Claude Code in VS Code what to do and it edits the open project | The Cutroom MCP server (see below) |
+| AI assistant control | Tell Claude, Cursor, Copilot, Codex or any MCP client what to do and it edits the open project | The Cutroom MCP server (see below) |
 
-## Control it from Claude Code (MCP)
+## Let your AI assistant edit (MCP)
 
-`mcp/cutroom_mcp.py` is an MCP server (stdlib only). It is registered for every Claude Code session on this Mac:
+`mcp/cutroom_mcp.py` is a standard [MCP](https://modelcontextprotocol.io) server (stdio, Python standard library only), so
+any assistant that speaks MCP can drive the open editor: Claude Code and Claude Desktop, Cursor, VS Code with Copilot,
+Windsurf, OpenAI's Codex CLI, LM Studio and others. It is tested with Claude Code.
 
-    claude mcp add -s user cutroom -- env -u PYTHONPATH /opt/homebrew/bin/python3 -I ~/cutroom/mcp/cutroom_mcp.py
+After a one-line install the server is at `~/.local/share/cutroom/src/mcp/cutroom_mcp.py` on a Mac and
+`%LOCALAPPDATA%\Cutroom\src\mcp\cutroom_mcp.py` on Windows (in a clone: `mcp/cutroom_mcp.py`). Point your assistant at it:
 
-On Windows, with the Python `install.ps1` printed:
+**🧩 Apps with an MCP settings file** (Claude Desktop, Cursor, Windsurf, LM Studio; VS Code uses `"servers"` in
+`.vscode/mcp.json` instead of `"mcpServers"`):
 
-    claude mcp add -s user cutroom -- C:\Python314\python.exe -X utf8 -I C:/Users/<you>/cutroom/mcp/cutroom_mcp.py
+```json
+{
+  "mcpServers": {
+    "cutroom": {
+      "command": "/opt/homebrew/bin/python3",
+      "args": ["-I", "/Users/you/.local/share/cutroom/src/mcp/cutroom_mcp.py"]
+    }
+  }
+}
+```
 
-There the first tool call opens `cutroom.cmd` instead of the app, and the tool texts say "this computer".
+(The full path: apps started from the Dock may not see Homebrew.)
+On Windows, `"command"` is the Python the installer printed (for example `C:\\Python314\\python.exe`) and `"args"` are
+`["-X", "utf8", "-I", "C:\\Users\\you\\AppData\\Local\\Cutroom\\src\\mcp\\cutroom_mcp.py"]`.
+
+**⌨️ Command-line assistants:**
+
+```sh
+claude mcp add -s user cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py   # Claude Code
+codex mcp add cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py            # OpenAI Codex CLI
+```
+
+On Windows the first tool call opens `cutroom.cmd` instead of the app, and the tool texts say "this computer".
 
 Then ask in plain words, for example "open the demo project, remove the pauses, add bold captions, put a dip-to-white
-between every clip and export 1080p". Claude reads the timeline, edits, looks at the result (the `snapshot` tool returns
+between every clip and export 1080p". The assistant reads the timeline, edits, looks at the result (the `snapshot` tool returns
 the preview frame as an image), and exports. The tools cover projects, media import, the brand kit (`brand`: get, set, apply; `export` with `watermark`), clips (add, update any setting,
 split, delete, duplicate, move), text, transitions, video effects (`add_effect`), sound effects (`add_sound_effect`), the main track's words
 (`main_transcript`) and ripple cuts by time (`cut_timeline`, so "cut the sentence about X" works), captions, pause and filler removal, voiceovers, the smart tools,
@@ -544,7 +609,7 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - `web/index.html`, `web/style.css`, `web/fonts/` (OFL fonts from Google Fonts).
 - `tools/matte.swift`, `tools/track.swift`, `tools/faces.swift`: Apple Vision helpers, compiled on first use.
 - `app/Cutroom.swift`, `app/build.sh`: the native app.
-- `mcp/cutroom_mcp.py`: the MCP server for Claude Code.
+- `mcp/cutroom_mcp.py`: the MCP server for any AI assistant (Claude, Cursor, VS Code Copilot, Codex, ...).
 - `templates/`: the starter templates (JSON; each one's poster and preview are made on this Mac the first time the gallery shows it).
 - `ai/setup.sh`: installs the on-device AI on a Mac (venv in `ai/.venv`, gitignored; packages from `ai/mac.lock`, made from
   `ai/mac.in`, with their hashes); `ai/setup.ps1` the Windows AI pack
@@ -695,3 +760,5 @@ libass/freetype, and drawing text once in the browser also guarantees the export
 - **Talking photo** (a person from a photo and a voice) is Wan 2.2 S2V on the 4090 PC; **lip sync** of real footage is LatentSync there.
 - **The Apple GPU does the preview's per-pixel work** (colour, grade, key, mask, vignette, skin smoothing) in one WebGL2 pass; clip blur and the blurred background still run as small box blurs on the CPU at reduced size. Smooth skin finds skin by colour, not faces: skin-coloured walls get smoothed too.
 - **Remove object** processes only the clip's range and only a crop around the object; ProPainter runs only over the frames that have something to fill (plus context), and the cleaned copy is encoded by Apple's hardware encoder. Reverse, stabilize and slow-mo renders use it too.
+- **Screen recordings on a Windows PC** begin with two frames a few levels brighter than the rest (seen with an RTX 4090's
+  encoder in Edge): invisible in practice, and the recorder test measures from the third frame on.

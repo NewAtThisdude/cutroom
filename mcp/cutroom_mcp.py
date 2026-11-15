@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Cutroom MCP server: Claude Code drives the open Cutroom editor (stdio JSON-RPC, stdlib only).
+"""Cutroom MCP server: an AI assistant (Claude, Cursor, Copilot, Codex, any MCP client) drives the open Cutroom editor (stdio JSON-RPC, stdlib only).
 
 Commands go to Cutroom's local server, which hands them to the editor page; the page runs them with the
 same functions the buttons use, so every edit shows up live and is one undo step. If no editor is open,
