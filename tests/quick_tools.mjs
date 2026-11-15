@@ -8,6 +8,7 @@
 //  3. Cover: a frame or an image (with an optional title) is saved next to the video and embedded as its cover (attached_pic, ffprobe).
 //   B=<server on a scratch library> CUTROOM_HOME=<its library> node quick_tools.mjs   (never 4610)
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { browser } from './browser.mjs';
@@ -24,9 +25,9 @@ const CLIP = 'quick-tools.mp4', PIC = 'quick-tools-pic.png';
 if (!fs.existsSync(OUT + CLIP)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
   '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-shortest', OUT + CLIP]);
 if (!fs.existsSync(OUT + PIC)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x2255aa:s=800x800', '-frames:v', '1', OUT + PIC]);
-for (const [k, trc] of [['hlg', 'arib-std-b67'], ['pq', 'smpte2084']]) { // real HDR sources (10-bit HEVC tagged BT.2020 HLG / PQ)
+for (const [k, trc] of [['hlg', 'arib-std-b67'], ['pq', 'smpte2084']]) { // real HDR sources (10-bit HEVC tagged BT.2020 HLG / PQ; libx265: on every OS)
   if (!fs.existsSync(`${OUT}hdr-${k}.mp4`)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-    '-vf', `format=p010le,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${trc}:range=tv`, '-c:v', 'hevc_videotoolbox', '-profile:v', 'main10', '-tag:v', 'hvc1', '-c:a', 'aac', '-shortest', `${OUT}hdr-${k}.mp4`]);
+    '-vf', `format=p010le,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${trc}:range=tv`, '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', 'log-level=error', '-pix_fmt', 'yuv420p10le', '-color_primaries', 'bt2020', '-color_trc', trc, '-colorspace', 'bt2020nc', '-tag:v', 'hvc1', '-c:a', 'aac', '-shortest', `${OUT}hdr-${k}.mp4`]);
   if (!(await api('/api/media')).some(m => m.name === `hdr-${k}.mp4`)) await fetch(`${B}/api/import?name=hdr-${k}.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(`${OUT}hdr-${k}.mp4`) });
 }
 for (const n of [CLIP, PIC]) if (!(await api('/api/media')).some(m => m.name === n)) await fetch(`${B}/api/import?name=${n}`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(OUT + n) });
@@ -196,7 +197,7 @@ for (const rm of ['no-preference', 'reduce']) {
   // a cover never replaces another export: an existing picture of the same name survives, and two exports of one name keep their own covers
   fs.writeFileSync(`${EXD}/${nm}-keep.png`, 'earlier still export');
   const keep = await doExport('mp4', { name: `${nm}-keep`, title: 'KEEP', cfmt: 'png' });
-  const md5 = f => execFileSync('md5', ['-q', f]).toString().trim();
+  const md5 = f => createHash('md5').update(fs.readFileSync(f)).digest('hex'); // (no md5 command on Windows)
   check(`${rm}: an earlier still export of the same name survives (the new MP4 and its cover take "(2)")`,
     fs.readFileSync(`${EXD}/${nm}-keep.png`, 'utf8') === 'earlier still export' && keep.f === `${nm}-keep (2).mp4` && fs.existsSync(`${EXD}/${nm}-keep (2).png`) && fs.statSync(`${EXD}/${nm}-keep (2).png`).size > 1000, JSON.stringify(keep));
   const same1 = await doExport('mp4', { name: `${nm}-same`, title: 'ONE' }), h1 = md5(`${EXD}/${nm}-same.jpg`);

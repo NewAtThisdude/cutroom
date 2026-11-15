@@ -23,6 +23,7 @@ const tmp = fs.mkdtempSync(`${os.tmpdir()}/cutroom-rec-`), f = `${tmp}/rec-base.
 execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=3', '-f', 'lavfi', '-i', 'sine=f=440:d=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', f]);
 const V = await (await fetch(`${B}/api/import?name=rec-base.mp4`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
 const HOME = (await api('/api/settings')).home, FPS = 30, FRAME = 1 / FPS;
+const WIN = process.platform === 'win32'; // the page's words follow its OS: Windows' Settings and Edge, even with the Mac app's handler stubbed
 const made = { p: [], m: [V.id] };
 
 // onsets in a file: luma crossing 128 upwards (in a region, if given) and the beeps (|x| > 0.3, 0.3 s apart)
@@ -237,6 +238,8 @@ for (const rm of ['no-preference', 'reduce']) {
   await page.click('#btnRecord'); await page.waitForSelector('#rcScreen');
   await page.selectOption('#rcScreen', 'area'); await page.click('#rcGo');
   await page.waitForSelector('.rcarea video');
+  await page.waitForFunction(() => document.querySelector('.rcarea video').videoWidth > 0); // the box takes the picture's height once it loads (Edge: a moment later)
+  await page.waitForTimeout(100);
   const box = await (await page.$('.rcarea')).boundingBox();
   await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.2); await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.7, { steps: 5 }); await page.mouse.up();
@@ -277,8 +280,8 @@ for (const rm of ['no-preference', 'reduce']) {
   const rg = await refused({});
   await install(); // (the fake screen back)
   check(`${rm}: refused permissions say where to allow them: screen, camera; a missing device says so; no screen recording at all says what to do`,
-    /Screen & System Audio Recording/.test(rs[0]) && /cancelled/.test(rs[0]) && /Privacy & Security > Camera\b/.test(rc[0]) && /^No camera( and microphone)? found/.test(rn[0]) && !rs[1] && rs[2] && !rc[1]
-    && /update macOS, or record the camera alone/.test(rg[0]) && !/TypeError/.test(rg[0]), `${rs[0]} | ${rc[0]} | ${rn[0]} | ${rg[0]}`);
+    (WIN ? /allow screen sharing for this page/.test(rs[0]) : /Screen & System Audio Recording/.test(rs[0])) && /cancelled/.test(rs[0]) && /Privacy & Security > Camera\b/i.test(rc[0]) && /^No camera( and microphone)? found/.test(rn[0]) && !rs[1] && rs[2] && !rc[1]
+    && (WIN ? /cannot record the screen.*The camera alone still works/ : /update macOS, or record the camera alone/).test(rg[0]) && !/macOS/.test(WIN ? rs[0] + rc[0] + rg[0] : '') && !/TypeError/.test(rg[0]), `${rs[0]} | ${rc[0]} | ${rn[0]} | ${rg[0]}`);
 
   // ---- a part the server refuses (disk full, the size cap): the take stops there, what was recorded is kept and placed ----
   let parts = 0;

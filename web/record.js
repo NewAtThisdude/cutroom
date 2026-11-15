@@ -73,7 +73,7 @@ function rcWhy(what, e) { // a refused or failed device, in words: what to do ab
   if (n === 'NotFoundError' || n === 'OverconstrainedError') return `No ${what} found: connect one, or turn it off here`;
   if (n === 'NotReadableError' || n === 'AbortError') return `The ${what} could not start: another app may be using it`;
   if (n !== 'NotAllowedError' && n !== 'SecurityError') return `The ${what} could not start: ${e?.message || e}`;
-  const pane = { screen: 'Screen & System Audio Recording', camera: 'Camera', microphone: 'Microphone', 'camera and microphone': 'Camera and Microphone' }[what];
+  const pane = { screen: 'Screen & System Audio Recording', camera: 'Camera', microphone: 'Microphone', 'camera and microphone': 'Camera, then Microphone' }[what]; // (two separate pages, on both systems)
   if (IS_WIN) return what === 'screen' ? 'Screen sharing was cancelled or blocked. Press Start recording again, pick a screen or a window and press Share. If Edge does not ask, allow screen sharing for this page (the icon left of the address)'
     : `The ${what} is blocked. In Windows: Settings > Privacy & security > ${pane}, let desktop apps use it. In Edge: allow it for this page (the icon left of the address)`;
   if (RC_APP()) return what === 'screen' ? 'Screen recording was cancelled or is not allowed. If you did not cancel it: System Settings > Privacy & Security > Screen & System Audio Recording, turn on Cutroom, then quit and reopen Cutroom'
@@ -88,7 +88,7 @@ async function rcStart() {
   try {
     RC_APP()?.postMessage(true); // the Mac app's window leaves screen capture before the picker opens (teleprompter, countdown, preview)
     if (o.screen !== 'none') {
-      if (!navigator.mediaDevices.getDisplayMedia) throw new Error(RC_APP() ? 'This version of macOS does not let Cutroom record the screen: update macOS, or record the camera alone (Screen: No screen)'
+      if (!navigator.mediaDevices.getDisplayMedia) throw new Error(RC_APP() && !IS_WIN ? 'This version of macOS does not let Cutroom record the screen: update macOS, or record the camera alone (Screen: No screen)'
         : 'This browser cannot record the screen: use Edge or Chrome, or the Cutroom app on a Mac. The camera alone still works (Screen: No screen)');
       const pick = surface => navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30, cursor: 'always', displaySurface: surface }, audio: false }).catch(e => { throw new Error(rcWhy('screen', e)); });
       r.screen = await pick(o.screen === 'window' ? 'window' : 'monitor');
@@ -208,6 +208,7 @@ async function rcRun(r) {
     m.src = A.createMediaStreamSource(new MediaStream(au)); m.node = new AudioWorkletNode(A, 'cutroom-rec');
     m.node.port.onmessage = ({ data: [f, x] }) => {
       if (m.f0 === undefined) m.f0 = m.f1 = f;
+      if (f < m.f1) f = m.f1; // a block stamped with the frame before it (Edge on Windows, as in toggleRecord): the next one
       if (f > m.f1) m.parts.push(new Float32Array(f - m.f1)); // a block the graph skipped: silence keeps the time
       m.parts.push(x); m.f1 = f + x.length;
     };
@@ -256,7 +257,7 @@ function rcPause(r) {
 }
 function rcEnd(r, msg) { // let go of every device; the Mac app shows its window to screen capture again
   for (const s of [r.screen, r.user]) s?.getTracks().forEach(t => t.stop());
-  r.mic?.src.disconnect(); r.mic?.node.disconnect();
+  r.mic?.src.disconnect(); r.mic?.node.disconnect(); r.mic?.node.port.postMessage(0);
   clearInterval(r.timer);
   for (const x of r.recs || []) x.rec.abort(); // (a finished one is kept)
   if (r.cur) { r.cur = null; api('/api/cursor', { on: false }).catch(() => {}); }
@@ -292,7 +293,7 @@ async function rcStop(r) {
 }
 async function rcMicTake(r, name) { // the mic's samples from the recorders' start, as a WAV, its delay corrected
   const m = r.mic, sr = actx.sampleRate;
-  m.src.disconnect(); m.node.disconnect();
+  m.src.disconnect(); m.node.disconnect(); m.node.port.postMessage(0); // (the processor stops: REC_JS)
   if (m.f0 === undefined) throw new Error('no sound came in from the microphone');
   const x = new Float32Array(m.f1 - m.f0), c0 = m.f0 / sr, lags = [];
   for (let o = 0, i = 0; i < m.parts.length; o += m.parts[i++].length) x.set(m.parts[i], o);

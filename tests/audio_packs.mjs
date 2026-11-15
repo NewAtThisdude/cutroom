@@ -119,7 +119,7 @@ const open = async rm => {
   return page;
 };
 const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
-// the talk clips: a voice that stops at 10.4 s (the cave's tail is read after it), one over music, a 22 s podcast over room noise
+// the talk clips: a voice that stops ~9.4 s in (the cave's tail is read just after it), one over music, a 22 s podcast over room noise
 // The music sits 10 dB under where it first was: the voice ~19 dB over it in the speech band, a vlog's music bed.
 // KNOWN LIMIT (open, to be fixed as its own piece): Studio voice alone makes the voice LESS clear when the music is within
 // ~6-10 dB of it. The expander can't tell that music from the voice and the compressor presses the voice towards it.
@@ -128,7 +128,9 @@ const page = await open('no-preference'), ev = (f, a) => page.evaluate(f, a);
 // Studio + remove music (Demucs) is the tool for such a mix.
 const SAY = 'We drove up the coast at sunset. [[slnc 900]] Then we ate dinner at a little cafe by the harbour. [[slnc 900]] The mountain trail was steep and the snow was deep.';
 const MUSIC = 'aevalsrc=0.06*(sin(2*PI*262*t)+sin(2*PI*330*t)+sin(2*PI*392*t))*(0.6+0.4*sin(2*PI*2*t))+0.08*sin(2*PI*65*t)*exp(-10*mod(t\\,0.5)):s=48000,volume=-10dB';
-const clips = { 'talk.mp4': [SAY, { lead: 0.5, dur: 12 }], 'talk-with-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC }],
+// talk.mp4 in a female voice on Windows too, like macOS's default (Samantha, f0 ~176 Hz; Zira ~182 Hz): over Windows' default
+// male voice (David, ~93 Hz) the alien's 38 Hz ring modulation hides the period from the pitch tracker (2 voiced frames)
+const clips = { 'talk.mp4': [SAY, { lead: 0.5, dur: 12, ...(process.platform === 'win32' && { voice: 'Microsoft Zira Desktop' }) }], 'talk-with-music.mp4': [SAY, { lead: 0.8, dur: 12, bed: MUSIC }],
   'podcast-episode.mp4': [`${SAY} [[slnc 900]] Back at the beach we talked about the drive home. [[slnc 900]] Next week we try the desert road, early, before the heat.`,
     { lead: 0.4, dur: 22, bed: 'anoisesrc=c=pink:r=48000:seed=9:amplitude=0.02' }] };
 const truth = {}, ids = {};
@@ -312,11 +314,21 @@ if (run('voices')) {
   check('formant-aware: a reverb (cave) leaves the envelope where it was (x1 +-5 %)', Math.abs(out.cave.warp - 1) <= 0.05, `cave x${out.cave.warp.toFixed(2)}`);
   const peak = y => y.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
   check('no character clips: peaks under -1.5 dBFS (the export limiter at -1 dBFS then changes nothing)', Object.values(out).every(o => peak(o.y) < 0.85), Object.entries(out).map(([k, o]) => `${k} ${(20 * Math.log10(peak(o.y))).toFixed(1)}`).join(', ') + ' dBFS');
-  check('band-limited against the voice band (300 Hz - 3 kHz): radio 6-12 kHz down > 25 dB, megaphone (3.8 kHz horn) > 18 dB', out.radio.high < -25 && out.megaphone.high < -18, `radio ${out.radio.high.toFixed(1)}, megaphone ${out.megaphone.high.toFixed(1)} dB`);
+  { // the band limit on a broadband probe (pink noise): the OS voice's own 6-12 kHz (Windows' voices have ~7-9 dB less than macOS's)
+    // sets how far it can fall, under the distortion the drive adds (the same samples on both systems: 111-230 dB SNR, 2026-11-14)
+    const f = `${os.tmpdir()}/cutroom-band-probe.wav`;
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'anoisesrc=c=pink:r=48000:seed=3:amplitude=0.1:d=4', '-ac', '2', f]);
+    const pm = await (await fetch(`${B}/api/import?name=band-probe.wav`, { method: 'POST', headers: { 'X-Cutroom': '1' }, body: fs.readFileSync(f) })).json();
+    fs.rmSync(f, { force: true });
+    const praw = await pcmOf(pm.id), hi = y => dB(energy(band(y, 6000, 12000))) - dB(energy(band(y, 300, 3000))) - dB(energy(band(praw, 6000, 12000))) + dB(energy(band(praw, 300, 3000)));
+    const radio = hi(await pcmOf(pm.id, 'radio')), mega = hi(await pcmOf(pm.id, 'megaphone'));
+    await post(`/api/media/${pm.id}/trash`, {});
+    check('band-limited against the voice band (300 Hz - 3 kHz), on pink noise: radio 6-12 kHz down > 25 dB, megaphone (3.8 kHz horn) > 18 dB', radio < -25 && mega < -18, `radio ${radio.toFixed(1)}, megaphone ${mega.toFixed(1)} dB (on the voice: ${out.radio.high.toFixed(1)}, ${out.megaphone.high.toFixed(1)})`);
+  }
   check('underwater: muffled (energy above 1.2 kHz down > 20 dB)', out.underwater.above < -20, `${out.underwater.above.toFixed(1)} dB`);
-  const tail = x => { let e = 0; for (let i = Math.round(10.55 * SR); i < Math.min(x.length, Math.round(10.85 * SR)); i++) e += x[i] * x[i]; return e; };
+  const end = truth[TALK.id].at(-1)[1], tail = x => { let e = 0; for (let i = Math.round((end + 0.15) * SR); i < Math.min(x.length, Math.round((end + 0.45) * SR)); i++) e += x[i] * x[i]; return e; }; // where the voice stopped (its own timing: the OS voices differ by 1.7 s)
   const cave = dB(tail(out.cave.y)) - dB(tail(raw));
-  check('cave: a reverb tail where the voice has stopped', cave > 10, `${cave.toFixed(1)} dB more in 10.55-10.85 s`);
+  check('cave: a reverb tail where the voice has stopped', cave > 10, `${cave.toFixed(1)} dB more in ${(end + 0.15).toFixed(2)}-${(end + 0.45).toFixed(2)} s`);
   check('characters are not delayed: within 2 ms (waveform; WORLD ones by their loudness envelope, 1 ms steps)', Object.values(out).every(o => Math.abs(o.lag) <= 96), Object.entries(out).map(([k, o]) => `${k} ${o.lag}`).join(', ') + ' samples');
   // preview == export through the inspector's voice buttons; a character on top of Studio voice too
   for (const [v, studio] of [['elf', false], ['cave', false], ['giant', true]].filter(([v]) => WORLD || !AI.includes(v))) {

@@ -349,11 +349,11 @@ export async function importNamedMedia(baseUrl, specs, { timeout = 180000 } = {}
 // A "talk" clip: OS speech (makeSpeech) placed at `lead` s over an optional lavfi sound bed (music, noise), padded to `dur`
 // s, with a test-pattern picture unless `video: false`. Returns { file, speech: [[start, end], ...] }: where the voice is,
 // from the clean speech (silencedetect), the ground truth a VAD would be judged by; null when the OS has no speech service.
-export function speechClip(name, text, { lead = 0.5, dur, bed = '', video = true } = {}) {
-  const key = createHash('sha256').update(JSON.stringify([process.platform, text, lead, dur, bed, video])).digest('hex').slice(0, 12);
+export function speechClip(name, text, { lead = 0.5, dur, bed = '', video = true, voice } = {}) {
+  const key = createHash('sha256').update(JSON.stringify([process.platform, text, lead, dur, bed, video, ...(voice ? [voice] : [])])).digest('hex').slice(0, 12);
   fs.mkdirSync(fixtureDir, { recursive: true });
   const wav = path.join(fixtureDir, `speech-src-${key}.${process.pid}.wav`);
-  if (!makeSpeech(wav, text)) return null;
+  if (!makeSpeech(wav, text, { voice })) return null;
   try {
     const sil = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', wav, '-af', 'silencedetect=noise=-40dB:d=0.3', '-f', 'null', '-'], { encoding: 'utf8', timeout: 60000 }).stderr;
     const len = +probe(wav).format.duration, speech = [];

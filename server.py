@@ -5451,10 +5451,10 @@ def mux_subtitles(p, td, out, job=None):
             esc = lambda t: re.sub(r'\\(?=[nN])', '\\\\\u2060', t).replace('{\\', '{\u2060\\').replace('\n', '\\N')
             f.write_text('[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
                          + ''.join(f"Dialogue: 0,{ass_t(round(c['start'] / 10))},{ass_t(max(round(c['start'] / 10) + 1, round(c['end'] / 10)))},Default,,0,0,0,,{esc(c['text'])}\n"
-                                   for c in track['cues']), encoding='utf-8')
+                                   for c in track['cues']), encoding='utf-8', newline='\n')  # (Windows would write CRLF: a caption's line break came out '\r\n')
         else:
             f = Path(td) / f'subtitle-{i}.vtt'
-            f.write_text('WEBVTT\n\n' + ''.join(f"{vtt_t(c['start'])} --> {vtt_t(c['end'])}\n{html.escape(c['text'], quote=False)}\n\n" for c in track['cues']), encoding='utf-8')
+            f.write_text('WEBVTT\n\n' + ''.join(f"{vtt_t(c['start'])} --> {vtt_t(c['end'])}\n{html.escape(c['text'], quote=False)}\n\n" for c in track['cues']), encoding='utf-8', newline='\n')
         ins += ['-i', str(f)]
         maps += ['-map', f'{i + 1}:s:0', f'-metadata:s:s:{i}', f"language={track['language']}",
                  f'-metadata:s:s:{i}', f"title={track['language']}", f'-disposition:s:{i}', 'default' if i == 0 else '0']
