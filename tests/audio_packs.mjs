@@ -528,8 +528,9 @@ print(json.dumps({'t': min(ts), 'out': out}))`;
     if (!np) console.log(`SKIP beats with numpy (ai/beats.py): no AI tools Python at ${AI_PY}`);
     else check('beats: numpy (ai/beats.py) and the stdlib fallback give that same grid', same(np.out) && same(sl.out), `numpy ${np.out.bpm}/${np.out.beats.length}, stdlib ${sl.out.bpm}/${sl.out.beats.length}`);
     if (np) check('beats: the computation >= 5x faster than the old loops (same bytes, same run)', old.t / np.t >= 5, `old loops ${old.t.toFixed(3)} s, numpy ${np.t.toFixed(4)} s: ${(old.t / np.t).toFixed(1)}x; stdlib fallback end to end ${sl.t.toFixed(3)} s`);
-    // end to end the ffmpeg decode is the floor (5x is not reachable): the old way's MP3 decode alone is ~0.17 s on a quiet
-    // Mac, the cached PCM's resample ~0.09 s, and the app's beats() is that resample + ~40 ms. 1.6-4.1x measured under load
+    // end to end the old way's MP3 decode alone is ~0.17 s on a quiet Mac; the app reads the 8 kHz copy made at import with the
+    // preview's sound (no ffmpeg at all), so it is the helper's ~10 ms + HTTP: 4.5x on the Mac. Before that (an ffmpeg resample of
+    // the cached PCM per call) it measured 1.6-4.1x on the Mac and 1.2-1.4x on Windows, where starting ffmpeg alone takes ~30 ms
     const e2eOld = dec + old.t, e2e = Math.min(...ts);
     check('beats: end to end through the app >= 1.5x faster than the old way (not 5x: the ffmpeg decode is the floor)', e2eOld / e2e >= 1.5, `old ${dec.toFixed(3)} s decode + ${old.t.toFixed(3)} s loops = ${e2eOld.toFixed(3)} s; app ${ts.map(t => t.toFixed(3)).join(', ')} s (HTTP included): ${(e2eOld / e2e).toFixed(1)}x`);
   }

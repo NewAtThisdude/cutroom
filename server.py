@@ -846,9 +846,17 @@ def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
                 return None
             cmd = (['-f', 's16le', '-ar', '48000', '-ac', '2', '-ss', str(a), *(['-t', str(b - a)] if b > a else []), '-i', str(base), '-af', atempo(tempo)]
                    if base else ['-i', str(src), '-vn', '-map', '0:a:0', '-af', f'{trim}aresample=48000,{atempo(tempo)}'])
-            if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp)], low=not base).returncode:
+            # the 1x copy from the source also writes beats()' input (8 kHz mono, ~16 KB a second) in the same decode:
+            # Beats then reads it instead of starting ffmpeg (~0.1 s a song on Windows, most of what Beats took)
+            beat = CACHE / f"{m['id']}.8k.pcm" if one and not base and not fx else None
+            also = ['-map', '0:a:0', '-ac', '1', '-ar', '8000', '-f', 's16le', str(beat.with_suffix('.tmp'))] if beat else []
+            if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp), *also], low=not base).returncode:
                 tmp.unlink(missing_ok=True)
+                if beat:
+                    beat.with_suffix('.tmp').unlink(missing_ok=True)
                 return None
+            if beat:
+                retry(beat.with_suffix('.tmp').replace, beat)
             retry(tmp.replace, out)
             if not one:
                 for old in sorted(CACHE.glob(f"{m['id']}.*-*.pcm"), key=lambda f: f.stat().st_mtime)[:-4]:
@@ -1196,14 +1204,14 @@ def beats(mid):
     sr, hop = 8000, 128  # 62.5 onset frames per second
     # the preview's 48 kHz PCM when it exists: raw samples resample in a third of an MP3/AAC decode (which was ~2/3 of the time).
     # Same BPM on all 22 pack songs; 2 of them had 2 beats each 2-3 frames off the grid read from the file itself
-    f = CACHE / f'{mid}.pcm'
+    f, f8 = CACHE / f'{mid}.pcm', CACHE / f'{mid}.8k.pcm'  # f8: made with the preview's sound at import (pcm())
     src = ['-f', 's16le', '-ar', '48000', '-ac', '2', '-i', str(f)] if f.exists() else ['-i', str(MEDIA / m['file']), '-vn']
     # numpy in the AI venv (ai/beats.py, the same grid): one helper kept running, started while ffmpeg decodes the first time
     # (Python + numpy take ~0.2 s to start on Windows, longer than the whole computation), then ~8 ms per song
     fast = not os.environ.get('CUTROOM_BEATS_STDLIB') and AI_PY.exists()
     if fast:
         beats_helper()
-    raw = subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
+    raw = f8.read_bytes() if f8.exists() else subprocess.run(['ffmpeg', '-v', 'error', *src, '-ac', '1', '-ar', str(sr), '-f', 's16le', '-'], capture_output=True).stdout
     if fast:
         out = beats_helper(raw)  # None: a broken venv or a failed request, the stdlib loops below
         if out and out.get('error'):
