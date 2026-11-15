@@ -29,7 +29,7 @@ function textArc(dx, width, curve, lineHeight = 0) { // arc length -> baseline a
 const TX_2D = { willReadFrequently: true };
 function textFxBlit(ctx, cv, x, y, radius = 0, horizontal = false) { // finite, deterministic blur taps: also works in WebKit workers without ctx.filter
   if (radius < 0.01) { ctx.drawImage(cv, x, y); return; }
-  const layer = scratch(cv.width, cv.height, 'txblur'), q = layer.getContext('2d', TX_2D), n = 13;
+  const layer = scratch(cv.width, cv.height, 'txblur', true), q = layer.getContext('2d', TX_2D), n = 13;
   q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, layer.width, layer.height);
   q.globalCompositeOperation = 'lighter'; q.globalAlpha = 1 / n; // average premultiplied pixels; source-over taps would lose opacity
   for (let i = 0; i < n; i++) {
@@ -43,7 +43,7 @@ function textGlyph(ctx, stroke, ch, x, y, size, alpha, blur, gradient) { // rast
   const m = ctx.measureText(ch), pad = Math.ceil(size * 2 + ctx.lineWidth + ctx.shadowBlur * 2 + Math.abs(ctx.shadowOffsetX) + Math.abs(ctx.shadowOffsetY));
   const r32 = v => Math.ceil(v / 32) * 32; // sizes in steps of 32 px: a canvas per letter width churned the 64-canvas scratch cache every frame
   const w = r32(Math.max(m.width, m.actualBoundingBoxRight || 0) + Math.max(0, m.actualBoundingBoxLeft || 0) + 2 * pad), h = r32(size * 2 + 2 * pad);
-  const cv = scratch(w, h, 'txglyph'), q = cv.getContext('2d', TX_2D);
+  const cv = scratch(w, h, 'txglyph', true), q = cv.getContext('2d', TX_2D);
   q.setTransform(1, 0, 0, 1, 0, 0); q.clearRect(0, 0, w, h);
   for (const k of ['font', 'textBaseline', 'lineJoin', 'lineWidth', 'fillStyle', 'strokeStyle', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY']) q[k] = ctx[k];
   q.setTransform(1, 0, 0, 1, pad - x, pad + size - y);
@@ -280,10 +280,13 @@ function drawFxLayers(ctx, t, k) { // effect overlays: under the text, in the te
 }
 
 const scratchCv = new Map();
-function scratch(W, H, tag) { // reusable offscreen canvases, one per size and purpose
+// cpu: an OffscreenCanvas on the page too, the kind the layer workers draw text with. Chromium's page canvas and OffscreenCanvas
+// differ at an anti-aliased clip edge (stroke draw-on under a shadowed fade: one column, page partly covered, worker empty), so
+// the workers' export and the page's preview/fallback came out different; WebKit draws both the same
+function scratch(W, H, tag, cpu = false) { // reusable offscreen canvases, one per size and purpose
   const key = `${tag}:${W}x${H}`;
   let c = scratchCv.get(key);
-  if (!c) { c = typeof document === 'undefined' ? new OffscreenCanvas(W, H) : document.createElement('canvas'); c.width = W; c.height = H; scratchCv.set(key, c); if (scratchCv.size > 64) scratchCv.delete(scratchCv.keys().next().value); }
+  if (!c) { c = typeof document === 'undefined' || (cpu && typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(W, H) : document.createElement('canvas'); c.width = W; c.height = H; scratchCv.set(key, c); if (scratchCv.size > 64) scratchCv.delete(scratchCv.keys().next().value); }
   return c;
 }
 
@@ -410,7 +413,7 @@ function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and expo
   // in the preview and the export): such text is drawn solid on a scratch canvas, then laid on at the fade
   const main = ctx, fade = ctx.globalAlpha;
   if ((st.shadow && fade < 1) || fxBlur > 0 || (st.loop === 'glow' && fade < 1)) {
-    const sx = scratch(main.canvas.width, main.canvas.height, 'txa').getContext('2d', TX_2D);
+    const sx = scratch(main.canvas.width, main.canvas.height, 'txa', true).getContext('2d', TX_2D);
     sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, sx.canvas.width, sx.canvas.height);
     sx.setTransform(main.getTransform()); sx.font = main.font; sx.textBaseline = 'middle'; sx.lineJoin = 'round';
     ctx = sx;
