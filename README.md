@@ -15,13 +15,13 @@ no account, no uploads, no watermark, no subscription.</p>
 
 ## Install in one line
 
-**<img src="docs/icons/apple.svg" width="18" height="18" alt=""> Mac** · paste into Terminal:
+**<img src="docs/icons/apple.svg" width="18" height="18" align="absmiddle" alt=""> Mac** · paste into Terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.sh | sh
 ```
 
-**<img src="docs/icons/windows.svg" width="18" height="18" alt=""> Windows 10 / 11** · paste into PowerShell:
+**<img src="docs/icons/windows.svg" width="18" height="18" align="absmiddle" alt=""> Windows 10 / 11** · paste into PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.ps1 | iex
@@ -31,10 +31,10 @@ Then open **Cutroom** from `~/Applications` on a Mac, or from the Start menu on 
 
 What the installer does, in order:
 
-1. <img src="docs/icons/scan-search.svg" width="16" height="16" alt=""> **Looks at your computer first** (chip, GPU, memory, video encoder) and says in plain words what it found and what it will install.
-2. <img src="docs/icons/wrench.svg" width="16" height="16" alt=""> **Offers the tools it needs** (ffmpeg, whisper.cpp; on a Mac through Homebrew) and asks before installing anything.
-3. <img src="docs/icons/cpu.svg" width="16" height="16" alt=""> **Picks the one AI pack this computer can run**: MLX on Apple Silicon, CUDA on an NVIDIA PC, CPU elsewhere, or none, with the reason.
-4. <img src="docs/icons/shield-check.svg" width="16" height="16" alt=""> **Pins and checks its downloads** by SHA-256 (the few exceptions are listed [below](#install-in-detail)). No admin rights,
+1. <img src="docs/icons/scan-search.svg" width="16" height="16" align="absmiddle" alt=""> **Looks at your computer first** (chip, GPU, memory, video encoder) and says in plain words what it found and what it will install.
+2. <img src="docs/icons/wrench.svg" width="16" height="16" align="absmiddle" alt=""> **Offers the tools it needs** (ffmpeg, whisper.cpp; on a Mac through Homebrew) and asks before installing anything.
+3. <img src="docs/icons/cpu.svg" width="16" height="16" align="absmiddle" alt=""> **Picks the one AI pack this computer can run**: MLX on Apple Silicon, CUDA on an NVIDIA PC, CPU elsewhere, or none, with the reason.
+4. <img src="docs/icons/shield-check.svg" width="16" height="16" align="absmiddle" alt=""> **Pins and checks its downloads** by SHA-256 (the few exceptions are listed [below](#install-in-detail)). No admin rights,
    no PATH change, nothing that starts at login.
 
 Run the same line again to update or repair. Prefer a copy of the source? `git clone https://github.com/NewAtThisdude/cutroom`,
@@ -45,22 +45,22 @@ then `./install.sh` (Mac) or `powershell -ExecutionPolicy Bypass -File install.p
 
 ## What it does
 
-- <img src="docs/icons/clapperboard.svg" width="16" height="16" alt=""> **Edit:** a magnetic main track plus overlay, audio, text, caption and effect tracks; trims, splits, slip / slide / roll,
+- <img src="docs/icons/clapperboard.svg" width="16" height="16" align="absmiddle" alt=""> **Edit:** a magnetic main track plus overlay, audio, text, caption and effect tracks; trims, splits, slip / slide / roll,
   ripple across all tracks, keyframes with easing curves, speed ramps, masks, chroma key, multicam, compound clips.
-- <img src="docs/icons/scan-eye.svg" width="16" height="16" alt=""> **What you see is what exports:** the preview and the export share their maths, and a test suite compares them frame by frame.
-- <img src="docs/icons/captions.svg" width="16" height="16" alt=""> **Captions and sound:** auto captions in 18 languages with 22 styles, translation, edit-by-script, noise reduction,
+- <img src="docs/icons/scan-eye.svg" width="16" height="16" align="absmiddle" alt=""> **What you see is what exports:** the preview and the export share their maths, and a test suite compares them frame by frame.
+- <img src="docs/icons/captions.svg" width="16" height="16" align="absmiddle" alt=""> **Captions and sound:** auto captions in 18 languages with 22 styles, translation, edit-by-script, noise reduction,
   voice isolation, auto-duck, a free CC0 sound and music library.
-- <img src="docs/icons/palette.svg" width="16" height="16" alt=""> **Colour and effects:** wheels, curves, HSL, LUTs, scopes, adjustment layers, 57 transitions, 47 effects, 47 looks.
-- <img src="docs/icons/film.svg" width="16" height="16" alt=""> **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms; every shape (9:16, 16:9, 1:1, 4:5) in one go, rendered one after another in an Exports panel.
-- <img src="docs/icons/feather.svg" width="16" height="16" alt=""> **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
+- <img src="docs/icons/palette.svg" width="16" height="16" align="absmiddle" alt=""> **Colour and effects:** wheels, curves, HSL, LUTs, scopes, adjustment layers, 57 transitions, 47 effects, 47 looks.
+- <img src="docs/icons/film.svg" width="16" height="16" align="absmiddle" alt=""> **Export:** H.264, HEVC, AV1, VP9, ProRes; HDR (HLG / PQ); transparent video; up to 8K; presets for the usual platforms; every shape (9:16, 16:9, 1:1, 4:5) in one go, rendered one after another in an Exports panel.
+- <img src="docs/icons/feather.svg" width="16" height="16" align="absmiddle" alt=""> **Light on the Mac:** heavy jobs run one at a time, models are sized to your memory and unload when idle,
   and the editor uses almost no CPU when you are not touching it.
-- <img src="docs/icons/settings.svg" width="16" height="16" alt=""> **Settings** (the gear, ⌘, or Ctrl+,): new-project shape, frame rate and name; how many versions autosave keeps; snapping,
+- <img src="docs/icons/settings.svg" width="16" height="16" align="absmiddle" alt=""> **Settings** (the gear, ⌘, or Ctrl+,): new-project shape, frame rate and name; how many versions autosave keeps; snapping,
   default photo / text / transition lengths, caption style and language; preview quality, proxies, loop, motion; the export
   preset, folder, file name, loudness and what happens when it finishes; every shortcut; each AI feature on or off (an off one
   loses its buttons and the MCP refuses it) next to what this computer runs it as; cache and trash sizes with Clear / Empty.
   Each choice applies at once and says where it is kept: this computer, or this library (`settings.json`, for what the server
   needs: versions, export folder, proxies, the local model). The MCP's `settings` tool reads and changes them.
-- <img src="docs/icons/bot.svg" width="16" height="16" alt=""> **Works with your AI assistant:** an MCP server (`mcp/cutroom_mcp.py`) lets Claude, Cursor, VS Code Copilot, Codex or any
+- <img src="docs/icons/bot.svg" width="16" height="16" align="absmiddle" alt=""> **Works with your AI assistant:** an MCP server (`mcp/cutroom_mcp.py`) lets Claude, Cursor, VS Code Copilot, Codex or any
   other MCP client drive the open editor: [set it up](#let-your-ai-assistant-edit-mcp).
 
 ## How it's tested
@@ -444,7 +444,7 @@ Windsurf, OpenAI's Codex CLI, LM Studio and others. It is tested with Claude Cod
 After a one-line install the server is at `~/.local/share/cutroom/src/mcp/cutroom_mcp.py` on a Mac and
 `%LOCALAPPDATA%\Cutroom\src\mcp\cutroom_mcp.py` on Windows (in a clone: `mcp/cutroom_mcp.py`). Point your assistant at it:
 
-**<img src="docs/icons/file-json.svg" width="16" height="16" alt=""> Apps with an MCP settings file** (Claude Desktop, Cursor, Windsurf, LM Studio; VS Code uses `"servers"` in
+**<img src="docs/icons/file-json.svg" width="16" height="16" align="absmiddle" alt=""> Apps with an MCP settings file** (Claude Desktop, Cursor, Windsurf, LM Studio; VS Code uses `"servers"` in
 `.vscode/mcp.json` instead of `"mcpServers"`):
 
 ```json
@@ -462,7 +462,7 @@ After a one-line install the server is at `~/.local/share/cutroom/src/mcp/cutroo
 On Windows, `"command"` is the Python the installer printed (for example `C:\\Python314\\python.exe`) and `"args"` are
 `["-X", "utf8", "-I", "C:\\Users\\you\\AppData\\Local\\Cutroom\\src\\mcp\\cutroom_mcp.py"]`.
 
-**<img src="docs/icons/square-terminal.svg" width="16" height="16" alt=""> Command-line assistants:**
+**<img src="docs/icons/square-terminal.svg" width="16" height="16" align="absmiddle" alt=""> Command-line assistants:**
 
 ```sh
 claude mcp add -s user cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py   # Claude Code
