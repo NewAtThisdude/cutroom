@@ -47,8 +47,10 @@ It checks your computer first, asks before installing anything and needs no admi
 ## Let your AI assistant edit
 
 ```sh
-claude mcp add -s user cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py   # Claude Code
-codex mcp add cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py            # Codex CLI
+# Claude Code
+claude mcp add -s user cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py
+# Codex CLI
+codex mcp add cutroom -- python3 -I ~/.local/share/cutroom/src/mcp/cutroom_mcp.py
 ```
 
 Then ask in plain words: "remove the pauses, add bold captions and export 1080p".
