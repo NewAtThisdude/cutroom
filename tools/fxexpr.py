@@ -254,23 +254,27 @@ def compile_expr(s, B):
     return v
 
 
-def main():
-    a = sys.argv
-    if len(a) != 6 or a[3] not in ('3', '4'):
-        sys.exit('usage: fxexpr.py W H planes expressions.json a,b;a,b')
-    W, H, P = int(a[1]), int(a[2]), int(a[3])
-    wins = [tuple(int(v) for v in w.split(',')) for w in a[5].split(';')]
-    exprs = json.load(open(a[4], encoding='utf-8'))
+def backend():
     want = os.environ.get('CUTROOM_FX_BACKEND', '').strip().lower()
-    B = None
     if want in ('', 'auto', 'cuda'):
         try:
-            B = Cuda()
+            return Cuda()
         except Exception as e:  # no PyTorch, or no GPU: numpy, unless the GPU was asked for
             if want == 'cuda':
                 sys.exit(f'fxexpr: cuda unavailable: {e}')
-    if B is None:
-        B = Numpy()
+    return Numpy()
+
+
+def main():
+    a = sys.argv
+    if a[1:] == ['--probe']:  # server.py: which backend this Python has (numpy missing: an ImportError, exit 1)
+        return print(backend().name)
+    if len(a) != 6 or a[3] not in ('3', '4'):
+        sys.exit('usage: fxexpr.py W H planes expressions.json a,b;a,b | --probe')
+    W, H, P = int(a[1]), int(a[2]), int(a[3])
+    wins = [tuple(int(v) for v in w.split(',')) for w in a[5].split(';')]
+    exprs = json.load(open(a[4], encoding='utf-8'))
+    B = backend()
     import numpy as np
     B.np = np
     B.W, B.H = B.const(W), B.const(H)

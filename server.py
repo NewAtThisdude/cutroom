@@ -5709,17 +5709,57 @@ def run_ffmpeg(cmd, dur, report, what='Rendering', job=None, stdin=None, low=Fal
     return e
 
 
-FXGPU = []  # the built fxgpu tool, or '' when it can't be built (geq then)
+FXGPU = []  # the effects tool, found once: (backend, command) - ('metal', [fxgpu]) on a Mac, ('cuda' | 'numpy', [python, fxexpr.py])
+# elsewhere (tools/fxexpr.py in a Python with NumPy: the AI pack's, else the small one the installer makes) - or '': geq then
+FX_PY = TOOLS / '.venv' / ('Scripts/python.exe' if WIN else 'bin/python')  # install.ps1 / install.sh: NumPy alone (tools/fx.lock)
+FX_USED = {}  # backend -> stages run since the server started, and 'fallback' -> stages that failed over to geq (GET /api/fx/backend)
+FX_SMALL = 3e8  # pixels: a job below this runs on NumPy even beside CUDA (PyTorch takes ~2 s to load; see fx_cmd)
 
 
 def fx_gpu():
+    """The effects tool, or '' (geq). CUTROOM_FX_BACKEND = metal | cuda | numpy | geq picks one (tests; unset: the best there is)."""
     if not FXGPU:
-        try:
-            FXGPU.append(build_tool('fxgpu'))
-        except (OSError, RuntimeError) as e:
-            print(f'effects on the GPU unavailable: {e}', file=sys.stderr, flush=True)
-            FXGPU.append('')
+        want, tool = os.environ.get('CUTROOM_FX_BACKEND', '').strip().lower(), ''
+        if MAC and want in ('', 'auto', 'metal'):
+            try:
+                tool = ('metal', [build_tool('fxgpu')])
+            except (OSError, RuntimeError) as e:
+                print(f'effects on the GPU unavailable: {e}', file=sys.stderr, flush=True)
+        if not tool and want not in ('metal', 'geq'):
+            env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+            for py in dict.fromkeys(str(x) for x in (AI_PY, FX_PY, sys.executable) if Path(x).exists()):
+                cmd = [py, '-I', str(TOOLS / 'fxexpr.py')]
+                try:
+                    r = subprocess.run([*cmd, '--probe'], capture_output=True, text=True, timeout=120, env=env)
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if r.returncode == 0 and (b := r.stdout.strip()) in ('cuda', 'numpy'):
+                    tool = (b, cmd)
+                    break
+        print(f"effects-pack expressions: {tool[0] + ' (' + ' '.join(tool[1]) + ')' if tool else 'geq (no Metal, no Python with NumPy)'}", file=sys.stderr, flush=True)
+        FXGPU.append(tool)
     return FXGPU[0]
+
+
+def fx_cmd(fxs, wins, W, H, planes, td, name):
+    """The command for one run of effects on the tool fx_gpu() found: their expressions written beside it (Metal kernels, or the
+    geq text for fxexpr.py), each on its frames wins [(a, b)]. A small job (a still, a short transition) runs on NumPy even where
+    CUDA is: PyTorch's load would take longer than the job. -> (command, environment, backend)"""
+    kind, cmd = FXGPU[0]
+    f = Path(td) / f"{name}.{'metal' if kind == 'metal' else 'json'}"
+    f.write_text(msl_effects(fxs) if kind == 'metal' else json.dumps([[x['er'], x['eg'], x['eb']] for x in fxs]))
+    if kind == 'cuda' and sum(max(0, b - a) for a, b in wins) * W * H < FX_SMALL and os.environ.get('CUTROOM_FX_BACKEND', '').strip().lower() != 'cuda':
+        kind = 'numpy'
+    env = None if kind == 'metal' else {**{k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}, 'CUTROOM_FX_BACKEND': kind}
+    return [*cmd, str(W), str(H), str(planes), str(f), ';'.join(f'{a},{b}' for a, b in wins)], env, kind
+
+
+def fx_note(kind, log_text):
+    """A stage done: counted, and fxexpr's own line (backend, time, peak memory) into the server's log."""
+    FX_USED[kind] = FX_USED.get(kind, 0) + 1
+    for ln in log_text.splitlines():
+        if ln.startswith('fxexpr:'):
+            print(ln, file=sys.stderr, flush=True)
 
 
 def gpu_transitions(p, td, job):
@@ -5742,13 +5782,13 @@ def gpu_transitions(p, td, job):
             a = {**a, 'in': a['in'] + m * a['speed'] / F, 'frames': a['frames'] - m, 'fadeIn': 0}
         sub = {**p, 'main': [a, b], 'overlay': [], 'audio': [], 'fx': [], 'frames': [], 'pngs': [], 'tr_stack': True, 'rgb': True, 'tr_files': {}}
         ins, fg = graph(sub, td)
-        gf, mt, f = Path(td) / f'trs{k}.txt', Path(td) / f'tr{k}.metal', Path(td) / f'tr{k}.mkv'
+        gf, f = Path(td) / f'trs{k}.txt', Path(td) / f'tr{k}.mkv'
         gf.write_text(fg)
-        mt.write_text(msl_effects([{c: re.sub(r'\bTO\b', str(o), a['trx'][c]) for c in ('er', 'eg', 'eb')}]))
+        cmd, env, kind = fx_cmd([{c: re.sub(r'\bTO\b', str(o), a['trx'][c]) for c in ('er', 'eg', 'eb')}], [(0, o)], W, 2 * H, 3, td, f'tr{k}')
         logs = [open(Path(td) / f'tr{k}.{i}.log', 'w+') for i in range(3)]
         p1 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-filter_complex_threads', FF_THREADS, *ins, '-/filter_complex', str(gf),
                                '-map', '[vout]', '-frames:v', str(o), '-fps_mode', 'passthrough', '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=logs[0])
-        p2 = subprocess.Popen([FXGPU[0], str(W), str(2 * H), '3', str(mt), f'0,{o}'], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=logs[1])
+        p2 = subprocess.Popen(cmd, stdin=p1.stdout, stdout=subprocess.PIPE, stderr=logs[1], env=env)
         p1.stdout.close()
         p3 = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-s', f'{W}x{2 * H}',
                                '-framerate', RATES.get(round(F, 3), f'{F:g}'), '-i', 'pipe:0', '-vf', f'crop={W}:{H}:0:0', '-c:v', 'ffv1', str(f)],
@@ -5768,6 +5808,7 @@ def gpu_transitions(p, td, job):
             lg.close()
         if any(codes) or n != o:
             raise RuntimeError(plain('A transition', text or f'{n} of {o} frames', next((c for c in codes if c), 0)))
+        fx_note(kind, text)
         out[k] = str(f)
     return out
 
@@ -5786,6 +5827,7 @@ def render(p, td, out, report, what='The export', job=None, intermediate=False):
         except RuntimeError as e:
             if 'cancelled' in str(e) or (job and JOBS.get(job, {}).get('cancel')):
                 raise
+            FX_USED['fallback'] = FX_USED.get('fallback', 0) + 1
             print(f'{what}: transitions on the GPU failed, geq instead: {e}', file=sys.stderr, flush=True)
     if not any(f['op'] == 'expr' for f in fx):
         return plain_run(p)
@@ -5794,6 +5836,7 @@ def render(p, td, out, report, what='The export', job=None, intermediate=False):
     except RuntimeError as e:
         if 'cancelled' in str(e) or (job and JOBS.get(job, {}).get('cancel')):
             raise
+        FX_USED['fallback'] = FX_USED.get('fallback', 0) + 1
         print(f'{what}: the GPU effects path failed, geq instead: {e}', file=sys.stderr, flush=True)
         return plain_run(p)
 
@@ -5823,13 +5866,13 @@ def render_gpu(p, td, out, report, what, job, intermediate=False):
     try:
         for k, (gpu, fxs) in enumerate(runs[:-1]):
             log = open(Path(td) / f'stage{k}.log', 'w+')
+            env = None
             if gpu:
-                (Path(td) / f'fx{k}.metal').write_text(msl_effects(fxs))
-                cmd = [FXGPU[0], str(W), str(H), '4' if A else '3', str(Path(td) / f'fx{k}.metal'), ';'.join(f"{f['a']},{f['b']}" for f in fxs)]
+                cmd, env, gpu = fx_cmd(fxs, [(f['a'], min(f['b'], n)) for f in fxs], W, H, 4 if A else 3, td, f'fx{k}')
             else:
                 q = {**p, 'fx': fxs, 'frames': [], 'pngs': [], 'format': 'mp4', 'raw_out': True, 'rgb': True}  # (rgb: the composite as the one pass makes it)
                 cmd = ffmpeg_cmd(q if k == 0 else {**q, 'main': [raw], 'overlay': [], 'audio': []}, td, None)
-            procs.append((gpu, subprocess.Popen(cmd, stdin=prev, stdout=subprocess.PIPE, stderr=log), log))
+            procs.append((gpu, subprocess.Popen(cmd, stdin=prev, stdout=subprocess.PIPE, stderr=log, env=env), log))
             if prev is not subprocess.DEVNULL:
                 prev.close()  # only the next stage holds it: a stage that stops makes the ones before it stop too
             prev = procs[-1][1].stdout
@@ -5848,6 +5891,8 @@ def render_gpu(p, td, out, report, what, job, intermediate=False):
         log.close()
         if pr.returncode and pr.returncode != -getattr(signal, 'SIGPIPE', 13) and not ('Broken pipe' in e or 'Error writing' in e and not gpu):
             raise RuntimeError(plain(what, e, pr.returncode))
+        if gpu:
+            fx_note(gpu, e)
     return err
 
 
@@ -7232,6 +7277,9 @@ class App(BaseHTTPRequestHandler):
                                    'refused': {k: t['refused'] for k in ('image', 'clone') if 'refused' in (t := tier(k))}})  # why, where this computer can't (MLX only)
             if path == '/api/ai/caps':  # Settings > AI > This Mac: what runs here, at what size, how fast
                 return self.reply(caps())
+            if path == '/api/fx/backend':  # what runs the effects-pack expressions in exports here, and what has run (tests/fx_pack.mjs)
+                t = fx_gpu()
+                return self.reply({'backend': t[0] if t else 'geq', 'command': t[1] if t else None, 'small': FX_SMALL, 'used': FX_USED})
             if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
                 return self.reply(settings_api(path))
             if path == '/api/remote/status':
