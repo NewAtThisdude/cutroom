@@ -187,7 +187,7 @@ if (parts.includes('exact')) { // the compiled expressions alone: the same input
       check(`fxexpr ${be}: ${kinds.length} transitions x3 + ${fxs.length} effects == preview`, !bad, `worst mean ${wm.toFixed(3)}, ${wp.toFixed(2)} % off by more than 2; transitions ${ts.toFixed(1)} s, effects ${fsec.toFixed(1)} s (${tl} | ${fl})`);
       // its own semantics against geq: lets set inside branches, a frame outside the window, two effects stacked on one frame, alpha
       const sem = [['r(X,Y)*0+if(lt(X,W/2),st(0,r(W-1-X,Y)),st(0,b(X,Y)*0.5));if(gt(Y,H/2),st(1,ld(0)+40),st(1,255-ld(0)));ld(1)', 'if(lt(mod(X,64),32),g(X,Y),255-g(X,Y))', 'ifnot(between(Y,50,120),b(X,Y),st(2,X);ld(2))'],
-        ['255-r(X,Y)', 'g(X*0.5,Y*0.5)', 'b(W-1-X,H-1-Y)']];
+        ['255-r(X,Y)', 'g(X*0.5,Y*0.5)', 'b(W-1-X,H-1-Y)']].map(e => e.map(x => `clip(${x},0,255)`)); // (clipped as the pack's are: geq stores 256 as 0)
       const ref = execFileSync('ffmpeg', ['-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-s', `${Wd}x${Ht}`, '-i', '-', '-vf', sem.map(e => `geq=interpolation=nearest:${['r', 'g', 'b'].map((c, i) => `${c}='${e[i]}'`).join(':')}`).join(','), '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-'], { input: Ap });
       const Aa = Buffer.concat([Ap, Buffer.alloc(PL, 77)]); // gbrap: alpha 77
       const [so] = worker(be, Wd, Ht, 4, sem, [[1, 2], [1, 2]], Buffer.concat([Aa, Aa, Aa]));
