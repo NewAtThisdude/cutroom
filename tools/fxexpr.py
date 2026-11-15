@@ -91,8 +91,14 @@ class Cuda(Numpy):
         return plane[yi, xi].to(self.f32)
 
 
-class Ctx:  # one channel of one band of one frame: where the pixels are, the frame number, the lets, the branch mask
-    __slots__ = ('X', 'Y', 'LF', 'L', 'mask', 'src')
+class Ctx:  # one channel of one band of one frame: where the pixels are, the frame number, the lets, the branch mask, and
+    # memo: the lets' values shared by the three channels. A let with the same text after the same lets has the same value in
+    # each (K() is already a number there, fetches name their channel), and most of an effect's work is in them.
+    __slots__ = ('X', 'Y', 'LF', 'L', 'mask', 'src', 'memo', 'chain')
+
+    def channel(self, zero, memo):
+        self.L, self.mask, self.memo, self.chain = [zero] * 10, None, memo, ()
+        return self
 
 
 def compile_expr(s, B):
@@ -168,10 +174,12 @@ def compile_expr(s, B):
                 raise ValueError(f'{t} is a function')
             return lambda c: k
         eat('(')
+        j0 = i
         args = [seq()]
         while peek() == ',':
             eat()
             args.append(seq())
+        text, pure = ' '.join(toks[j0:i]), 'st' not in toks[j0 + 1:i]
         eat(')')
         if t in ('st', 'ld'):
             if len(args) != (2 if t == 'st' else 1):
@@ -187,6 +195,14 @@ def compile_expr(s, B):
             v = args[1]
 
             def st(c):
+                if c.memo is not None and c.mask is None and pure:
+                    c.chain = key = (c.chain, text)
+                    x = c.memo.get(key)
+                    if x is None:
+                        x = c.memo[key] = v(c)
+                    c.L[k] = x
+                    return x
+                c.memo = None  # a let in a branch, or one that sets others: this channel's lets are its own from here
                 x = v(c)
                 c.L[k] = x if c.mask is None else B.where(c.mask, x, c.L[k])
                 return x
@@ -296,10 +312,9 @@ def main():
 
     def band(fx, src, dst, lf, y0, y1):
         c = Ctx()
-        c.X, c.Y, c.LF, c.src = Xn, np.arange(y0, y1, dtype=np.float32)[:, None], np.float32(lf), src
+        c.X, c.Y, c.LF, c.src, memo = Xn, np.arange(y0, y1, dtype=np.float32)[:, None], np.float32(lf), src, {}
         for pl in range(3):
-            c.L, c.mask = [np.float32(0)] * 10, None
-            dst[pl, y0:y1] = np.clip(fx[pl](c), 0, 255)  # (the float -> uint8 store truncates)
+            dst[pl, y0:y1] = np.clip(fx[pl](c.channel(np.float32(0), memo)), 0, 255)  # (the float -> uint8 store truncates)
 
     def read():
         got = 0
@@ -323,11 +338,10 @@ def main():
                 cur = host.to(B.dev, non_blocking=True).view(P, H, W)
                 for k in on:
                     c = Ctx()
-                    c.X, c.Y, c.LF, c.src = Xc, Yc, B.const(frame - wins[k][0]), cur
+                    c.X, c.Y, c.LF, c.src, memo = Xc, Yc, B.const(frame - wins[k][0]), cur, {}
                     nxt = cur.clone()
                     for pl in range(3):
-                        c.L, c.mask = [B.const(0.0)] * 10, None
-                        v = fns[k][pl](c)
+                        v = fns[k][pl](c.channel(B.const(0.0), memo))
                         nxt[pl] = B.clip(v, B.const(0.0), B.const(255.0)).expand(H, W).to(t.uint8)
                     cur = nxt
                 host.copy_(cur.reshape(-1))
@@ -361,9 +375,11 @@ def main():
                 _fields_ = [('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD)] + [(f, ctypes.c_size_t) for f in (
                     'PeakWorkingSetSize', 'WorkingSetSize', 'QuotaPeakPagedPoolUsage', 'QuotaPagedPoolUsage', 'QuotaPeakNonPagedPoolUsage',
                     'QuotaNonPagedPoolUsage', 'PagefileUsage', 'PeakPagefileUsage')]
-            m = PMC()
+            m, k32 = PMC(), ctypes.WinDLL('kernel32')
             m.cb = ctypes.sizeof(m)
-            ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(m), m.cb)
+            k32.GetCurrentProcess.restype = wintypes.HANDLE  # (-1 as a 64-bit handle: the default int return cut it to 32 bits)
+            k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+            k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(m), m.cb)
             peak = f' peak {m.PeakWorkingSetSize >> 20} MB'
         else:
             import resource

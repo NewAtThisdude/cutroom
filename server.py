@@ -5711,9 +5711,27 @@ def run_ffmpeg(cmd, dur, report, what='Rendering', job=None, stdin=None, low=Fal
 
 FXGPU = []  # the effects tool, found once: (backend, command) - ('metal', [fxgpu]) on a Mac, ('cuda' | 'numpy', [python, fxexpr.py])
 # elsewhere (tools/fxexpr.py in a Python with NumPy: the AI pack's, else the small one the installer makes) - or '': geq then
-FX_PY = TOOLS / '.venv' / ('Scripts/python.exe' if WIN else 'bin/python')  # install.ps1 / install.sh: NumPy alone (tools/fx.lock)
+FX_PY = TOOLS / '.venv' / ('Scripts/python.exe' if WIN else 'bin/python')  # install.ps1: NumPy alone (tools/fx.lock)
+FXW = []  # fx_worker(): found once
 FX_USED = {}  # backend -> stages run since the server started, and 'fallback' -> stages that failed over to geq (GET /api/fx/backend)
 FX_SMALL = 3e8  # pixels: a job below this runs on NumPy even beside CUDA (PyTorch takes ~2 s to load; see fx_cmd)
+
+
+def fx_worker():
+    """tools/fxexpr.py in the first Python here with NumPy -> ('cuda' | 'numpy', its command), or '' (probed once)."""
+    if not FXW:
+        env, w = {k: v for k, v in os.environ.items() if k not in ('PYTHONPATH', 'CUTROOM_FX_BACKEND')}, ''
+        for py in dict.fromkeys(str(x) for x in (AI_PY, FX_PY, sys.executable) if Path(x).exists()):
+            cmd = [py, '-I', str(TOOLS / 'fxexpr.py')]
+            try:
+                r = subprocess.run([*cmd, '--probe'], capture_output=True, text=True, timeout=120, env=env)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0 and (b := r.stdout.strip()) in ('cuda', 'numpy'):
+                w = (b, cmd)
+                break
+        FXW.append(w)
+    return FXW[0]
 
 
 def fx_gpu():
@@ -5725,18 +5743,9 @@ def fx_gpu():
                 tool = ('metal', [build_tool('fxgpu')])
             except (OSError, RuntimeError) as e:
                 print(f'effects on the GPU unavailable: {e}', file=sys.stderr, flush=True)
-        if not tool and want not in ('metal', 'geq'):
-            env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
-            for py in dict.fromkeys(str(x) for x in (AI_PY, FX_PY, sys.executable) if Path(x).exists()):
-                cmd = [py, '-I', str(TOOLS / 'fxexpr.py')]
-                try:
-                    r = subprocess.run([*cmd, '--probe'], capture_output=True, text=True, timeout=120, env=env)
-                except (OSError, subprocess.TimeoutExpired):
-                    continue
-                if r.returncode == 0 and (b := r.stdout.strip()) in ('cuda', 'numpy'):
-                    tool = (b, cmd)
-                    break
-        print(f"effects-pack expressions: {tool[0] + ' (' + ' '.join(tool[1]) + ')' if tool else 'geq (no Metal, no Python with NumPy)'}", file=sys.stderr, flush=True)
+        if not tool and want not in ('metal', 'geq') and (w := fx_worker()) and (want != 'cuda' or w[0] == 'cuda'):
+            tool = ('numpy', w[1]) if want == 'numpy' else w
+        print(f"effects-pack expressions: {tool[0] + ' (' + ' '.join(tool[1]) + ')' if tool else 'geq'}", file=sys.stderr, flush=True)
         FXGPU.append(tool)
     return FXGPU[0]
 
@@ -7279,7 +7288,9 @@ class App(BaseHTTPRequestHandler):
                 return self.reply(caps())
             if path == '/api/fx/backend':  # what runs the effects-pack expressions in exports here, and what has run (tests/fx_pack.mjs)
                 t = fx_gpu()
-                return self.reply({'backend': t[0] if t else 'geq', 'command': t[1] if t else None, 'small': FX_SMALL, 'used': FX_USED})
+                w = fx_worker()
+                return self.reply({'backend': t[0] if t else 'geq', 'command': t[1] if t else None, 'worker': {'backend': w[0], 'command': w[1]} if w else None,
+                                   'small': FX_SMALL, 'used': FX_USED})
             if path.startswith('/api/settings'):  # the Settings window (library settings block, near main)
                 return self.reply(settings_api(path))
             if path == '/api/remote/status':

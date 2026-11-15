@@ -19,7 +19,7 @@
 import { browser } from './browser.mjs';
 import { cachedMedia } from './fixtures.mjs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 const B = process.env.B, H = { 'X-Cutroom': '1', 'Content-Type': 'application/json' };
@@ -149,6 +149,47 @@ if (parts.includes('exact')) { // the compiled expressions alone: the same input
     for (let i = 0; i < f.length; i++) { const d = Math.abs(f[i] - g.px[i]); sum += d; if (d > 2) big++; }
     const mean = sum / f.length, pct = (100 * big) / f.length;
     check(name.padEnd(24), f.length === g.px.length && mean < 1 && pct < 1, `mean ${mean.toFixed(3)}  ${pct.toFixed(2)} % off by more than 2`);
+  }
+  // The export's own expression worker (tools/fxexpr.py: NumPy, and CUDA where PyTorch sees a GPU; a Mac exports on Metal) on the
+  // same pictures, every backend this computer has, against the same preview pixels and limits; then what geq and Metal leave
+  // to it alone: st() inside branches only some pixels take, frames outside an effect's window, two effects on one frame, alpha.
+  const fxb = await (await fetch(`${B}/api/fx/backend`, { headers: H })).json();
+  console.log(`-- export expressions here: ${fxb.backend}; tools/fxexpr.py: ${fxb.worker ? `${fxb.worker.backend} (${fxb.worker.command.join(' ')})` : 'no Python with NumPy'}`);
+  if (!fxb.worker) console.log('SKIP tools/fxexpr.py: no Python with NumPy on this computer (exports use Metal or geq)');
+  const gbrp = f => execFileSync('ffmpeg', ['-v', 'error', '-i', f, '-frames:v', '1', '-pix_fmt', 'gbrp', '-f', 'rawvideo', '-']);
+  const [Ap, Bp] = [gbrp(`${D}/a.png`), gbrp(`${D}/b.png`)], PL = Wd * Ht;
+  const worker = (be, w, h, planes, exprs, wins, input) => { // -> [output frames, seconds, its own last line]
+    fs.writeFileSync(`${D}/w.json`, JSON.stringify(exprs));
+    const t = Date.now(), [py, ...args] = fxb.worker.command;
+    const r = spawnSync(py, [...args, String(w), String(h), String(planes), `${D}/w.json`, wins.map(x => x.join(',')).join(';')],
+      { input, env: { ...process.env, CUTROOM_FX_BACKEND: be }, maxBuffer: 1 << 30 });
+    if (r.status) throw new Error(`fxexpr ${be} exit ${r.status}: ${String(r.stderr).slice(-300)}`);
+    return [r.stdout, (Date.now() - t) / 1000, String(r.stderr).trim().split(/\r?\n/).at(-1)];
+  };
+  const rgbOf = (buf, off, n, st) => { const o = Buffer.alloc(n * 3); for (let i = 0; i < n; i++) { o[3 * i] = buf[off + 2 * st + i]; o[3 * i + 1] = buf[off + i]; o[3 * i + 2] = buf[off + st + i]; } return o; }; // gbrp (planes st apart) -> rgb24, the first n pixels
+  const diff = (a, b) => { let sum = 0, big = 0; for (let i = 0; i < a.length; i++) { const d = Math.abs(a[i] - b[i]); sum += d; if (d > 2) big++; } return [sum / a.length, (100 * big) / a.length]; };
+  for (const be of !fxb.worker ? [] : fxb.worker.backend === 'cuda' ? ['numpy', 'cuda'] : ['numpy']) {
+    try {
+      const trs = Object.entries(got).filter(([n]) => n.startsWith('tr')), fxs = Object.entries(got).filter(([n]) => n.startsWith('fx'));
+      // transitions: 10 stacked frames each (a over b, H doubled), frame i at p = i/10; effects: 8 frames each, LF = 7 on the last
+      const stk = Buffer.concat([0, 1, 2].flatMap(p => [Ap.subarray(p * PL, (p + 1) * PL), Bp.subarray(p * PL, (p + 1) * PL)]));
+      const kinds = [...new Map(trs.map(([n, g]) => [n.split(' ')[1], g.e])).entries()];
+      const [to, ts, tl] = worker(be, Wd, 2 * Ht, 3, kinds.map(([, e]) => ['r', 'g', 'b'].map(c => e[`e${c}`].replace(/\bTO\b/g, '10'))), kinds.map((_, k) => [10 * k, 10 * k + 10]), Buffer.concat(Array(10 * kinds.length).fill(stk)));
+      const [fo, fsec, fl] = worker(be, Wd, Ht, 3, fxs.map(([, g]) => ['r', 'g', 'b'].map(c => g.e[`e${c}`])), fxs.map((_, k) => [8 * k, 8 * k + 8]), Buffer.concat(Array(8 * fxs.length).fill(Ap)));
+      let wm = 0, wp = 0, bad = 0;
+      const one = (name, px, g) => { const [m, pct] = diff(px, g.px); wm = Math.max(wm, m); wp = Math.max(wp, pct); if (!(m < 1 && pct < 1)) { bad++; check(`fxexpr ${be} ${name}`, false, `mean ${m.toFixed(3)}  ${pct.toFixed(2)} % off by more than 2`); } };
+      trs.forEach(([name, g]) => { const [, k, pr] = name.split(' '); one(name, rgbOf(to, (10 * kinds.findIndex(x => x[0] === k) + Math.round(+pr * 10)) * 6 * PL, PL, 2 * PL), g); }); // (the top half: the crop the export makes)
+      fxs.forEach(([name, g], k) => one(name, rgbOf(fo, (8 * k + 7) * 3 * PL, PL, PL), g));
+      check(`fxexpr ${be}: ${kinds.length} transitions x3 + ${fxs.length} effects == preview`, !bad, `worst mean ${wm.toFixed(3)}, ${wp.toFixed(2)} % off by more than 2; transitions ${ts.toFixed(1)} s, effects ${fsec.toFixed(1)} s (${tl} | ${fl})`);
+      // its own semantics against geq: lets set inside branches, a frame outside the window, two effects stacked on one frame, alpha
+      const sem = [['r(X,Y)*0+if(lt(X,W/2),st(0,r(W-1-X,Y)),st(0,b(X,Y)*0.5));if(gt(Y,H/2),st(1,ld(0)+40),st(1,255-ld(0)));ld(1)', 'if(lt(mod(X,64),32),g(X,Y),255-g(X,Y))', 'ifnot(between(Y,50,120),b(X,Y),st(2,X);ld(2))'],
+        ['255-r(X,Y)', 'g(X*0.5,Y*0.5)', 'b(W-1-X,H-1-Y)']];
+      const ref = execFileSync('ffmpeg', ['-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-s', `${Wd}x${Ht}`, '-i', '-', '-vf', sem.map(e => `geq=interpolation=nearest:${['r', 'g', 'b'].map((c, i) => `${c}='${e[i]}'`).join(':')}`).join(','), '-f', 'rawvideo', '-pix_fmt', 'gbrp', '-'], { input: Ap });
+      const Aa = Buffer.concat([Ap, Buffer.alloc(PL, 77)]); // gbrap: alpha 77
+      const [so] = worker(be, Wd, Ht, 4, sem, [[1, 2], [1, 2]], Buffer.concat([Aa, Aa, Aa]));
+      const [m1, p1] = diff(so.subarray(4 * PL, 7 * PL), ref), same0 = so.subarray(0, 4 * PL).equals(Aa) && so.subarray(8 * PL).equals(Aa), alpha = so.subarray(7 * PL, 8 * PL).every(v => v === 77);
+      check(`fxexpr ${be}: lets in branches, windows, stacked, alpha`, m1 < 1 && p1 < 1 && same0 && alpha, `vs geq mean ${m1.toFixed(3)}, ${p1.toFixed(2)} % off by more than 2; frames outside the window untouched ${same0}; alpha kept ${alpha}`);
+    } catch (e) { check(`fxexpr ${be}`, false, String(e.message).split('\n')[0].slice(0, 300)); }
   }
   fs.rmSync(D, { recursive: true });
   await page.context().close();
