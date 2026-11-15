@@ -591,9 +591,9 @@ def wk_copy(m):
 def mute_copy(mid, src):
     """The picture alone, for Chromium's players (Edge, Chrome; ?an=1): the same video stream with the audio left out. The page
     plays every element muted (the sound comes from Web Audio), but a file with sound starts Chromium's audio renderer, which
-    holds the picture 40-60 ms at every play(): measured 2026-11-15, the first move came 1-10 ms after play() without sound,
-    38-59 ms with it (720p and 4K, cold or warmed, Mac Chromium and Edge), a stall at every cut onto a clip that starts at its
-    file's 0 s. Remade when its source is newer (a proxy arriving, a Clear preview cache)."""
+    holds the picture 40-60 ms at every play(): measured 2026-11-15 on Mac Chromium, the first move came 1-10 ms after play()
+    without sound, 38-59 ms with it (720p and 4K, cold, warmed, or started at rate 0), a stall at every cut onto a clip that
+    starts at its file's 0 s (Edge's 44-51 ms gap in ramp_play went with it). Remade when its source is newer (a proxy arriving)."""
     out = CACHE / f'{mid}.an.mp4'
     with WK_LOCK:
         if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:

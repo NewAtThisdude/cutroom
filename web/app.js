@@ -3838,7 +3838,9 @@ function addTemplate(name) {
 // much early (Edge -25 ms, Mac Chromium -39, the 2x clip -50 with atempo). The next cut's prerolled element starts with the
 // same stall, so there the clock steps back ~50 ms just after the cut and the sound re-syncs once (steering that element
 // by playbackRate was tried: Chromium's picture then drifted from its currentTime). The sound's 20 ms: Edge's
-// getOutputTimestamp() wanders ~10 ms for the first frames after the audio device starts.
+// getOutputTimestamp() wanders ~10 ms for the first frames after the audio device starts. (2026-11-15: that stall is the
+// element's audio renderer starting, muted or not. Chromium's players now get the picture alone (vidFor, ?an=1), which starts
+// within a frame; the two-frame wait below stays for a file still played with its sound.)
 const SMOOTH_CLOCK = /Chrome\//.test(navigator.userAgent), CLOCK_TOL = SMOOTH_CLOCK ? 0.012 : 0.06, AUDIO_TOL = SMOOTH_CLOCK ? 0.02 : 0.04;
 function frame(now) {
   rafId = 0;
