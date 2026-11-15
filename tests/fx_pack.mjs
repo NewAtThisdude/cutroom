@@ -1,7 +1,9 @@
 // The effects pack (web/fxpack.js, its FX entries in web/draw.js): every new transition, video effect and film look.
 //  0. the compiled expressions alone: one 480x270 picture (two for transitions) through the GPU shader and through
 //     ffmpeg's geq: they must agree to the level (mean < 1, under 1 % of values more than 2 apart: float32 vs double
-//     truncating a value just under a whole level).
+//     truncating a value just under a whole level). Then the export's own worker where there is no Metal, tools/fxexpr.py, on
+//     every backend this computer has (NumPy; CUDA too where PyTorch sees a GPU), against the same preview pixels and limits,
+//     and its lets-in-branches / window / stacking / alpha handling against geq. GET /api/fx/backend names the export's backend.
 //  1. preview == export: the preview canvas vs the export renderer (/api/still_frame) on the same frame, both shrunk to
 //     320x180: mean |difference| and the worst 10x10 block, in 0-255 levels. Transitions at 25 / 50 / 75 %, effects at two
 //     moments, looks on sharp synthetic footage and on real iPhone footage (HLG, when the scratchpad has it).
@@ -117,6 +119,8 @@ if (parts.includes('parity')) {
     if (!ok || process.env.SAVE) { const f = `${OUT}${name.replace(/[^a-z0-9]+/gi, '_')}`; fs.writeFileSync(`${f}_export.png`, Buffer.from(r.ex, 'base64')); fs.writeFileSync(`${f}_preview.png`, Buffer.from(r.pv, 'base64')); }
   }
   check('parity: no page errors or GPU warnings', !page.errs.length, page.errs.slice(0, 3).join(' | '));
+  const fb = await (await fetch(`${B}/api/fx/backend`, { headers: H })).json(); // which tool made those export frames, and that none fell back
+  check(`parity: export expressions on ${fb.backend}, none fell back to geq`, fb.backend === 'geq' || (Object.entries(fb.used).some(([k, n]) => k !== 'fallback' && n > 0) && !fb.used.fallback), `stages run: ${JSON.stringify(fb.used)}`);
   await page.context().close();
 }
 

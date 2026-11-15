@@ -5824,9 +5824,11 @@ def gpu_transitions(p, td, job):
 
 def render(p, td, out, report, what='The export', job=None, intermediate=False):
     """One ffmpeg run, or where the plan has effects-pack effects, a chain of stages joined by pipes: ffmpeg makes the
-    composite up to the first one, fxgpu (Metal) runs each run of them, ffmpeg carries on, and the last stage adds the text
-    layer, the sound (mixed first, apart) and encodes. Same pixels as geq to a level (float vs double), but geq took
-    25-150 s of every core for 3 s of 1080p, the GPU about 0.5 s. Without the tool, or if a stage fails, geq does it."""
+    composite up to the first one, fxgpu (Metal) or fxexpr.py (CUDA / NumPy, where there is no Metal) runs each run of them,
+    ffmpeg carries on, and the last stage adds the text layer, the sound (mixed first, apart) and encodes. Same pixels as geq
+    to a level (float vs double), but geq took 25-150 s of every core for 3 s of 1080p, the GPU about 0.5 s; on a 32-core
+    Windows PC a 4 s 1080p30 halftone took 175 s with geq, 16.5 s on NumPy, 9.3 s on CUDA, and 5 s of 4K60 kaleido ~12
+    minutes with geq, 20.5 s on CUDA. Without a tool, or if a stage fails, geq does it. HDR output stays on geq (8-bit tools)."""
     fx, plain_run = p.get('fx') or [], lambda q: run_ffmpeg(ffmpeg_cmd(q, td, out, intermediate), q['duration'], report, what, job)
     if p.get('format') in SOUND or p.get('hdr') or not fx_gpu():
         return plain_run(p)
