@@ -23,8 +23,10 @@ async function startServer() {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(`${B}/api/ping`, { headers: { 'X-Cutroom': '1' } })).ok) return; } catch {} await sleep(200); }
   throw new Error('server did not start');
 }
-const hardKill = pid => WIN ? execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }) : process.kill(pid, 'SIGKILL');
-const kill9 = async p => { const dead = new Promise(r => p.once('exit', r)); hardKill(p.pid); await dead; };
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// taskkill /T exits non-zero when one child (Edge's crashpad, a GPU process) is already gone: only a pid still alive is an error
+const hardKill = pid => { if (!WIN) return process.kill(pid, 'SIGKILL'); try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }); } catch (e) { if (alive(pid)) throw e; } };
+const kill9 = async p => { if (p.exitCode !== null || p.signalCode) return; const dead = new Promise(r => p.once('exit', r)); hardKill(p.pid); await dead; };
 const realPid = () => WIN // (python3 is a launcher: the server is not always the pid spawn returned)
   ? +execFileSync('netstat', ['-ano', '-p', 'TCP']).toString().match(new RegExp(`^\\s*TCP\\s+\\S+:${PORT}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, 'm'))[1]
   : +execFileSync('lsof', ['-t', `-iTCP:${PORT}`, '-sTCP:LISTEN']).toString().trim().split('\n')[0];

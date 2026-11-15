@@ -169,7 +169,7 @@ for (const rm of ['no-preference', 'reduce']) {
     g.ok && g.result.snap.value === false && g.result.versionsKeep.kept === 'this library' && s.ok && s.result.thumbs.value === false && (await ev(() => opt('thumbs'))) === false && !bad.ok && /one of/.test(bad.result), JSON.stringify({ g: g.ok, s: s.ok, bad }));
 
   // ---- Storage: clear preview cache removes only what can be made again; the editor makes it again ----
-  const REGEN = /\.(proxy\.mp4|proxy\.webm|wk\.mov|strip\.jpg|grid\.jpg|wave\.png|peaks|320\.jpg|320\.png|2560\.jpg|2560\.png)$/;
+  const REGEN = /\.(proxy\.mp4|proxy\.webm|wk\.mov|an\.mp4|strip\.jpg|grid\.jpg|wave\.png|peaks|320\.jpg|320\.png|2560\.jpg|2560\.png)$/;
   const list = d => fs.readdirSync(d).filter(f => !f.startsWith('.')).sort();
   const before = { cache: list(`${HOME}/cache`), media: list(`${HOME}/media`).map(f => `${f}:${fs.statSync(`${HOME}/media/${f}`).size}`).filter(x => !x.includes('.json')), proj: list(`${HOME}/projects`) };
   await keyOpen(); await section('storage');
