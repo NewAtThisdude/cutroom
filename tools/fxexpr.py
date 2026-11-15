@@ -302,7 +302,9 @@ def main():
     buf = bytearray(n)
     view = memoryview(buf)
     threads = max(1, min(32, os.cpu_count() or 1))
-    rows = max(1, min(H, 98304 // max(W, 1)))  # bands of ~100 K pixels: 93 ms a 4K kaleido frame on 32 threads (Windows; 256 K: 277, 16 K: 540)
+    # bands of 256 K pixels (1 MB float32 arrays, in cache), 96 K on Windows, whose heap hands blocks over 512 KB to VirtualAlloc
+    # each time: a 4K kaleido frame took 277 ms on 32 threads there at 256 K, 93 ms at 96 K (an M4 Max: 40 ms at 256 K, 63 at 96 K)
+    rows = max(1, min(H, (98304 if os.name == 'nt' else 262144) // max(W, 1)))
     bands = [(y, min(H, y + rows)) for y in range(0, H, rows)]
     pool = None
     if B.name == 'numpy' and threads > 1:
