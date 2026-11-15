@@ -192,6 +192,9 @@ if (parts.includes('exact')) { // the compiled expressions alone: the same input
       const Aa = Buffer.concat([Ap, Buffer.alloc(PL, 77)]); // gbrap: alpha 77
       const [so] = worker(be, Wd, Ht, 4, sem, [[1, 2], [1, 2]], Buffer.concat([Aa, Aa, Aa]));
       const [m1, p1] = diff(so.subarray(4 * PL, 7 * PL), ref), same0 = so.subarray(0, 4 * PL).equals(Aa) && so.subarray(8 * PL).equals(Aa), alpha = so.subarray(7 * PL, 8 * PL).every(v => v === 77);
+      fs.writeFileSync(`${D}/bad.json`, JSON.stringify([['r(X,Y)', 'foo(1)', 'b(X,Y)']])); // refused, not run: the export then falls back to geq (render)
+      const [py, ...wa] = fxb.worker.command, refused = spawnSync(py, [...wa, String(Wd), String(Ht), '3', `${D}/bad.json`, '0,1'], { input: Ap, env: { ...process.env, CUTROOM_FX_BACKEND: be } });
+      check(`fxexpr ${be}: an expression with an unknown name is refused`, refused.status && !refused.stdout.length, `exit ${refused.status}: ${String(refused.stderr).trim().split(/\r?\n/).at(-1)}`);
       check(`fxexpr ${be}: lets in branches, windows, stacked, alpha`, m1 < 1 && p1 < 1 && same0 && alpha, `vs geq mean ${m1.toFixed(3)}, ${p1.toFixed(2)} % off by more than 2; frames outside the window untouched ${same0}; alpha kept ${alpha}`);
     } catch (e) { check(`fxexpr ${be}`, false, String(e.message).split('\n')[0].slice(0, 300)); }
   }
