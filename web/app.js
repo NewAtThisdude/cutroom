@@ -2259,10 +2259,11 @@ function paint() {
       // clock needn't wait for it to start (that wait was a gap in the sound at every cut). A clip from its file's first
       // frame has nothing before it to run through: it starts from that frame within a display frame of its cut (started
       // at the cut, it ran a frame behind the clock, which stepped back to it: its first frame showed twice)
-      const from = nx.in - lead * nx.speed;
-      if (S.playing && lead <= PRE && (from >= 0 || lead <= (S.fdt || 1 / 60) * S.rate)) sync(v, Math.max(0, from), nx.speed);
+      // (preLag: parked and run that far ahead, WebKit's element is on its target once it starts moving)
+      const from = nx.in - lead * nx.speed, ahead = preLag * nx.speed * S.rate, at0 = nx.in - PRE * nx.speed;
+      if (S.playing && lead <= PRE && (from >= 0 || lead <= (S.fdt || 1 / 60) * S.rate)) sync(v, from >= 0 ? from + ahead : 0, nx.speed);
       else {
-        const at = S.playing ? Math.max(0, nx.in - PRE * nx.speed) : nx.in;
+        const at = S.playing ? (at0 >= 0 ? at0 + ahead : 0) : nx.in;
         if (!v.paused) v.pause();
         v._want = at;
         if (!v.seeking && Math.abs(v.currentTime - at) > 0.04) v.currentTime = at;
@@ -3842,6 +3843,10 @@ function addTemplate(name) {
 // element's audio renderer starting, muted or not. Chromium's players now get the picture alone (vidFor, ?an=1), which starts
 // within a frame; the two-frame wait below stays for a file still played with its sound.)
 const SMOOTH_CLOCK = /Chrome\//.test(navigator.userAgent), CLOCK_TOL = SMOOTH_CLOCK ? 0.012 : 0.06, AUDIO_TOL = SMOOTH_CLOCK ? 0.02 : 0.04;
+// WebKit's start latency (s): a prerolled next cut started on time ran 16-31 ms behind its target, and the cut's first moment
+// of sound played that much ahead of its picture before the clock took the new lead (av_sync: -47 ms at a 1x cut). Learned at
+// each such cut (half the error); it starts at the low end, since a picture ahead of its sound is the worse error
+let preLag = SMOOTH_CLOCK ? 0 : 0.015;
 function frame(now) {
   rafId = 0;
   if (!P) return;
@@ -3858,7 +3863,10 @@ function frame(now) {
     S.last = now; if (dt > 0) S.fdt = dt / 1000; // the display's frame time (paint: a first-frame cut's start)
     // a new lead that sync() just started (a cut onto a clip's first frame): measured from where play() left it, so a clean
     // start that has already moved by this frame counts now, not a frame later (that frame's hold was a 33 ms gap)
-    if (v !== S.vEl) { S.vEl = v; S.vt = v?._clean && !v._run && !v.paused ? v._ct ?? v.currentTime : v?.currentTime; S.vAt = now; S.vMoved = !!v?._run; S.vRun = 0; S.vNew = v?._clean ? 2 : 0; }
+    // S.vNew: WebKit's leads take the clock too (its currentTime is steady once moving, ±3 ms). Without it a prerolled lead
+    // ran 26-31 ms behind the clock for its whole clip, under CLOCK_TOL, and the sound was that much early; and a first-frame
+    // lead that started late stepped the clock back 15-17 ms without moving the sound (av_sync's 2x clip: -50 ms)
+    if (v !== S.vEl) { S.vEl = v; S.vt = v?._clean && !v._run && !v.paused ? v._ct ?? v.currentTime : v?.currentTime; S.vAt = now; S.vMoved = S.vPre = !!v?._run; S.vRun = 0; S.vNew = v?._clean || !SMOOTH_CLOCK ? 2 : 0; }
     const moved = v && v.currentTime !== S.vt;
     // Chromium's currentTime jumps on play() and then holds ~40 ms while its audio renderer starts: for a file with sound
     // the first move is the second frame in a row it runs at speed (else the clock re-anchored, and the sound re-synced,
@@ -3882,7 +3890,7 @@ function frame(now) {
       // carries a few ms of its start), the sound following when that moves it: a prerolled one runs a few ms behind its target,
       // under CLOCK_TOL, and the clock stayed that far ahead of its picture (av_sync on Mac Chromium: sound 20-30 ms early)
       const to = Math.max(tl, S.t0);
-      if ((first || was || S.vNew || Math.abs(to - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { if (S.vNew && Math.abs(to - S.t) > 0.004) S.aA0 = undefined; S.wall0 -= ((to - S.t) * 1000) / S.rate; S.t = Math.min(to, S.end); S.vNew = Math.max(0, (S.vNew || 0) - 1); }
+      if ((first || was || S.vNew || Math.abs(to - S.t) > CLOCK_TOL * S.rate) && tl >= lc.start && tl < lc.start + tdur(lc, 'main')) { if (S.vNew === 2 && S.vPre && !SMOOTH_CLOCK && S.rate === 1) preLag = clamp(preLag + (S.t - to) / 2, 0, 0.05); if (S.vNew && Math.abs(to - S.t) > 0.004) S.aA0 = undefined; S.wall0 -= ((to - S.t) * 1000) / S.rate; S.t = Math.min(to, S.end); S.vNew = Math.max(0, (S.vNew || 0) - 1); }
     }
     if (S.t >= S.end) { const again = opt('loop', false) && S.rate === 1 && S.end >= total() - 1e-3; pause(); if (again) play(); } // (Settings: loop playback)
     const f = Math.floor(S.t * P.fps); // a new picture when the project's next frame is due, not every display refresh
