@@ -31,7 +31,7 @@ $env:BROWSER = 'msedge'
 node tests/run_all.mjs
 ```
 
-The default gate covers `ui_smoke`, `ui_audit`, `tour`, `platforms`, `history`, `curves`, `scopes`, `jlcuts`, `meter`, `versions`, `labels_keys`, `export_light`, `export_formats quick`, `layer_parity`, `package`, `this_computer`, `fade_handles`, `features_e2e`, `interchange`, `timeline_pro`, `video_parity`, and `audio_e2e`. The tour gets both an empty library and a second library containing media. The package test gets a second reserved port for its own empty-library server. Versions uses `CUTROOM_VERSION_GAP=2`.
+The default gate is 54 tests (`--list` prints them). The tour gets both an empty library and a second library containing media. The package test gets a second reserved port for its own empty-library server. Versions uses `CUTROOM_VERSION_GAP=2`.
 
 Useful options:
 
@@ -49,6 +49,6 @@ Generated inputs are cached in `tests/out/fixtures/`. Each run retains its libra
 
 Speech fixtures use macOS `say` or Windows PowerShell `System.Speech`, with an explicit SKIP if neither works. `export_formats` uses a supplied `PHONE` clip when run directly, or the shared synthetic 4K60 HLG HEVC fixture in the release gate. If the local ffmpeg cannot encode that fixture, the phone section prints SKIP and the other export checks continue.
 
-AI models are excluded by default, including optional AI sections within otherwise ordinary tests. `--ai` explicitly permits those sections and adds `ai_worker`, `ai_enhance`, `captions_pro`, `tracking`, `retouch`, and `voice_dub`. These optional suites may require installed models or specialized reference footage beyond the synthetic release fixtures, and report skips or failures accordingly. The default gate neither installs nor loads those models.
+AI models are excluded by default, including optional AI sections within otherwise ordinary tests. `--ai` explicitly permits those sections and adds seven AI suites (`--list --ai` prints them). These optional suites may require installed models or specialized reference footage beyond the synthetic release fixtures, and report skips or failures accordingly. The default gate neither installs nor loads those models.
 
-`--tests` accepts names in the default list or these six AI suites. Specialized legacy benchmarks and tools remain standalone. See [the Mac validation record](MAC_RUN_REPORT.md) for the attempted run, its browser-launch blocker, and unverified Windows behavior.
+`--tests` accepts names in the default list or the AI suites. Specialized legacy benchmarks and tools remain standalone.

@@ -854,7 +854,8 @@ def pcm(m, tempo=1.0, a=0, b=0, dn=False, fx='', st=None):
             # Beats then reads it instead of starting ffmpeg (~0.1 s a song on Windows, most of what Beats took)
             beat = CACHE / f"{m['id']}.8k.pcm" if one and not base and not fx else None
             also = ['-map', '0:a:0', '-ac', '1', '-ar', '8000', '-f', 's16le', str(beat.with_suffix('.tmp'))] if beat else []
-            if sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp), *also], low=not base).returncode:
+            if (r := sh(['ffmpeg', '-v', 'error', '-y', *cmd, '-ac', '2', '-f', 's16le', str(tmp), *also], low=not base)).returncode:
+                print(f"sound of {m['id']}{tag} at {tempo:g}x: ffmpeg exited {r.returncode}: {r.stderr.strip()[-400:]}", file=sys.stderr, flush=True)
                 tmp.unlink(missing_ok=True)
                 if beat:
                     beat.with_suffix('.tmp').unlink(missing_ok=True)
@@ -3268,7 +3269,7 @@ def ai_lipsync_(st, media, t0, t1, speed, audio, a0, local=False):
         gpu_reachable()
     comfy_down()  # Cutroom's own ComfyUI (an AI video a minute ago) holds the GPU memory this needs
     jid = uuid.uuid4().hex[:10]
-    rd = f'B:/AI/cutroom_ls/{jid}'
+    rd = f"{LS_DIR.replace(chr(92), '/').rstrip('/').rsplit('/', 1)[0]}/cutroom_ls/{jid}"  # next to LatentSync (B:/AI by default)
     dec, vf = hdr_decode(m)
     with tempfile.TemporaryDirectory(prefix='cutroom-') as td:
         td = Path(td)
@@ -7967,7 +7968,7 @@ def check_profiles():
             elif w:
                 assert t.get('backend') == w[0] and t['size'].startswith(w[1]), (spec, k, w, t)
         assert all(t.get('backend') in (None, 'apple') for t in got.values()) if spec.startswith('mac') else all(t.get('backend') != 'apple' for t in got.values()), spec
-    far = profile_choices('mac:16', 'win4090')  # the GPU PC opted in: a Mac sends the big video models there, nothing else
+    far = profile_choices('mac:16', 'gpu-pc')  # the GPU PC opted in: a Mac sends the big video models there, nothing else
     assert [k for k, t in far.items() if t.get('backend') == 'remote'] == ['lipsync', 'talk', 'video'], far
     print('profiles ok: every simulated computer gets its backend per job or the plain reason; the GPU PC only when opted in')
     for spec, pack in (('mac:8', 'mlx'), ('win:cpu:16', 'cpu'), ('win:cpu:4', 'none'), ('win:cuda:4:16', 'cpu'), ('win:cuda:12:32', 'cuda')):

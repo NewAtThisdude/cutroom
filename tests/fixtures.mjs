@@ -258,7 +258,7 @@ export async function aiFootage(names, { baseUrl = process.env.B } = {}) {
   };
   const files = {};
   if (names.includes('podcast') || names.includes('drive')) files.podcast = aiSpeechMedia('podcast-episode-v1.mp4', AI_TALK, 900, 'testsrc2=s=1280x720:r=30');
-  // the real fox clip and its clean plate (Marat's footage, where SAM 2 is unsure of a loose box) when PHOTOS has them, else the stand-in
+  // the real fox clip and its clean plate (the author's own footage, where SAM 2 is unsure of a loose box) when PHOTOS has them, else the stand-in
   const real = ['fox-walk.mp4', 'talk-with-music.mp4'].map(f => process.env.PHOTOS && path.join(process.env.PHOTOS, f));
   if (names.includes('fox')) { const f = real.every(x => x && fs.existsSync(x)) ? { walk: real[0], plate: real[1] } : foxFiles(); files.fox = f.walk; files.plate = f.plate; }
   if (names.includes('drive')) AI_DRIVE.forEach((lines, i) => { files[`drive${i}`] = aiSpeechMedia(`night-drive-${i + 1}-v1.mp4`, lines, 2500, 'testsrc2=s=640x360:r=30'); });

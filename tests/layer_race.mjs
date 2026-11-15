@@ -84,14 +84,16 @@ for (const [how, harm] of [['deleted', d => fs.rmSync(`${d}/t5.png`)], ['damaged
 }
 // ---- a second server starting on this library (its startup cleanup) while an export renders
 {
-  const lid = await layer(), r = await post('/api/export', plan(lid, { format: 'webm', w: 1280, h: 720, main: [{ media, in: 0, out: D, frames: D * F, geom: { x: 0, y: 0, w: 1280, h: 720 } }] }));
+  // 4 x D long: a fast PC (a 4090) finished one D before the second server was up, and the export's own end removes its layers
+  const lid = await layer(), r = await post('/api/export', plan(lid, { format: 'webm', w: 1280, h: 720, duration: 4 * D, main: Array(4).fill({ media, in: 0, out: D, frames: D * F, geom: { x: 0, y: 0, w: 1280, h: 720 } }) }));
   const env = { ...process.env, CUTROOM_HOME: HOME, CUTROOM_PORT: new URL(B).port }; // the same port: it clears what it clears, then can't listen and exits
   delete env.PYTHONPATH;
   const second = spawnManaged(PYTHON, ['-X', 'utf8', '-I', SERVER_PY], { env, stdio: 'ignore' });
   const exited = await Promise.race([new Promise(ok => second.on('exit', ok)), sleep(30000).then(() => 'timeout')]);
   if (exited === 'timeout') await stopChild(second);
-  const still = layersOf(lid).length, [st, bad] = await done(r);
-  check('a second server starting on the library mid-export: the export keeps every picture', exited !== 'timeout' && still === 1 && st === 'done' && bad.length === 0, `second server ${exited}, layer dir ${still ? 'kept' : 'GONE'}, ${st}${bad?.length ? ` wrong at ${JSON.stringify(bad)}` : ''}`);
+  const still = layersOf(lid).length, mid = r.status === 200 && (await (await fetch(`${B}/api/jobs/${r.j.job}`, { headers: H })).json()).state === 'running'; // (after `still`: it was looked at mid-export)
+  const [st, bad] = await done(r);
+  check('a second server starting on the library mid-export: the export keeps every picture', mid && exited !== 'timeout' && still === 1 && st === 'done' && bad.length === 0, `${mid ? '' : 'the export was over before the second server was (the race never ran), '}second server ${exited}, layer dir ${still ? 'kept' : 'GONE'}, ${st}${bad?.length ? ` wrong at ${JSON.stringify(bad)}` : ''}`);
 }
 // ---- 4 exports and 8 still frames at once, each its own upload
 {

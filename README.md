@@ -1,8 +1,9 @@
 # Cutroom
 
-A free video editor for Mac that runs entirely on your machine. No account, no uploads, no watermark,
-no subscription. Captions, voice, cut-outs and the other AI tools run on your Mac too. The editor also runs on
-Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardware or says why it can't.
+A free video editor for Mac and Windows, in the spirit of CapCut, that runs entirely on your own computer. Editing,
+exports and the AI tools (captions, voices, cut-outs, object removal, music) all run locally: no account, no uploads, no
+watermark, no subscription. Each AI tool runs on that computer's own hardware (Apple Silicon, an NVIDIA GPU or the CPU),
+or says plainly why it can't.
 
 ![The Cutroom editor: library, preview, inspector and timeline](docs/screenshot.png)
 
@@ -23,9 +24,32 @@ Windows 10/11 PCs (see Install); there each AI tool runs on that PC's own hardwa
   needs: versions, export folder, proxies, the local model). The MCP's `settings` tool reads and changes them.
 - **Scriptable:** an MCP server (`mcp/cutroom_mcp.py`) lets an AI assistant drive the open editor.
 
+## How it's tested
+
+One release gate, `node tests/run_all.mjs`, runs on a Mac (WebKit, the engine the app uses) and on a Windows PC (Edge).
+Each test gets its own scratch server and library and generated media; it exports real files with ffmpeg and measures
+them. Tests that move on screen run in both motion settings (reduced motion on and off).
+
+- **The preview is the export.** Every transition, effect and look is rendered in the preview and in an exported file,
+  and the two frames are compared: a mean difference of at most 4 levels out of 255, and no block of the frame more than
+  28 off (`video_parity`, `fx_pack`, `layer_parity`).
+- **Sound stays on the picture.** Flashes and beeps on the timeline are timed in playback and in the export: each beep
+  within 45 ms of its flash, at 1x and 2x, through cuts and transitions (`av_sync`, `play_clock`, `audio_e2e`).
+- **Playback stays smooth.** Paints per second are counted while playing, with motion blur and through every transition
+  (`motion_blur`, `fx_pack`, `ramp_play`).
+- **Nothing is lost.** The server and the browser are killed mid-edit and mid-export; the edit comes back, a project file
+  cut off mid-write opens as its last good version, and the interrupted export is offered again (`recovery`, `layer_race`).
+- **Thresholds are not loosened to make a run pass.** A failing check gets the product fixed; what is known not to work
+  is written down under [Limits](#limits-honest).
+
+The last full run, on the release commit: on the Mac, 54 tests and 1,717 checks, plus the 7 AI suites (61 tests, 1,867
+checks with the AI sections on); on a Windows 11 PC with an RTX 4090, PC_COUNTS. Skips are listed by name in each run's
+summary: real phone footage that is not in the repository, Mac-only features on the PC. [tests/README.md](tests/README.md)
+explains how to run it.
+
 ## Install
 
-One line, on a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
+On a Mac (Terminal) or a Windows 10/11 PC (PowerShell). The installer looks at the computer first
 (`cutroom check`), says in plain words what it found, what it will install and why, and installs only the AI pack that
 computer can run. Every file it downloads is pinned to a version and checked by SHA-256 before use, and so is every Python
 package of the AI packs (uv lock files with each file's hash, installed with `--require-hashes`). Three exceptions, all on a
@@ -35,14 +59,13 @@ is installed, its search model `nomic-embed-text:v1.5` is pulled by tag (Ollama 
 when it is not the build it was tested with). Everything
 goes into your own folders, with no admin rights, no PATH change and nothing that starts at login.
 
-    curl -fsSL <url>/install.sh | sh          # Mac
-    irm <url>/install.ps1 | iex               # Windows (PowerShell)
+    git clone https://github.com/NewAtThisdude/cutroom && cd cutroom
+    ./install.sh                                              # Mac (Terminal)
+    powershell -ExecutionPolicy Bypass -File install.ps1      # Windows (PowerShell, in the cutroom folder)
 
-The source is not published yet, so for now `<url>` is wherever the release sits, and the installer needs the source's
-address and hash: `CUTROOM_SRC=<the .tar.gz / .zip>` and `CUTROOM_SRC_SHA256=<its SHA-256>` (a release fills in the
-defaults at the top of both installers). From a copy of the source, `./install.sh` or
-`powershell -ExecutionPolicy Bypass -File install.ps1` does the same with that copy. Run either again at any time to update
-or repair: finished downloads are kept, and an update keeps the installed AI pack.
+Run it again at any time to update or repair: finished downloads are kept, and an update keeps the installed AI pack. A
+one-line `curl ... | sh` / `irm ... | iex` install comes with the first tagged release (the installers then fetch that
+release's source by its SHA-256, filled in at the top of both: `CUTROOM_SRC` and `CUTROOM_SRC_SHA256` set them by hand).
 
 **What `cutroom check` looks at, and the AI pack it picks** (`cutroom check` on a Mac, `cutroom.cmd check` on Windows, both
 in the source folder; the same as `python3 -I server.py --check`): the OS, chip and GPU, memory, the video encoder ffmpeg
@@ -60,7 +83,8 @@ supports CUDA 12.4; update the NVIDIA driver ...") and, job by job, what each AI
 it can't. **No Windows equivalent yet** (these say "unavailable on this computer yet" on a PC): Chatterbox voice clone and
 AI dubbing (its PyTorch package pins torch 2.6, which has no CUDA 13 build), Z-Image image generation (MLX only here), and
 the Apple Vision tools: remove background, find faces (blur faces, auto reframe), retouch, photo and sticker cut-outs. Also
-Mac-only: the effects pack on the GPU (Metal; a PC renders it with ffmpeg on the CPU) and Photos import. Lip sync, talking
+Mac-only: Photos import. (The effects pack renders with Metal on a Mac, with CUDA on an NVIDIA PC and on every CPU core
+elsewhere, all from the same expressions.) Lip sync, talking
 photo and AI video need ComfyUI and LatentSync on a 24 GB NVIDIA GPU (`ai/gpu_setup.ps1`), not part of any pack. The
 language-model tools (shorts, translation, hook titles, smart search) need [Ollama](https://ollama.com), installed separately.
 
@@ -75,7 +99,7 @@ Settings, as environment variables (they work piped too):
 | `CUTROOM_SHORTCUTS` (Windows): where the Start-menu shortcut goes | | the Start menu |
 | `CUTROOM_YES=1`: no questions (Homebrew / winget installs, the AI pack) | | |
 
-For example `curl -fsSL <url>/install.sh | CUTROOM_AI=none sh`, or in PowerShell `$env:CUTROOM_AI='none'; irm <url>/install.ps1 | iex`.
+For example `CUTROOM_AI=none ./install.sh`, or in PowerShell `$env:CUTROOM_AI='none'; .\install.ps1`.
 
 ### Mac
 
@@ -141,7 +165,8 @@ they are marked there.
 - `CUTROOM_PORT` and `CUTROOM_HOME` (the library folder) work for the app, the launcher and the server;
   `CUTROOM_MODEL` points captions at another whisper ggml model. `CUTROOM_PROFILE` makes the server plan as another
   computer (see This computer); `CUTROOM_GPU_HOST` opts in to a GPU PC over SSH; `CUTROOM_COMFY_DIR` and
-  `CUTROOM_LATENTSYNC_DIR` say where ComfyUI and LatentSync live on a Windows PC with an NVIDIA GPU.
+  `CUTROOM_LATENTSYNC_DIR` say where ComfyUI and LatentSync live on a Windows PC with an NVIDIA GPU (default
+  `B:\AI\ComfyUI_windows_portable` and `B:\AI\LatentSync`, where `ai/gpu_setup.ps1` puts them).
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Licence: [GPL v3 or later](LICENSE): free to use, change and share; versions you distribute stay open under the same terms.
 
 Data lives in `~/Movies/Cutroom/` (`~/Videos/Cutroom` on Windows):
@@ -433,7 +458,8 @@ per image). That is why Cutroom keeps a 4-bit copy, which loads in about 4 s.
 
 A plain declarative timeline (JSON) that one engine renders, split in two. The browser draws the preview and
 the **text layer** as PNGs, using the same `drawText()` call for both. ffmpeg composites and encodes; effects-pack
-effects and transitions run as Metal kernels between ffmpeg stages (`tools/fxgpu.swift`). Homebrew ffmpeg has no
+effects and transitions run between ffmpeg stages from one set of expressions: as Metal kernels on a Mac
+(`tools/fxgpu.swift`), with PyTorch on an NVIDIA GPU or NumPy on every CPU core elsewhere (`tools/fxexpr.py`). Homebrew ffmpeg has no
 libass/freetype, and drawing text once in the browser also guarantees the export matches the preview.
 
 ## Engineering notes (each one bit once and is now pinned by the self-check)
