@@ -148,7 +148,11 @@ if (run('export')) {
 }
 
 // ---------- keywords (and emoji) on podcast-episode ----------
-const pod = run('keywords') || run('bilingual') ? (await aiFootage(['podcast'])).podcast?.id : null;
+// keywords, emoji and translation need the local language model: a run that switched it off (CUTROOM_TEST_AI_OFF=llm, so it never
+// loads a model into an Ollama another job is using) skips them; the lyrics and speakers below still run
+const llmOff = (process.env.CUTROOM_TEST_AI_OFF || '').split(',').map(s => s.trim()).includes('llm');
+if (llmOff && (run('keywords') || run('bilingual'))) console.log('SKIP keywords / bilingual: the local language model is switched off for this run (CUTROOM_TEST_AI_OFF=llm)');
+const pod = !llmOff && (run('keywords') || run('bilingual')) ? (await aiFootage(['podcast'])).podcast?.id : null;
 if (pod) await ev(() => loadMedia());
 if ((run('keywords') || run('bilingual')) && pod) try { // (a failure here is reported, and the lyrics and speakers below still run)
   await fresh('Podcast captions');
@@ -205,7 +209,7 @@ if ((run('keywords') || run('bilingual')) && pod) try { // (a failure here is re
     }
   }
 } catch (e) { check('keywords / bilingual ran to the end', false, String(e.message).split('\n')[0]); }
-else if (run('keywords') || run('bilingual')) console.log('SKIP keywords / bilingual: no speech service on this computer for the podcast fixture');
+else if (!llmOff && (run('keywords') || run('bilingual'))) console.log('SKIP keywords / bilingual: no speech service on this computer for the podcast fixture');
 
 // ---------- lyrics: a song made here ----------
 if (run('lyrics')) {
