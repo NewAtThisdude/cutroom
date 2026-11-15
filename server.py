@@ -730,7 +730,11 @@ def fx_pcm(m, fx, tmp, st=None):
     if not base:
         return False
     raw_in = lambda f, fmt='s16le': ['-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f)]
-    run = lambda af, src, dst, fmt='s16le': not sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)]).returncode
+    def run(af, src, dst, fmt='s16le'):
+        r = sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)])
+        if r.returncode:  # said in the server log: the page only hears "processing its sound failed"
+            print(f"sound processing {fx} of {m['id']}: ffmpeg exited {r.returncode}: {r.stderr.strip()[-400:]}", file=sys.stderr, flush=True)
+        return not r.returncode
     rnn = lambda mix=1: f"apad=whole_len={n + RNN_LAG},arnndn=m='{fpath(rnn_model())}':mix={mix},atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
     if step == 'dn':  # (afftdn was 25 ms late and took only 1-5 dB)
         return run(rnn(), raw_in(base), tmp)

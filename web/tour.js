@@ -2,7 +2,7 @@
 // First-start tour: a few coach marks over the real editor (a ring on the part, a card beside it), shown once on an empty
 // library and again from the shortcut sheet (?). Keys: Enter / → next, ← back, Esc closes. Page only (after app.js).
 'use strict';
-const TOUR = [
+const TOUR_ALL = [
   { t: 'Welcome to Cutroom', d: 'A video editor that runs on this Mac. Your footage, the AI tools and every export stay here: no account, no upload.' },
   { el: '.imports', t: 'Bring in your footage', d: 'Import media, or drop files anywhere in the window. Hover a video to skim it; click it to mark a range with I and O.' },
   { el: '.rail', t: 'Everything to add', d: 'Sound, text, stickers, effects, transitions, filters, captions, the script view and the on-device AI tools.' },
@@ -13,9 +13,10 @@ const TOUR = [
   { el: '#btnExport', t: 'Export', d: 'MP4, HEVC, ProRes, GIF, HDR, transparent video, subtitles, and Final Cut / Resolve timelines. Press ? for every shortcut.' },
   { t: 'Please enjoy Cutroom', d: 'It is free and open source, made for people who edit. If you like it, star the GitHub repo so more people can find it.', link: ['https://github.com/NewAtThisdude/cutroom', 'Star Cutroom on GitHub'] },
 ];
-let tourAt = -1;
+let TOUR = TOUR_ALL, tourAt = -1;
 
 function tourShow(i) {
+  if (!i) TOUR = TOUR_ALL.filter(s => !s.el || $(s.el)?.offsetParent != null); // no step for a part this computer hides (Ask, without the local model)
   tourAt = i;
   let box = $('#tour');
   if (!box) {
