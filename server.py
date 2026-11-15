@@ -652,17 +652,21 @@ FF_CHARS = {  # voice characters as ffmpeg filters (n: the length in samples, fo
                        f"[cw][ci]afir=irnorm=-1:gtype=none,lowpass=f=3000[cx];[cd][cx]amix=inputs=2:normalize=0:weights=0.8 1,atrim=end_sample={n}"),
     'underwater': lambda n: 'lowpass=f=500:p=2,lowpass=f=500:p=2,aphaser=type=t:speed=0.6:decay=0.5,chorus=0.7:0.9:55|70:0.4|0.32:0.25|0.4:2|1.3,tremolo=f=5:d=0.25'}
 VOICE_CHARS = (*AI_CHARS, *FF_CHARS)
-# Studio voice after RNNoise: rumble cut, less mud, de-ess, a downward expander for the gaps (at most -14 dB), presence and
-# air, then one gain to -16 LUFS (podcast loudness); the same without the expander when that one would make the speech less
-# clear (studio_pcm). None of these looks ahead: the voice is not delayed (the onset stays within 2 ms). No compressor: it
-# pressed the voice towards the music under it and cost 3-4 dB of speech-band speech/gap at every bed level measured
-# (2026-11-15, OS speech over music +6 to -20 dB and pink noise): over music within ~10 dB the voice came out LESS clear.
-STUDIO = ('highpass=f=80:p=2,equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,agate=threshold=0.025:ratio=2:range=0.2:attack=3:release=250,'
+# Studio voice after RNNoise (30 % of the sound under it kept: STUDIO_RNN_MIX): less mud, de-ess, a downward expander for
+# the gaps (at most -14 dB), presence and air, then one gain to -16 LUFS (podcast loudness); the same without the expander
+# when that one would make the speech less clear (studio_pcm). None of these looks ahead: the voice is not delayed (the
+# onset stays within 2 ms). Measured 2026-11-15 (OS speech over music +15 to -20 dB, drums, pink noise, two voices; Mac and
+# Windows voices): no compressor (it pressed the voice towards the music under it and cost 3-4 dB of speech-band
+# speech/gap at every bed level); RNNoise at full strength took up to 4 % of the voiced 20 ms frames more than 10 dB down
+# under music or drums (the dry 30 % keeps them within 10 dB); and no 80 Hz rumble cut (even at 40 Hz it took 2-3 % of
+# the voiced frames 10 dB down over music with a bass line).
+STUDIO_RNN_MIX = 0.7
+STUDIO = ('equalizer=f=250:t=q:w=1:g=-2,deesser=i=0.4:m=0.5:f=0.5,agate=threshold=0.025:ratio=2:range=0.2:attack=3:release=250,'
           'equalizer=f=3500:t=q:w=1.2:g=3,equalizer=f=10000:t=q:w=1:g=1.5')
 STUDIO_LIGHT = re.sub(r'agate=[^,]*,', '', STUDIO)
 # the processed PCM files' cache key carries this: a result cached by an older Studio voice (or anything built on it: a
 # character on top, a speed's span) is made again, not reused
-FX_VER = 2
+FX_VER = 3
 
 
 def fx_ok(fx):
@@ -710,12 +714,12 @@ def fx_pcm(m, fx, tmp, st=None):
         return False
     raw_in = lambda f, fmt='s16le': ['-f', fmt, '-ar', '48000', '-ac', '2', '-i', str(f)]
     run = lambda af, src, dst, fmt='s16le': not sh(['ffmpeg', '-v', 'error', '-y', *src, '-filter_complex', f'[0:a]{af}[o]', '-map', '[o]', '-ac', '2', '-f', fmt, str(dst)]).returncode
-    rnn = f"apad=whole_len={n + RNN_LAG},arnndn=m='{fpath(rnn_model())}',atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
+    rnn = lambda mix=1: f"apad=whole_len={n + RNN_LAG},arnndn=m='{fpath(rnn_model())}':mix={mix},atrim=start_sample={RNN_LAG}:end_sample={n + RNN_LAG}"  # its 10 ms lag taken back out
     if step == 'dn':  # (afftdn was 25 ms late and took only 1-5 dB)
-        return run(rnn, raw_in(base), tmp)
+        return run(rnn(), raw_in(base), tmp)
     mid, (i0, tp0) = tmp.with_suffix('.f32'), pcm_lufs(base)
     if step in NOISE_FX:  # first to -20 LUFS: RNNoise and the expander's threshold then see a known level
-        pre = f'aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn}'
+        pre = f"aformat=sample_fmts=flt,volume={max(-20, min(30, -20 - i0)) if i0 > -70 else 0:.2f}dB,{rnn(STUDIO_RNN_MIX)}"
         return studio_pcm(base, tmp, lambda chain: level(run, raw_in, base, mid, tmp, f'{pre},{chain}', -16),
                           lambda: bool(shutil.copyfile(base, tmp)) if tp0 <= -1.5 else run(f'volume={-1.5 - tp0:.3f}dB', raw_in(base), tmp))
     try:

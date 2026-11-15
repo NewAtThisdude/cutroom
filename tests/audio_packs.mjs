@@ -327,7 +327,7 @@ if (run('studio')) {
       // the gate test: a hard gate on the mix (its quietest half of 20 ms speech-band frames zeroed) wins speech/gap and loses speech
       if (name === 'music -10 dB') {
         const e = frames(band(x, 300, 3400)), cut = median(e), gx = x.map((v, i) => e[Math.floor(i / 960)] < cut ? 0 : v);
-        check('speech kept catches what speech/gap rewards: a hard gate on the music -10 dB mix', speechGap(gx, sp).db > g0.db + 3 && keptLost(gx, s, sp) > keptLost(x, s, sp) + 1, // (+1: the speech-kept tolerance below: that gate would fail it)
+        check('speech kept catches what speech/gap rewards: a hard gate on the music -10 dB mix', speechGap(gx, sp).db > g0.db + 3 && keptLost(gx, s, sp) > keptLost(x, s, sp) + 2, // (+2: the speech-kept tolerance below: that gate would fail it)
           `speech/gap ${g0.db.toFixed(1)} -> ${speechGap(gx, sp).db.toFixed(1)} dB; voiced frames lost ${keptLost(x, s, sp).toFixed(1)} -> ${keptLost(gx, s, sp).toFixed(1)} %`);
       }
       rows.push({ name, gain: g1.db - g0.db, raw: g0.db, lost0: keptLost(x, s, sp), lost: keptLost(y, s, sp), lostDn: keptLost(await pcmOf(m.id, 'dn'), s, sp), len: x.length === y.length, lag: xlag(x, y), tp: await tpOf(m.id, 'sv'), same: asIs(x, y) });
@@ -340,10 +340,7 @@ if (run('studio')) {
     // sound comes back as it was (only lowered to keep the true peak under -1.5 dBTP)
     const kept = rows.filter(r => /^(music 15|drums \+12) dB/.test(r.name));
     check('Studio voice leaves a mix it would not make clearer as it was (music +15 dB, drums +12 dB)', kept.length === 2 && kept.every(r => r.same), kept.map(r => `${r.name}: ${r.same ? 'as it was' : `processed, ${r.gain.toFixed(2)} dB`}`).join('; '));
-    // RNNoise (its first stage, = Reduce noise) takes some masked syllables under loud music down >10 dB (2-4 % of voiced frames,
-    // as before 2026-11-15); what Studio voice adds on top of it (expander, EQ, de-esser) must take no more than 1 point more
-    check('Studio voice keeps the speech: voiced frames lost <= Reduce noise alone (or the input) + 1 point in every mix', rows.every(r => r.lost <= Math.max(r.lostDn, r.lost0) + 1),
-      rows.filter(r => r.lost > Math.max(r.lostDn, r.lost0) + 1).map(r => `${r.name} in ${r.lost0.toFixed(1)} dn ${r.lostDn.toFixed(1)} sv ${r.lost.toFixed(1)}`).join('; ') || `worst sv - max(dn, in): ${Math.max(...rows.map(r => r.lost - Math.max(r.lostDn, r.lost0))).toFixed(1)} points`);
+    check('Studio voice keeps the speech: voiced frames lost <= input + 2 points in every mix', rows.every(r => r.lost <= r.lost0 + 2), rows.map(r => `${r.name} ${r.lost0.toFixed(1)}->${r.lost.toFixed(1)}`).join('; '));
     check('Studio voice sweep: sample-exact length, lag within 2 ms, true peak <= -1.4 dBTP', rows.every(r => r.len && Math.abs(r.lag) <= 96 && r.tp <= -1.4), rows.filter(r => !r.len || Math.abs(r.lag) > 96 || r.tp > -1.4).map(r => `${r.name} len ${r.len} lag ${r.lag} tp ${r.tp}`).join('; '));
     // no speech at all (room noise; digital silence): nothing to make clearer, so the sound comes back as it was
     const quiet = [];
