@@ -42,8 +42,9 @@ them. Tests that move on screen run in both motion settings (reduced motion on a
 - **Thresholds are not loosened to make a run pass.** A failing check gets the product fixed; what is known not to work
   is written down under [Limits](#limits-honest).
 
-The last full run, on the release commit: on the Mac, 54 tests and 1,717 checks, plus the 7 AI suites (61 tests, 1,867
-checks with the AI sections on); on a Windows 11 PC with an RTX 4090, PC_COUNTS. Skips are listed by name in each run's
+The latest full runs: on the Mac, 54 tests and 1,717 checks, plus the 7 AI suites (61 tests, 1,867
+checks with the AI sections on); on a Windows 11 PC with an RTX 4090, 54 tests and 1,849 checks, plus
+the AI suites (61 tests, 1,970 checks). Skips are listed by name in each run's
 summary: real phone footage that is not in the repository, Mac-only features on the PC. [tests/README.md](tests/README.md)
 explains how to run it.
 
