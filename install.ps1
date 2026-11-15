@@ -1,4 +1,4 @@
-# Cutroom on Windows 10/11, one line in PowerShell:      irm <url>/install.ps1 | iex
+# Cutroom on Windows 10/11, one line in PowerShell:      irm https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.ps1 | iex
 # or from a copy of the source:                          powershell -ExecutionPolicy Bypass -File install.ps1
 # Finds Python (offers winget), downloads ffmpeg, whisper.cpp, uv and the two speech models, puts NumPy for effects exports in
 # tools\.venv (tools\fx.lock), runs `cutroom check` and installs
@@ -15,8 +15,8 @@
 & {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$SrcUrl = 'https://github.com/REPLACE-ME/cutroom/archive/refs/tags/v1.0.zip'  # the release this installer belongs to, and its
-$SrcSha = 'REPLACE-ME'                                                      # SHA-256: both set when the source is published
+$SrcUrl = 'https://github.com/NewAtThisdude/cutroom/releases/download/v0.1.0/cutroom-0.1.0.zip'  # the release this installer belongs to, and its
+$SrcSha = 'a254ee2890db584bf64044209be89461b7626ef58663a004ed5d4b11618bdd93'                                                      # SHA-256: both set when the source is published
 $Prefix = if ($env:CUTROOM_PREFIX) { $env:CUTROOM_PREFIX } else { "$env:LOCALAPPDATA\Cutroom" }
 $Library = if ($env:CUTROOM_HOME) { $env:CUTROOM_HOME } else { Join-Path ([Environment]::GetFolderPath('MyVideos')) 'Cutroom' }
 $Shortcuts = if ($env:CUTROOM_SHORTCUTS) { $env:CUTROOM_SHORTCUTS } else { [Environment]::GetFolderPath('Programs') }

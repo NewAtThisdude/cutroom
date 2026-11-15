@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cutroom on a Mac, one line in Terminal:   curl -fsSL <url>/install.sh | sh
+# Cutroom on a Mac, one line in Terminal:   curl -fsSL https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.sh | sh
 # or from a copy of the source:            ./install.sh
 # Checks the tools (offers Homebrew's ffmpeg and whisper-cpp when they are missing), fetches the two speech models, runs
 # `cutroom check` and installs the AI pack this Mac can run (Apple Silicon: the MLX pack, ai/setup.sh), then builds the app.
@@ -15,8 +15,8 @@
 #   CUTROOM_YES=1    no questions (Homebrew installs, the AI pack)
 #   CUTROOM_SRC, CUTROOM_SRC_SHA256   the source .tar.gz and its SHA-256, when not run from a copy of the source
 set -eu
-SRC_URL=https://github.com/REPLACE-ME/cutroom/archive/refs/tags/v1.0.tar.gz  # the release this installer belongs to, and its
-SRC_SHA256=REPLACE-ME                                                      # SHA-256: both set when the source is published
+SRC_URL=https://github.com/NewAtThisdude/cutroom/releases/download/v0.1.0/cutroom-0.1.0.tar.gz  # the release this installer belongs to, and its
+SRC_SHA256=4814a3e4d728aa7059cfb48a494c5a36bc5dac224e4a21eb584d595285e5aff7                                                      # SHA-256: both set when the source is published
 UV_URL=https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz  # uv 0.13.6 (MIT / Apache-2.0)
 UV_SHA256=60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472
 
@@ -38,7 +38,7 @@ fetch() { # url file sha256: once; a file that doesn't match is deleted, never u
 }
 
 main() { # (one function, called on the last line: piped into sh, nothing runs before the whole script has arrived)
-  [ "$(uname -s)" = Darwin ] || die 'install.sh is for macOS. On Windows, in PowerShell: irm <url>/install.ps1 | iex'
+  [ "$(uname -s)" = Darwin ] || die 'install.sh is for macOS. On Windows, in PowerShell: irm https://raw.githubusercontent.com/NewAtThisdude/cutroom/main/install.ps1 | iex'
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   PREFIX=${CUTROOM_PREFIX:-$HOME/.local/share/cutroom}
   LIB=${CUTROOM_HOME:-$HOME/Movies/Cutroom}
