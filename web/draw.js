@@ -306,7 +306,12 @@ function emojiPic(e) {
 function textStyle(it, lane) { return { ...TEXT_BASE, ...(lane === 'captions' ? { ...P.capStyle, ...it.style } : it.style) }; }
 function drawTexts(ctx, t, k, preview, captions = true) {
   drawFxLayers(ctx, t, k);
-  for (const lane of captions ? ['text', 'captions'] : ['text']) if (!P.mute[lane]) for (const it of shown(lane)) if (t >= it.start && t < it.start + it.dur) drawText(ctx, it, lane, t - it.start, k, preview);
+  for (const lane of captions ? ['text', 'captions'] : ['text']) if (!P.mute[lane]) {
+    const on = shown(lane).filter(it => t >= it.start && t < it.start + it.dur);
+    // back-to-back captions an edit moved (start snapped to a frame, length kept) can overlap by under a frame: the next one takes over
+    const next = lane === 'captions' ? it => on.some(b => b.start > it.start && it.start + it.dur - b.start < 1 / P.fps) : () => false;
+    for (const it of on) if (!next(it)) drawText(ctx, it, lane, t - it.start, k, preview);
+  }
 }
 
 function drawText(ctx, it, lane, lt, k, preview) { // shared by preview and export: what you see is what renders

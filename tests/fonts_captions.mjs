@@ -103,6 +103,13 @@ try {
     check(`${rm}: Apply to all: every caption takes that style, overrides cleared, export matches`, all.styles.every(s => !s) && all.cs.color === '#ff3030' && all.cs.size === 120 && all.cs.font === 'Anton' && all.eff === 1 && ok(a0), `${JSON.stringify(all.styles)} ${all.cs.color} ${all.eff} styles; mean ${a0.mean}`);
     const un = await ev(() => { restore(undo, redo); return { c1: P.captions[1].style?.color, c0: P.captions[0].style || null, cs: P.capStyle.color }; }).catch(e => ({ err: e.message }));
     check(`${rm}: one undo brings the single restyled caption back`, un.c1 === '#ff3030' && un.c0 === null && un.cs !== '#ff3030', JSON.stringify(un));
+    // an edit that moves captions snaps each start to a frame and keeps its length: back to back, one can run under a frame into the next.
+    // At the handover only the next one shows (both were drawn on top of each other there)
+    const clean = await cmp(1.5);
+    await ev(() => change(() => { P.captions[0].start = 0.02; }));
+    const over = await cmp(1.5, clean.ex), overPv = await cmp(1.5);
+    check(`${rm}: a caption running 0.02 s into the next is not drawn under it (export as the clean handover, preview == export)`, over.mean === 0 && ok(overPv), `vs clean ${over.mean}/${over.worst}, preview vs export ${overPv.mean}/${overPv.worst}`);
+    await ev(() => restore(undo, redo));
     check(`${rm}: no page errors`, errs.length === 0, errs.slice(0, 3).join(' | '));
 
     // 4. loudness (once): one gain across the edit, sound as long as the picture
