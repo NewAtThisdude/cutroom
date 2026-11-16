@@ -31,6 +31,30 @@ It checks your computer first, asks before installing anything and needs no admi
 
 ![The Cutroom editor: library, preview, inspector and timeline](docs/screenshot.png)
 
+## See what it makes
+
+Every image below came out of Cutroom's own exports ([footage credits](docs/samples/CREDITS.md)).
+
+**Auto captions** over an on-device voiceover, in three of the 22 caption styles
+
+![The same night-street frame captioned in three styles: gold karaoke, green neon, yellow word box](docs/samples/captions.jpg)
+
+**Colour looks** in one click: the original, Golden, Cyber and Noir
+
+![A mountain sunset in four colour looks](docs/samples/looks.jpg)
+
+**Cut out a subject** and put it on any background, no green screen
+
+![A dancer in front of a studio curtain, then the same dancer over a mountain sunset](docs/samples/cut-out.jpg)
+
+**Every shape from one edit**: 16:9, 9:16, 1:1 and 4:5, with captions that reflow to fit
+
+![One edit exported in four shapes side by side](docs/samples/shapes.jpg)
+
+**57 transitions**, here caught halfway: ink, cube, page curl and wave
+
+![A cut from Tokyo to London halfway through four different transitions](docs/samples/transitions.jpg)
+
 ## Why Cutroom
 
 - <img src="docs/icons/lock-keyhole.svg" width="16" height="16" align="absmiddle" alt=""> **Private.** Your footage never leaves your computer. No account, no cloud, nothing to pay.
